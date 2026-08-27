@@ -121,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
                 send_button=config.selectors.send_button or "(Enter)",
                 assistant_messages=config.selectors.assistant_messages,
                 model_dropdown=config.selectors.model_dropdown or "(auto)",
+                model_dropdown_identifier=config.selectors.model_dropdown_identifier
+                or "(none)",
             )
         )
         patch = _read_patch(args.patch_file)

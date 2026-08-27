@@ -17,7 +17,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is treated as a **button or clickable div that opens a panel**, not a native `<select>`. The bot clicks the opener, then the matching item in the panel (including shadow DOM). Set `selectors.model_dropdown` to that button/div if auto-detect misses it; `selectors.model_option` can target items inside the open panel.
+Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/

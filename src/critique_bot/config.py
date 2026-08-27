@@ -29,6 +29,7 @@ class Selectors:
     prompt_input: str
     assistant_messages: str
     model_dropdown: str = ""
+    model_dropdown_identifier: str = ""
     model_option: str = ""
     send_button: str = ""
 
@@ -89,6 +90,10 @@ def load_config(
         prompt_input=_clean(selectors_raw.get("prompt_input")),
         assistant_messages=_clean(selectors_raw.get("assistant_messages")),
         model_dropdown=_clean(selectors_raw.get("model_dropdown")),
+        model_dropdown_identifier=_clean(
+            selectors_raw.get("model_dropdown_identifier")
+            or raw.get("model_dropdown_identifier")
+        ),
         model_option=_clean(selectors_raw.get("model_option")),
         send_button=_clean(selectors_raw.get("send_button")),
     )

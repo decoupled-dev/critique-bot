@@ -358,6 +358,93 @@ _FIND_OPENER_JS = """
 }
 """
 
+_FIND_IDENTIFIER_JS = """
+(needle) => {
+  const target = String(needle || "").replace(/\\s+/g, " ").trim().toLowerCase();
+  if (!target) return null;
+  const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK"]);
+
+  const isVisible = (el) => {
+    if (!(el instanceof Element)) return false;
+    const st = getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) === 0) {
+      return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+
+  const asOpener = (el) => {
+    const close = el.closest(
+      'button, a, summary, [role="combobox"], [role="button"], [aria-haspopup], [aria-expanded], [tabindex], [onclick]'
+    );
+    if (close) return close;
+    let n = el;
+    while (n && n instanceof Element) {
+      const st = getComputedStyle(n);
+      if (st.cursor === "pointer" || n.hasAttribute("onclick")) return n;
+      const root = n.getRootNode && n.getRootNode();
+      n = n.parentElement || (root && root.host) || null;
+    }
+    return el;
+  };
+
+  const hayOf = (el) => {
+    const cls = typeof el.className === "string" ? el.className : "";
+    return [
+      el.getAttribute("aria-label"),
+      el.getAttribute("title"),
+      el.getAttribute("data-testid"),
+      el.getAttribute("data-id"),
+      el.id,
+      cls,
+      el.innerText,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  };
+
+  const candidates = [];
+  const visit = (root) => {
+    if (root instanceof Document) {
+      if (root.documentElement) visit(root.documentElement);
+      return;
+    }
+    if (root instanceof Element) {
+      if (SKIP.has(root.tagName)) return;
+      if (root.shadowRoot) visit(root.shadowRoot);
+    }
+    const children =
+      root instanceof Element || root instanceof ShadowRoot
+        ? Array.from(root.children)
+        : [];
+    for (const child of children) visit(child);
+    if (!(root instanceof Element)) return;
+    if (root.tagName === "HTML" || root.tagName === "BODY") return;
+    if (!isVisible(root)) return;
+    const hay = hayOf(root);
+    if (!hay.includes(target)) return;
+    let score = 40;
+    const aria = (root.getAttribute("aria-label") || "").trim().toLowerCase();
+    const testid = (root.getAttribute("data-testid") || "").trim().toLowerCase();
+    const id = (root.id || "").trim().toLowerCase();
+    const text = (root.innerText || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    if (aria === target || testid === target || id === target || text === target) score += 80;
+    else if (aria.includes(target) || testid.includes(target) || id.includes(target)) score += 40;
+    else if (text.includes(target)) score += 20;
+    if (root.tagName === "BUTTON" || (root.getAttribute("role") || "") === "button") score += 25;
+    candidates.push({ el: asOpener(root), score });
+  };
+
+  visit(document);
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.length ? candidates[0].el : null;
+}
+"""
+
 _OPENER_LOCATORS = (
     '[data-testid*="model" i]',
     '[class*="model-picker" i]',
@@ -619,6 +706,73 @@ def _click_timeout(timeout_ms: int) -> int:
     return min(max(timeout_ms, 1), 8_000)
 
 
+def _looks_like_locator(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if text.startswith((".", "#", "[", "/", "xpath=", "text=", "internal:")):
+        return True
+    return bool(re.match(r"^[a-zA-Z][\w-]*(\[|#|\.|:)", text))
+
+
+def _has_pinned_opener(selectors: Selectors) -> bool:
+    return bool(selectors.model_dropdown_identifier or selectors.model_dropdown)
+
+
+def _click_dropdown_identifier(page: Page, identifier: str, click_ms: int) -> bool:
+    log.info(f"finding model dropdown by identifier {identifier!r}")
+    if _looks_like_locator(identifier):
+        loc = page.locator(identifier)
+        try:
+            count = loc.count()
+        except Exception as exc:
+            log.debug(f"identifier locator {identifier!r} failed: {exc}")
+            count = 0
+        log.debug(f"identifier as locator matched {count}")
+        if count > 0 and _click_element(loc.first, click_ms):
+            page.wait_for_timeout(MENU_OPEN_MS)
+            log.info(f"clicked model_dropdown_identifier locator {identifier!r}")
+            return True
+
+    try:
+        loc = page.get_by_role("button", name=re.compile(re.escape(identifier), re.I))
+        if loc.count() > 0 and loc.first.is_visible() and _click_element(loc.first, click_ms):
+            page.wait_for_timeout(MENU_OPEN_MS)
+            log.info(f"clicked model_dropdown_identifier button name {identifier!r}")
+            return True
+    except Exception as exc:
+        log.debug(f"get_by_role(button, name={identifier!r}) failed: {exc}")
+
+    try:
+        loc = page.get_by_label(identifier, exact=False)
+        if loc.count() > 0 and loc.first.is_visible() and _click_element(loc.first, click_ms):
+            page.wait_for_timeout(MENU_OPEN_MS)
+            log.info(f"clicked model_dropdown_identifier label {identifier!r}")
+            return True
+    except Exception as exc:
+        log.debug(f"get_by_label({identifier!r}) failed: {exc}")
+
+    for frame in _frames(page):
+        handle = None
+        try:
+            handle = frame.evaluate_handle(_FIND_IDENTIFIER_JS, identifier)
+            opener = handle.as_element()
+            if opener is not None and _click_element(opener, click_ms):
+                page.wait_for_timeout(MENU_OPEN_MS)
+                log.info(
+                    f"clicked model_dropdown_identifier {identifier!r} "
+                    f"in {frame.url!r}: {_describe_element(opener)}"
+                )
+                return True
+        except Exception as exc:
+            log.debug(f"identifier DOM scan failed in {frame.url!r}: {exc}")
+        finally:
+            if handle is not None:
+                _dispose(handle)
+    log.warn(f"no control matched model_dropdown_identifier {identifier!r}")
+    return False
+
+
 def _menu_looks_open(page: Page) -> bool:
     for frame in _frames(page):
         try:
@@ -638,6 +792,15 @@ def _open_model_menu(
 ) -> bool:
     log.debug("trying to open the model picker (button/div + panel)")
     click_ms = _click_timeout(timeout_ms)
+    pinned = _has_pinned_opener(selectors)
+
+    if selectors.model_dropdown_identifier:
+        if _click_dropdown_identifier(page, selectors.model_dropdown_identifier, click_ms):
+            return True
+        log.warn(
+            "model_dropdown_identifier did not match; not clicking other buttons"
+        )
+        return False
 
     if selectors.model_dropdown:
         dropdown = page.locator(selectors.model_dropdown)
@@ -648,6 +811,9 @@ def _open_model_menu(
                 page.wait_for_timeout(MENU_OPEN_MS)
                 log.info("clicked selectors.model_dropdown")
                 return True
+        if pinned:
+            log.warn("selectors.model_dropdown did not open the picker; not clicking other buttons")
+            return False
 
     for frame in _frames(page):
         handle = None
@@ -656,8 +822,8 @@ def _open_model_menu(
             opener = handle.as_element()
             if opener is not None and _click_element(opener, click_ms):
                 page.wait_for_timeout(MENU_OPEN_MS)
-            log.info(f"clicked inferred model opener in {frame.url!r}")
-            return True
+                log.info(f"clicked inferred model opener in {frame.url!r}")
+                return True
         except Exception as exc:
             log.debug(f"opener scan failed in {frame.url!r}: {exc}")
         finally:
@@ -739,7 +905,11 @@ def _select_model(page: Page, selectors: Selectors, model: str, timeout_ms: int)
                     log.info(f"clicked model {model!r} in the open panel")
                     return
                 raise ChatError(f"found {model!r} in the panel but could not click it")
-            if meta.get("visible") and meta.get("isControl"):
+            if (
+                meta.get("visible")
+                and meta.get("isControl")
+                and not _has_pinned_opener(selectors)
+            ):
                 last_trigger = element
 
         if (menu_open or last_open_try > 0) and _click_visible_model_label(page, model, click_ms):
@@ -906,6 +1076,7 @@ def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
             send_button=selectors.send_button or "(Enter)",
             assistant_messages=selectors.assistant_messages,
             model_dropdown=selectors.model_dropdown or "(auto)",
+            model_dropdown_identifier=selectors.model_dropdown_identifier or "(none)",
             model_option=selectors.model_option or "(auto)",
         )
     )

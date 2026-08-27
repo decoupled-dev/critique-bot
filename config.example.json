@@ -2,6 +2,7 @@
   "url": "https://YOUR_CHAT_UI/",
   "selectors": {
     "model_dropdown": "",
+    "model_dropdown_identifier": "",
     "model_option": "",
     "prompt_input": "textarea",
     "send_button": "button[type=submit]",
