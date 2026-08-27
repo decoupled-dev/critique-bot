@@ -1,0 +1,14 @@
+{
+  "url": "https://YOUR_CHAT_UI/",
+  "selectors": {
+    "model_dropdown": "select#model",
+    "model_option": "",
+    "prompt_input": "textarea",
+    "send_button": "button[type=submit]",
+    "assistant_messages": ".assistant-message"
+  },
+  "model": "YOUR_MODEL_NAME",
+  "timeout_ms": 180000,
+  "idle_ms": 4000,
+  "storage_state": ""
+}

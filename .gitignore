@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+out/
+dist/
+build/
+config.json
+storage_state.json
+.python-version
