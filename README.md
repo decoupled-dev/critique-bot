@@ -4,6 +4,8 @@ General-purpose web LLM bot: it opens a ChatGPT-like UI in **headless Microsoft 
 
 **Default mode is a specialized code reviewer.** Pass a patch and the bot wraps it in the review template. `--mode general` sends a one-shot prompt. `--mode chat` is an interactive conversation in the terminal.
 
+Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMANDS.md).
+
 ## Requirements
 
 - Python 3.10+
@@ -64,42 +66,6 @@ python -m critique_bot --config config.json --mode general \
 
 `--file` and trailing paths both attach files. If the prompt contains `{files}` or `{patch}`, those contents replace the placeholder; otherwise they are appended after the prompt, labeled with each path.
 
-## Deploy (Windows and Linux)
-
-The bot is a CLI. Ship a **zip per OS** (no Python install on the target machine) or a **pip wheel**. Microsoft Edge must already be installed on the target (`microsoft-edge-stable` on Linux; Edge is usually already on Windows). Build **on the OS you want to ship** — a Linux binary will not run on Windows, and vice versa.
-
-### Standalone zip (recommended)
-
-From a Python 3.10+ checkout:
-
-```bash
-python -m pip install -e ".[packaging]"
-python scripts/build.py
-```
-
-That writes `dist/critique-bot-<version>-linux-x64.zip` or `dist/critique-bot-<version>-windows-x64.zip`. Unzip on the target, copy `config.example.json` to `config.json`, then:
-
-```bash
-# Linux
-./critique-bot --config config.json --patch-file diff.patch
-
-# Windows
-.\critique-bot.exe --config config.json --patch-file diff.patch
-```
-
-Keep `_internal` next to the executable. First login still uses `--headed` so the Edge profile (`.edge-profile` by default) can be reused later.
-
-CI builds both zips: GitHub Actions workflow **Build** (manual run, or push a `v*` tag). Tagging `v0.1.0` also attaches the zips and a pip wheel to a GitHub Release.
-
-### Pip wheel (Python already on the target)
-
-```bash
-python -m pip install build
-python -m build --sdist --wheel
-pip install dist/critique_bot-*.whl
-critique-bot --config config.json --patch-file diff.patch
-```
-
 ### Chat
 
 Interactive conversation in this terminal. The browser window opens (same as `--headed`). Type a message at `You>`, then the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`.
@@ -117,3 +83,7 @@ python -m critique_bot --config config.json --mode chat \
 ```
 
 In-session commands: `/help`, `/file PATH [message]` to attach a file to the next turn, and a trailing `\` to continue a line.
+
+## Deploy
+
+Windows PowerShell and Linux zip (and pip wheel) instructions: [DEPLOY.md](DEPLOY.md).
