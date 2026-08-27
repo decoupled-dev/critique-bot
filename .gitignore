@@ -8,4 +8,5 @@ dist/
 build/
 config.json
 storage_state.json
+.edge-profile/
 .python-version

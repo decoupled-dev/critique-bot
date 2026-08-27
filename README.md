@@ -23,9 +23,11 @@ Copy [`config.example.json`](config.example.json) to `config.json` and set the r
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
 ```
 
-Optional session cookies: log in once with `--headed`, then save Playwright storage state and set `storage_state` in config or `CRITIQUE_STORAGE_STATE`.
+The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. First run with `--headed`, log in to the chat UI, then later runs (including headless) reuse that session. Set `user_data_dir` to `system` to use your desktop Edge profile instead (close Edge first, or the profile is locked). To attach to an Edge window that is already open and signed in, start Edge with `--remote-debugging-port=9222` and set `cdp_url` to `http://127.0.0.1:9222`.
 
-Env overrides: `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_STORAGE_STATE`.
+Optional extra cookies: Playwright `storage_state` via config or `CRITIQUE_STORAGE_STATE`.
+
+Env overrides: `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`.
 
 ## Run
 

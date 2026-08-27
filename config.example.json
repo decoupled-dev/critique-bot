@@ -10,5 +10,7 @@
   "model": "GPT-5.1",
   "timeout_ms": 180000,
   "idle_ms": 4000,
+  "user_data_dir": ".edge-profile",
+  "cdp_url": "",
   "storage_state": ""
 }
