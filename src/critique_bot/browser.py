@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -15,7 +17,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from critique_bot import log
-from critique_bot.config import system_edge_user_data_dir
+from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page
@@ -93,8 +95,28 @@ def _run_quiet(cmd: list[str]) -> None:
 
 
 def close_existing_edge_sessions(*, profile_dir: Path | None = None) -> None:
-    """Quit desktop Edge so the profile lock is released before a new launch."""
-    log.info("closing any open Microsoft Edge sessions")
+    """Quit Edge processes that are using this profile. Leaves other Edge windows alone."""
+    if profile_dir is None:
+        log.info("closing any open Microsoft Edge sessions")
+        _kill_all_edge()
+        return
+
+    pids = _edge_pids_for_profile(profile_dir)
+    if pids:
+        log.info(f"closing Edge using profile {profile_dir} pids={pids}")
+        _stop_pids(pids)
+    else:
+        log.debug(f"no Edge process found for profile {profile_dir}")
+
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        if not _profile_locked(profile_dir) and not _edge_pids_for_profile(profile_dir):
+            break
+        time.sleep(0.25)
+    _clear_profile_locks(profile_dir)
+
+
+def _kill_all_edge() -> None:
     if sys.platform == "win32":
         _run_quiet(["taskkill", "/F", "/IM", "msedge.exe", "/T"])
     elif sys.platform == "darwin":
@@ -111,13 +133,113 @@ def close_existing_edge_sessions(*, profile_dir: Path | None = None) -> None:
             if shutil.which("pkill"):
                 _run_quiet(["pkill", "-x", name])
 
-    deadline = time.time() + 12
-    while time.time() < deadline:
-        if profile_dir is None or not _profile_locked(profile_dir):
-            break
-        time.sleep(0.25)
-    if profile_dir is not None:
-        _clear_profile_locks(profile_dir)
+
+def _edge_pids_for_profile(profile_dir: Path) -> list[int]:
+    needle = str(profile_dir.expanduser().resolve())
+    pids: list[int] = []
+    if sys.platform == "win32":
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name = 'msedge.exe'\" | "
+            "ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }"
+        )
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", script],
+                text=True,
+                errors="replace",
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return []
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) < 2 or needle not in parts[1]:
+                continue
+            try:
+                pids.append(int(parts[0]))
+            except ValueError:
+                continue
+        return pids
+
+    try:
+        out = subprocess.check_output(
+            ["ps", "-eo", "pid,args"],
+            text=True,
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 1)
+        if len(parts) < 2 or needle not in parts[1]:
+            continue
+        lower = parts[1].lower()
+        if not any(
+            token in lower for token in ("msedge", "microsoft-edge", "microsoft edge")
+        ):
+            continue
+        try:
+            pids.append(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
+def _stop_pids(pids: list[int]) -> None:
+    my_pid = os.getpid()
+    for pid in pids:
+        if pid in {0, 1, my_pid}:
+            continue
+        if sys.platform == "win32":
+            _run_quiet(["taskkill", "/F", "/PID", str(pid), "/T"])
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+    if sys.platform == "win32":
+        return
+    deadline = time.time() + 3
+    remaining = set(pids)
+    while remaining and time.time() < deadline:
+        alive = set()
+        for pid in remaining:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            alive.add(pid)
+        remaining = alive
+        time.sleep(0.15)
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+
+
+def _stop_desktop_edge(
+    proc: subprocess.Popen[bytes] | None, profile_dir: Path
+) -> None:
+    if proc is not None and proc.poll() is None:
+        log.debug(f"stopping desktop Edge pid={proc.pid}")
+        try:
+            if sys.platform != "win32":
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
+        except OSError:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    close_existing_edge_sessions(profile_dir=profile_dir)
 
 
 def _profile_locked(profile_dir: Path) -> bool:
@@ -183,7 +305,13 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_cdp(cdp_url: str, timeout_s: float = 30) -> None:
+def _wait_for_cdp(
+    cdp_url: str,
+    *,
+    timeout_s: float = 45,
+    process: subprocess.Popen[bytes] | None = None,
+    stderr_path: Path | None = None,
+) -> None:
     version_url = cdp_url.rstrip("/") + "/json/version"
     deadline = time.time() + timeout_s
     last_error: Exception | None = None
@@ -196,44 +324,103 @@ def _wait_for_cdp(cdp_url: str, timeout_s: float = 30) -> None:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             time.sleep(0.2)
+    detail = _stderr_tail(stderr_path)
+    exited = ""
+    if process is not None and process.poll() is not None:
+        exited = f" Edge process already exited ({process.returncode})."
     raise BrowserError(
         f"Edge did not open remote debugging at {cdp_url}. "
-        f"Last error: {last_error}"
+        "Chromium 136+ ignores --remote-debugging-port on the daily desktop "
+        "profile; the bot must use a non-default --user-data-dir. "
+        f"Last error: {last_error}.{exited}"
+        + (f" Edge output: {detail}" if detail else "")
     )
 
 
-def _start_system_edge(*, headed: bool, start_url: str | None) -> tuple[str, bool]:
+def _stderr_tail(path: Path | None, limit: int = 800) -> str:
+    if path is None or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[-limit:]
+
+
+def _start_desktop_edge(
+    *,
+    headed: bool,
+    start_url: str | None,
+    user_data_dir: Path,
+) -> tuple[str, subprocess.Popen[bytes]]:
     """Start desktop Edge the same way a user would, plus CDP so we can drive it."""
     executable = find_edge_executable()
+    user_data_dir.mkdir(parents=True, exist_ok=True)
     port = _free_port()
     cdp_url = f"http://127.0.0.1:{port}"
     cmd = [
         executable,
+        f"--user-data-dir={user_data_dir}",
         f"--remote-debugging-port={port}",
+        "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         "--hide-crash-restore-bubble",
+        "--no-first-run",
+        "--no-default-browser-check",
     ]
     if not headed:
         log.info(
-            "system profile requested; opening a real Edge window instead of a "
-            "headless scripted instance"
+            "opening a real Edge window instead of a headless scripted instance"
         )
     if start_url:
         cmd.append(start_url)
     log.info(
         "launching desktop Edge "
-        + log.kv(executable=executable, cdp_url=cdp_url, start_url=start_url)
+        + log.kv(
+            executable=executable,
+            cdp_url=cdp_url,
+            user_data_dir=str(user_data_dir),
+            start_url=start_url,
+        )
     )
     log.debug(f"Edge command: {cmd}")
+    stderr_file = tempfile.NamedTemporaryFile(
+        prefix="critique-bot-edge-",
+        suffix=".stderr",
+        delete=False,
+    )
+    stderr_path = Path(stderr_file.name)
     kwargs: dict[str, object] = {
         "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stderr": stderr_file,
+        "start_new_session": True,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(cmd, **kwargs)
-    _wait_for_cdp(cdp_url)
-    return cdp_url, True
+        kwargs.pop("start_new_session", None)
+    process = subprocess.Popen(cmd, **kwargs)
+    stderr_file.close()
+    try:
+        _wait_for_cdp(
+            cdp_url,
+            process=process,
+            stderr_path=stderr_path,
+        )
+    except Exception:
+        _stop_desktop_edge(process, user_data_dir)
+        try:
+            stderr_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    try:
+        stderr_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return cdp_url, process
 
 
 def _attach_over_cdp(
@@ -523,6 +710,7 @@ def launch_edge(
     context = None
     attached_page = None
     started_desktop_edge = False
+    desktop_proc: subprocess.Popen[bytes] | None = None
     profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
     use_system_profile = _is_system_profile(str(profile_dir))
     try:
@@ -538,17 +726,25 @@ def launch_edge(
             yield attached_page
             return
 
-        close_existing_edge_sessions(profile_dir=profile_dir)
-
         if use_system_profile:
+            profile_dir = dedicated_edge_user_data_dir()
+            log.warn(
+                "Edge (Chrome 136+) refuses remote debugging on the daily desktop "
+                "profile, so the site can open while the bot never attaches. "
+                f"Starting a real Edge window with a dedicated profile at {profile_dir}. "
+                "Log in there once; later runs reuse that session. Everyday Edge is left open."
+            )
             if storage_state:
                 log.warn(
-                    "ignoring storage_state; system profile already has the desktop login"
+                    "ignoring storage_state; the dedicated desktop profile already has logins"
                 )
-            cdp_url, started_desktop_edge = _start_system_edge(
+            close_existing_edge_sessions(profile_dir=profile_dir)
+            cdp_url, desktop_proc = _start_desktop_edge(
                 headed=headed,
                 start_url=start_url,
+                user_data_dir=profile_dir,
             )
+            started_desktop_edge = True
             context, attached_page = _attach_over_cdp(
                 playwright,
                 cdp_url,
@@ -557,6 +753,8 @@ def launch_edge(
             )
             yield attached_page
             return
+
+        close_existing_edge_sessions(profile_dir=profile_dir)
 
         profile_dir.mkdir(parents=True, exist_ok=True)
         existing = any(profile_dir.iterdir())
@@ -623,5 +821,5 @@ def launch_edge(
             except Exception as exc:
                 log.debug(f"Playwright stop: {exc}")
         if started_desktop_edge:
-            close_existing_edge_sessions(profile_dir=profile_dir)
+            _stop_desktop_edge(desktop_proc, profile_dir)
         log.debug("Playwright stopped")

@@ -25,7 +25,9 @@ playwright codegen --channel msedge https://YOUR_CHAT_UI/
 
 The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. First run with `--headed`, log in to the chat UI, then later runs (including headless) reuse that session.
 
-Set `user_data_dir` to `system` to use your **desktop Edge profile**. The bot quits any already-open Edge, then starts real Microsoft Edge (same profile, extensions, and login as a normal user — not a Playwright automation window). To attach to an Edge window you already started yourself, launch it with `--remote-debugging-port=9222` and set `cdp_url` to `http://127.0.0.1:9222`.
+Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile, so the bot uses a dedicated Edge profile next to it (`microsoft-edge-critique-bot` on Linux). Log in once in that window; later runs reuse the session. Everyday Edge is left alone.
+
+To attach to an Edge window you already started yourself, launch it with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`, then set `cdp_url` to `http://127.0.0.1:9222`.
 
 Optional extra cookies: Playwright `storage_state` via config or `CRITIQUE_STORAGE_STATE`.
 

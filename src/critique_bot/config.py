@@ -162,6 +162,12 @@ def load_config(
     )
 
 
+def dedicated_edge_user_data_dir() -> Path:
+    """Persistent Edge profile the bot can debug (not the daily desktop profile)."""
+    system = system_edge_user_data_dir()
+    return system.parent / f"{system.name}-critique-bot"
+
+
 def system_edge_user_data_dir() -> Path:
     """Microsoft Edge user-data directory for the signed-in desktop profile."""
     if sys.platform == "win32":
