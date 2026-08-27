@@ -17,7 +17,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors. Fastest way to discover selectors:
+Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The bot walks the DOM, including open shadow roots and combobox/dropdown lists, and clicks the matching control. `selectors.model_dropdown` is optional: only set it if the list stays closed until you click a specific opener.
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
