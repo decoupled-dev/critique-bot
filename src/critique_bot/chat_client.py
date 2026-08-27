@@ -534,9 +534,7 @@ def _wait_for_reply(
 
 
 def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
-    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-
-    from critique_bot.browser import describe_page, warn_if_login_page
+    from critique_bot.browser import BrowserError, describe_page, navigate, warn_if_login_page
 
     selectors = config.selectors
     timeout_ms = config.timeout_ms
@@ -557,13 +555,10 @@ def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
     log.debug(f"before navigation: {describe_page(page)}")
 
     try:
-        log.info(f"navigating to {config.url}")
-        page.goto(config.url, wait_until="domcontentloaded", timeout=timeout_ms)
-    except PlaywrightTimeoutError as exc:
-        log.error(f"timed out loading chat UI: {config.url} ({describe_page(page)})")
-        raise ChatError(f"timed out loading chat UI: {config.url}") from exc
+        navigate(page, config.url, timeout_ms)
+    except BrowserError as exc:
+        raise ChatError(str(exc)) from exc
 
-    log.info(f"loaded {describe_page(page)}")
     warn_if_login_page(page)
     frames = list(page.frames)
     log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")

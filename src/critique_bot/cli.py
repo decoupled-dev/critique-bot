@@ -146,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             storage_state=config.storage_state,
             user_data_dir=config.user_data_dir,
             cdp_url=config.cdp_url,
+            start_url=config.url,
+            timeout_ms=config.timeout_ms,
         ) as page:
             try:
                 response = submit_review(page, config, prompt)
