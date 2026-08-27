@@ -6,17 +6,21 @@ from typing import TYPE_CHECKING
 
 from critique_bot import log
 from critique_bot.config import BotConfig, Selectors
+from critique_bot.patch import strip_unsafe_controls
 
 if TYPE_CHECKING:
     from playwright.sync_api import Frame, Locator, Page
 
 
 class ChatError(RuntimeError):
-    """The web chat UI did not complete a review."""
+    """The web chat UI did not complete a reply."""
 
 
 POLL_MS = 250
 MENU_OPEN_MS = 700
+_FILL_DIRECT_MAX = 8_000
+_FILL_CHUNK = 12_000
+_FILL_SINGLE_EVAL_MAX = 48_000
 _MODELISH_RE = re.compile(
     r"model|gpt|claude|gemini|grok|llama|mistral|sonnet|opus|haiku|flash|chatgpt",
     re.I,
@@ -464,6 +468,50 @@ _OPENER_LOCATORS = (
 )
 
 
+_SET_PROMPT_JS = """
+(el, args) => {
+  const mode = args.mode;
+  const chunk = args.chunk || "";
+  const dispatch = () => {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const setValue = (value) => {
+    if (el.isContentEditable) {
+      el.textContent = value;
+      return;
+    }
+    const proto = el instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : (el instanceof HTMLInputElement ? HTMLInputElement.prototype : null);
+    const setter = proto && Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(el, value);
+    else if ("value" in el) el.value = value;
+    else el.textContent = value;
+  };
+  const getValue = () => {
+    if (el.isContentEditable) return el.textContent || "";
+    if ("value" in el) return el.value || "";
+    return el.textContent || "";
+  };
+  if (mode === "set") {
+    setValue(chunk);
+    dispatch();
+    return getValue().length;
+  }
+  if (mode === "append") {
+    setValue(getValue() + chunk);
+    return getValue().length;
+  }
+  if (mode === "dispatch") {
+    dispatch();
+    return getValue().length;
+  }
+  return getValue().length;
+}
+"""
+
+
 def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -476,33 +524,51 @@ def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
     log.debug(f"{what} is visible")
 
 
+def _fill_prompt_via_dom(locator: Locator, text: str) -> None:
+    if len(text) <= _FILL_SINGLE_EVAL_MAX:
+        locator.evaluate(_SET_PROMPT_JS, {"mode": "set", "chunk": text})
+        log.debug("prompt filled via DOM value setter")
+        return
+    log.info(f"filling prompt in {_FILL_CHUNK}-char chunks ({len(text)} chars)")
+    locator.evaluate(_SET_PROMPT_JS, {"mode": "set", "chunk": ""})
+    for index in range(0, len(text), _FILL_CHUNK):
+        chunk = text[index : index + _FILL_CHUNK]
+        locator.evaluate(_SET_PROMPT_JS, {"mode": "append", "chunk": chunk})
+    locator.evaluate(_SET_PROMPT_JS, {"mode": "dispatch", "chunk": ""})
+    log.debug("prompt filled via chunked DOM value setter")
+
+
 def _fill_prompt(locator: Locator, text: str, timeout_ms: int) -> None:
     locator = locator.first
+    text = strip_unsafe_controls(text)
     log.info(f"filling prompt ({len(text)} chars, preview={log.preview(text)!r})")
     _wait_visible(locator, timeout_ms, "prompt input")
+    if len(text) <= _FILL_DIRECT_MAX:
+        try:
+            locator.fill(text, timeout=timeout_ms)
+            log.debug("prompt filled via locator.fill")
+            return
+        except Exception as exc:
+            log.warn(f"locator.fill failed ({exc}); falling back to DOM value setter")
+        _fill_prompt_via_dom(locator, text)
+        return
+
+    log.info(
+        f"skipping locator.fill for large prompt ({len(text)} chars); "
+        "using DOM setter so the page does not freeze"
+    )
     try:
-        locator.fill(text, timeout=timeout_ms)
-        log.debug("prompt filled via locator.fill")
+        _fill_prompt_via_dom(locator, text)
         return
     except Exception as exc:
-        log.warn(f"locator.fill failed ({exc}); falling back to DOM value setter")
-    locator.evaluate(
-        """(el, value) => {
-            const proto = el instanceof HTMLTextAreaElement
-                ? HTMLTextAreaElement.prototype
-                : HTMLInputElement.prototype;
-            const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (setter) {
-                setter.call(el, value);
-            } else {
-                el.value = value;
-            }
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-            el.dispatchEvent(new Event("change", { bubbles: true }));
-        }""",
-        text,
-    )
-    log.debug("prompt filled via DOM value setter")
+        log.warn(f"DOM setter failed ({exc}); trying locator.fill as last resort")
+    try:
+        locator.fill(text, timeout=timeout_ms)
+        log.debug("prompt filled via locator.fill after DOM setter failed")
+    except Exception as exc:
+        raise ChatError(
+            f"could not paste prompt ({len(text)} chars) into the chat input: {exc}"
+        ) from exc
 
 
 def _frames(page: Page) -> list[Frame]:
@@ -1059,7 +1125,7 @@ def _wait_for_reply(
     )
 
 
-def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
+def prepare_chat(page: Page, config: BotConfig) -> None:
     from critique_bot.browser import BrowserError, describe_page, navigate, warn_if_login_page
 
     selectors = config.selectors
@@ -1071,7 +1137,6 @@ def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
             model=config.model or "(none)",
             timeout_ms=timeout_ms,
             idle_ms=config.idle_ms,
-            prompt_chars=len(prompt),
             prompt_input=selectors.prompt_input,
             send_button=selectors.send_button or "(Enter)",
             assistant_messages=selectors.assistant_messages,
@@ -1097,9 +1162,17 @@ def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
         "prompt input after navigation",
     )
     _select_model(page, selectors, config.model, timeout_ms)
+    log.info("chat UI is ready")
 
+
+def send_turn(page: Page, config: BotConfig, prompt: str) -> str:
+    selectors = config.selectors
+    timeout_ms = config.timeout_ms
     previous_count = page.locator(selectors.assistant_messages).count()
-    log.info(f"assistant messages already on page: {previous_count}")
+    log.info(
+        "sending turn "
+        + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
+    )
     _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
     _send(page, selectors, timeout_ms)
 
@@ -1110,5 +1183,10 @@ def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
         timeout_ms=timeout_ms,
         idle_ms=config.idle_ms,
     )
-    log.info(f"captured review ({len(reply)} chars)")
+    log.info(f"captured reply ({len(reply)} chars)")
     return reply
+
+
+def submit_review(page: Page, config: BotConfig, prompt: str) -> str:
+    prepare_chat(page, config)
+    return send_turn(page, config, prompt)

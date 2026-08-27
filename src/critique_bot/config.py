@@ -7,6 +7,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from critique_bot import log
+from critique_bot.patch import (
+    ABSOLUTE_MAX_FILE_CHARS,
+    ABSOLUTE_MAX_FILES,
+    ABSOLUTE_MAX_PROMPT_CHARS,
+    ABSOLUTE_MAX_READ_BYTES,
+    DEFAULT_MAX_FILE_CHARS,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_PROMPT_CHARS,
+    DEFAULT_MAX_READ_BYTES,
+    InputLimits,
+)
 
 PLACEHOLDER_URL = "YOUR_CHAT_UI"
 PLACEHOLDER_MODEL = "YOUR_MODEL_NAME"
@@ -44,6 +55,19 @@ class BotConfig:
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
+    max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS
+    max_file_chars: int = DEFAULT_MAX_FILE_CHARS
+    max_files: int = DEFAULT_MAX_FILES
+    max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+
+    @property
+    def input_limits(self) -> InputLimits:
+        return InputLimits(
+            max_prompt_chars=self.max_prompt_chars,
+            max_file_chars=self.max_file_chars,
+            max_files=self.max_files,
+            max_read_bytes=self.max_read_bytes,
+        )
 
 
 def _clean(value: object) -> str:
@@ -61,6 +85,16 @@ def _positive_int(name: str, value: object, default: int) -> int:
         raise ConfigError(f"{name} must be an integer, got {value!r}") from exc
     if parsed <= 0:
         raise ConfigError(f"{name} must be > 0, got {parsed}")
+    return parsed
+
+
+def _clamped_positive_int(
+    name: str, value: object, default: int, maximum: int
+) -> int:
+    parsed = _positive_int(name, value, default)
+    if parsed > maximum:
+        log.warn(f"{name}={parsed} exceeds {maximum}; using {maximum}")
+        return maximum
     return parsed
 
 
@@ -164,6 +198,30 @@ def load_config(
         storage_state=storage_state,
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
+        max_prompt_chars=_clamped_positive_int(
+            "max_prompt_chars",
+            raw.get("max_prompt_chars"),
+            DEFAULT_MAX_PROMPT_CHARS,
+            ABSOLUTE_MAX_PROMPT_CHARS,
+        ),
+        max_file_chars=_clamped_positive_int(
+            "max_file_chars",
+            raw.get("max_file_chars"),
+            DEFAULT_MAX_FILE_CHARS,
+            ABSOLUTE_MAX_FILE_CHARS,
+        ),
+        max_files=_clamped_positive_int(
+            "max_files",
+            raw.get("max_files"),
+            DEFAULT_MAX_FILES,
+            ABSOLUTE_MAX_FILES,
+        ),
+        max_read_bytes=_clamped_positive_int(
+            "max_read_bytes",
+            raw.get("max_read_bytes"),
+            DEFAULT_MAX_READ_BYTES,
+            ABSOLUTE_MAX_READ_BYTES,
+        ),
     )
 
 
@@ -213,8 +271,98 @@ def compose_prompt(template: str, patch: str) -> str:
     return template.replace("{patch}", patch)
 
 
+def format_attachments(
+    attachments: list[tuple[str, str]],
+    *,
+    named: bool = True,
+) -> str:
+    """Join file contents for inclusion in a prompt.
+
+    When named, each file is prefixed with ``--- file: <path> ---``.
+    A single unnamed attachment is returned as raw text (review-template mode).
+    """
+    if not attachments:
+        return ""
+    if not named:
+        return "\n\n".join(content for _, content in attachments)
+    parts: list[str] = []
+    for name, content in attachments:
+        parts.append(f"--- file: {name} ---")
+        parts.append(content.rstrip("\n"))
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def compose_prompt_from_args(
+    prompt: str,
+    attachments: list[tuple[str, str]] | None = None,
+) -> str:
+    """Build a prompt from CLI text plus optional file attachments.
+
+    ``{files}`` is replaced with named file sections. ``{patch}`` is replaced
+    with raw text for one file, or named sections for several. If neither
+    placeholder is present, files are appended after the prompt.
+    """
+    attachments = list(attachments or [])
+    if not prompt.strip():
+        raise ConfigError("prompt is empty")
+    has_files = "{files}" in prompt
+    has_patch = "{patch}" in prompt
+    if has_files or has_patch:
+        if not attachments:
+            raise ConfigError(
+                "prompt contains {files} or {patch} but no files were provided"
+            )
+        named = format_attachments(attachments, named=True)
+        raw = format_attachments(attachments, named=len(attachments) > 1)
+        if has_files:
+            prompt = prompt.replace("{files}", named)
+        if has_patch:
+            prompt = prompt.replace("{patch}", raw)
+        return prompt
+    if not attachments:
+        return prompt
+    return prompt.rstrip() + "\n\n" + format_attachments(attachments, named=True)
+
+
+def _frozen_root() -> Path | None:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return None
+
+
 def default_prompt_template_path() -> Path:
-    cwd_path = Path.cwd() / "prompts" / "review.txt"
-    if cwd_path.is_file():
-        return cwd_path
-    return Path(__file__).resolve().parents[2] / "prompts" / "review.txt"
+    """Resolve the bundled review template (cwd, next to the binary, or package)."""
+    package_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / "prompts" / "review.txt",
+        Path(sys.executable).resolve().parent / "prompts" / "review.txt",
+        package_dir / "prompts" / "review.txt",
+    ]
+    frozen_root = _frozen_root()
+    if frozen_root is not None:
+        candidates.append(frozen_root / "prompts" / "review.txt")
+        candidates.append(frozen_root / "critique_bot" / "prompts" / "review.txt")
+    try:
+        candidates.append(package_dir.parents[2] / "prompts" / "review.txt")
+    except IndexError:
+        pass
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if path.is_file():
+            return path
+    raise ConfigError(
+        "review prompt template not found. Place prompts/review.txt next to "
+        "the binary or in the current directory, or pass --prompt-template."
+    )

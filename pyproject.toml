@@ -5,12 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "critique-bot"
 version = "0.1.0"
-description = "Headless Microsoft Edge bot that submits a patch to a web LLM and captures the review."
+description = "Headless Microsoft Edge bot that drives a web LLM chat UI. Default mode reviews patches."
 requires-python = ">=3.10"
 dependencies = ["playwright>=1.49.0"]
 
 [project.scripts]
 critique-bot = "critique_bot.cli:main"
 
+[project.optional-dependencies]
+packaging = ["pyinstaller>=6.11"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+critique_bot = ["prompts/*.txt"]

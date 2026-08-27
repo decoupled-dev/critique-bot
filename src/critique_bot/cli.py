@@ -9,46 +9,360 @@ from critique_bot import log
 from critique_bot.config import (
     ConfigError,
     compose_prompt,
+    compose_prompt_from_args,
     default_prompt_template_path,
+    format_attachments,
     load_config,
 )
-from critique_bot.output import isoformat, save_failure, write_review
+from critique_bot.output import isoformat, save_failure, write_output
+from critique_bot.patch import (
+    NOTE_RESERVE_CHARS,
+    InputError,
+    InputLimits,
+    LoadedInput,
+    cap_text,
+    finalize_prompt,
+    load_path,
+    load_stdin,
+    sanitize_attachments,
+)
+
+MODE_REVIEW = "review"
+MODE_GENERAL = "general"
+MODE_CHAT = "chat"
+OUTPUT_STEM = {
+    MODE_REVIEW: "review",
+    MODE_GENERAL: "reply",
+    MODE_CHAT: "chat",
+}
+_CHAT_QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
 
 
-def _read_patch(patch_file: str | None) -> str:
-    if patch_file:
-        path = Path(patch_file)
-        log.info(f"reading patch from {path}")
-        if not path.is_file():
-            raise ConfigError(f"patch file not found: {path}")
-        text = path.read_text(encoding="utf-8")
-    else:
-        log.info("reading patch from stdin")
-        if sys.stdin.isatty():
-            raise ConfigError("provide --patch-file or pipe a patch on stdin")
-        text = sys.stdin.read()
-    if not text.strip():
+def _read_text_file(
+    path: str | Path,
+    limits: InputLimits,
+    *,
+    label: str = "file",
+    allow_binary: bool = True,
+) -> LoadedInput:
+    file_path = Path(path)
+    log.info(f"reading {label} from {file_path}")
+    try:
+        loaded = load_path(file_path, limits, name=str(path))
+    except InputError as exc:
+        raise ConfigError(f"{label} not found: {file_path}" if "not found" in str(exc) else str(exc)) from exc
+    if loaded.binary and not allow_binary:
+        raise ConfigError(f"{label} is binary, not text: {file_path}")
+    if not loaded.text.strip():
+        raise ConfigError(f"{label} is empty: {file_path}")
+    extra = []
+    if loaded.truncated_read:
+        extra.append("truncated")
+    if loaded.binary:
+        extra.append("binary omitted")
+    suffix = f", {', '.join(extra)}" if extra else ""
+    log.info(
+        f"{label} loaded ({len(loaded.text)} chars, "
+        f"{loaded.text.count(chr(10)) + 1} lines{suffix})"
+    )
+    return loaded
+
+
+def _read_stdin_patch(limits: InputLimits) -> LoadedInput:
+    log.info("reading patch from stdin")
+    if sys.stdin.isatty():
+        raise ConfigError(
+            "review mode needs a patch: pass --patch-file / FILE, "
+            "or pipe a patch on stdin. For a one-shot prompt, use "
+            "--mode general --prompt '...'. To talk interactively, use "
+            "--mode chat"
+        )
+    loaded = load_stdin(limits)
+    if not loaded.text.strip():
         raise ConfigError("patch is empty")
-    log.info(f"patch loaded ({len(text)} chars, {text.count(chr(10)) + 1} lines)")
-    return text
+    extra = []
+    if loaded.truncated_read:
+        extra.append("truncated")
+    if loaded.binary:
+        extra.append("binary omitted")
+    suffix = f", {', '.join(extra)}" if extra else ""
+    log.info(
+        f"patch loaded ({len(loaded.text)} chars, "
+        f"{loaded.text.count(chr(10)) + 1} lines{suffix})"
+    )
+    return loaded
 
 
-def _load_template(path: Path) -> str:
+def _resolve_mode(args: argparse.Namespace) -> str:
+    has_prompt = bool(args.prompt or args.prompt_file)
+    mode = args.mode or (MODE_GENERAL if has_prompt else MODE_REVIEW)
+    if mode == MODE_REVIEW and has_prompt:
+        raise ConfigError(
+            "--mode review uses the review template; "
+            "use --mode general with --prompt / --prompt-file, "
+            "or --mode chat to talk interactively"
+        )
+    if mode == MODE_GENERAL and not has_prompt:
+        raise ConfigError("--mode general requires --prompt or --prompt-file")
+    if mode != MODE_REVIEW and args.prompt_template:
+        raise ConfigError("--prompt-template is only used in --mode review")
+    return mode
+
+
+def _collect_attachments(
+    patch_file: str | None,
+    files: list[str] | None,
+    limits: InputLimits,
+    *,
+    allow_stdin: bool,
+) -> list[LoadedInput]:
+    paths: list[str] = []
+    if patch_file:
+        paths.append(patch_file)
+    paths.extend(files or [])
+    if paths:
+        open_cap = max(limits.max_files * 3, 120)
+        if len(paths) > open_cap:
+            log.warn(
+                f"{len(paths)} input files; reading the first {open_cap} "
+                f"(increase max_files if you need more)"
+            )
+        per_file_limits = limits
+        if len(paths) > 1:
+            per_read = min(
+                limits.max_read_bytes,
+                max(limits.max_file_chars * 8, limits.max_prompt_chars * 2, 256_000),
+            )
+            per_file_limits = InputLimits(
+                max_prompt_chars=limits.max_prompt_chars,
+                max_file_chars=limits.max_file_chars,
+                max_files=limits.max_files,
+                max_read_bytes=per_read,
+            )
+        return [_read_text_file(path, per_file_limits) for path in paths[:open_cap]]
+    if not allow_stdin:
+        return []
+    return [_read_stdin_patch(limits)]
+
+
+def _load_template(path: Path, limits: InputLimits) -> str:
     log.info(f"loading prompt template {path}")
-    if not path.is_file():
-        raise ConfigError(f"prompt template not found: {path}")
-    text = path.read_text(encoding="utf-8")
-    log.debug(f"template loaded ({len(text)} chars)")
-    return text
+    return _read_text_file(
+        path, limits, label="prompt template", allow_binary=False
+    ).text
+
+
+def _build_prompt(args: argparse.Namespace, mode: str, limits: InputLimits) -> str:
+    loaded_attachments = _collect_attachments(
+        args.patch_file,
+        list(args.files or []) + list(args.paths or []),
+        limits,
+        allow_stdin=mode == MODE_REVIEW,
+    )
+    raw_attachments = [(item.name, item.text) for item in loaded_attachments]
+    read_capped = any(item.truncated_read for item in loaded_attachments)
+
+    if mode in (MODE_GENERAL, MODE_CHAT):
+        has_input = bool(
+            args.prompt
+            or args.prompt_file
+            or args.patch_file
+            or args.files
+            or args.paths
+        )
+        if mode == MODE_CHAT and not has_input:
+            return ""
+        if args.prompt_file:
+            prompt_text = _read_text_file(
+                args.prompt_file, limits, label="prompt file", allow_binary=False
+            ).text
+        else:
+            prompt_text = args.prompt or ""
+        prompt_text = cap_text(
+            prompt_text,
+            max(limits.max_prompt_chars // 2, 8_000),
+            what="prompt text",
+        )
+        if not prompt_text.strip() and raw_attachments:
+            prompt_text = "Please look at the attached file(s)."
+        overhead = (
+            len(prompt_text) - 7
+            if ("{patch}" in prompt_text or "{files}" in prompt_text)
+            else len(prompt_text)
+        )
+        attachments, stats = sanitize_attachments(
+            raw_attachments,
+            limits,
+            extra_overhead=overhead + NOTE_RESERVE_CHARS,
+        )
+        stats.truncated_read = stats.truncated_read or read_capped
+        prompt = finalize_prompt(
+            compose_prompt_from_args(prompt_text, attachments),
+            limits,
+            stats,
+        )
+        log.info(
+            f"composed {mode} prompt ({len(prompt)} chars, "
+            f"{len(attachments)} file(s)"
+            + (", sanitized" if stats.did_sanitize else "")
+            + ")"
+        )
+        return prompt
+
+    template_path = (
+        Path(args.prompt_template)
+        if args.prompt_template
+        else default_prompt_template_path()
+    )
+    template = _load_template(template_path, limits)
+    overhead = max(len(template) - 7, 0)
+    attachments, stats = sanitize_attachments(
+        raw_attachments,
+        limits,
+        extra_overhead=overhead + NOTE_RESERVE_CHARS,
+    )
+    stats.truncated_read = stats.truncated_read or read_capped
+    body = format_attachments(attachments, named=len(attachments) > 1)
+    prompt = finalize_prompt(compose_prompt(template, body), limits, stats)
+    log.info(
+        f"composed review prompt ({len(prompt)} chars"
+        + (", sanitized" if stats.did_sanitize else "")
+        + ")"
+    )
+    return prompt
+
+
+_CHAT_HELP = (
+    "commands:\n"
+    "  exit, quit, /q     leave the session\n"
+    "  /help              show this help\n"
+    "  /file PATH [text]  attach a file to this turn\n"
+    "  end a line with \\  continue on the next line"
+)
+
+
+def _print_assistant(reply: str) -> None:
+    print(reply, flush=True)
+    print(flush=True)
+
+
+def _read_chat_message() -> str | None:
+    chunks: list[str] = []
+    while True:
+        prefix = "You> " if not chunks else "... "
+        try:
+            line = input(prefix)
+        except EOFError:
+            print(flush=True)
+            if chunks:
+                return "\n".join(chunks).rstrip()
+            return None
+        except KeyboardInterrupt:
+            print(flush=True)
+            return None
+        stripped = line.strip()
+        if not chunks:
+            if not stripped:
+                continue
+            if stripped.lower() in _CHAT_QUIT:
+                return None
+        if line.endswith("\\") and not line.endswith("\\\\"):
+            chunks.append(line[:-1])
+            continue
+        chunks.append(line)
+        return "\n".join(chunks).rstrip()
+
+
+def _chat_file_turn(command: str, limits: InputLimits) -> str:
+    parts = command.split(None, 2)
+    if len(parts) < 2:
+        raise ConfigError("/file needs a path, e.g. /file notes.txt explain this")
+    path = parts[1]
+    extra = parts[2].strip() if len(parts) > 2 else ""
+    loaded = _read_text_file(path, limits)
+    prompt_text = extra or f"Please look at {loaded.name}."
+    attachments, stats = sanitize_attachments(
+        [(loaded.name, loaded.text)],
+        limits,
+        extra_overhead=len(prompt_text) + NOTE_RESERVE_CHARS,
+    )
+    return finalize_prompt(
+        compose_prompt_from_args(prompt_text, attachments),
+        limits,
+        stats,
+    )
+
+
+def _format_chat_transcript(turns: list[dict[str, str]]) -> str:
+    parts = ["# Chat", ""]
+    for turn in turns:
+        heading = "You" if turn["role"] == "user" else "Assistant"
+        parts.append(f"## {heading}")
+        parts.append("")
+        parts.append(turn["content"].rstrip())
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _run_chat_session(page, config, first_prompt: str) -> list[dict[str, str]]:
+    from critique_bot.chat_client import prepare_chat, send_turn
+
+    prepare_chat(page, config)
+    turns: list[dict[str, str]] = []
+
+    def send(payload: str) -> None:
+        reply = send_turn(page, config, payload)
+        _print_assistant(reply)
+        if not reply.strip():
+            log.warn("assistant returned an empty reply")
+        turns.append({"role": "user", "content": payload})
+        turns.append({"role": "assistant", "content": reply})
+
+    if first_prompt.strip():
+        send(first_prompt)
+
+    print(
+        "Chat session ready. Type a message, /help, or exit / Ctrl-D to quit.",
+        file=sys.stderr,
+    )
+    while True:
+        message = _read_chat_message()
+        if message is None:
+            break
+        if message.strip().lower() == "/help":
+            print(_CHAT_HELP, file=sys.stderr)
+            continue
+        if message.lower() == "/file" or message.lower().startswith("/file "):
+            try:
+                payload = _chat_file_turn(message, config.input_limits)
+            except ConfigError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                continue
+        else:
+            payload = cap_text(message, config.max_prompt_chars, what="chat message")
+        if not payload.strip():
+            continue
+        send(payload)
+    return turns
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="critique-bot",
         description=(
-            "Open a web LLM chat in headless Microsoft Edge, paste a patch, "
-            "and write the review to stdout plus review.md / review.json."
+            "General-purpose web LLM bot (headless Microsoft Edge). "
+            "Default mode is a specialized code reviewer; "
+            "--mode general sends any prompt and optional files; "
+            "--mode chat is an interactive terminal session."
         ),
+        epilog=(
+            "examples:\n"
+            "  critique-bot --config config.json --patch-file diff.patch\n"
+            "  critique-bot --config config.json --mode general "
+            "--prompt 'Summarize this' notes.txt\n"
+            "  critique-bot --config config.json --mode chat --headed\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--config",
@@ -56,13 +370,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to JSON config (see config.example.json)",
     )
     parser.add_argument(
+        "--mode",
+        choices=(MODE_REVIEW, MODE_GENERAL, MODE_CHAT),
+        help=(
+            f"{MODE_REVIEW} (default): code-review template + patch. "
+            f"{MODE_GENERAL}: send --prompt and optional files as-is. "
+            f"{MODE_CHAT}: interactive conversation in this terminal "
+            f"(--prompt is optional as the first message)"
+        ),
+    )
+    prompt_src = parser.add_mutually_exclusive_group()
+    prompt_src.add_argument(
+        "--prompt",
+        help="prompt text to send (--mode general, or first message in --mode chat)",
+    )
+    prompt_src.add_argument(
+        "--prompt-file",
+        help="read prompt text from a file (--mode general, or first message in --mode chat)",
+    )
+    parser.add_argument(
+        "--file",
+        dest="files",
+        action="append",
+        metavar="PATH",
+        help="file to include in the prompt (repeatable; patch, source, or any text file)",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        metavar="FILE",
+        help="files to include in the prompt (same as --file)",
+    )
+    parser.add_argument(
         "--patch-file",
-        help="patch/diff to review; omit to read from stdin",
+        help="patch/diff to include; in review mode, omit to read a patch from stdin",
     )
     parser.add_argument(
         "--output-dir",
         default="out",
-        help="directory for review.md, review.json, and failure screenshots",
+        help="directory for the reply (review.md, reply.md, or chat.md), JSON, and failure screenshots",
     )
     parser.add_argument(
         "--headed",
@@ -79,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prompt-template",
-        help="template file containing a {patch} placeholder",
+        help="template file containing a {patch} placeholder (review mode)",
     )
     return parser
 
@@ -88,13 +434,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir)
+    try:
+        mode = _resolve_mode(args)
+    except ConfigError as exc:
+        log.error(f"config error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    stem = OUTPUT_STEM[mode]
+    headed = args.headed or mode == MODE_CHAT
     log.info(
         "critique-bot starting "
         + log.kv(
             config=args.config,
-            patch_file=args.patch_file or "(stdin)",
+            mode=mode,
+            prompt=log.preview(args.prompt) if args.prompt else None,
+            prompt_file=args.prompt_file,
+            patch_file=args.patch_file or ("(stdin)" if mode == MODE_REVIEW else None),
+            files=",".join(list(args.files or []) + list(args.paths or [])) or None,
             output_dir=str(output_dir),
-            headed=args.headed,
+            headed=headed,
             cdp_url=args.cdp_url,
             model_override=args.model,
             prompt_template=args.prompt_template,
@@ -114,6 +472,10 @@ def main(argv: list[str] | None = None) -> int:
                 model=config.model or "(none)",
                 timeout_ms=config.timeout_ms,
                 idle_ms=config.idle_ms,
+                max_prompt_chars=config.max_prompt_chars,
+                max_file_chars=config.max_file_chars,
+                max_files=config.max_files,
+                max_read_bytes=config.max_read_bytes,
                 user_data_dir=config.user_data_dir,
                 cdp_url=config.cdp_url,
                 storage_state=config.storage_state,
@@ -125,14 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                 or "(none)",
             )
         )
-        patch = _read_patch(args.patch_file)
-        template_path = (
-            Path(args.prompt_template)
-            if args.prompt_template
-            else default_prompt_template_path()
-        )
-        prompt = compose_prompt(_load_template(template_path), patch)
-        log.info(f"composed prompt ({len(prompt)} chars)")
+        prompt = _build_prompt(args, mode, config.input_limits)
     except ConfigError as exc:
         log.error(f"config error: {exc}")
         print(f"error: {exc}", file=sys.stderr)
@@ -142,9 +497,11 @@ def main(argv: list[str] | None = None) -> int:
     from critique_bot.chat_client import ChatError, submit_review
 
     started = datetime.now(timezone.utc)
+    turns: list[dict[str, str]] = []
+    response = ""
     try:
         with launch_edge(
-            headed=args.headed,
+            headed=headed,
             storage_state=config.storage_state,
             user_data_dir=config.user_data_dir,
             cdp_url=config.cdp_url,
@@ -152,7 +509,10 @@ def main(argv: list[str] | None = None) -> int:
             timeout_ms=config.timeout_ms,
         ) as page:
             try:
-                response = submit_review(page, config, prompt)
+                if mode == MODE_CHAT:
+                    turns = _run_chat_session(page, config, prompt)
+                else:
+                    response = submit_review(page, config, prompt)
             except Exception:
                 log.exception("chat flow failed; capturing screenshot and HTML")
                 save_failure(page, output_dir)
@@ -168,23 +528,34 @@ def main(argv: list[str] | None = None) -> int:
 
     finished = datetime.now(timezone.utc)
     elapsed = (finished - started).total_seconds()
-    log.info(f"chat flow finished in {elapsed:.1f}s ({len(response)} chars)")
-    if not response.strip():
-        log.error("assistant returned an empty review")
-        print("error: assistant returned an empty review", file=sys.stderr)
-        return 1
+    if mode == MODE_CHAT:
+        if not turns:
+            log.info(f"chat session ended with no turns ({elapsed:.1f}s)")
+            return 0
+        response = _format_chat_transcript(turns)
+        log.info(
+            f"chat session finished in {elapsed:.1f}s "
+            f"({len(turns)} turn(s), {len(response)} chars)"
+        )
+    else:
+        log.info(f"chat flow finished in {elapsed:.1f}s ({len(response)} chars)")
+        if not response.strip():
+            kind = "review" if mode == MODE_REVIEW else "reply"
+            log.error(f"assistant returned an empty {kind}")
+            print(f"error: assistant returned an empty {kind}", file=sys.stderr)
+            return 1
 
-    write_review(
-        output_dir,
-        response,
-        {
-            "model": config.model,
-            "url": config.url,
-            "prompt_chars": len(prompt),
-            "response": response,
-            "started_at": isoformat(started),
-            "finished_at": isoformat(finished),
-        },
-    )
+    payload = {
+        "mode": mode,
+        "model": config.model,
+        "url": config.url,
+        "prompt_chars": len(prompt),
+        "response": response,
+        "started_at": isoformat(started),
+        "finished_at": isoformat(finished),
+    }
+    if turns:
+        payload["turns"] = turns
+    write_output(output_dir, response, payload, stem=stem)
     log.info("critique-bot finished successfully")
     return 0
