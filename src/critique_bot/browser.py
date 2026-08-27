@@ -371,10 +371,19 @@ def _start_desktop_edge(
         "--no-first-run",
         "--no-default-browser-check",
     ]
-    if not headed:
-        log.info(
-            "opening a real Edge window instead of a headless scripted instance"
+    if headed:
+        cmd.append("--start-maximized")
+    else:
+        cmd.extend(
+            [
+                "--headless=new",
+                "--disable-gpu",
+                "--window-size=1920,1080",
+            ]
         )
+        if sys.platform.startswith("linux"):
+            cmd.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+        log.info("launching desktop Edge headless (--headed not passed)")
     if start_url:
         cmd.append(start_url)
     log.info(
@@ -730,9 +739,9 @@ def launch_edge(
             profile_dir = dedicated_edge_user_data_dir()
             log.warn(
                 "Edge (Chrome 136+) refuses remote debugging on the daily desktop "
-                "profile, so the site can open while the bot never attaches. "
-                f"Starting a real Edge window with a dedicated profile at {profile_dir}. "
-                "Log in there once; later runs reuse that session. Everyday Edge is left open."
+                "profile, so using a dedicated profile at "
+                f"{profile_dir}. Log in once with --headed; later runs reuse that "
+                "session. Everyday Edge is left open."
             )
             if storage_state:
                 log.warn(

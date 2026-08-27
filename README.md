@@ -17,7 +17,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The bot walks the DOM, including open shadow roots and combobox/dropdown lists, and clicks the matching control. `selectors.model_dropdown` is optional: only set it if the list stays closed until you click a specific opener.
+Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is treated as a **button or clickable div that opens a panel**, not a native `<select>`. The bot clicks the opener, then the matching item in the panel (including shadow DOM). Set `selectors.model_dropdown` to that button/div if auto-detect misses it; `selectors.model_option` can target items inside the open panel.
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
@@ -25,7 +25,7 @@ playwright codegen --channel msedge https://YOUR_CHAT_UI/
 
 The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. First run with `--headed`, log in to the chat UI, then later runs (including headless) reuse that session.
 
-Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile, so the bot uses a dedicated Edge profile next to it (`microsoft-edge-critique-bot` on Linux). Log in once in that window; later runs reuse the session. Everyday Edge is left alone.
+Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile, so the bot uses a dedicated Edge profile next to it (`microsoft-edge-critique-bot` on Linux). Log in once with `--headed`; later runs reuse that session. Everyday Edge is left alone. Without `--headed`, this path is headless too.
 
 To attach to an Edge window you already started yourself, launch it with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`, then set `cdp_url` to `http://127.0.0.1:9222`.
 
