@@ -1147,21 +1147,22 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
     )
     log.debug(f"before navigation: {describe_page(page)}")
 
-    try:
-        navigate(page, config.url, timeout_ms)
-    except BrowserError as exc:
-        raise ChatError(str(exc)) from exc
+    with log.loading("Opening chat..."):
+        try:
+            navigate(page, config.url, timeout_ms)
+        except BrowserError as exc:
+            raise ChatError(str(exc)) from exc
 
-    warn_if_login_page(page)
-    frames = list(page.frames)
-    log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
+        warn_if_login_page(page)
+        frames = list(page.frames)
+        log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
 
-    _wait_visible(
-        page.locator(selectors.prompt_input),
-        timeout_ms,
-        "prompt input after navigation",
-    )
-    _select_model(page, selectors, config.model, timeout_ms)
+        _wait_visible(
+            page.locator(selectors.prompt_input),
+            timeout_ms,
+            "prompt input after navigation",
+        )
+        _select_model(page, selectors, config.model, timeout_ms)
     log.info("chat UI is ready")
 
 
@@ -1173,16 +1174,17 @@ def send_turn(page: Page, config: BotConfig, prompt: str) -> str:
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
     )
-    _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
-    _send(page, selectors, timeout_ms)
+    with log.loading("Waiting for assistant..."):
+        _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
+        _send(page, selectors, timeout_ms)
 
-    reply = _wait_for_reply(
-        page,
-        selectors.assistant_messages,
-        previous_count=previous_count,
-        timeout_ms=timeout_ms,
-        idle_ms=config.idle_ms,
-    )
+        reply = _wait_for_reply(
+            page,
+            selectors.assistant_messages,
+            previous_count=previous_count,
+            timeout_ms=timeout_ms,
+            idle_ms=config.idle_ms,
+        )
     log.info(f"captured reply ({len(reply)} chars)")
     return reply
 

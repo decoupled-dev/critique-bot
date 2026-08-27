@@ -68,10 +68,16 @@ python -m critique_bot --config config.json --mode general \
 
 ### Chat
 
-Interactive conversation in this terminal. The browser window opens (same as `--headed`). Type a message at `You>`, then the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`.
+Interactive conversation in this terminal. Edge stays headless unless you pass `--headed`. Type a message at `You>`; a spinner shows until the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`. Diagnostic logs are off by default; pass `--logs` to print them on stderr.
 
 ```bash
 python -m critique_bot --config config.json --mode chat
+```
+
+Pass `--headed` to show the Edge window:
+
+```bash
+python -m critique_bot --config config.json --mode chat --headed
 ```
 
 Optional first message and files:

@@ -29,7 +29,7 @@ Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
-`chat` opens the browser window (same as `--headed`).
+Chat mode is headless unless you pass `--headed`.
 
 ### Placeholders
 
@@ -52,9 +52,10 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--patch-file PATH` | all | Patch/diff to include. In review, omit this to read a patch from stdin. |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
 | `--output-dir DIR` | all | Where replies and failure screenshots go. Default: `out`. |
-| `--headed` | all | Show the Edge window. Implied by `--mode chat`. Use this for first login. |
+| `--headed` | all | Show the Edge window. Use this for first login or selector debugging. |
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model dropdown label. |
+| `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off. A spinner shows while waiting for the assistant. |
 | `-h` / `--help` | all | Print CLI help. |
 
 ---
@@ -125,6 +126,10 @@ python -m critique_bot --config config.json --prompt "What does this do?" src/cl
 
 ```bash
 python -m critique_bot --config config.json --mode chat
+```
+
+```bash
+python -m critique_bot --config config.json --mode chat --headed
 ```
 
 ```bash
@@ -230,6 +235,10 @@ python -m critique_bot --config config.json --mode chat
 ```
 
 ```powershell
+python -m critique_bot --config config.json --mode chat --headed
+```
+
+```powershell
 python -m critique_bot --config config.json --mode chat `
   --prompt "Let's go through this file" `
   src\cli.py
@@ -301,4 +310,4 @@ Default `--output-dir` is `out`.
 | general | `reply.md`, `reply.json` | same |
 | chat | `chat.md`, `chat.json` (skipped if you quit with no turns) | same |
 
-Logs go to **stderr**. The assistant reply (or chat transcript) is printed to **stdout**.
+Diagnostic logs are **off** by default; pass `--logs` to write them to **stderr**. While waiting for the assistant, a spinner is shown on stderr (hidden when `--logs` is on, since log lines already show progress). The assistant reply (or chat transcript) is printed to **stdout**.

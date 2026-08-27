@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -360,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  critique-bot --config config.json --patch-file diff.patch\n"
             "  critique-bot --config config.json --mode general "
             "--prompt 'Summarize this' notes.txt\n"
-            "  critique-bot --config config.json --mode chat --headed\n"
+            "  critique-bot --config config.json --mode chat\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -427,12 +428,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-template",
         help="template file containing a {patch} placeholder (review mode)",
     )
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="write diagnostic logs to stderr (default: off)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
     output_dir = Path(args.output_dir)
     try:
         mode = _resolve_mode(args)
@@ -441,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     stem = OUTPUT_STEM[mode]
-    headed = args.headed or mode == MODE_CHAT
+    headed = args.headed
     log.info(
         "critique-bot starting "
         + log.kv(
@@ -456,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             cdp_url=args.cdp_url,
             model_override=args.model,
             prompt_template=args.prompt_template,
+            logs=args.logs,
         )
     )
 
@@ -500,14 +509,18 @@ def main(argv: list[str] | None = None) -> int:
     turns: list[dict[str, str]] = []
     response = ""
     try:
-        with launch_edge(
-            headed=headed,
-            storage_state=config.storage_state,
-            user_data_dir=config.user_data_dir,
-            cdp_url=config.cdp_url,
-            start_url=config.url,
-            timeout_ms=config.timeout_ms,
-        ) as page:
+        with ExitStack() as stack:
+            with log.loading("Starting browser..."):
+                page = stack.enter_context(
+                    launch_edge(
+                        headed=headed,
+                        storage_state=config.storage_state,
+                        user_data_dir=config.user_data_dir,
+                        cdp_url=config.cdp_url,
+                        start_url=config.url,
+                        timeout_ms=config.timeout_ms,
+                    )
+                )
             try:
                 if mode == MODE_CHAT:
                     turns = _run_chat_session(page, config, prompt)
