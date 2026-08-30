@@ -362,6 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
             "production (runner PC):\n"
             "  critique-bot worker --config config.json --logs\n"
             "  critique-bot submit --config config.json --patch-file diff.patch\n"
+            "  critique-bot gitlab-post --review-file out/review.md "
+            "--patch-file diff.patch\n"
             "\n"
             "one-shot (debug):\n"
             "  critique-bot --config config.json --patch-file diff.patch\n"
@@ -554,12 +556,14 @@ def _add_submit_args(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in {"worker", "submit"}:
+    if argv and argv[0] in {"worker", "submit", "gitlab-post"}:
         command = argv[0]
         rest = argv[1:]
         if command == "worker":
             return _main_worker(rest)
-        return _main_submit(rest)
+        if command == "submit":
+            return _main_submit(rest)
+        return _main_gitlab_post(rest)
     return _main_run(argv)
 
 
@@ -672,6 +676,51 @@ def _main_submit(argv: list[str]) -> int:
         + (f" in {status.elapsed_seconds:.1f}s" if status.elapsed_seconds else "")
     )
     return 0
+
+
+def _main_gitlab_post(argv: list[str]) -> int:
+    from critique_bot.gitlab_post import GitLabPostError, post_review
+
+    parser = argparse.ArgumentParser(
+        prog="critique-bot gitlab-post",
+        description=(
+            "Post the review as a GitLab MR summary note and inline diff "
+            "comments. Needs CRITIQUE_GITLAB_TOKEN (project access token, "
+            "scope api). CI_JOB_TOKEN cannot create notes."
+        ),
+    )
+    parser.add_argument(
+        "--review-file",
+        required=True,
+        help="path to review.md from submit",
+    )
+    parser.add_argument(
+        "--patch-file",
+        help="unified diff used to map comments onto changed lines",
+    )
+    parser.add_argument("--project-id", help="GitLab project ID or path")
+    parser.add_argument("--mr-iid", help="merge request IID")
+    parser.add_argument("--api-url", help="GitLab API v4 URL")
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write diagnostic logs to stderr (default: on)",
+    )
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    try:
+        return post_review(
+            review_file=Path(args.review_file),
+            patch_file=Path(args.patch_file) if args.patch_file else None,
+            project_id=args.project_id,
+            mr_iid=args.mr_iid,
+            api_url=args.api_url,
+        )
+    except GitLabPostError as exc:
+        log.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _main_run(argv: list[str]) -> int:
