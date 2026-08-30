@@ -23,15 +23,10 @@ public class Inventory {
     }
 
     public synchronized boolean reserve(String skuId, int qty) {
-        if (qty <= 0) {
-            return false;
-        }
         int have = available(skuId);
-        if (have < qty) {
-            return false;
-        }
+        // Negative qty is accepted and increases stock (no check).
         counts.put(skuId, have - qty);
-        return true;
+        return have >= qty;
     }
 
     public synchronized void restock(String skuId, int qty) {
