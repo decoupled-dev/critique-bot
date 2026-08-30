@@ -307,14 +307,11 @@ def _format_chat_transcript(turns: list[dict[str, str]]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-def _run_chat_session(page, config, first_prompt: str) -> list[dict[str, str]]:
-    from critique_bot.chat_client import prepare_chat, send_turn
-
-    prepare_chat(page, config)
+def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]]:
     turns: list[dict[str, str]] = []
 
     def send(payload: str) -> None:
-        reply = send_turn(page, config, payload)
+        reply = session.send(payload)
         _print_assistant(reply)
         if not reply.strip():
             log.warn("assistant returned an empty reply")
@@ -353,7 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="critique-bot",
         description=(
-            "General-purpose web LLM bot (headless Microsoft Edge). "
+            "General-purpose LLM bot. Default backend drives a web chat UI in "
+            "headless Microsoft Edge; set backend to ollama, openai, or "
+            "openai-compatible to call an HTTP API instead. "
             "Default mode is a specialized code reviewer; "
             "--mode general sends any prompt and optional files; "
             "--mode chat is an interactive terminal session."
@@ -422,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--headed",
         action="store_true",
-        help="show the browser window (for selector debugging / first login)",
+        help="show the browser window (browser backend: selector debugging / first login)",
     )
     parser.add_argument(
         "--cdp-url",
@@ -430,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        help="override config/env model name for the dropdown",
+        help="override config/env model name (dropdown label, Ollama tag, or API model id)",
     )
     parser.add_argument(
         "--prompt-template",
@@ -456,27 +455,43 @@ def _log_config(config) -> None:
     log.info(
         "config loaded "
         + log.kv(
-            url=config.url,
+            backend=config.backend,
+            url=config.url or None,
+            base_url=config.base_url or None,
             model=config.model or "(none)",
             timeout_ms=config.timeout_ms,
-            idle_ms=config.idle_ms,
+            idle_ms=config.idle_ms if config.uses_browser else None,
             max_prompt_chars=config.max_prompt_chars,
             max_file_chars=config.max_file_chars,
             max_files=config.max_files,
             max_read_bytes=config.max_read_bytes,
-            user_data_dir=config.user_data_dir,
-            cdp_url=config.cdp_url,
+            user_data_dir=config.user_data_dir if config.uses_browser else None,
+            cdp_url=config.cdp_url if config.uses_browser else None,
             queue_dir=config.queue_dir,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
             max_parallel_tabs=config.max_parallel_tabs,
-            storage_state=config.storage_state,
-            prompt_input=config.selectors.prompt_input,
-            send_button=config.selectors.send_button or "(Enter)",
-            assistant_messages=config.selectors.assistant_messages,
-            model_dropdown=config.selectors.model_dropdown or "(auto)",
-            model_dropdown_identifier=config.selectors.model_dropdown_identifier
-            or "(none)",
+            storage_state=config.storage_state if config.uses_browser else None,
+            has_api_key=bool(config.api_key) if not config.uses_browser else None,
+            prompt_input=config.selectors.prompt_input if config.uses_browser else None,
+            send_button=(
+                (config.selectors.send_button or "(Enter)")
+                if config.uses_browser
+                else None
+            ),
+            assistant_messages=(
+                config.selectors.assistant_messages if config.uses_browser else None
+            ),
+            model_dropdown=(
+                (config.selectors.model_dropdown or "(auto)")
+                if config.uses_browser
+                else None
+            ),
+            model_dropdown_identifier=(
+                (config.selectors.model_dropdown_identifier or "(none)")
+                if config.uses_browser
+                else None
+            ),
         )
     )
 
@@ -531,9 +546,10 @@ def build_worker_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="critique-bot worker",
         description=(
-            "Keep one signed-in Edge instance open and process review jobs "
-            "from the on-disk queue. GitLab jobs should call "
-            "`critique-bot submit`, not this command."
+            "Keep one worker process open and process review jobs from the "
+            "on-disk queue. Browser backend: one signed-in Edge instance. "
+            "Ollama/OpenAI backends: HTTP calls, no browser. GitLab jobs "
+            "should call `critique-bot submit`, not this command."
         ),
     )
     parser.add_argument("--config", required=True, help="path to JSON config")
@@ -604,7 +620,8 @@ def _main_submit(argv: list[str]) -> int:
     parser.prog = "critique-bot submit"
     parser.description = (
         "Enqueue a review on the runner worker and wait for review.md. "
-        "The worker owns Edge; this command does not launch a browser."
+        "The worker owns the LLM backend; this command does not launch a browser "
+        "or call the model."
     )
     _add_submit_args(parser)
     args = parser.parse_args(argv)
@@ -781,35 +798,37 @@ def _main_run(argv: list[str]) -> int:
     except ConfigError as exc:
         return _config_error(exc)
 
-    from critique_bot.browser import BrowserError, launch_edge
-    from critique_bot.chat_client import ChatError, submit_review
+    from critique_bot.browser import BrowserError
+    from critique_bot.llm import LLMError, open_provider
 
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
     response = ""
     try:
+        setup_msg = (
+            "Starting browser..." if config.uses_browser else "Connecting to LLM..."
+        )
+        provider = open_provider(config, headed=headed)
         with ExitStack() as stack:
-            with log.loading("Starting browser..."):
-                page = stack.enter_context(
-                    launch_edge(
-                        headed=headed,
-                        storage_state=config.storage_state,
-                        user_data_dir=config.user_data_dir,
-                        cdp_url=config.cdp_url,
-                        start_url=config.url,
-                        timeout_ms=config.timeout_ms,
-                    )
-                )
-            try:
-                if mode == MODE_CHAT:
-                    turns = _run_chat_session(page, config, prompt)
-                else:
-                    response = submit_review(page, config, prompt)
-            except Exception:
-                log.exception("chat flow failed; capturing screenshot and HTML")
-                save_failure(page, output_dir)
-                raise
-    except (BrowserError, ChatError) as exc:
+            with log.loading(setup_msg):
+                stack.enter_context(provider)
+            with provider.session() as session:
+                try:
+                    if mode == MODE_CHAT:
+                        turns = _run_chat_session(session, config, prompt)
+                    else:
+                        response = session.send(prompt)
+                except Exception:
+                    page = getattr(session, "page", None)
+                    if page is not None:
+                        log.exception(
+                            "chat flow failed; capturing screenshot and HTML"
+                        )
+                        save_failure(page, output_dir)
+                    else:
+                        log.exception("chat flow failed")
+                    raise
+    except (BrowserError, LLMError) as exc:
         log.error(str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -840,7 +859,8 @@ def _main_run(argv: list[str]) -> int:
     payload = {
         "mode": mode,
         "model": config.model,
-        "url": config.url,
+        "backend": config.backend,
+        "url": config.url or config.base_url,
         "prompt_chars": len(prompt),
         "response": response,
         "started_at": isoformat(started),

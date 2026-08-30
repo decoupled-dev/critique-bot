@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "critique-bot"
 version = "0.1.0"
-description = "Headless Microsoft Edge bot that drives a web LLM chat UI. Default mode reviews patches."
+description = "LLM bot for patch review: browser chat UI, Ollama, or OpenAI-compatible APIs."
 requires-python = ">=3.10"
 dependencies = ["playwright>=1.49.0"]
 

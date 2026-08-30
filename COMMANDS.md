@@ -17,11 +17,26 @@ Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 
 ---
 
+## Backends
+
+`backend` in `config.json` (or `CRITIQUE_BACKEND`) selects how the model is called. Prompt flags, modes, and `submit` / `worker` are the same for every backend.
+
+| `backend` | Calls | `model` | Needs |
+| --- | --- | --- | --- |
+| `browser` (default) | Web chat UI in Edge | Visible dropdown label | `url` + `selectors` |
+| `ollama` | `POST {base_url}/chat/completions` | Ollama tag (`ollama list`) | Ollama running; default `base_url` `http://127.0.0.1:11434/v1` |
+| `openai` | OpenAI Chat Completions | API model id | `OPENAI_API_KEY` or `CRITIQUE_API_KEY` |
+| `openai-compatible` | Any OpenAI-style server | API model id | `base_url` (vLLM, LM Studio, Groq, …) |
+
+Starters: [`config.example.json`](config.example.json), [`config.ollama.example.json`](config.ollama.example.json), [`config.openai.example.json`](config.openai.example.json), [`config.openai-compatible.example.json`](config.openai-compatible.example.json). `--headed` and `--cdp-url` apply only to `browser`.
+
+---
+
 ## Production commands (GitLab / GitHub runner)
 
 | Command | Where | Meaning |
 | --- | --- | --- |
-| `critique-bot worker --config PATH` | Runner PC, always on | One signed-in Edge; pulls jobs from `queue_dir` |
+| `critique-bot worker --config PATH` | Runner PC, always on | One worker process; pulls jobs from `queue_dir` (browser: signed-in Edge; ollama/openai: HTTP) |
 | `critique-bot submit --config PATH --patch-file diff.patch` | GitLab or GitHub job | Enqueue, wait, write `{output-dir}/review.md` |
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
@@ -69,9 +84,9 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--patch-file PATH` | all | Patch/diff to include. In review, omit this to read a patch from stdin. |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
 | `--output-dir DIR` | all | Where replies and failure screenshots go. Default: `out`. |
-| `--headed` | all | Show the Edge window. Use this for first login or selector debugging. |
-| `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
-| `--model NAME` | all | Override the config/env model dropdown label. |
+| `--headed` | all | Show the Edge window (`browser` backend). Ignored for HTTP backends. |
+| `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222` (`browser` only). |
+| `--model NAME` | all | Override the config/env model (dropdown label, Ollama tag, or API model id). |
 | `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
 | `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `--label NAME` | submit | Override the job slug in the queue filename. Default: MR/PR/CI id or `local`. |

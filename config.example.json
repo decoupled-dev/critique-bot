@@ -1,4 +1,5 @@
 {
+  "backend": "browser",
   "url": "https://YOUR_CHAT_UI/",
   "selectors": {
     "model_dropdown": "",

@@ -1,6 +1,6 @@
 # Deploy critique-bot (Windows and Linux)
 
-Ship a **zip per OS** (no Python on the target) or a **pip wheel**. Microsoft Edge must already be installed on the target (`microsoft-edge-stable` on Linux; Edge is usually already on Windows).
+Ship a **zip per OS** (no Python on the target) or a **pip wheel**. The **browser** backend needs Microsoft Edge on the target (`microsoft-edge-stable` on Linux; Edge is usually already on Windows). Ollama and OpenAI backends do not.
 
 Build **on the OS you want to ship**. A Linux binary will not run on Windows, and vice versa. PyInstaller cannot cross-compile this project.
 
@@ -14,8 +14,9 @@ The zip bundles Python, Playwright’s Node driver, `config.example.json`, and t
 ## Target requirements
 
 - 64-bit Windows or Linux
-- Microsoft Edge installed
-- On Linux CI or headless servers you may also need Playwright OS libraries: `playwright install-deps` (only if you install via pip, not for the zip)
+- **browser** backend: Microsoft Edge installed
+- **ollama** backend: Ollama installed and `ollama serve` running
+- On Linux CI or headless servers using the browser backend you may also need Playwright OS libraries: `playwright install-deps` (only if you install via pip, not for the zip)
 - Linux zips from GitHub Actions are built on Ubuntu 22.04. They need a glibc at least as new as that host (Ubuntu 22.04+, Debian 12+, RHEL 9+, or similar)
 
 On Windows, use **PowerShell** (not Command Prompt). If `python` is missing, use the [Python launcher](https://docs.python.org/3/using/windows.html#python-launcher-for-windows) `py -3` in place of `python`.

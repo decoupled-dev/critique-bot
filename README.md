@@ -1,6 +1,13 @@
 # Critique bot
 
-General-purpose web LLM bot: it opens a ChatGPT-like UI in **headless Microsoft Edge**, pastes a prompt (and optional files), waits for the reply, then writes it to **stdout** and `{output-dir}`.
+General-purpose LLM bot. Prompt composition, the job queue, and review output are the same for every backend. The model itself is pluggable:
+
+| `backend` | How the model is called | Starter config |
+| --- | --- | --- |
+| `browser` (default) | Headless Edge drives a ChatGPT-like web UI | [`config.example.json`](config.example.json), [`config.chatgpt.example.json`](config.chatgpt.example.json) |
+| `ollama` | Local OpenAI-compatible HTTP API (`http://127.0.0.1:11434/v1`) | [`config.ollama.example.json`](config.ollama.example.json) |
+| `openai` | OpenAI Chat Completions | [`config.openai.example.json`](config.openai.example.json) |
+| `openai-compatible` | Any `/v1/chat/completions` server (vLLM, LM Studio, Groq, …) | [`config.openai-compatible.example.json`](config.openai-compatible.example.json) |
 
 **Default mode is a specialized code reviewer.** Pass a patch and the bot wraps it in the review template. `--mode general` sends a one-shot prompt. `--mode chat` is an interactive conversation in the terminal.
 
@@ -9,8 +16,9 @@ Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMA
 ## Requirements
 
 - Python 3.10+
-- Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed
-- On Linux CI, you may also need: `playwright install-deps`
+- **browser** backend: Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed. On Linux CI you may also need `playwright install-deps`
+- **ollama** backend: [Ollama](https://ollama.com) with a pulled model (`ollama serve` / `sudo systemctl start ollama`)
+- **openai** / **openai-compatible**: network access and an API key if the server requires one
 
 ## Setup
 
@@ -21,7 +29,30 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Field-by-field reference: [`docs/config.json.md`](docs/config.json.md). Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
+Copy a starter file to `config.json`. Field-by-field reference: [`docs/config.json.md`](docs/config.json.md).
+
+### Local Ollama
+
+```bash
+cp config.ollama.example.json config.json
+# set "model" to a name from `ollama list` (for example llama3, codellama, mistral)
+ollama serve   # if the service is not already running
+python -m critique_bot --config config.json --mode general --prompt "Say hello in one sentence"
+```
+
+### OpenAI (or compatible) API
+
+```bash
+cp config.openai.example.json config.json
+export OPENAI_API_KEY=sk-...
+python -m critique_bot --config config.json --mode general --prompt "Say hello in one sentence"
+```
+
+For Groq, vLLM, LM Studio, or similar, copy [`config.openai-compatible.example.json`](config.openai-compatible.example.json) and set `base_url` + `model`. Prefer `CRITIQUE_API_KEY` / `OPENAI_API_KEY` over putting a key in the JSON file.
+
+### Browser (ChatGPT-like UI)
+
+Copy [`config.example.json`](config.example.json) (or [`config.chatgpt.example.json`](config.chatgpt.example.json)) and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
@@ -35,7 +66,7 @@ To attach to an Edge window you already started yourself, launch it with `--remo
 
 Optional extra cookies: Playwright `storage_state` via config or `CRITIQUE_STORAGE_STATE`.
 
-Env overrides: `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`.
+Env overrides: `CRITIQUE_BACKEND`, `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_BASE_URL`, `CRITIQUE_API_KEY`, `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`.
 
 ## Run
 
@@ -94,7 +125,7 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 GitLab runner and project setup: [`docs/gitlab-ci.md`](docs/gitlab-ci.md).
 
-CI jobs must **not** each launch Edge. On the runner PC, start **one worker** that stays signed in. The job calls **submit**, waits for `out/review.md`, then posts that file as a comment on the MR or PR.
+CI jobs must **not** each launch the model. On the runner PC, start **one worker**. The job calls **submit**, waits for `out/review.md`, then posts that file as a comment on the MR or PR. Browser backend: the worker owns the signed-in Edge. Ollama/OpenAI: the worker makes HTTP calls (no browser).
 
 ```bash
 # once, on the runner (systemd: packaging/critique-bot-worker.service)
@@ -112,9 +143,9 @@ The job and the worker must share `queue_dir` (default: `.critique-queue` next t
 | GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Self-hosted, **shell** executor, tag `critique-bot` |
 | GitHub | [`packaging/github-review.yml`](packaging/github-review.yml) → `.github/workflows/review.yml` | Self-hosted Actions runner, labels `self-hosted, critique-bot` |
 
-GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run reviews: there is no signed-in Edge and no shared queue.
+GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run the **browser** backend: there is no signed-in Edge and no shared queue. Ollama or OpenAI on a self-hosted runner still uses the worker + `queue_dir` split.
 
-`--mode chat` is local/debug only. One-shot `critique-bot --patch-file …` (no `submit`) still works for a single machine, but two of those at once will fight over the Edge profile.
+`--mode chat` is local/debug only. One-shot `critique-bot --patch-file …` (no `submit`) still works for a single machine. Two browser one-shots at once will fight over the Edge profile; HTTP backends do not.
 
 ## Deploy
 

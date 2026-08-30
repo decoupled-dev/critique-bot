@@ -51,7 +51,8 @@ class ParallelWorkerTests(unittest.TestCase):
         finished: list[str] = []
         overlap = {"ok": False}
 
-        def fake_run(_cdp_url, _config, queue, job) -> None:
+        def fake_run(_provider, _config, queue, job, isolated=False) -> None:
+            del isolated
             try:
                 barrier.wait(timeout=2)
                 overlap["ok"] = True
@@ -73,13 +74,16 @@ class ParallelWorkerTests(unittest.TestCase):
             )
             finished.append(job.id)
 
-        with patch("critique_bot.worker._run_job_on_cdp", fake_run):
+        class _StubProvider:
+            can_parallelize = True
+
+        with patch("critique_bot.worker._run_job", fake_run):
             _parallel_loop(
+                _StubProvider(),
                 self.config,
                 self.queue,
                 RateLimiter(0, 0),
                 lambda: len(finished) >= 3,
-                cdp_url="http://127.0.0.1:9",
                 parallel=3,
             )
         self.assertTrue(overlap["ok"])

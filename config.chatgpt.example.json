@@ -1,4 +1,5 @@
 {
+  "backend": "browser",
   "url": "https://chatgpt.com/",
   "selectors": {
     "model_dropdown": "",

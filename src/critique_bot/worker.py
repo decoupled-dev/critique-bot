@@ -11,9 +11,9 @@ from types import FrameType
 from typing import Callable
 
 from critique_bot import log
-from critique_bot.browser import BrowserError, connect_job_page, launch_edge
-from critique_bot.chat_client import ChatError, submit_review
+from critique_bot.browser import BrowserError
 from critique_bot.config import BotConfig
+from critique_bot.llm import LLMError, LLMProvider, open_provider
 from critique_bot.output import isoformat, save_failure, write_output
 from critique_bot.queue import (
     HEARTBEAT_EVERY_SEC,
@@ -52,47 +52,28 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
         "worker started "
         + log.kv(
             queue_dir=str(queue.root),
+            backend=config.backend,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
             max_parallel_tabs=config.max_parallel_tabs,
             requeued=requeued or None,
-            headed=headed,
-            url=config.url,
+            headed=headed if config.uses_browser else None,
+            url=config.url or None,
+            base_url=config.base_url or None,
             model=config.model or "(none)",
         )
     )
     print(
-        f"critique-bot worker ready (queue {queue.root}, "
-        f"{config.max_parallel_tabs} tab(s)). Ctrl-C to stop.",
+        f"critique-bot worker ready ({config.backend}, queue {queue.root}, "
+        f"{config.max_parallel_tabs} job(s)). Ctrl-C to stop.",
         flush=True,
     )
     try:
-        while not stop():
-            try:
-                cdp_out: dict[str, str] = {}
-                with launch_edge(
-                    headed=headed,
-                    storage_state=config.storage_state,
-                    user_data_dir=config.user_data_dir,
-                    cdp_url=config.cdp_url,
-                    start_url=config.url,
-                    timeout_ms=config.timeout_ms,
-                    cdp_out=cdp_out if config.max_parallel_tabs > 1 else None,
-                ) as home:
-                    _session_loop(
-                        home.context,
-                        config,
-                        queue,
-                        limiter,
-                        stop,
-                        cdp_url=cdp_out.get("url") or config.cdp_url,
-                    )
-            except BrowserError as exc:
-                log.error(f"browser error: {exc}")
-                if stop():
-                    break
-                log.info(f"restarting Edge in {BROWSER_RESTART_SEC:.0f}s")
-                time.sleep(BROWSER_RESTART_SEC)
+        if config.uses_browser:
+            _browser_provider_loop(config, queue, limiter, stop, headed=headed)
+        else:
+            with open_provider(config, headed=headed) as provider:
+                _session_loop(provider, config, queue, limiter, stop)
     finally:
         log.info("worker stopping")
         lock.close()
@@ -110,30 +91,49 @@ def _heartbeat_loop(queue: FileQueue, stop: Callable[[], bool]) -> None:
             time.sleep(0.25)
 
 
-def _session_loop(
-    context,
+def _browser_provider_loop(
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
     stop: Callable[[], bool],
     *,
-    cdp_url: str | None = None,
+    headed: bool,
+) -> None:
+    while not stop():
+        try:
+            with open_provider(config, headed=headed) as provider:
+                _session_loop(provider, config, queue, limiter, stop)
+        except BrowserError as exc:
+            log.error(f"browser error: {exc}")
+            if stop():
+                break
+            log.info(f"restarting Edge in {BROWSER_RESTART_SEC:.0f}s")
+            time.sleep(BROWSER_RESTART_SEC)
+
+
+def _session_loop(
+    provider: LLMProvider,
+    config: BotConfig,
+    queue: FileQueue,
+    limiter: RateLimiter,
+    stop: Callable[[], bool],
 ) -> None:
     parallel = max(int(config.max_parallel_tabs), 1)
-    if parallel > 1 and not cdp_url:
-        log.warn(
-            f"max_parallel_tabs={parallel} needs Edge remote debugging; "
-            "running one tab"
-        )
+    if parallel > 1 and not provider.can_parallelize:
+        if config.uses_browser:
+            log.warn(
+                f"max_parallel_tabs={parallel} needs Edge remote debugging; "
+                "running one tab"
+            )
         parallel = 1
     if parallel <= 1:
-        _sequential_loop(context, config, queue, limiter, stop)
+        _sequential_loop(provider, config, queue, limiter, stop)
         return
-    _parallel_loop(config, queue, limiter, stop, cdp_url=cdp_url, parallel=parallel)
+    _parallel_loop(provider, config, queue, limiter, stop, parallel=parallel)
 
 
 def _sequential_loop(
-    context,
+    provider: LLMProvider,
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
@@ -145,19 +145,19 @@ def _sequential_loop(
             time.sleep(POLL_SEC)
             continue
         limiter.wait()
-        _run_job_on_context(context, config, queue, job)
+        _run_job(provider, config, queue, job, isolated=False)
 
 
 def _parallel_loop(
+    provider: LLMProvider,
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
     stop: Callable[[], bool],
     *,
-    cdp_url: str,
     parallel: int,
 ) -> None:
-    log.info(f"running up to {parallel} review tabs in parallel")
+    log.info(f"running up to {parallel} reviews in parallel")
     inflight: dict[Future[None], str] = {}
     browser_error: BrowserError | None = None
 
@@ -175,7 +175,7 @@ def _parallel_loop(
 
     with ThreadPoolExecutor(
         max_workers=parallel,
-        thread_name_prefix="critique-tab",
+        thread_name_prefix="critique-job",
     ) as pool:
         try:
             while not stop():
@@ -196,7 +196,9 @@ def _parallel_loop(
                         time.sleep(POLL_SEC)
                     continue
                 limiter.wait()
-                future = pool.submit(_run_job_on_cdp, cdp_url, config, queue, job)
+                future = pool.submit(
+                    _run_job, provider, config, queue, job, True
+                )
                 inflight[future] = job.id
         finally:
             if inflight:
@@ -205,21 +207,15 @@ def _parallel_loop(
                 collect_done()
 
 
-def _run_job_on_context(context, config: BotConfig, queue: FileQueue, job: Job) -> None:
-    page = None
-    try:
-        page = context.new_page()
-        _execute_job(page, config, queue, job)
-    finally:
-        _close_page(page)
-
-
-def _run_job_on_cdp(
-    cdp_url: str, config: BotConfig, queue: FileQueue, job: Job
+def _run_job(
+    provider: LLMProvider,
+    config: BotConfig,
+    queue: FileQueue,
+    job: Job,
+    isolated: bool = False,
 ) -> None:
     try:
-        with connect_job_page(cdp_url) as page:
-            _execute_job(page, config, queue, job)
+        _execute_job(provider, config, queue, job, isolated=isolated)
     except BrowserError as exc:
         if queue.read_status(job.id) is None:
             queue.fail(
@@ -232,55 +228,60 @@ def _run_job_on_cdp(
         raise
 
 
-def _close_page(page) -> None:
+def _save_job_failure(session, out_dir: Path) -> None:
+    page = getattr(session, "page", None) if session is not None else None
     if page is None:
         return
     try:
-        page.close()
-    except Exception as exc:
-        log.debug(f"tab close: {exc}")
+        save_failure(page, out_dir)
+    except Exception:
+        pass
 
 
-def _execute_job(page, config: BotConfig, queue: FileQueue, job: Job) -> None:
-    from dataclasses import replace
-
+def _execute_job(
+    provider: LLMProvider,
+    config: BotConfig,
+    queue: FileQueue,
+    job: Job,
+    *,
+    isolated: bool,
+) -> None:
     started = datetime.now(timezone.utc)
     out_dir = queue.result_dir(job.id)
     queue.write_job_record(job)
-    job_config = config
-    if job.model:
-        job_config = replace(config, model=job.model)
+    model = job.model or config.model
     log.info(
         f"running job {job.id} "
         + log.kv(
             label=job.label or None,
             mode=job.mode,
+            backend=config.backend,
             prompt_chars=len(job.prompt),
-            model=job_config.model or "(none)",
+            model=model or "(none)",
             meta=job.meta or None,
         )
     )
+    response = ""
     try:
-        response = submit_review(page, job_config, job.prompt)
+        with provider.session(isolated=isolated, model=job.model) as session:
+            try:
+                response = session.send(job.prompt)
+            except Exception:
+                _save_job_failure(session, out_dir)
+                raise
     except BrowserError as exc:
-        save_failure(page, out_dir)
         log.error(f"job {job.id} failed: {exc}")
         queue.fail(
             job.id, str(exc), stem=job.stem, label=job.label, meta=job.meta
         )
         raise
-    except ChatError as exc:
-        save_failure(page, out_dir)
+    except LLMError as exc:
         log.error(f"job {job.id} failed: {exc}")
         queue.fail(
             job.id, str(exc), stem=job.stem, label=job.label, meta=job.meta
         )
         return
     except Exception as exc:
-        try:
-            save_failure(page, out_dir)
-        except Exception:
-            pass
         log.exception(f"job {job.id} unexpected failure: {exc}")
         queue.fail(
             job.id,
@@ -304,8 +305,9 @@ def _execute_job(page, config: BotConfig, queue: FileQueue, job: Job) -> None:
         return
     payload = {
         "mode": job.mode,
-        "model": job_config.model,
-        "url": config.url,
+        "model": model,
+        "backend": config.backend,
+        "url": config.url or config.base_url,
         "prompt_chars": len(job.prompt),
         "response": response,
         "started_at": isoformat(started),

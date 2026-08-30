@@ -29,6 +29,14 @@ ENV_USER_DATA_DIR = "CRITIQUE_USER_DATA_DIR"
 ENV_CDP_URL = "CRITIQUE_CDP_URL"
 ENV_QUEUE_DIR = "CRITIQUE_QUEUE_DIR"
 ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
+ENV_BACKEND = "CRITIQUE_BACKEND"
+ENV_BASE_URL = "CRITIQUE_BASE_URL"
+ENV_API_KEY = "CRITIQUE_API_KEY"
+
+BACKEND_BROWSER = "browser"
+BACKEND_OLLAMA = "ollama"
+BACKEND_OPENAI = "openai"
+BACKEND_OPENAI_COMPAT = "openai-compatible"
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
@@ -36,6 +44,21 @@ DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
 DEFAULT_MAX_PARALLEL_TABS = 1
 ABSOLUTE_MAX_PARALLEL_TABS = 8
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+_BACKEND_ALIASES = {
+    "browser": BACKEND_BROWSER,
+    "web": BACKEND_BROWSER,
+    "playwright": BACKEND_BROWSER,
+    "ui": BACKEND_BROWSER,
+    "ollama": BACKEND_OLLAMA,
+    "local": BACKEND_OLLAMA,
+    "openai": BACKEND_OPENAI,
+    "openai-compatible": BACKEND_OPENAI_COMPAT,
+    "openai_compatible": BACKEND_OPENAI_COMPAT,
+    "compatible": BACKEND_OPENAI_COMPAT,
+}
 
 
 class ConfigError(ValueError):
@@ -70,6 +93,9 @@ class BotConfig:
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+    backend: str = BACKEND_BROWSER
+    base_url: str = ""
+    api_key: str = ""
 
     @property
     def input_limits(self) -> InputLimits:
@@ -79,6 +105,10 @@ class BotConfig:
             max_files=self.max_files,
             max_read_bytes=self.max_read_bytes,
         )
+
+    @property
+    def uses_browser(self) -> bool:
+        return self.backend == BACKEND_BROWSER
 
 
 def _clean(value: object) -> str:
@@ -143,6 +173,12 @@ def load_config(
     if not isinstance(selectors_raw, dict):
         raise ConfigError("selectors must be a JSON object")
 
+    backend = _parse_backend(
+        os.environ.get(ENV_BACKEND) or _clean(raw.get("backend"))
+    )
+    if os.environ.get(ENV_BACKEND):
+        log.debug(f"backend overridden by {ENV_BACKEND}")
+
     selectors = Selectors(
         prompt_input=_clean(selectors_raw.get("prompt_input")),
         assistant_messages=_clean(selectors_raw.get("assistant_messages")),
@@ -154,10 +190,6 @@ def load_config(
         model_option=_clean(selectors_raw.get("model_option")),
         send_button=_clean(selectors_raw.get("send_button")),
     )
-    if not selectors.prompt_input:
-        raise ConfigError("selectors.prompt_input is required")
-    if not selectors.assistant_messages:
-        raise ConfigError("selectors.assistant_messages is required")
 
     url = os.environ.get(ENV_CHAT_URL) or _clean(raw.get("url"))
     if os.environ.get(ENV_CHAT_URL):
@@ -208,18 +240,47 @@ def load_config(
     if raw_parallel:
         log.debug(f"max_parallel_tabs overridden by {ENV_MAX_PARALLEL_TABS}")
 
-    if not url:
-        raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
-    if PLACEHOLDER_URL in url:
-        raise ConfigError(
-            "url is still a placeholder. Copy config.example.json to config.json "
-            "and set the real chat UI URL (or set CRITIQUE_CHAT_URL)."
-        )
+    base_url = _normalize_base_url(
+        backend,
+        os.environ.get(ENV_BASE_URL) or _clean(raw.get("base_url")),
+    )
+    if os.environ.get(ENV_BASE_URL):
+        log.debug(f"base_url overridden by {ENV_BASE_URL}")
+    api_key = _resolve_api_key(raw, backend)
+
     if model and PLACEHOLDER_MODEL in model:
         raise ConfigError(
-            "model is still a placeholder. Set selectors + model in config.json "
+            "model is still a placeholder. Set model in config.json "
             "or pass --model / CRITIQUE_MODEL."
         )
+    if backend == BACKEND_BROWSER:
+        if not selectors.prompt_input:
+            raise ConfigError("selectors.prompt_input is required")
+        if not selectors.assistant_messages:
+            raise ConfigError("selectors.assistant_messages is required")
+        if not url:
+            raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
+        if PLACEHOLDER_URL in url:
+            raise ConfigError(
+                "url is still a placeholder. Copy config.example.json to config.json "
+                "and set the real chat UI URL (or set CRITIQUE_CHAT_URL)."
+            )
+    else:
+        if not model:
+            raise ConfigError(
+                f"model is required for the {backend} backend "
+                "(config, --model, or CRITIQUE_MODEL)"
+            )
+        if backend == BACKEND_OPENAI_COMPAT and not base_url:
+            raise ConfigError(
+                "base_url is required for openai-compatible "
+                "(config or CRITIQUE_BASE_URL)"
+            )
+        if backend == BACKEND_OPENAI and not api_key:
+            raise ConfigError(
+                "OpenAI backend needs an API key: set CRITIQUE_API_KEY or "
+                "OPENAI_API_KEY (or api_key / api_key_env in config.json)"
+            )
 
     return BotConfig(
         url=url,
@@ -271,7 +332,53 @@ def load_config(
             DEFAULT_MAX_READ_BYTES,
             ABSOLUTE_MAX_READ_BYTES,
         ),
+        backend=backend,
+        base_url=base_url,
+        api_key=api_key,
     )
+
+
+def _parse_backend(value: str) -> str:
+    key = value.strip().lower().replace("_", "-").replace(" ", "-")
+    if not key:
+        return BACKEND_BROWSER
+    mapped = _BACKEND_ALIASES.get(key)
+    if mapped is None:
+        known = ", ".join(
+            (BACKEND_BROWSER, BACKEND_OLLAMA, BACKEND_OPENAI, BACKEND_OPENAI_COMPAT)
+        )
+        raise ConfigError(f"unknown backend {value!r}. Use one of: {known}")
+    return mapped
+
+
+def _normalize_base_url(backend: str, value: str) -> str:
+    cleaned = value.strip().rstrip("/")
+    if not cleaned:
+        if backend == BACKEND_OLLAMA:
+            return DEFAULT_OLLAMA_BASE_URL
+        if backend == BACKEND_OPENAI:
+            return DEFAULT_OPENAI_BASE_URL
+        return ""
+    if backend == BACKEND_OLLAMA:
+        if cleaned.endswith("/v1"):
+            return cleaned
+        if cleaned.endswith("/api"):
+            return cleaned[: -len("/api")] + "/v1"
+        return cleaned + "/v1"
+    return cleaned
+
+
+def _resolve_api_key(raw: dict, backend: str) -> str:
+    env_name = _clean(raw.get("api_key_env"))
+    if not env_name and backend == BACKEND_OPENAI:
+        env_name = "OPENAI_API_KEY"
+    if os.environ.get(ENV_API_KEY):
+        log.debug(f"api_key overridden by {ENV_API_KEY}")
+        return os.environ[ENV_API_KEY]
+    if env_name and os.environ.get(env_name):
+        log.debug(f"api_key taken from {env_name}")
+        return os.environ[env_name]
+    return _clean(raw.get("api_key"))
 
 
 def dedicated_edge_user_data_dir() -> Path:

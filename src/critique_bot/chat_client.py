@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING
 
 from critique_bot import log
 from critique_bot.config import BotConfig, Selectors
+from critique_bot.llm import LLMError
 from critique_bot.patch import strip_unsafe_controls
 
 if TYPE_CHECKING:
     from playwright.sync_api import Frame, Locator, Page
 
 
-class ChatError(RuntimeError):
+class ChatError(LLMError):
     """The web chat UI did not complete a reply."""
 
 

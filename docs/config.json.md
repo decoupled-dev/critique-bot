@@ -1,17 +1,44 @@
 # config.json reference
 
-Copy [`config.example.json`](../config.example.json) to `config.json` next to the binary (CI default: `/opt/critique-bot/config.json`). ChatGPT starters: [`config.chatgpt.example.json`](../config.chatgpt.example.json).
+Copy a starter to `config.json` next to the binary (CI default: `/opt/critique-bot/config.json`):
+
+| Backend | Starter |
+| --- | --- |
+| Web chat UI (Edge) | [`config.example.json`](../config.example.json), [`config.chatgpt.example.json`](../config.chatgpt.example.json) |
+| Local Ollama | [`config.ollama.example.json`](../config.ollama.example.json) |
+| OpenAI | [`config.openai.example.json`](../config.openai.example.json) |
+| Other `/v1/chat/completions` | [`config.openai-compatible.example.json`](../config.openai-compatible.example.json) |
 
 `--config` is required on every command. The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
 
 GitLab runner layout and the worker/submit split: [`gitlab-ci.md`](gitlab-ci.md).
 
+## `backend`
+
+| | |
+| --- | --- |
+| Type | string |
+| Env | `CRITIQUE_BACKEND` |
+| Default | `browser` |
+
+How the composed prompt is sent. Aliases: `web` / `playwright` → `browser`; `local` → `ollama`.
+
+| Value | Effect |
+| --- | --- |
+| `browser` | Drive a ChatGPT-like page in Edge (Playwright). Needs `url` + `selectors` |
+| `ollama` | HTTP Chat Completions against Ollama. Needs `model`. Default `base_url` `http://127.0.0.1:11434/v1` |
+| `openai` | HTTP Chat Completions against OpenAI. Needs `model` and `OPENAI_API_KEY` or `CRITIQUE_API_KEY` |
+| `openai-compatible` | Same HTTP shape as OpenAI. Needs `model` and `base_url` |
+
+Prompt building, the on-disk queue, and `review.md` are shared. Only this layer changes.
+
 ## Minimal file that will start
 
-Required: a real `url` (not the `YOUR_CHAT_UI` placeholder) and two selectors.
+**Browser** — a real `url` (not the `YOUR_CHAT_UI` placeholder) and two selectors:
 
 ```json
 {
+  "backend": "browser",
   "url": "https://chatgpt.com/",
   "selectors": {
     "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea']",
@@ -20,11 +47,20 @@ Required: a real `url` (not the `YOUR_CHAT_UI` placeholder) and two selectors.
 }
 ```
 
-Everything else has a default. For CI, also set `queue_dir` and `user_data_dir` to **absolute** paths so the worker’s working directory cannot shift the Edge profile.
+**Ollama** — a pulled model name (`ollama list`). `url` and `selectors` are omitted:
+
+```json
+{
+  "backend": "ollama",
+  "model": "codellama"
+}
+```
+
+Everything else has a default. For CI, set `queue_dir` (and for browser, `user_data_dir`) to **absolute** paths.
 
 ## How to fill selectors
 
-The bot drives a **web chat UI in Edge**. It does not call an LLM API. Selectors are CSS (Playwright locators) for **this** site; they break when the site redesigns.
+Used only when `backend` is `browser`. Selectors are CSS (Playwright locators) for **this** site; they break when the site redesigns.
 
 1. Open the chat UI in Edge.
 2. Run `playwright codegen --channel msedge https://YOUR_CHAT_UI/` and click the prompt box, send, model picker, and an assistant reply.
@@ -35,7 +71,7 @@ Comma-separated lists are OR: the first matching node is used.
 
 ---
 
-## `url` (required)
+## `url` (required for `browser`)
 
 | | |
 | --- | --- |
@@ -49,7 +85,7 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 
 ---
 
-## `selectors` (object, required)
+## `selectors` (object, required for `browser`)
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -121,9 +157,37 @@ Placeholder `YOUR_MODEL_NAME` in `model` is rejected.
 | Type | string |
 | Env | `CRITIQUE_MODEL` |
 | CLI | `--model` (wins over env and file) |
-| Default | `""` (skip picker) |
+| Default | `""` (browser: skip picker) |
 
-Visible dropdown label. Empty is valid.
+**browser:** visible dropdown label. Empty is valid (uses whatever the signed-in session already has selected).
+
+**ollama / openai / openai-compatible:** required. Ollama tag (`llama3`, `codellama`) or API model id (`gpt-4o`). Placeholder `YOUR_MODEL_NAME` is rejected.
+
+---
+
+## HTTP backends (`ollama`, `openai`, `openai-compatible`)
+
+### `base_url`
+
+| | |
+| --- | --- |
+| Type | string |
+| Env | `CRITIQUE_BASE_URL` |
+| Default | Ollama: `http://127.0.0.1:11434/v1`. OpenAI: `https://api.openai.com/v1`. Compatible: none (required) |
+
+Root of the OpenAI-style API. The bot POSTs to `{base_url}/chat/completions`. For Ollama, a host without `/v1` is rewritten to add it (`http://127.0.0.1:11434` → `.../v1`).
+
+### `api_key` / `api_key_env`
+
+| | |
+| --- | --- |
+| Type | string |
+| Env | `CRITIQUE_API_KEY` (wins), then the env named by `api_key_env` (OpenAI default: `OPENAI_API_KEY`), then `api_key` in the file |
+| Default | empty (Ollama usually needs none) |
+
+Do not commit keys. OpenAI backend fails to load if no key is found. Ollama and most local servers leave this empty.
+
+`idle_ms`, `selectors`, `url`, `user_data_dir`, `cdp_url`, and `storage_state` are ignored for HTTP backends. `max_parallel_tabs` is concurrent HTTP requests, not Edge tabs.
 
 ---
 
@@ -251,11 +315,11 @@ Extra random delay in `[0, jitter]` added to the interval, so traffic is less me
 | Env | `CRITIQUE_MAX_PARALLEL_TABS` |
 | Default | `1` |
 
-How many Edge **tabs** (reviews) the worker may run at once in the **same** signed-in Edge. `1` is sequential (safest for ChatGPT rate limits). `3` means up to three MRs in flight; new sends still wait `min_interval_seconds`. Values above 8 are clamped to 8.
+How many reviews the worker may run at once. **browser:** Edge tabs in the same signed-in instance (`1` is safest for ChatGPT rate limits). **HTTP:** concurrent API requests. `3` means up to three MRs in flight; new sends still wait `min_interval_seconds`. Values above 8 are clamped to 8.
 
-If remote debugging cannot be opened, the worker logs a warning and falls back to one tab.
+If the browser backend cannot open remote debugging, the worker logs a warning and falls back to one tab.
 
-CI recommendation: start at `1`, raise to `2` or `3` only after you confirm the chat UI does not block parallel sessions.
+CI recommendation: start at `1`. For Ollama, `2` or `3` is usually fine if the machine has enough RAM/VRAM.
 
 ---
 
@@ -263,8 +327,11 @@ CI recommendation: start at `1`, raise to `2` or `3` only after you confirm the 
 
 | Env | Config key |
 | --- | --- |
+| `CRITIQUE_BACKEND` | `backend` |
 | `CRITIQUE_CHAT_URL` | `url` |
 | `CRITIQUE_MODEL` | `model` |
+| `CRITIQUE_BASE_URL` | `base_url` |
+| `CRITIQUE_API_KEY` | `api_key` (also `OPENAI_API_KEY` when `api_key_env` is that name) |
 | `CRITIQUE_STORAGE_STATE` | `storage_state` |
 | `CRITIQUE_USER_DATA_DIR` | `user_data_dir` |
 | `CRITIQUE_CDP_URL` | `cdp_url` |
@@ -277,10 +344,11 @@ CI recommendation: start at `1`, raise to `2` or `3` only after you confirm the 
 
 ## Suggested CI `config.json`
 
-Adjust `url` and `selectors` to your chat UI. Keep paths absolute.
+Adjust `backend` (and for browser, `url` / `selectors`) to your setup. Keep paths absolute.
 
 ```json
 {
+  "backend": "browser",
   "url": "https://chatgpt.com/",
   "selectors": {
     "model_dropdown": "",
@@ -307,13 +375,15 @@ Adjust `url` and `selectors` to your chat UI. Keep paths absolute.
 }
 ```
 
-Do not commit this file if it contains a private chat URL or a `storage_state` path.
+Do not commit this file if it contains a private chat URL, a `storage_state` path, or an `api_key`.
 
 ## Validation the loader enforces
 
 - File exists and is a JSON object.
-- `selectors.prompt_input` and `selectors.assistant_messages` are non-empty.
-- `url` is non-empty and not a placeholder.
-- `model`, if set, is not `YOUR_MODEL_NAME`.
+- `backend` is `browser`, `ollama`, `openai`, or `openai-compatible` (or a documented alias).
+- **browser:** `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
+- **HTTP backends:** `model` is required and not `YOUR_MODEL_NAME`.
+- **openai:** an API key is present (`CRITIQUE_API_KEY`, `OPENAI_API_KEY`, or config).
+- **openai-compatible:** `base_url` is required.
 - If `storage_state` is set, that path is a file.
 - Integer/float fields: `timeout_ms`, `idle_ms`, and the `max_*` keys must be > 0; interval fields must be ≥ 0.

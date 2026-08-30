@@ -2,7 +2,7 @@
 
 This is the runner-side setup. Field-by-field `config.json` is in [`config.json.md`](config.json.md).
 
-Jobs **do not launch a browser**. One long-running **worker** on the runner PC owns Microsoft Edge. Each CI job only **submits** a patch to a shared on-disk queue and waits for `out/review.md`.
+Jobs **do not launch the model**. One long-running **worker** on the runner PC owns the backend (signed-in Edge, or HTTP to Ollama/OpenAI). Each CI job only **submits** a patch to a shared on-disk queue and waits for `out/review.md`.
 
 ```text
 MR pipeline  →  critique-bot submit  →  .critique-queue  →  worker + Edge  →  review.md
@@ -17,13 +17,13 @@ Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) into the **application** repo (the pr
 | Piece | Requirement |
 | --- | --- |
 | Runner | Self-hosted, **shell** executor (not Docker, not Kubernetes), tag `critique-bot` |
-| Machine | 64-bit Linux or Windows with **Microsoft Edge** (Chrome is a fallback) |
+| Machine | 64-bit Linux or Windows. **browser:** Microsoft Edge (Chrome is a fallback). **ollama / openai:** no Edge |
 | Shared disk | Job and worker must see the **same** `config.json` and `queue_dir` |
 | Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install path: `/opt/critique-bot` |
-| Session | Edge signed in once on that machine (`--headed`). Later runs reuse `.edge-profile` |
+| Session | **browser:** Edge signed in once (`--headed`). Later runs reuse `.edge-profile`. **HTTP:** `ollama serve` or API credentials |
 | Token | Project (or group) access token, scope `api`, role Developer+, in `CRITIQUE_GITLAB_TOKEN` |
 
-Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs cannot do this: they have no signed-in Edge and no shared queue.
+Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs cannot run the **browser** backend: they have no signed-in Edge and no shared queue. HTTP backends still need a self-hosted runner that shares `queue_dir` with the worker.
 
 ## One-time: runner PC
 
