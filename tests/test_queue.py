@@ -202,6 +202,127 @@ class RateLimiterSleepTests(unittest.TestCase):
         self.assertGreaterEqual(slept, 0.05)
         self.assertGreaterEqual(elapsed, 0.05)
 
+    def test_negative_values_clamped(self) -> None:
+        limiter = RateLimiter(-1, -5)
+        self.assertEqual(limiter.min_interval, 0.0)
+        self.assertEqual(limiter.jitter, 0.0)
+
+
+class FileQueueMoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue = FileQueue(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_claim_empty_prompt_fails_job(self) -> None:
+        dest = self.queue.inbox / "bad.json"
+        dest.write_text(json.dumps({"id": "bad", "prompt": "  "}), encoding="utf-8")
+        self.assertIsNone(self.queue.claim())
+        status = self.queue.read_status("bad")
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertIn("empty", status.error or "")
+
+    def test_claim_invalid_json(self) -> None:
+        (self.queue.inbox / "nope.json").write_text("{not json", encoding="utf-8")
+        self.assertIsNone(self.queue.claim())
+        status = self.queue.read_status("nope")
+        assert status is not None
+        self.assertFalse(status.ok)
+
+    def test_claim_json_array(self) -> None:
+        (self.queue.inbox / "arr.json").write_text("[1]", encoding="utf-8")
+        self.assertIsNone(self.queue.claim())
+
+    def test_general_mode_default_stem(self) -> None:
+        job_id = self.queue.enqueue(mode="general", stem="", prompt="hello")
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.id, job_id)
+        self.assertEqual(claimed.stem, "reply")
+        self.assertEqual(claimed.mode, "general")
+
+    def test_read_status_missing(self) -> None:
+        self.assertIsNone(self.queue.read_status("missing"))
+
+    def test_fail_writes_status(self) -> None:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="p")
+        self.queue.fail(job_id, "nope", stem="review", label="x")
+        status = self.queue.read_status(job_id)
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertEqual(status.error, "nope")
+        self.assertEqual(status.label, "x")
+
+    def test_worker_hint_no_file(self) -> None:
+        self.assertEqual(self.queue.worker_hint(), "no worker heartbeat file")
+
+    def test_worker_hint_unreadable(self) -> None:
+        self.queue.heartbeat_path.write_text("not json", encoding="utf-8")
+        hint = self.queue.worker_hint()
+        self.assertIn("pid=?", hint)
+
+    def test_worker_hint_after_beat(self) -> None:
+        self.queue.beat(pid=12345)
+        hint = self.queue.worker_hint()
+        self.assertIn("12345", hint)
+
+    def test_wait_timeout(self) -> None:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="p")
+        self.queue.beat()
+        with self.assertRaises(QueueError) as ctx:
+            self.queue.wait(job_id, timeout_sec=0.2, poll_sec=0.05)
+        self.assertIn("timed out", str(ctx.exception))
+
+    def test_worker_alive_stale(self) -> None:
+        self.queue.beat()
+        self.assertFalse(self.queue.worker_alive(stale_sec=-1))
+
+    def test_close_lock_twice(self) -> None:
+        lock = self.queue.acquire_worker_lock()
+        lock.close()
+        lock.close()
+
+    def test_model_none_when_empty(self) -> None:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="p", model="")
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.id, job_id)
+        self.assertIsNone(claimed.model)
+
+    def test_requeue_none_when_empty(self) -> None:
+        self.assertEqual(self.queue.requeue_stale_processing(), 0)
+
+
+class SlugAndLabelTests(unittest.TestCase):
+    def test_ci_job_id(self) -> None:
+        self.assertEqual(job_label({"CI_JOB_ID": "55"}), "ci55")
+
+    def test_github_run_id(self) -> None:
+        self.assertEqual(job_label({"GITHUB_RUN_ID": "77"}), "ci77")
+
+    def test_github_pr_with_repo(self) -> None:
+        self.assertEqual(
+            job_label({"GITHUB_REF": "refs/pull/3/head", "GITHUB_REPOSITORY": "acme/app"}),
+            "acme-app-pr3",
+        )
+
+    def test_gitlab_mr_without_project(self) -> None:
+        self.assertEqual(job_label({"CI_MERGE_REQUEST_IID": "8"}), "mr8")
+
+    def test_safe_slug_special_chars(self) -> None:
+        from critique_bot.queue import _pr_from_github_ref, _safe_slug
+
+        self.assertEqual(_safe_slug("Hello World!!", 48), "Hello-World")
+        self.assertEqual(_safe_slug("@@@", 8), "job")
+        self.assertEqual(_safe_slug("", 8), "")
+        self.assertEqual(_safe_slug("a" * 80, 5), "a" * 5)
+        self.assertEqual(_pr_from_github_ref("refs/heads/main"), "")
+        self.assertEqual(_pr_from_github_ref("refs/pull/x/merge"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

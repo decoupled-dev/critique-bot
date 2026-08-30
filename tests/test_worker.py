@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from critique_bot.browser import BrowserError
+from critique_bot.config import BACKEND_OLLAMA, BotConfig, Selectors
+from critique_bot.llm import LLMError, LLMProvider, LLMSession
+from critique_bot.queue import FileQueue, Job, RateLimiter
+from critique_bot.worker import (
+    _execute_job,
+    _run_job,
+    _save_job_failure,
+    _sequential_loop,
+    _session_loop,
+)
+
+
+def _config(queue_dir: str, **overrides: object) -> BotConfig:
+    values: dict[str, object] = {
+        "url": "",
+        "selectors": Selectors(prompt_input="", assistant_messages=""),
+        "model": "llama3",
+        "backend": BACKEND_OLLAMA,
+        "base_url": "http://127.0.0.1:11434/v1",
+        "queue_dir": queue_dir,
+        "min_interval_seconds": 0,
+        "interval_jitter_seconds": 0,
+        "max_parallel_tabs": 1,
+        "timeout_ms": 5_000,
+    }
+    values.update(overrides)
+    return BotConfig(**values)  # type: ignore[arg-type]
+
+
+class FakeSession(LLMSession):
+    def __init__(self, reply: str | BaseException, *, page: object | None = None) -> None:
+        self._reply = reply
+        self.page = page
+        self.prompts: list[str] = []
+
+    def send(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if isinstance(self._reply, BaseException):
+            raise self._reply
+        return self._reply
+
+    def close(self) -> None:
+        return None
+
+
+class FakeProvider(LLMProvider):
+    can_parallelize = True
+
+    def __init__(self, reply: str | BaseException = "looks good") -> None:
+        self.reply = reply
+        self.sessions: list[FakeSession] = []
+        self.isolated_flags: list[bool] = []
+
+    def session(self, *, isolated: bool = False, model: str | None = None) -> FakeSession:
+        del model
+        session = FakeSession(self.reply)
+        self.sessions.append(session)
+        self.isolated_flags.append(isolated)
+        return session
+
+
+class ExecuteJobTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue = FileQueue(self.root)
+        self.config = _config(str(self.root))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _job(self, prompt: str = "patch") -> Job:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt=prompt, label="t")
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.id, job_id)
+        return claimed
+
+    def test_success_writes_review_and_status(self) -> None:
+        job = self._job()
+        provider = FakeProvider("LGTM")
+        _execute_job(provider, self.config, self.queue, job, isolated=False)
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertTrue(status.ok)
+        body = (self.queue.result_dir(job.id) / "review.md").read_text(encoding="utf-8")
+        self.assertEqual(body, "LGTM")
+        record = json.loads(
+            (self.queue.result_dir(job.id) / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["id"], job.id)
+        self.assertEqual(provider.isolated_flags, [False])
+
+    def test_empty_reply_fails(self) -> None:
+        job = self._job()
+        _execute_job(FakeProvider("  \n"), self.config, self.queue, job, isolated=False)
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertIn("empty", status.error or "")
+
+    def test_llm_error_fails_without_raising(self) -> None:
+        job = self._job()
+        _execute_job(
+            FakeProvider(LLMError("model down")),
+            self.config,
+            self.queue,
+            job,
+            isolated=False,
+        )
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertIn("model down", status.error or "")
+
+    def test_unexpected_error_fails_without_raising(self) -> None:
+        job = self._job()
+        _execute_job(
+            FakeProvider(RuntimeError("boom")),
+            self.config,
+            self.queue,
+            job,
+            isolated=False,
+        )
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertIn("unexpected", status.error or "")
+
+    def test_browser_error_fails_and_reraises(self) -> None:
+        job = self._job()
+        with self.assertRaises(BrowserError):
+            _execute_job(
+                FakeProvider(BrowserError("edge gone")),
+                self.config,
+                self.queue,
+                job,
+                isolated=True,
+            )
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertFalse(status.ok)
+        self.assertIn("edge gone", status.error or "")
+
+    def test_run_job_records_status_when_execute_did_not(self) -> None:
+        job = self._job()
+        with patch(
+            "critique_bot.worker._execute_job",
+            side_effect=BrowserError("later"),
+        ):
+            with self.assertRaises(BrowserError):
+                _run_job(
+                    FakeProvider("unused"),
+                    self.config,
+                    self.queue,
+                    job,
+                    isolated=False,
+                )
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertEqual(status.error, "later")
+
+    def test_run_job_does_not_overwrite_status(self) -> None:
+        job = self._job()
+        self.queue.fail(job.id, "already", stem=job.stem, label=job.label)
+        with patch(
+            "critique_bot.worker._execute_job",
+            side_effect=BrowserError("later"),
+        ):
+            with self.assertRaises(BrowserError):
+                _run_job(
+                    FakeProvider("unused"),
+                    self.config,
+                    self.queue,
+                    job,
+                    isolated=False,
+                )
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertEqual(status.error, "already")
+
+    def test_save_job_failure_no_page(self) -> None:
+        _save_job_failure(FakeSession("x"), self.root)
+        _save_job_failure(None, self.root)
+
+
+class SessionLoopTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue = FileQueue(self.root)
+        self.config = _config(str(self.root), max_parallel_tabs=3)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_falls_back_to_sequential_without_parallel(self) -> None:
+        provider = FakeProvider()
+        provider.can_parallelize = False
+        called = {"seq": False, "par": False}
+
+        def seq(*args: object, **kwargs: object) -> None:
+            called["seq"] = True
+
+        def par(*args: object, **kwargs: object) -> None:
+            called["par"] = True
+
+        with patch("critique_bot.worker._sequential_loop", seq):
+            with patch("critique_bot.worker._parallel_loop", par):
+                _session_loop(
+                    provider,
+                    self.config,
+                    self.queue,
+                    RateLimiter(0, 0),
+                    lambda: True,
+                )
+        self.assertTrue(called["seq"])
+        self.assertFalse(called["par"])
+
+    def test_sequential_processes_one_job(self) -> None:
+        self.queue.enqueue(mode="review", stem="review", prompt="p")
+        provider = FakeProvider("ok")
+        stop_after = {"n": 0}
+
+        def stop() -> bool:
+            return stop_after["n"] >= 1
+
+        real_run = _run_job
+
+        def wrapped(*args: object, **kwargs: object) -> None:
+            stop_after["n"] += 1
+            return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("critique_bot.worker._run_job", wrapped):
+            _sequential_loop(
+                provider,
+                _config(str(self.root)),
+                self.queue,
+                RateLimiter(0, 0),
+                stop,
+            )
+        status_files = list((self.root / "results").glob("*/status.json"))
+        self.assertEqual(len(status_files), 1)
+
+
+class HeartbeatLoopSmokeTests(unittest.TestCase):
+    def test_heartbeat_loop_stops(self) -> None:
+        from critique_bot.worker import _heartbeat_loop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = FileQueue(Path(tmp))
+            stop = threading.Event()
+
+            def flag() -> bool:
+                return stop.is_set()
+
+            thread = threading.Thread(target=_heartbeat_loop, args=(queue, flag), daemon=True)
+            thread.start()
+            deadline = threading.Event()
+            deadline.wait(0.3)
+            self.assertTrue(queue.heartbeat_path.is_file())
+            stop.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+
+
+if __name__ == "__main__":
+    unittest.main()
