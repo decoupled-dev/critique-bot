@@ -1,9 +1,14 @@
 # Copy this file (or the `review` job) into the GitLab project that should
 # post critique-bot comments on merge requests.
 #
+# Pipelines:
+#   - Merge requests: the review job runs automatically.
+#   - Branch / main pushes: a manual "review" job is created (click Play).
+# Pushing to main alone does not auto-run review.
+#
 # Runner PC requirements:
-#   - Shell executor (not Docker): the job must see the same queue directory
-#     as the long-running worker.
+#   - A project or group runner tagged `critique-bot` (shell executor, not Docker)
+#     so the job sees the same queue directory as the long-running worker.
 #   - Microsoft Edge, signed in once (`critique-bot worker --headed` or
 #     one-shot `--headed`).
 #   - Worker already running, e.g. systemd
@@ -12,6 +17,13 @@
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the
 # worker serializes Edge and applies min_interval_seconds from config.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
 
 stages:
   - review
@@ -28,7 +40,7 @@ review:
   timeout: 1h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CRITIQUE_MANUAL == "true"
+    - if: $CI_COMMIT_BRANCH
       when: manual
   artifacts:
     when: always
