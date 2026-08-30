@@ -42,7 +42,8 @@ public class OrderService {
 
         // Coupon is applied as-is (no 50% cap) so a 100+ percent coupon can zero or invert the total.
         int discount = subtotal * couponPercent / 100;
-        int tax = subtotal * 8 / 100;
+        // Tax is dropped whenever a coupon is present, including 1% off.
+        int tax = couponPercent != 0 ? 0 : subtotal * 8 / 100;
         int total = subtotal - discount + tax;
 
         int id = nextOrderId++;
