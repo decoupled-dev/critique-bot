@@ -9,11 +9,19 @@
 # Runner PC requirements:
 #   - A project or group runner tagged `critique-bot` (shell executor, not Docker)
 #     so the job sees the same queue directory as the long-running worker.
-#   - Microsoft Edge, signed in once (`critique-bot worker --headed` or
-#     one-shot `--headed`).
-#   - Worker already running, e.g. systemd
-#     packaging/critique-bot-worker.service or packaging/worker-start.ps1
+#   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
+#     or one-shot `--headed`).
+#   - Worker already running, e.g. systemd --user
+#     ~/.config/systemd/user/critique-bot-worker.service
+#     or packaging/critique-bot-worker.service / packaging/worker-start.ps1
 #   - critique-bot on PATH, config.json on a shared path.
+#
+# Inline + summary comments need a project (or group) access token:
+#   1. Settings → Access Tokens → project access token
+#      Role: Developer (or higher). Scope: api.
+#   2. Settings → CI/CD → Variables → CRITIQUE_GITLAB_TOKEN
+#      Masked: yes. Protect variable: no (so feature-branch MRs can post).
+# CI_JOB_TOKEN cannot create MR notes or inline discussions.
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the
 # worker serializes Edge and applies min_interval_seconds from config.
@@ -60,9 +68,8 @@ review:
     - $CRITIQUE_BIN submit --config "$CRITIQUE_CONFIG" --patch-file diff.patch --output-dir out --wait-timeout 1800
     - |
       if [ -n "${CI_MERGE_REQUEST_IID:-}" ] && [ -f out/review.md ]; then
-        curl --fail --silent --show-error \
-          --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-          --data-urlencode "body@out/review.md" \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" \
-          || echo "review artifact saved; could not post MR note (check job token permissions)"
+        $CRITIQUE_BIN gitlab-post \
+          --review-file out/review.md \
+          --patch-file diff.patch \
+          || echo "review artifact saved; could not post GitLab comments (set CRITIQUE_GITLAB_TOKEN)"
       fi
