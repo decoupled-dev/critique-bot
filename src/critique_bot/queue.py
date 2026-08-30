@@ -181,6 +181,22 @@ class FileQueue:
                 log.warn(f"could not requeue {path.name}: {exc}")
         return moved
 
+    def requeue_job(self, job_id: str) -> bool:
+        """Move a claimed job back to inbox so it can run after Edge restarts."""
+        src = self.processing / f"{job_id}.json"
+        dest = self.inbox / f"{job_id}.json"
+        if dest.is_file() and not src.is_file():
+            return True
+        if not src.is_file():
+            return False
+        try:
+            src.replace(dest)
+        except OSError as exc:
+            log.warn(f"could not requeue {job_id}: {exc}")
+            return False
+        log.warn(f"requeued job {job_id} after a recoverable browser error")
+        return True
+
     def enqueue(
         self,
         *,

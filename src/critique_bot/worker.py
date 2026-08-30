@@ -11,7 +11,7 @@ from types import FrameType
 from typing import Callable
 
 from critique_bot import log
-from critique_bot.browser import BrowserError
+from critique_bot.browser import BrowserError, as_browser_error
 from critique_bot.config import BotConfig
 from critique_bot.llm import LLMError, LLMProvider, open_provider
 from critique_bot.output import isoformat, save_failure, write_output
@@ -216,15 +216,9 @@ def _run_job(
 ) -> None:
     try:
         _execute_job(provider, config, queue, job, isolated=isolated)
-    except BrowserError as exc:
+    except BrowserError:
         if queue.read_status(job.id) is None:
-            queue.fail(
-                job.id,
-                str(exc),
-                stem=job.stem,
-                label=job.label,
-                meta=job.meta,
-            )
+            queue.requeue_job(job.id)
         raise
 
 
@@ -270,18 +264,26 @@ def _execute_job(
                 _save_job_failure(session, out_dir)
                 raise
     except BrowserError as exc:
-        log.error(f"job {job.id} failed: {exc}")
-        queue.fail(
-            job.id, str(exc), stem=job.stem, label=job.label, meta=job.meta
-        )
+        log.error(f"job {job.id} browser error: {exc}")
+        queue.requeue_job(job.id)
         raise
     except LLMError as exc:
+        closed = as_browser_error(exc)
+        if closed is not None:
+            log.error(f"job {job.id} browser error: {closed}")
+            queue.requeue_job(job.id)
+            raise closed from exc
         log.error(f"job {job.id} failed: {exc}")
         queue.fail(
             job.id, str(exc), stem=job.stem, label=job.label, meta=job.meta
         )
         return
     except Exception as exc:
+        closed = as_browser_error(exc)
+        if closed is not None:
+            log.error(f"job {job.id} browser error: {closed}")
+            queue.requeue_job(job.id)
+            raise closed from exc
         log.exception(f"job {job.id} unexpected failure: {exc}")
         queue.fail(
             job.id,

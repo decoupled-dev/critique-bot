@@ -12,8 +12,10 @@ from critique_bot.browser import (
     _is_system_profile,
     _stderr_tail,
     _urls_match,
+    as_browser_error,
     describe_page,
     is_blank_url,
+    is_browser_closed_error,
     page_block_hint,
     warn_if_login_page,
 )
@@ -75,6 +77,32 @@ class HelpfulEdgeErrorTests(unittest.TestCase):
         err = _helpful_edge_error(RuntimeError("spawn failed"))
         self.assertIn("Playwright", str(err))
         self.assertIn("microsoft-edge", str(err).lower())
+
+
+class ClosedBrowserErrorTests(unittest.TestCase):
+    def test_playwright_new_page_message(self) -> None:
+        exc = RuntimeError(
+            "BrowserContext.new_page: Target page, context or browser has been closed"
+        )
+        self.assertTrue(is_browser_closed_error(exc))
+        wrapped = as_browser_error(exc)
+        self.assertIsInstance(wrapped, BrowserError)
+        assert wrapped is not None
+        self.assertIn("restart the browser", str(wrapped).lower())
+
+    def test_nested_cause(self) -> None:
+        inner = RuntimeError("Target closed")
+        outer = RuntimeError("send failed")
+        outer.__cause__ = inner
+        self.assertTrue(is_browser_closed_error(outer))
+
+    def test_unrelated_error(self) -> None:
+        self.assertFalse(is_browser_closed_error(RuntimeError("boom")))
+        self.assertIsNone(as_browser_error(RuntimeError("boom")))
+
+    def test_existing_browser_error_passthrough(self) -> None:
+        err = BrowserError("already")
+        self.assertIs(as_browser_error(err), err)
 
 
 class PageHintTests(unittest.TestCase):

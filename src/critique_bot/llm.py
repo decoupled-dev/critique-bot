@@ -223,19 +223,29 @@ class BrowserProvider(LLMProvider):
         model: str | None = None,
     ) -> LLMSession:
         cfg = _job_config(self._config, model)
+        from critique_bot.browser import BrowserError, as_browser_error
+
         if isolated:
             if not self._cdp_url:
-                from critique_bot.browser import BrowserError
-
                 raise BrowserError(
                     "parallel review tabs need Edge remote debugging (cdp_url)"
                 )
             return CdpBrowserSession(self._cdp_url, cfg)
         if self._home is None:
-            from critique_bot.browser import BrowserError
-
             raise BrowserError("browser provider is not started")
-        return PageBrowserSession(self._home.context.new_page(), cfg, close_page=True)
+        try:
+            home = self._home
+            if getattr(home, "is_closed", lambda: False)():
+                raise BrowserError("Edge home tab has been closed")
+            page = home.context.new_page()
+        except BrowserError:
+            raise
+        except Exception as exc:
+            closed = as_browser_error(exc)
+            if closed is not None:
+                raise closed from exc
+            raise BrowserError(f"could not open a review tab: {exc}") from exc
+        return PageBrowserSession(page, cfg, close_page=True)
 
 
 class PageBrowserSession(LLMSession):
