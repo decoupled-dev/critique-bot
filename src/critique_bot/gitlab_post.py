@@ -37,10 +37,10 @@ def post_review(
 ) -> int:
     project_id = project_id or os.environ.get("CI_PROJECT_ID") or ""
     mr_iid = mr_iid or os.environ.get("CI_MERGE_REQUEST_IID") or ""
-    api_url = (api_url or os.environ.get("CI_API_V4_URL") or "https://gitlab.com/api/v4").rstrip(
-        "/"
-    )
+    api_url = (api_url or os.environ.get("CI_API_V4_URL") or "").rstrip("/")
     token = token or _resolve_token()
+    if not api_url:
+        raise GitLabPostError("need --api-url or CI_API_V4_URL")
     if not project_id or not mr_iid:
         raise GitLabPostError("need --project-id and --mr-iid (or CI_PROJECT_ID / CI_MERGE_REQUEST_IID)")
     if not token:

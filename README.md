@@ -21,7 +21,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
+Copy [`config.example.json`](config.example.json) to `config.json` and set the real chat URL plus CSS selectors for the prompt/send/reply. Field-by-field reference: [`docs/config.json.md`](docs/config.json.md). Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
@@ -92,6 +92,8 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 ## CI runner (GitLab or GitHub)
 
+GitLab runner and project setup: [`docs/gitlab-ci.md`](docs/gitlab-ci.md).
+
 CI jobs must **not** each launch Edge. On the runner PC, start **one worker** that stays signed in. The job calls **submit**, waits for `out/review.md`, then posts that file as a comment on the MR or PR.
 
 ```bash
@@ -103,7 +105,7 @@ critique-bot submit --config /opt/critique-bot/config.json \
   --patch-file diff.patch --output-dir out
 ```
 
-The job and the worker must share `queue_dir` (default: `.critique-queue` next to `config.json`). Concurrent MRs/PRs enqueue; the worker runs one review at a time with `min_interval_seconds` (default 30).
+The job and the worker must share `queue_dir` (default: `.critique-queue` next to `config.json`). Concurrent MRs/PRs enqueue; the worker runs up to `max_parallel_tabs` reviews at once (default 1) with `min_interval_seconds` between starts.
 
 | Host | Job definition | Runner |
 | --- | --- | --- |

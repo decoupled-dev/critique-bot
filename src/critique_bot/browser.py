@@ -534,6 +534,47 @@ def _attach_over_cdp(
     return context, page
 
 
+@contextmanager
+def connect_job_page(cdp_url: str) -> Iterator["Page"]:
+    """Open one new tab via CDP. Used by parallel worker threads (own Playwright)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise BrowserError(
+            "Playwright is required. Install with: pip install -r requirements.txt"
+        ) from exc
+    playwright = None
+    page = None
+    try:
+        playwright = sync_playwright().start()
+        try:
+            browser = playwright.chromium.connect_over_cdp(cdp_url)
+        except Exception as exc:
+            raise BrowserError(
+                f"Failed to attach a review tab at {cdp_url}: {exc}"
+            ) from exc
+        if not browser.contexts:
+            raise BrowserError(
+                f"Connected to Edge at {cdp_url} but found no browser context."
+            )
+        page = browser.contexts[0].new_page()
+        attach_page_debug(page)
+        log.debug(f"opened parallel tab {describe_page(page)}")
+        yield page
+    finally:
+        if page is not None:
+            try:
+                if not page.is_closed():
+                    page.close()
+            except Exception as exc:
+                log.debug(f"parallel tab close: {exc}")
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception as exc:
+                log.debug(f"parallel Playwright stop: {exc}")
+
+
 def _page_url(page: Page) -> str:
     try:
         return page.url or ""
@@ -785,6 +826,7 @@ def launch_edge(
     cdp_url: str | None = None,
     start_url: str | None = None,
     timeout_ms: int = 180_000,
+    cdp_out: dict[str, str] | None = None,
 ) -> Iterator[Page]:
     """Open Microsoft Edge on a persistent signed-in profile (or attach via CDP)."""
     try:
@@ -811,6 +853,8 @@ def launch_edge(
                 start_url=start_url,
                 timeout_ms=timeout_ms,
             )
+            if cdp_out is not None:
+                cdp_out["url"] = cdp_url
             yield attached_page
             return
 
@@ -839,6 +883,8 @@ def launch_edge(
                 start_url=start_url,
                 timeout_ms=timeout_ms,
             )
+            if cdp_out is not None:
+                cdp_out["url"] = cdp_url
             yield attached_page
             return
 
@@ -848,6 +894,17 @@ def launch_edge(
         existing = any(profile_dir.iterdir())
         _executable, channel = resolve_browser()
         args = list(EDGE_LAUNCH_ARGS)
+        debug_url = ""
+        if cdp_out is not None:
+            port = _free_port()
+            debug_url = f"http://127.0.0.1:{port}"
+            args.extend(
+                [
+                    f"--remote-debugging-port={port}",
+                    "--remote-debugging-address=127.0.0.1",
+                    "--remote-allow-origins=*",
+                ]
+            )
         if headed:
             args.append("--start-maximized")
         log.info(
@@ -884,6 +941,16 @@ def launch_edge(
             log.exception(f"browser launch failed: {exc}")
             raise _helpful_edge_error(exc) from exc
         _log_context(context, via="persistent")
+        if debug_url and cdp_out is not None:
+            try:
+                _wait_for_cdp(debug_url, timeout_s=20)
+                cdp_out["url"] = debug_url
+                log.info(f"persistent Edge CDP ready at {debug_url}")
+            except BrowserError as exc:
+                log.warn(
+                    "could not open remote debugging for parallel tabs "
+                    f"({exc}); worker will use one tab"
+                )
         page = _adopt_page(context, prefer_url=start_url)
         attach_page_debug(page)
         if start_url:

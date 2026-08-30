@@ -28,11 +28,14 @@ ENV_STORAGE_STATE = "CRITIQUE_STORAGE_STATE"
 ENV_USER_DATA_DIR = "CRITIQUE_USER_DATA_DIR"
 ENV_CDP_URL = "CRITIQUE_CDP_URL"
 ENV_QUEUE_DIR = "CRITIQUE_QUEUE_DIR"
+ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
 DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
+DEFAULT_MAX_PARALLEL_TABS = 1
+ABSOLUTE_MAX_PARALLEL_TABS = 8
 
 
 class ConfigError(ValueError):
@@ -62,6 +65,7 @@ class BotConfig:
     queue_dir: str = ""
     min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS
     interval_jitter_seconds: float = DEFAULT_INTERVAL_JITTER_SECONDS
+    max_parallel_tabs: int = DEFAULT_MAX_PARALLEL_TABS
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
@@ -200,6 +204,9 @@ def load_config(
     )
     if os.environ.get(ENV_QUEUE_DIR):
         log.debug(f"queue_dir overridden by {ENV_QUEUE_DIR}")
+    raw_parallel = os.environ.get(ENV_MAX_PARALLEL_TABS)
+    if raw_parallel:
+        log.debug(f"max_parallel_tabs overridden by {ENV_MAX_PARALLEL_TABS}")
 
     if not url:
         raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
@@ -233,6 +240,12 @@ def load_config(
             "interval_jitter_seconds",
             raw.get("interval_jitter_seconds"),
             DEFAULT_INTERVAL_JITTER_SECONDS,
+        ),
+        max_parallel_tabs=_clamped_positive_int(
+            "max_parallel_tabs",
+            raw_parallel if raw_parallel else raw.get("max_parallel_tabs"),
+            DEFAULT_MAX_PARALLEL_TABS,
+            ABSOLUTE_MAX_PARALLEL_TABS,
         ),
         max_prompt_chars=_clamped_positive_int(
             "max_prompt_chars",

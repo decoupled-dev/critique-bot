@@ -20,5 +20,6 @@
   "storage_state": "",
   "queue_dir": ".critique-queue",
   "min_interval_seconds": 30,
-  "interval_jitter_seconds": 5
+  "interval_jitter_seconds": 5,
+  "max_parallel_tabs": 1
 }

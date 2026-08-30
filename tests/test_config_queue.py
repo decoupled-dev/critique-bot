@@ -29,12 +29,17 @@ class QueueDirConfigTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.folder = Path(self._tmp.name)
         self._saved = os.environ.pop("CRITIQUE_QUEUE_DIR", None)
+        self._saved_parallel = os.environ.pop("CRITIQUE_MAX_PARALLEL_TABS", None)
 
     def tearDown(self) -> None:
         if self._saved is None:
             os.environ.pop("CRITIQUE_QUEUE_DIR", None)
         else:
             os.environ["CRITIQUE_QUEUE_DIR"] = self._saved
+        if self._saved_parallel is None:
+            os.environ.pop("CRITIQUE_MAX_PARALLEL_TABS", None)
+        else:
+            os.environ["CRITIQUE_MAX_PARALLEL_TABS"] = self._saved_parallel
         self._tmp.cleanup()
 
     def test_default_queue_dir_next_to_config(self) -> None:
@@ -43,6 +48,23 @@ class QueueDirConfigTests(unittest.TestCase):
         self.assertEqual(config.queue_dir, str((self.folder / ".critique-queue").resolve()))
         self.assertEqual(config.min_interval_seconds, 30.0)
         self.assertEqual(config.interval_jitter_seconds, 5.0)
+        self.assertEqual(config.max_parallel_tabs, 1)
+
+    def test_max_parallel_tabs(self) -> None:
+        path = _write_config(self.folder, {"max_parallel_tabs": 3})
+        config = load_config(path)
+        self.assertEqual(config.max_parallel_tabs, 3)
+
+    def test_max_parallel_tabs_clamped(self) -> None:
+        path = _write_config(self.folder, {"max_parallel_tabs": 99})
+        config = load_config(path)
+        self.assertEqual(config.max_parallel_tabs, 8)
+
+    def test_env_overrides_max_parallel_tabs(self) -> None:
+        path = _write_config(self.folder, {"max_parallel_tabs": 1})
+        os.environ["CRITIQUE_MAX_PARALLEL_TABS"] = "4"
+        config = load_config(path)
+        self.assertEqual(config.max_parallel_tabs, 4)
 
     def test_relative_queue_dir(self) -> None:
         path = _write_config(self.folder, {"queue_dir": "jobs"})

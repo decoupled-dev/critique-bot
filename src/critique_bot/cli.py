@@ -442,6 +442,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="write diagnostic logs to stderr (default: off)",
     )
+    parser.add_argument(
+        "--label",
+        help=(
+            "short id for this job (shown in the queue filename). "
+            "Default: GitLab MR IID, GitHub PR number, CI job id, or 'local'"
+        ),
+    )
     return parser
 
 
@@ -462,6 +469,7 @@ def _log_config(config) -> None:
             queue_dir=config.queue_dir,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
+            max_parallel_tabs=config.max_parallel_tabs,
             storage_state=config.storage_state,
             prompt_input=config.selectors.prompt_input,
             send_button=config.selectors.send_button or "(Enter)",
@@ -479,13 +487,16 @@ def _ci_meta() -> dict[str, str]:
         "CI_JOB_NAME",
         "CI_PIPELINE_ID",
         "CI_PROJECT_PATH",
+        "CI_PROJECT_ID",
         "CI_MERGE_REQUEST_IID",
         "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
         "CI_COMMIT_SHA",
+        "CI_COMMIT_REF_NAME",
         "GITHUB_REPOSITORY",
         "GITHUB_RUN_ID",
         "GITHUB_JOB",
         "GITHUB_SHA",
+        "GITHUB_REF",
         "GITHUB_HEAD_REF",
         "GITHUB_BASE_REF",
         "GITHUB_EVENT_NAME",
@@ -500,6 +511,7 @@ def _copy_job_results(src: Path, dest: Path, stem: str) -> None:
         f"{stem}.md",
         f"{stem}.json",
         "status.json",
+        "job.json",
         "screenshot.png",
         "page.html",
     )
@@ -617,6 +629,7 @@ def _main_submit(argv: list[str]) -> int:
         + log.kv(
             config=args.config,
             mode=mode,
+            label=args.label or None,
             patch_file=args.patch_file or ("(stdin)" if mode == MODE_REVIEW else None),
             output_dir=str(output_dir),
             wait_timeout=args.wait_timeout,
@@ -646,12 +659,14 @@ def _main_submit(argv: list[str]) -> int:
         print(f"error: {message}", file=sys.stderr)
         return 1
     try:
+        meta = _ci_meta()
         job_id = queue.enqueue(
             mode=mode,
             stem=stem,
             prompt=prompt,
             model=args.model,
-            meta=_ci_meta(),
+            meta=meta,
+            label=args.label,
         )
         print(f"queued job {job_id}; waiting for worker...", file=sys.stderr)
         status = queue.wait(job_id, timeout_sec=max(args.wait_timeout, 1))
@@ -700,7 +715,10 @@ def _main_gitlab_post(argv: list[str]) -> int:
     )
     parser.add_argument("--project-id", help="GitLab project ID or path")
     parser.add_argument("--mr-iid", help="merge request IID")
-    parser.add_argument("--api-url", help="GitLab API v4 URL")
+    parser.add_argument(
+        "--api-url",
+        help="GitLab API v4 URL (or CI_API_V4_URL; required outside GitLab CI)",
+    )
     parser.add_argument(
         "--logs",
         action=argparse.BooleanOptionalAction,

@@ -32,6 +32,7 @@ class Job:
     prompt: str
     model: str | None
     created_at: str
+    label: str
     meta: dict[str, Any]
 
 
@@ -44,6 +45,8 @@ class JobStatus:
     started_at: str | None
     finished_at: str | None
     elapsed_seconds: float | None
+    label: str = ""
+    meta: dict[str, Any] | None = None
 
 
 class RateLimiter:
@@ -186,8 +189,11 @@ class FileQueue:
         prompt: str,
         model: str | None = None,
         meta: dict[str, Any] | None = None,
+        label: str | None = None,
     ) -> str:
-        job_id = _new_job_id()
+        meta = dict(meta or {})
+        slug = job_label(meta, explicit=label)
+        job_id = _new_job_id(slug)
         payload = {
             "id": job_id,
             "mode": mode,
@@ -195,11 +201,14 @@ class FileQueue:
             "prompt": prompt,
             "model": model or "",
             "created_at": isoformat(datetime.now(timezone.utc)),
-            "meta": meta or {},
+            "label": slug,
+            "meta": meta,
         }
         dest = self.inbox / f"{job_id}.json"
         _atomic_write_json(dest, payload)
-        log.info(f"enqueued job {job_id} ({len(prompt)} chars, mode={mode})")
+        log.info(
+            f"enqueued job {job_id} ({len(prompt)} chars, mode={mode}, label={slug})"
+        )
         return job_id
 
     def claim(self) -> Job | None:
@@ -216,7 +225,7 @@ class FileQueue:
                 return _job_from_payload(_read_json(dest), dest.stem)
             except QueueError as exc:
                 log.error(f"invalid job file {dest.name}: {exc}")
-                self.fail(dest.stem, str(exc), stem="review")
+                self.fail(dest.stem, str(exc), stem="review", label=dest.stem)
                 try:
                     dest.unlink(missing_ok=True)
                 except OSError:
@@ -229,6 +238,21 @@ class FileQueue:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def write_job_record(self, job: Job) -> None:
+        _atomic_write_json(
+            self.result_dir(job.id) / "job.json",
+            {
+                "id": job.id,
+                "label": job.label,
+                "mode": job.mode,
+                "stem": job.stem,
+                "model": job.model or "",
+                "created_at": job.created_at,
+                "meta": job.meta,
+                "prompt_chars": len(job.prompt),
+            },
+        )
+
     def finish(self, job_id: str, status: JobStatus) -> None:
         payload = {
             "id": status.id,
@@ -238,6 +262,8 @@ class FileQueue:
             "started_at": status.started_at,
             "finished_at": status.finished_at,
             "elapsed_seconds": status.elapsed_seconds,
+            "label": status.label or "",
+            "meta": status.meta or {},
         }
         _atomic_write_json(self.result_dir(job_id) / "status.json", payload)
         processing = self.processing / f"{job_id}.json"
@@ -246,7 +272,15 @@ class FileQueue:
         except OSError:
             pass
 
-    def fail(self, job_id: str, error: str, *, stem: str) -> None:
+    def fail(
+        self,
+        job_id: str,
+        error: str,
+        *,
+        stem: str,
+        label: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         now = isoformat(datetime.now(timezone.utc))
         self.finish(
             job_id,
@@ -258,6 +292,8 @@ class FileQueue:
                 started_at=None,
                 finished_at=now,
                 elapsed_seconds=None,
+                label=label,
+                meta=meta,
             ),
         )
 
@@ -266,6 +302,7 @@ class FileQueue:
         if not path.is_file():
             return None
         data = _read_json(path)
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         return JobStatus(
             id=str(data.get("id") or job_id),
             ok=bool(data.get("ok")),
@@ -274,6 +311,8 @@ class FileQueue:
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
             elapsed_seconds=data.get("elapsed_seconds"),
+            label=str(data.get("label") or ""),
+            meta=meta,
         )
 
     def wait(
@@ -303,9 +342,58 @@ class FileQueue:
         )
 
 
-def _new_job_id() -> str:
+def job_label(meta: dict[str, Any] | None = None, *, explicit: str | None = None) -> str:
+    """Human-readable slug for a queue job: MR/PR id, CI job, or ``local``."""
+    if explicit and str(explicit).strip():
+        return _safe_slug(str(explicit).strip(), 48)
+    meta = meta or {}
+    mr = str(meta.get("CI_MERGE_REQUEST_IID") or "").strip()
+    if mr:
+        project = _safe_slug(
+            str(meta.get("CI_PROJECT_PATH") or "").replace("/", "-"), 32
+        )
+        return f"{project}-mr{mr}" if project else f"mr{mr}"
+    pr = str(meta.get("GITHUB_PR_NUMBER") or "").strip() or _pr_from_github_ref(
+        str(meta.get("GITHUB_REF") or "")
+    )
+    if pr:
+        repo = _safe_slug(
+            str(meta.get("GITHUB_REPOSITORY") or "").replace("/", "-"), 32
+        )
+        return f"{repo}-pr{pr}" if repo else f"pr{pr}"
+    run = str(meta.get("CI_JOB_ID") or meta.get("GITHUB_RUN_ID") or "").strip()
+    if run:
+        return f"ci{run}"
+    return "local"
+
+
+def _pr_from_github_ref(ref: str) -> str:
+    parts = [part for part in ref.strip("/").split("/") if part]
+    if len(parts) >= 3 and parts[0] == "refs" and parts[1] == "pull" and parts[2].isdigit():
+        return parts[2]
+    return ""
+
+
+def _safe_slug(text: str, max_len: int) -> str:
+    if not text or not text.strip():
+        return ""
+    cleaned: list[str] = []
+    for ch in text:
+        if ch.isalnum() or ch in "-_":
+            cleaned.append(ch)
+        else:
+            cleaned.append("-")
+    slug = "".join(cleaned).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug[:max_len].strip("-")
+    return slug or "job"
+
+
+def _new_job_id(label: str | None = None) -> str:
     stamp = int(time.time() * 1000)
-    return f"{stamp:013d}-{uuid.uuid4().hex[:12]}"
+    slug = _safe_slug(label or "job", 48) or "job"
+    return f"{stamp:013d}-{slug}-{uuid.uuid4().hex[:8]}"
 
 
 def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
@@ -315,13 +403,16 @@ def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
     mode = str(data.get("mode") or "review")
     stem = str(data.get("stem") or ("reply" if mode == "general" else "review"))
     meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    job_id = str(data.get("id") or fallback_id)
+    label = str(data.get("label") or "").strip() or job_label(meta)
     return Job(
-        id=str(data.get("id") or fallback_id),
+        id=job_id,
         mode=mode,
         stem=stem,
         prompt=prompt,
         model=str(data["model"]) if data.get("model") else None,
         created_at=str(data.get("created_at") or ""),
+        label=label,
         meta=meta,
     )
 

@@ -276,7 +276,7 @@ Keep **one worker** running on the runner PC. CI jobs only call `submit`. The jo
    - **GitHub:** install a self-hosted Actions runner on that PC with labels `self-hosted` and `critique-bot`. Copy [`packaging/github-review.yml`](packaging/github-review.yml) to `.github/workflows/review.yml` in the app repo. Optional repo variable `CRITIQUE_CONFIG` (default `/opt/critique-bot/config.json`; on Windows set it to `C:\critique-bot\config.json`). The workflow posts `out/review.md` as a PR comment (`pull-requests: write`).
 5. Each MR/PR job writes `diff.patch`, runs `critique-bot submit … --output-dir out`, then posts `out/review.md`.
 
-Concurrent jobs enqueue. The worker runs one review at a time and waits `min_interval_seconds` (default 30) plus jitter between sends.
+Concurrent jobs enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default 1) and waits `min_interval_seconds` (default 30) plus jitter between starts.
 
 GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run this: no signed-in Edge, no shared queue.
 
