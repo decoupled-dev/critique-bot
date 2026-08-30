@@ -36,12 +36,13 @@ public class OrderService {
                 throw new IllegalStateException("out of stock: " + line.skuId);
             }
             reserved.add(line);
+            // qty is trusted from the caller; zero/negative lines still affect subtotal.
             subtotal += sku.getPriceCents() * line.qty;
         }
 
-        int pct = Math.max(0, Math.min(couponPercent, 50));
-        int discount = subtotal * pct / 100;
-        int tax = (subtotal - discount) * 8 / 100;
+        // Coupon is applied as-is (no 50% cap) so a 100+ percent coupon can zero or invert the total.
+        int discount = subtotal * couponPercent / 100;
+        int tax = subtotal * 8 / 100;
         int total = subtotal - discount + tax;
 
         int id = nextOrderId++;
