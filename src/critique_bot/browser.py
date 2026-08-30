@@ -65,6 +65,48 @@ _BLANK_URLS = frozenset(
 
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "oauth", "auth")
 _PROFILE_LOCKS = ("SingletonLock", "SingletonSocket", "SingletonCookie")
+_CLOSED_BROWSER_TOKENS = (
+    "has been closed",
+    "target closed",
+    "targetclosed",
+    "browser has been closed",
+    "context has been closed",
+    "connection closed",
+    "playwright connection closed",
+)
+
+
+def is_browser_closed_error(exc: BaseException) -> bool:
+    """True when Playwright lost the Edge tab/context (restartable)."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in {"TargetClosedError", "TargetCloseError"}:
+            return True
+        message = str(current).lower()
+        if any(token in message for token in _CLOSED_BROWSER_TOKENS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def wrap_closed_browser_error(exc: BaseException) -> BrowserError:
+    err = BrowserError(
+        "Microsoft Edge closed or disconnected while opening a review tab "
+        f"({exc}). The worker will restart the browser and retry the job."
+    )
+    err.__cause__ = exc
+    return err
+
+
+def as_browser_error(exc: BaseException) -> BrowserError | None:
+    """Map a dead-browser Playwright error to BrowserError; otherwise None."""
+    if isinstance(exc, BrowserError):
+        return exc
+    if is_browser_closed_error(exc):
+        return wrap_closed_browser_error(exc)
+    return None
 
 
 def _helpful_edge_error(exc: BaseException) -> BrowserError:
@@ -557,7 +599,15 @@ def connect_job_page(cdp_url: str) -> Iterator["Page"]:
             raise BrowserError(
                 f"Connected to Edge at {cdp_url} but found no browser context."
             )
-        page = browser.contexts[0].new_page()
+        try:
+            page = browser.contexts[0].new_page()
+        except Exception as exc:
+            closed = as_browser_error(exc)
+            if closed is not None:
+                raise closed from exc
+            raise BrowserError(
+                f"Failed to open a review tab at {cdp_url}: {exc}"
+            ) from exc
         attach_page_debug(page)
         log.debug(f"opened parallel tab {describe_page(page)}")
         yield page

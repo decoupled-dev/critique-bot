@@ -296,6 +296,18 @@ class FileQueueMoreTests(unittest.TestCase):
     def test_requeue_none_when_empty(self) -> None:
         self.assertEqual(self.queue.requeue_stale_processing(), 0)
 
+    def test_requeue_job_moves_processing_to_inbox(self) -> None:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="p")
+        self.assertIsNotNone(self.queue.claim())
+        self.assertTrue((self.queue.processing / f"{job_id}.json").is_file())
+        self.assertTrue(self.queue.requeue_job(job_id))
+        self.assertTrue((self.queue.inbox / f"{job_id}.json").is_file())
+        self.assertFalse((self.queue.processing / f"{job_id}.json").exists())
+        self.assertTrue(self.queue.requeue_job(job_id))
+
+    def test_requeue_job_missing(self) -> None:
+        self.assertFalse(self.queue.requeue_job("no-such-job"))
+
 
 class SlugAndLabelTests(unittest.TestCase):
     def test_ci_job_id(self) -> None:

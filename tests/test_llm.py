@@ -346,6 +346,60 @@ class HttpChatClientTests(unittest.TestCase):
         with self.assertRaises(BrowserError):
             provider.session(isolated=True)
 
+    def test_new_page_closed_context_is_browser_error(self) -> None:
+        from critique_bot.browser import BrowserError
+        from critique_bot.config import BACKEND_BROWSER
+        from critique_bot.llm import BrowserProvider
+
+        class Context:
+            def new_page(self) -> None:
+                raise RuntimeError(
+                    "BrowserContext.new_page: Target page, context or browser has been closed"
+                )
+
+        class Home:
+            context = Context()
+
+            def is_closed(self) -> bool:
+                return False
+
+        provider = BrowserProvider(
+            _config(
+                backend=BACKEND_BROWSER,
+                url="https://chat.example",
+                selectors=Selectors(prompt_input="t", assistant_messages=".a"),
+            ),
+            headed=False,
+        )
+        provider._home = Home()
+        with self.assertRaises(BrowserError) as ctx:
+            provider.session()
+        self.assertIn("closed", str(ctx.exception).lower())
+
+    def test_closed_home_tab_is_browser_error(self) -> None:
+        from critique_bot.browser import BrowserError
+        from critique_bot.config import BACKEND_BROWSER
+        from critique_bot.llm import BrowserProvider
+
+        class Home:
+            context = object()
+
+            def is_closed(self) -> bool:
+                return True
+
+        provider = BrowserProvider(
+            _config(
+                backend=BACKEND_BROWSER,
+                url="https://chat.example",
+                selectors=Selectors(prompt_input="t", assistant_messages=".a"),
+            ),
+            headed=False,
+        )
+        provider._home = Home()
+        with self.assertRaises(BrowserError) as ctx:
+            provider.session()
+        self.assertIn("home tab", str(ctx.exception).lower())
+
     def test_http_session_uses_alternate_model_client(self) -> None:
         provider = HttpProvider(_config(model="llama3"))
         fake = _FakeResponse({"choices": [{"message": {"content": "ok"}}]})

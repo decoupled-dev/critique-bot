@@ -137,7 +137,7 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertFalse(status.ok)
         self.assertIn("unexpected", status.error or "")
 
-    def test_browser_error_fails_and_reraises(self) -> None:
+    def test_browser_error_requeues_and_reraises(self) -> None:
         job = self._job()
         with self.assertRaises(BrowserError):
             _execute_job(
@@ -147,12 +147,44 @@ class ExecuteJobTests(unittest.TestCase):
                 job,
                 isolated=True,
             )
-        status = self.queue.read_status(job.id)
-        assert status is not None
-        self.assertFalse(status.ok)
-        self.assertIn("edge gone", status.error or "")
+        self.assertIsNone(self.queue.read_status(job.id))
+        self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
+        self.assertFalse((self.queue.processing / f"{job.id}.json").exists())
 
-    def test_run_job_records_status_when_execute_did_not(self) -> None:
+    def test_closed_context_is_requeued_as_browser_error(self) -> None:
+        job = self._job()
+        with self.assertRaises(BrowserError) as ctx:
+            _execute_job(
+                FakeProvider(
+                    RuntimeError(
+                        "BrowserContext.new_page: Target page, context or browser has been closed"
+                    )
+                ),
+                self.config,
+                self.queue,
+                job,
+                isolated=False,
+            )
+        self.assertIn("restart the browser", str(ctx.exception).lower())
+        self.assertIsNone(self.queue.read_status(job.id))
+        self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
+
+    def test_llm_closed_page_is_requeued(self) -> None:
+        job = self._job()
+        with self.assertRaises(BrowserError):
+            _execute_job(
+                FakeProvider(
+                    LLMError("Target page, context or browser has been closed")
+                ),
+                self.config,
+                self.queue,
+                job,
+                isolated=False,
+            )
+        self.assertIsNone(self.queue.read_status(job.id))
+        self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
+
+    def test_run_job_requeues_when_execute_did_not(self) -> None:
         job = self._job()
         with patch(
             "critique_bot.worker._execute_job",
@@ -166,9 +198,8 @@ class ExecuteJobTests(unittest.TestCase):
                     job,
                     isolated=False,
                 )
-        status = self.queue.read_status(job.id)
-        assert status is not None
-        self.assertEqual(status.error, "later")
+        self.assertIsNone(self.queue.read_status(job.id))
+        self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
 
     def test_run_job_does_not_overwrite_status(self) -> None:
         job = self._job()
