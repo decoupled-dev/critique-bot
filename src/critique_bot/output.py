@@ -17,6 +17,7 @@ def write_output(
     payload: dict[str, Any],
     *,
     stem: str = "review",
+    print_body: bool = True,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     md_path = output_dir / f"{stem}.md"
@@ -34,7 +35,8 @@ def write_output(
             chars=len(body),
         )
     )
-    print(body, flush=True)
+    if print_body:
+        print(body, flush=True)
 
 
 def write_review(

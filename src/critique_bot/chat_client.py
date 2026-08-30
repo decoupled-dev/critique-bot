@@ -473,14 +473,48 @@ _SET_PROMPT_JS = """
   const mode = args.mode;
   const chunk = args.chunk || "";
   const dispatch = () => {
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: chunk }));
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
-  const setValue = (value) => {
-    if (el.isContentEditable) {
-      el.textContent = value;
-      return;
+  const getValue = () => {
+    if (el.isContentEditable) return (el.innerText || el.textContent || "").replace(/\\u200b/g, "");
+    if ("value" in el) return el.value || "";
+    return el.textContent || "";
+  };
+  const placeCaret = (atStart) => {
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(Boolean(atStart));
+    sel.removeAllRanges();
+    sel.addRange(range);
+  };
+  const insertEditable = (value, replace) => {
+    el.focus();
+    if (replace) {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      if (!value) {
+        const deleted = document.execCommand("delete", false);
+        if (!deleted || getValue().trim()) el.textContent = "";
+        return;
+      }
+    } else {
+      placeCaret(false);
     }
+    const inserted = document.execCommand("insertText", false, value);
+    if (!inserted && value) {
+      if (replace) el.textContent = value;
+      else el.textContent = (el.textContent || "") + value;
+    }
+  };
+  const setNative = (value) => {
     const proto = el instanceof HTMLTextAreaElement
       ? HTMLTextAreaElement.prototype
       : (el instanceof HTMLInputElement ? HTMLInputElement.prototype : null);
@@ -489,18 +523,15 @@ _SET_PROMPT_JS = """
     else if ("value" in el) el.value = value;
     else el.textContent = value;
   };
-  const getValue = () => {
-    if (el.isContentEditable) return el.textContent || "";
-    if ("value" in el) return el.value || "";
-    return el.textContent || "";
-  };
   if (mode === "set") {
-    setValue(chunk);
+    if (el.isContentEditable) insertEditable(chunk, true);
+    else setNative(chunk);
     dispatch();
     return getValue().length;
   }
   if (mode === "append") {
-    setValue(getValue() + chunk);
+    if (el.isContentEditable) insertEditable(chunk, false);
+    else setNative(getValue() + chunk);
     return getValue().length;
   }
   if (mode === "dispatch") {
@@ -519,8 +550,18 @@ def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
     try:
         locator.first.wait_for(state="visible", timeout=timeout_ms)
     except PlaywrightTimeoutError as exc:
-        log.error(f"timed out waiting for {what}: {locator.first}")
-        raise ChatError(f"timed out waiting for {what}: {locator.first}") from exc
+        hint = ""
+        try:
+            from critique_bot.browser import page_block_hint
+
+            hint = page_block_hint(locator.page)
+        except Exception:
+            hint = ""
+        extra = f" ({hint})" if hint else ""
+        log.error(f"timed out waiting for {what}: {locator.first}{extra}")
+        raise ChatError(
+            f"timed out waiting for {what}: {locator.first}{extra}"
+        ) from exc
     log.debug(f"{what} is visible")
 
 
@@ -1041,12 +1082,48 @@ def _send(page: Page, selectors: Selectors, timeout_ms: int) -> None:
         log.info(f"clicking send button {selectors.send_button!r}")
         button = page.locator(selectors.send_button).first
         _wait_visible(button, timeout_ms, "send button")
-        button.click(timeout=timeout_ms)
-        log.debug("send button clicked")
+        try:
+            button.click(timeout=timeout_ms)
+            log.debug("send button clicked")
+            return
+        except Exception as exc:
+            log.warn(f"send button click failed ({exc}); pressing Enter")
+        page.locator(selectors.prompt_input).first.press("Enter", timeout=timeout_ms)
+        log.debug("Enter pressed after send click failed")
         return
     log.info("no send_button selector; pressing Enter in the prompt")
     page.locator(selectors.prompt_input).first.press("Enter", timeout=timeout_ms)
     log.debug("Enter pressed")
+
+
+def _visible_count(locator: Locator) -> int:
+    try:
+        total = locator.count()
+    except Exception:
+        return 0
+    visible = 0
+    for index in range(total):
+        try:
+            if locator.nth(index).is_visible():
+                visible += 1
+        except Exception:
+            continue
+    return visible
+
+
+def _last_visible(locator: Locator) -> Locator | None:
+    try:
+        total = locator.count()
+    except Exception:
+        return None
+    for index in range(total - 1, -1, -1):
+        item = locator.nth(index)
+        try:
+            if item.is_visible():
+                return item
+        except Exception:
+            continue
+    return None
 
 
 def _wait_for_reply(
@@ -1066,7 +1143,7 @@ def _wait_for_reply(
 
     last_status_log = 0.0
     while time.monotonic() < deadline:
-        count = messages.count()
+        count = _visible_count(messages)
         if count > previous_count:
             log.info(f"assistant message appeared (count {previous_count} -> {count})")
             break
@@ -1083,7 +1160,7 @@ def _wait_for_reply(
         log.error(
             "no assistant message appeared "
             f"(selector={selector!r}, previous_count={previous_count}, "
-            f"current_count={messages.count()})"
+            f"current_count={_visible_count(messages)})"
         )
         raise ChatError(
             "no assistant message appeared "
@@ -1094,8 +1171,8 @@ def _wait_for_reply(
     last_change = time.monotonic()
     last_growth_log = 0.0
     while time.monotonic() < deadline:
-        count = messages.count()
-        text = messages.nth(count - 1).inner_text()
+        target = _last_visible(messages)
+        text = target.inner_text() if target is not None else ""
         idle_so_far = (time.monotonic() - last_change) * 1000
         if text != last_text:
             last_text = text
@@ -1103,7 +1180,8 @@ def _wait_for_reply(
             now = time.monotonic()
             if now - last_growth_log >= 1.0:
                 log.debug(
-                    f"reply streaming: {len(text)} chars, {count} message(s), "
+                    f"reply streaming: {len(text)} chars, "
+                    f"{_visible_count(messages)} message(s), "
                     f"preview={log.preview(text, 80)!r}"
                 )
                 last_growth_log = now
@@ -1169,7 +1247,7 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
 def send_turn(page: Page, config: BotConfig, prompt: str) -> str:
     selectors = config.selectors
     timeout_ms = config.timeout_ms
-    previous_count = page.locator(selectors.assistant_messages).count()
+    previous_count = _visible_count(page.locator(selectors.assistant_messages))
     log.info(
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)

@@ -1,0 +1,83 @@
+# Copy this file to .github/workflows/review.yml in the GitHub repo that
+# should post critique-bot comments on pull requests.
+#
+# GitHub-hosted runners (ubuntu-latest, windows-latest) cannot do this:
+# they have no signed-in Edge and no shared queue with the worker.
+#
+# Runner PC requirements (same machine as the worker):
+#   - Self-hosted GitHub Actions runner, labels: self-hosted, critique-bot
+#   - Not Docker isolation: the job must see the same queue_dir as the worker
+#   - Microsoft Edge, signed in once
+#   - Worker already running (packaging/critique-bot-worker.service or
+#     packaging/worker-start.ps1)
+#   - critique-bot on PATH; config.json on a shared path
+#
+# Optional repo variable CRITIQUE_CONFIG overrides the default config path.
+# Several PRs can trigger this job at once. They enqueue and wait; the
+# worker serializes Edge and applies min_interval_seconds from config.
+
+name: Critique review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: critique-pr-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: [self-hosted, critique-bot]
+    timeout-minutes: 60
+    env:
+      CRITIQUE_CONFIG: ${{ vars.CRITIQUE_CONFIG || '/opt/critique-bot/config.json' }}
+      CRITIQUE_BIN: critique-bot
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build patch
+        shell: bash
+        run: |
+          git diff \
+            "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            > diff.patch
+          if [ ! -s diff.patch ]; then
+            echo "empty diff; nothing to review"
+          fi
+
+      - name: Request review
+        if: hashFiles('diff.patch') != ''
+        shell: bash
+        run: |
+          "$CRITIQUE_BIN" submit --config "$CRITIQUE_CONFIG" \
+            --patch-file diff.patch --output-dir out --wait-timeout 1800
+
+      - name: Comment on pull request
+        if: hashFiles('out/review.md') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('out/review.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: critique-review
+          path: |
+            out/
+            diff.patch
+          if-no-files-found: ignore

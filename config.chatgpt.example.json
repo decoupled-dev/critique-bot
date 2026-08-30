@@ -1,0 +1,24 @@
+{
+  "url": "https://chatgpt.com/",
+  "selectors": {
+    "model_dropdown": "",
+    "model_dropdown_identifier": "model-switcher",
+    "model_option": "[role='menuitemradio'], [role='menuitem'], [role='option']",
+    "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]",
+    "send_button": "button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton",
+    "assistant_messages": "[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']"
+  },
+  "model": "",
+  "timeout_ms": 180000,
+  "idle_ms": 6000,
+  "max_prompt_chars": 120000,
+  "max_file_chars": 32000,
+  "max_files": 80,
+  "max_read_bytes": 16000000,
+  "user_data_dir": ".edge-profile",
+  "cdp_url": "",
+  "storage_state": "",
+  "queue_dir": ".critique-queue",
+  "min_interval_seconds": 30,
+  "interval_jitter_seconds": 5
+}

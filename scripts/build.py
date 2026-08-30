@@ -116,7 +116,11 @@ def _write_readme(dest: Path, binary_name: str) -> None:
                 "and CSS selectors. First login: run with --headed, then reuse",
                 "the .edge-profile directory on later runs.",
                 "",
-                "Review a patch:",
+                "Production on a GitLab runner (keep one worker running):",
+                f"  {invoke} worker --config config.json --logs",
+                f"  {invoke} submit --config config.json --patch-file diff.patch",
+                "",
+                "One-shot review (debug, not for parallel CI jobs):",
                 f"  {invoke} --config config.json --patch-file diff.patch",
                 "",
                 "General prompt:",
@@ -143,6 +147,13 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     if internal.is_dir():
         shutil.copytree(internal, payload / "_internal", symlinks=True)
     shutil.copy2(ROOT / "config.example.json", payload / "config.example.json")
+    for extra in (
+        ROOT / "packaging" / "critique-bot-worker.service",
+        ROOT / "packaging" / "worker-start.ps1",
+        ROOT / "packaging" / "github-review.yml",
+    ):
+        if extra.is_file():
+            shutil.copy2(extra, payload / extra.name)
     prompts_src = ROOT / "prompts"
     if prompts_src.is_dir():
         shutil.copytree(prompts_src, payload / "prompts")

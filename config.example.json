@@ -17,5 +17,8 @@
   "max_read_bytes": 16000000,
   "user_data_dir": ".edge-profile",
   "cdp_url": "",
-  "storage_state": ""
+  "storage_state": "",
+  "queue_dir": ".critique-queue",
+  "min_interval_seconds": 30,
+  "interval_jitter_seconds": 5
 }

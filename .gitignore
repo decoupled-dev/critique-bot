@@ -9,4 +9,5 @@ build/
 config.json
 storage_state.json
 .edge-profile/
+.critique-queue/
 .python-version

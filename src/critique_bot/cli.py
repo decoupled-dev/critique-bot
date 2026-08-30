@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -357,7 +359,11 @@ def build_parser() -> argparse.ArgumentParser:
             "--mode chat is an interactive terminal session."
         ),
         epilog=(
-            "examples:\n"
+            "production (runner PC):\n"
+            "  critique-bot worker --config config.json --logs\n"
+            "  critique-bot submit --config config.json --patch-file diff.patch\n"
+            "\n"
+            "one-shot (debug):\n"
             "  critique-bot --config config.json --patch-file diff.patch\n"
             "  critique-bot --config config.json --mode general "
             "--prompt 'Summarize this' notes.txt\n"
@@ -437,7 +443,238 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _log_config(config) -> None:
+    log.info(
+        "config loaded "
+        + log.kv(
+            url=config.url,
+            model=config.model or "(none)",
+            timeout_ms=config.timeout_ms,
+            idle_ms=config.idle_ms,
+            max_prompt_chars=config.max_prompt_chars,
+            max_file_chars=config.max_file_chars,
+            max_files=config.max_files,
+            max_read_bytes=config.max_read_bytes,
+            user_data_dir=config.user_data_dir,
+            cdp_url=config.cdp_url,
+            queue_dir=config.queue_dir,
+            min_interval_seconds=config.min_interval_seconds,
+            interval_jitter_seconds=config.interval_jitter_seconds,
+            storage_state=config.storage_state,
+            prompt_input=config.selectors.prompt_input,
+            send_button=config.selectors.send_button or "(Enter)",
+            assistant_messages=config.selectors.assistant_messages,
+            model_dropdown=config.selectors.model_dropdown or "(auto)",
+            model_dropdown_identifier=config.selectors.model_dropdown_identifier
+            or "(none)",
+        )
+    )
+
+
+def _ci_meta() -> dict[str, str]:
+    keys = (
+        "CI_JOB_ID",
+        "CI_JOB_NAME",
+        "CI_PIPELINE_ID",
+        "CI_PROJECT_PATH",
+        "CI_MERGE_REQUEST_IID",
+        "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
+        "CI_COMMIT_SHA",
+        "GITHUB_REPOSITORY",
+        "GITHUB_RUN_ID",
+        "GITHUB_JOB",
+        "GITHUB_SHA",
+        "GITHUB_HEAD_REF",
+        "GITHUB_BASE_REF",
+        "GITHUB_EVENT_NAME",
+        "GITHUB_PR_NUMBER",
+    )
+    return {key: os.environ[key] for key in keys if os.environ.get(key)}
+
+
+def _copy_job_results(src: Path, dest: Path, stem: str) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    names = (
+        f"{stem}.md",
+        f"{stem}.json",
+        "status.json",
+        "screenshot.png",
+        "page.html",
+    )
+    for name in names:
+        item = src / name
+        if item.is_file():
+            shutil.copy2(item, dest / name)
+
+
+def _config_error(exc: BaseException) -> int:
+    log.error(f"config error: {exc}")
+    print(f"error: {exc}", file=sys.stderr)
+    return 1
+
+
+def build_worker_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="critique-bot worker",
+        description=(
+            "Keep one signed-in Edge instance open and process review jobs "
+            "from the on-disk queue. GitLab jobs should call "
+            "`critique-bot submit`, not this command."
+        ),
+    )
+    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="show the browser window (first login / debugging)",
+    )
+    parser.add_argument(
+        "--cdp-url",
+        help="attach to a running Edge (e.g. http://127.0.0.1:9222)",
+    )
+    parser.add_argument("--model", help="override config/env model name")
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write diagnostic logs to stderr (default: on for worker)",
+    )
+    return parser
+
+
+def _add_submit_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wait-timeout",
+        type=int,
+        default=1800,
+        metavar="SEC",
+        help="seconds to wait for the worker to finish this job (default: 1800)",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"worker", "submit"}:
+        command = argv[0]
+        rest = argv[1:]
+        if command == "worker":
+            return _main_worker(rest)
+        return _main_submit(rest)
+    return _main_run(argv)
+
+
+def _main_worker(argv: list[str]) -> int:
+    parser = build_worker_parser()
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    try:
+        config = load_config(
+            args.config,
+            model_override=args.model,
+            cdp_url_override=args.cdp_url,
+        )
+        _log_config(config)
+    except ConfigError as exc:
+        return _config_error(exc)
+    from critique_bot.worker import run_worker
+
+    return run_worker(config, headed=bool(args.headed))
+
+
+def _main_submit(argv: list[str]) -> int:
+    from critique_bot.queue import FileQueue, QueueError
+
+    parser = build_parser()
+    parser.prog = "critique-bot submit"
+    parser.description = (
+        "Enqueue a review on the runner worker and wait for review.md. "
+        "The worker owns Edge; this command does not launch a browser."
+    )
+    _add_submit_args(parser)
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    output_dir = Path(args.output_dir)
+    try:
+        mode = _resolve_mode(args)
+    except ConfigError as exc:
+        return _config_error(exc)
+    if mode == MODE_CHAT:
+        return _config_error(
+            ConfigError(
+                "submit cannot run --mode chat; use review or general, "
+                "or run `critique-bot --mode chat` locally"
+            )
+        )
+    if args.headed:
+        log.warn("--headed is ignored on submit; the worker owns the browser")
+    stem = OUTPUT_STEM[mode]
+    log.info(
+        "critique-bot submit "
+        + log.kv(
+            config=args.config,
+            mode=mode,
+            patch_file=args.patch_file or ("(stdin)" if mode == MODE_REVIEW else None),
+            output_dir=str(output_dir),
+            wait_timeout=args.wait_timeout,
+        )
+    )
+    try:
+        config = load_config(
+            args.config,
+            model_override=args.model,
+            cdp_url_override=args.cdp_url,
+        )
+        _log_config(config)
+        prompt = _build_prompt(args, mode, config.input_limits)
+    except ConfigError as exc:
+        return _config_error(exc)
+    if not prompt.strip():
+        return _config_error(ConfigError("prompt is empty"))
+
+    queue = FileQueue(Path(config.queue_dir))
+    if not queue.worker_alive():
+        message = (
+            "critique-bot worker is not running "
+            f"({queue.worker_hint()}). On the runner start: "
+            f"critique-bot worker --config {args.config} --logs"
+        )
+        log.error(message)
+        print(f"error: {message}", file=sys.stderr)
+        return 1
+    try:
+        job_id = queue.enqueue(
+            mode=mode,
+            stem=stem,
+            prompt=prompt,
+            model=args.model,
+            meta=_ci_meta(),
+        )
+        print(f"queued job {job_id}; waiting for worker...", file=sys.stderr)
+        status = queue.wait(job_id, timeout_sec=max(args.wait_timeout, 1))
+    except QueueError as exc:
+        log.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    result_dir = queue.result_dir(job_id)
+    _copy_job_results(result_dir, output_dir, status.stem)
+    body_path = output_dir / f"{status.stem}.md"
+    if not status.ok:
+        message = status.error or "worker reported failure"
+        log.error(f"job {job_id} failed: {message}")
+        print(f"error: {message}", file=sys.stderr)
+        return 1
+    if body_path.is_file():
+        print(body_path.read_text(encoding="utf-8"), flush=True)
+    log.info(
+        f"job {job_id} copied to {output_dir} "
+        f"({status.stem}.md)"
+        + (f" in {status.elapsed_seconds:.1f}s" if status.elapsed_seconds else "")
+    )
+    return 0
+
+
+def _main_run(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
@@ -445,9 +682,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         mode = _resolve_mode(args)
     except ConfigError as exc:
-        log.error(f"config error: {exc}")
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return _config_error(exc)
     stem = OUTPUT_STEM[mode]
     headed = args.headed
     log.info(
@@ -474,33 +709,10 @@ def main(argv: list[str] | None = None) -> int:
             model_override=args.model,
             cdp_url_override=args.cdp_url,
         )
-        log.info(
-            "config loaded "
-            + log.kv(
-                url=config.url,
-                model=config.model or "(none)",
-                timeout_ms=config.timeout_ms,
-                idle_ms=config.idle_ms,
-                max_prompt_chars=config.max_prompt_chars,
-                max_file_chars=config.max_file_chars,
-                max_files=config.max_files,
-                max_read_bytes=config.max_read_bytes,
-                user_data_dir=config.user_data_dir,
-                cdp_url=config.cdp_url,
-                storage_state=config.storage_state,
-                prompt_input=config.selectors.prompt_input,
-                send_button=config.selectors.send_button or "(Enter)",
-                assistant_messages=config.selectors.assistant_messages,
-                model_dropdown=config.selectors.model_dropdown or "(auto)",
-                model_dropdown_identifier=config.selectors.model_dropdown_identifier
-                or "(none)",
-            )
-        )
+        _log_config(config)
         prompt = _build_prompt(args, mode, config.input_limits)
     except ConfigError as exc:
-        log.error(f"config error: {exc}")
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return _config_error(exc)
 
     from critique_bot.browser import BrowserError, launch_edge
     from critique_bot.chat_client import ChatError, submit_review

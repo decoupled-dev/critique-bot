@@ -37,6 +37,16 @@ EDGE_LAUNCH_ARGS = (
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-infobars",
+    "--disable-blink-features=AutomationControlled",
+)
+
+_BROWSER_PROCESS_TOKENS = (
+    "msedge",
+    "microsoft-edge",
+    "microsoft edge",
+    "google-chrome",
+    "chromium",
+    "chrome",
 )
 
 _BLANK_URLS = frozenset(
@@ -68,11 +78,10 @@ def _helpful_edge_error(exc: BaseException) -> BrowserError:
             f"{exc}"
         )
     return BrowserError(
-        "Failed to launch Microsoft Edge via Playwright (channel=msedge). "
-        "Install Edge (microsoft-edge-stable on Linux; Edge is typically "
-        "preinstalled on Windows). On Linux runners you may also need: "
-        "playwright install-deps. Original error: "
-        f"{exc}"
+        "Failed to launch a Chromium browser via Playwright. "
+        "Install Microsoft Edge (microsoft-edge-stable on Linux) or Google "
+        "Chrome. On Linux runners you may also need: playwright install-deps. "
+        f"Original error: {exc}"
     )
 
 
@@ -173,9 +182,7 @@ def _edge_pids_for_profile(profile_dir: Path) -> list[int]:
         if len(parts) < 2 or needle not in parts[1]:
             continue
         lower = parts[1].lower()
-        if not any(
-            token in lower for token in ("msedge", "microsoft-edge", "microsoft edge")
-        ):
+        if not any(token in lower for token in _BROWSER_PROCESS_TOKENS):
             continue
         try:
             pids.append(int(parts[0]))
@@ -259,7 +266,36 @@ def _clear_profile_locks(profile_dir: Path) -> None:
             log.warn(f"could not remove {path}: {exc}")
 
 
+def _first_existing(candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def find_edge_executable() -> str:
+    executable, _channel = resolve_browser()
+    return executable
+
+
+def resolve_browser() -> tuple[str, str]:
+    """Return (executable_path, playwright_channel) for Edge, else Chrome."""
+    edge = _find_edge_executable()
+    if edge:
+        return edge, "msedge"
+    chrome = _find_chrome_executable()
+    if chrome:
+        log.warn(
+            f"Microsoft Edge was not found; using Google Chrome at {chrome}"
+        )
+        return chrome, "chrome"
+    raise BrowserError(
+        "No Chromium browser was found. Install microsoft-edge-stable on Linux "
+        "or Microsoft Edge / Google Chrome on Windows/macOS."
+    )
+
+
+def _find_edge_executable() -> str | None:
     candidates: list[str] = []
     if sys.platform == "win32":
         for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
@@ -288,14 +324,42 @@ def find_edge_executable() -> str:
             found = shutil.which(name)
             if found:
                 return found
+    return _first_existing(candidates)
 
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return candidate
-    raise BrowserError(
-        "Microsoft Edge was not found. Install microsoft-edge-stable on Linux "
-        "or Microsoft Edge on Windows/macOS."
-    )
+
+def _find_chrome_executable() -> str | None:
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(env_name)
+            if base:
+                candidates.append(
+                    str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+                )
+    elif sys.platform == "darwin":
+        candidates.append(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        )
+    else:
+        for name in (
+            "google-chrome-stable",
+            "google-chrome",
+            "chromium-browser",
+            "chromium",
+        ):
+            found = shutil.which(name)
+            if found:
+                return found
+        candidates.extend(
+            [
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/google-chrome",
+                "/opt/google/chrome/chrome",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+            ]
+        )
+    return _first_existing(candidates)
 
 
 def _free_port() -> int:
@@ -357,7 +421,7 @@ def _start_desktop_edge(
     user_data_dir: Path,
 ) -> tuple[str, subprocess.Popen[bytes]]:
     """Start desktop Edge the same way a user would, plus CDP so we can drive it."""
-    executable = find_edge_executable()
+    executable, _channel = resolve_browser()
     user_data_dir.mkdir(parents=True, exist_ok=True)
     port = _free_port()
     cdp_url = f"http://127.0.0.1:{port}"
@@ -482,12 +546,13 @@ def is_blank_url(url: str) -> bool:
 
 
 def _urls_match(left: str, right: str) -> bool:
-    def parts(url: str) -> tuple[str, str, str]:
+    def parts(url: str) -> tuple[str, str, str, str]:
         parsed = urlsplit(url)
         return (
             parsed.scheme.lower(),
             parsed.netloc.lower(),
             parsed.path.rstrip("/") or "/",
+            parsed.query,
         )
 
     try:
@@ -620,16 +685,30 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
         )
 
 
-def warn_if_login_page(page: Page) -> None:
+def page_block_hint(page: Page) -> str:
+    """Return a short reason if the tab is a login or bot-challenge page."""
     try:
-        url = page.url.lower()
+        url = (page.url or "").lower()
     except Exception:
-        return
-    if any(hint in url for hint in _LOGIN_HINTS):
-        log.warn(
-            "current URL looks like a login/SSO page; the session may not be signed in "
-            f"({page.url})"
+        url = ""
+    try:
+        title = (page.title() or "").lower()
+    except Exception:
+        title = ""
+    if "__cf_chl" in url or "challenges.cloudflare.com" in url or "just a moment" in title:
+        return (
+            "Cloudflare challenge page (headless is often blocked; "
+            "retry with --headed and a signed-in profile)"
         )
+    if any(hint in url for hint in _LOGIN_HINTS):
+        return f"login/SSO page ({page.url})"
+    return ""
+
+
+def warn_if_login_page(page: Page) -> None:
+    hint = page_block_hint(page)
+    if hint:
+        log.warn(f"current URL looks blocked: {hint}")
 
 
 def attach_page_debug(page: Page) -> None:
@@ -767,13 +846,14 @@ def launch_edge(
 
         profile_dir.mkdir(parents=True, exist_ok=True)
         existing = any(profile_dir.iterdir())
+        _executable, channel = resolve_browser()
         args = list(EDGE_LAUNCH_ARGS)
         if headed:
             args.append("--start-maximized")
         log.info(
-            "launching persistent Edge "
+            "launching persistent browser "
             + log.kv(
-                channel="msedge",
+                channel=channel,
                 headed=headed,
                 headless=not headed,
                 chromium_sandbox=False,
@@ -784,7 +864,7 @@ def launch_edge(
             )
         )
         launch_kwargs: dict[str, object] = {
-            "channel": "msedge",
+            "channel": channel,
             "headless": not headed,
             "chromium_sandbox": False,
             "args": args,
@@ -801,7 +881,7 @@ def launch_edge(
                 **launch_kwargs,
             )
         except Exception as exc:
-            log.exception(f"Edge launch failed: {exc}")
+            log.exception(f"browser launch failed: {exc}")
             raise _helpful_edge_error(exc) from exc
         _log_context(context, via="persistent")
         page = _adopt_page(context, prefer_url=start_url)
@@ -809,7 +889,7 @@ def launch_edge(
         if start_url:
             navigate(page, start_url, timeout_ms)
             _close_extra_blank_pages(context, page)
-        log.info(f"Edge ready {describe_page(page)}")
+        log.info(f"browser ready {describe_page(page)}")
         yield page
     finally:
         log.info("closing Playwright connection")

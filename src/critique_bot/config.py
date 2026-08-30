@@ -27,8 +27,12 @@ ENV_MODEL = "CRITIQUE_MODEL"
 ENV_STORAGE_STATE = "CRITIQUE_STORAGE_STATE"
 ENV_USER_DATA_DIR = "CRITIQUE_USER_DATA_DIR"
 ENV_CDP_URL = "CRITIQUE_CDP_URL"
+ENV_QUEUE_DIR = "CRITIQUE_QUEUE_DIR"
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
+DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
+DEFAULT_MIN_INTERVAL_SECONDS = 30.0
+DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
 
 
 class ConfigError(ValueError):
@@ -55,6 +59,9 @@ class BotConfig:
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
+    queue_dir: str = ""
+    min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS
+    interval_jitter_seconds: float = DEFAULT_INTERVAL_JITTER_SECONDS
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
@@ -95,6 +102,18 @@ def _clamped_positive_int(
     if parsed > maximum:
         log.warn(f"{name}={parsed} exceeds {maximum}; using {maximum}")
         return maximum
+    return parsed
+
+
+def _non_negative_float(name: str, value: object, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{name} must be a number, got {value!r}") from exc
+    if parsed < 0:
+        raise ConfigError(f"{name} must be >= 0, got {parsed}")
     return parsed
 
 
@@ -175,6 +194,12 @@ def load_config(
     if os.environ.get(ENV_USER_DATA_DIR):
         log.debug(f"user_data_dir overridden by {ENV_USER_DATA_DIR}")
     user_data_dir = _resolve_user_data_dir(raw_user_data)
+    queue_dir = _resolve_queue_dir(
+        os.environ.get(ENV_QUEUE_DIR) or _clean(raw.get("queue_dir")),
+        config_path,
+    )
+    if os.environ.get(ENV_QUEUE_DIR):
+        log.debug(f"queue_dir overridden by {ENV_QUEUE_DIR}")
 
     if not url:
         raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
@@ -198,6 +223,17 @@ def load_config(
         storage_state=storage_state,
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
+        queue_dir=queue_dir,
+        min_interval_seconds=_non_negative_float(
+            "min_interval_seconds",
+            raw.get("min_interval_seconds"),
+            DEFAULT_MIN_INTERVAL_SECONDS,
+        ),
+        interval_jitter_seconds=_non_negative_float(
+            "interval_jitter_seconds",
+            raw.get("interval_jitter_seconds"),
+            DEFAULT_INTERVAL_JITTER_SECONDS,
+        ),
         max_prompt_chars=_clamped_positive_int(
             "max_prompt_chars",
             raw.get("max_prompt_chars"),
@@ -252,6 +288,21 @@ def system_edge_user_data_dir() -> Path:
     if snap.is_dir() and not standard.is_dir():
         return snap
     return standard
+
+
+def _resolve_queue_dir(value: str, config_path: Path) -> str:
+    """Shared inbox for worker + submit. Relative paths are next to config.json."""
+    raw = value.strip() if value else ""
+    if not raw:
+        resolved = (config_path.parent / DEFAULT_QUEUE_DIR_NAME).expanduser().resolve()
+        log.debug(f"queue_dir default -> {resolved}")
+        return str(resolved)
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    resolved = path.resolve()
+    log.debug(f"queue_dir {raw!r} -> {resolved}")
+    return str(resolved)
 
 
 def _resolve_user_data_dir(value: str) -> str:

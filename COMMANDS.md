@@ -17,6 +17,21 @@ Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 
 ---
 
+## Production commands (GitLab / GitHub runner)
+
+| Command | Where | Meaning |
+| --- | --- | --- |
+| `critique-bot worker --config PATH` | Runner PC, always on | One signed-in Edge; pulls jobs from `queue_dir` |
+| `critique-bot submit --config PATH --patch-file diff.patch` | GitLab or GitHub job | Enqueue, wait, write `{output-dir}/review.md` |
+
+Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
+
+Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800). `--headed` is ignored. `--mode chat` is rejected.
+
+If the worker is not running, submit exits immediately with an error. Config: `queue_dir`, `min_interval_seconds` (default 30), `interval_jitter_seconds` (default 5). Env: `CRITIQUE_QUEUE_DIR`.
+
+---
+
 ## Modes
 
 `--mode` selects how the bot builds the prompt. If you omit it, **review** is used unless you pass `--prompt` / `--prompt-file` (those select **general**).
@@ -55,7 +70,8 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--headed` | all | Show the Edge window. Use this for first login or selector debugging. |
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model dropdown label. |
-| `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off. A spinner shows while waiting for the assistant. |
+| `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
+| `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `-h` / `--help` | all | Print CLI help. |
 
 ---
@@ -146,6 +162,17 @@ You> /file src/cli.py explain the entry point
 You> this is a long \
 ... question continued on the next line
 You> exit
+```
+
+### Worker / submit (runner)
+
+```bash
+python -m critique_bot worker --config /opt/critique-bot/config.json --logs
+```
+
+```bash
+python -m critique_bot submit --config /opt/critique-bot/config.json \
+  --patch-file diff.patch --output-dir ./out
 ```
 
 ### Other
@@ -256,6 +283,17 @@ You> exit
 
 To end with EOF instead of `exit`: press **Ctrl-Z**, then **Enter**.
 
+### Worker / submit (runner)
+
+```powershell
+python -m critique_bot worker --config C:\critique-bot\config.json --logs
+```
+
+```powershell
+python -m critique_bot submit --config C:\critique-bot\config.json `
+  --patch-file diff.patch --output-dir .\out
+```
+
 ### Other
 
 ```powershell
@@ -295,6 +333,7 @@ These override matching fields in `config.json`.
 | `CRITIQUE_STORAGE_STATE` | `storage_state` |
 | `CRITIQUE_USER_DATA_DIR` | `user_data_dir` |
 | `CRITIQUE_CDP_URL` | `cdp_url` |
+| `CRITIQUE_QUEUE_DIR` | `queue_dir` |
 
 Linux: `export NAME=value`. PowerShell: `$env:NAME = "value"`.
 
@@ -309,5 +348,6 @@ Default `--output-dir` is `out`.
 | review | `review.md`, `review.json` | `screenshot.png`, `page.html` |
 | general | `reply.md`, `reply.json` | same |
 | chat | `chat.md`, `chat.json` (skipped if you quit with no turns) | same |
+| submit | same as the mode, in `--output-dir` (copied from the worker queue) | same, plus `status.json` |
 
 Diagnostic logs are **off** by default; pass `--logs` to write them to **stderr**. While waiting for the assistant, a spinner is shown on stderr (hidden when `--logs` is on, since log lines already show progress). The assistant reply (or chat transcript) is printed to **stdout**.

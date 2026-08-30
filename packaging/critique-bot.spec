@@ -62,6 +62,8 @@ a = Analysis(
         "critique_bot.log",
         "critique_bot.output",
         "critique_bot.patch",
+        "critique_bot.queue",
+        "critique_bot.worker",
         "playwright.sync_api",
         "greenlet",
     ],

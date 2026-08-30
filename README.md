@@ -9,7 +9,7 @@ Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMA
 ## Requirements
 
 - Python 3.10+
-- Microsoft Edge installed (`microsoft-edge-stable` on Linux; Edge is usually already on Windows)
+- Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed
 - On Linux CI, you may also need: `playwright install-deps`
 
 ## Setup
@@ -89,6 +89,30 @@ python -m critique_bot --config config.json --mode chat \
 ```
 
 In-session commands: `/help`, `/file PATH [message]` to attach a file to the next turn, and a trailing `\` to continue a line.
+
+## CI runner (GitLab or GitHub)
+
+CI jobs must **not** each launch Edge. On the runner PC, start **one worker** that stays signed in. The job calls **submit**, waits for `out/review.md`, then posts that file as a comment on the MR or PR.
+
+```bash
+# once, on the runner (systemd: packaging/critique-bot-worker.service)
+critique-bot worker --config /opt/critique-bot/config.json --logs
+
+# each GitLab / GitHub job
+critique-bot submit --config /opt/critique-bot/config.json \
+  --patch-file diff.patch --output-dir out
+```
+
+The job and the worker must share `queue_dir` (default: `.critique-queue` next to `config.json`). Concurrent MRs/PRs enqueue; the worker runs one review at a time with `min_interval_seconds` (default 30).
+
+| Host | Job definition | Runner |
+| --- | --- | --- |
+| GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Self-hosted, **shell** executor, tag `critique-bot` |
+| GitHub | [`packaging/github-review.yml`](packaging/github-review.yml) → `.github/workflows/review.yml` | Self-hosted Actions runner, labels `self-hosted, critique-bot` |
+
+GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run reviews: there is no signed-in Edge and no shared queue.
+
+`--mode chat` is local/debug only. One-shot `critique-bot --patch-file …` (no `submit`) still works for a single machine, but two of those at once will fight over the Edge profile.
 
 ## Deploy
 

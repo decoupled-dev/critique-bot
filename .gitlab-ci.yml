@@ -1,0 +1,56 @@
+# Copy this file (or the `review` job) into the GitLab project that should
+# post critique-bot comments on merge requests.
+#
+# Runner PC requirements:
+#   - Shell executor (not Docker): the job must see the same queue directory
+#     as the long-running worker.
+#   - Microsoft Edge, signed in once (`critique-bot worker --headed` or
+#     one-shot `--headed`).
+#   - Worker already running, e.g. systemd
+#     packaging/critique-bot-worker.service or packaging/worker-start.ps1
+#   - critique-bot on PATH, config.json on a shared path.
+#
+# Several MRs can trigger this job at once. They enqueue and wait; the
+# worker serializes Edge and applies min_interval_seconds from config.
+
+stages:
+  - review
+
+variables:
+  CRITIQUE_CONFIG: /opt/critique-bot/config.json
+  CRITIQUE_BIN: critique-bot
+
+review:
+  stage: review
+  interruptible: true
+  tags:
+    - critique-bot
+  timeout: 1h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CRITIQUE_MANUAL == "true"
+      when: manual
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - out/
+      - diff.patch
+  script:
+    - |
+      if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+        git fetch --depth=50 origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-}" || true
+        git diff "${CI_MERGE_REQUEST_DIFF_BASE_SHA}...${CI_COMMIT_SHA}" > diff.patch
+      else
+        git diff HEAD~1...HEAD > diff.patch
+      fi
+    - test -s diff.patch || { echo "empty diff; nothing to review"; exit 0; }
+    - $CRITIQUE_BIN submit --config "$CRITIQUE_CONFIG" --patch-file diff.patch --output-dir out --wait-timeout 1800
+    - |
+      if [ -n "${CI_MERGE_REQUEST_IID:-}" ] && [ -f out/review.md ]; then
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+          --data-urlencode "body@out/review.md" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" \
+          || echo "review artifact saved; could not post MR note (check job token permissions)"
+      fi
