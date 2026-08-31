@@ -63,6 +63,37 @@ _BLANK_URLS = frozenset(
     }
 )
 
+# Browser-internal URLs never leave the machine.
+_INTERNAL_SCHEMES = frozenset(
+    {
+        "about",
+        "blob",
+        "data",
+        "chrome",
+        "edge",
+        "devtools",
+        "chrome-extension",
+    }
+)
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# First-party hosts needed to *render* a well-known chat page. Not ads, CDNs
+# of other companies, or arbitrary sites the model might try to open.
+_CHAT_PAGE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "chatgpt.com",
+        (
+            "chatgpt.com",
+            "openai.com",
+            "oaistatic.com",
+            "oaiusercontent.com",
+            "cloudflare.com",
+            "arkoselabs.com",
+            "funcaptcha.com",
+        ),
+    ),
+)
+_BLOCKED_BY_CLIENT = ("blockedbyclient", "err_blocked_by_client", "net::err_blocked_by_client")
+
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "oauth", "auth")
 _PROFILE_LOCKS = ("SingletonLock", "SingletonSocket", "SingletonCookie")
 _CLOSED_BROWSER_TOKENS = (
@@ -652,6 +683,100 @@ def _urls_match(left: str, right: str) -> bool:
         return left.rstrip("/") == right.rstrip("/")
 
 
+def _host_matches_suffix(host: str, suffix: str) -> bool:
+    return host == suffix or (bool(suffix) and host.endswith("." + suffix))
+
+
+def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
+    """Host suffixes Edge may contact for this chat URL."""
+    host = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
+    if not host:
+        return frozenset()
+    hosts = {host}
+    if host.startswith("www."):
+        hosts.add(host[4:])
+    for root, family in _CHAT_PAGE_FAMILIES:
+        if _host_matches_suffix(host, root):
+            hosts.update(family)
+    return frozenset(hosts)
+
+
+def request_is_allowed(request_url: str, chat_url: str) -> bool:
+    """True when a browser request stays on the chat page (or loopback/internal)."""
+    parsed = urlsplit(request_url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme in _INTERNAL_SCHEMES:
+        return True
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host in _LOOPBACK_HOSTS:
+        return True
+    if scheme not in {"http", "https", "ws", "wss"}:
+        return False
+    allowed = allowed_chat_hosts(chat_url)
+    return any(_host_matches_suffix(host, suffix) for suffix in allowed)
+
+
+def _filter_chat_route(route, chat_url: str) -> None:
+    request = getattr(route, "request", None)
+    url = getattr(request, "url", "") or ""
+    # Document navigations (Cloudflare challenge, SSO) must not be aborted or
+    # page.goto waits until timeout and setup looks stuck on "opening browser".
+    rtype = str(getattr(request, "resource_type", "") or "").lower()
+    if rtype in {"document", "websocket"} or request_is_allowed(url, chat_url):
+        try:
+            route.continue_()
+        except Exception as exc:
+            log.debug(f"route continue failed {log.preview(url, 180)}: {exc}")
+        return
+    method = getattr(request, "method", "?")
+    host = (urlsplit(url).hostname or url or "?").lower()
+    log.debug(f"blocked off-chat request {method} {log.preview(url, 180)}")
+    seen = getattr(_filter_chat_route, "_warned", None)
+    if seen is None:
+        seen = set()
+        _filter_chat_route._warned = seen  # type: ignore[attr-defined]
+    if host not in seen:
+        seen.add(host)
+        log.info(f"blocking requests to {host} (outside chat URL)")
+    try:
+        route.abort("blockedbyclient")
+    except Exception as exc:
+        log.debug(f"route abort failed {log.preview(url, 180)}: {exc}")
+
+
+def guard_page_network(page: Page, chat_url: str) -> None:
+    """Abort later Edge XHR/fetch that are not for the configured chat URL.
+
+    Installed *after* the chat page has loaded. Intercepting during goto hangs
+    Playwright's sync API when Cloudflare or login redirects are aborted.
+    """
+    if not chat_url or getattr(page, "_critique_chat_guard", None) == chat_url:
+        return
+
+    def handle(route) -> None:
+        _filter_chat_route(route, chat_url)
+
+    try:
+        page.route("**/*", handle)
+    except Exception as exc:
+        log.warn(f"could not restrict browser network to the chat URL: {exc}")
+        return
+    try:
+        page._critique_chat_guard = chat_url  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    def on_popup(popup) -> None:
+        guard_page_network(popup, chat_url)
+
+    try:
+        page.on("popup", on_popup)
+    except Exception as exc:
+        log.debug(f"popup listener: {exc}")
+    hosts = ", ".join(sorted(allowed_chat_hosts(chat_url))) or chat_url
+    log.info(f"browser network restricted to {hosts}")
+
+
 def describe_page(page: Page) -> str:
     try:
         title = page.title()
@@ -755,6 +880,7 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
     current = _page_url(page)
     if current and _urls_match(current, url):
         log.info(f"already on target {describe_page(page)}")
+        guard_page_network(page, url)
         return
     try:
         page.bring_to_front()
@@ -774,6 +900,7 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
             "is probably using this profile (Startup boost / background Edge). "
             "Fully quit Edge and retry."
         )
+    guard_page_network(page, url)
 
 
 def page_block_hint(page: Page) -> str:
@@ -826,6 +953,13 @@ def attach_page_debug(page: Page) -> None:
     def on_request_failed(request) -> None:
         failure = request.failure or {}
         error_text = failure.get("errorText") if isinstance(failure, dict) else failure
+        err = str(error_text or "").lower()
+        if any(token in err for token in _BLOCKED_BY_CLIENT):
+            log.debug(
+                "blocked off-chat request "
+                f"{request.method} {log.preview(request.url, 180)}"
+            )
+            return
         log.warn(
             "request failed "
             f"{request.method} {log.preview(request.url, 180)} "

@@ -12,11 +12,14 @@ from critique_bot.browser import (
     _is_system_profile,
     _stderr_tail,
     _urls_match,
+    allowed_chat_hosts,
     as_browser_error,
     describe_page,
+    guard_page_network,
     is_blank_url,
     is_browser_closed_error,
     page_block_hint,
+    request_is_allowed,
     warn_if_login_page,
 )
 from critique_bot.chat_client import (
@@ -64,6 +67,112 @@ class UrlsMatchTests(unittest.TestCase):
 
     def test_same_query(self) -> None:
         self.assertTrue(_urls_match("https://ex.com/a?x=1", "https://ex.com/a?x=1"))
+
+
+class ChatNetworkGuardTests(unittest.TestCase):
+    CHAT = "https://chatgpt.com/"
+
+    def test_allows_chat_origin_and_subdomains(self) -> None:
+        for url in (
+            "https://chatgpt.com/",
+            "https://chatgpt.com/backend-api/conversation",
+            "wss://chatgpt.com/ws",
+            "https://ab.chatgpt.com/events",
+        ):
+            self.assertTrue(request_is_allowed(url, self.CHAT), url)
+
+    def test_allows_first_party_hosts_for_chatgpt(self) -> None:
+        for url in (
+            "https://auth.openai.com/authorize",
+            "https://cdn.oaistatic.com/assets/app.js",
+            "https://files.oaiusercontent.com/file",
+            "https://challenges.cloudflare.com/cdn-cgi/challenge",
+            "https://client-api.arkoselabs.com/fc/gt2/public_key",
+        ):
+            self.assertTrue(request_is_allowed(url, self.CHAT), url)
+
+    def test_blocks_third_party_and_arbitrary_sites(self) -> None:
+        for url in (
+            "https://www.google.com/",
+            "https://www.facebook.com/tr",
+            "https://evil.example/steal",
+            "https://api.github.com/repos/x",
+            "https://gitlab.com/api/v4/projects",
+        ):
+            self.assertFalse(request_is_allowed(url, self.CHAT), url)
+
+    def test_allows_loopback_and_internal_schemes(self) -> None:
+        for url in (
+            "http://127.0.0.1:9222/json/version",
+            "http://localhost:8765/",
+            "about:blank",
+            "blob:https://chatgpt.com/uuid",
+            "data:text/plain,hi",
+            "edge://settings/",
+        ):
+            self.assertTrue(request_is_allowed(url, self.CHAT), url)
+
+    def test_custom_chat_host_does_not_get_openai_family(self) -> None:
+        chat = "https://chat.corp.example/"
+        self.assertTrue(request_is_allowed("https://chat.corp.example/api", chat))
+        self.assertTrue(request_is_allowed("https://cdn.chat.corp.example/app.js", chat))
+        self.assertFalse(request_is_allowed("https://chatgpt.com/", chat))
+        self.assertFalse(request_is_allowed("https://cdn.oaistatic.com/x", chat))
+        self.assertFalse(request_is_allowed("https://other.corp.example/", chat))
+
+    def test_allowed_hosts_include_chat_host(self) -> None:
+        hosts = allowed_chat_hosts(self.CHAT)
+        self.assertIn("chatgpt.com", hosts)
+        self.assertIn("oaistatic.com", hosts)
+
+    def test_guard_aborts_off_chat_requests(self) -> None:
+        handlers: list = []
+        page = MagicMock()
+        page._critique_chat_guard = None
+        page.route.side_effect = lambda _pattern, handler: handlers.append(handler)
+
+        guard_page_network(page, self.CHAT)
+        self.assertEqual(len(handlers), 1)
+        page.route.assert_called_once()
+        page.on.assert_called_once()
+
+        class Route:
+            def __init__(self, url: str, resource_type: str = "xhr") -> None:
+                self.request = MagicMock(
+                    url=url, method="GET", resource_type=resource_type
+                )
+                self.continued = False
+                self.aborted = None
+
+            def continue_(self) -> None:
+                self.continued = True
+
+            def abort(self, reason: str | None = None) -> None:
+                self.aborted = reason
+
+        allowed = Route("https://chatgpt.com/backend-api/conversation")
+        handlers[0](allowed)
+        self.assertTrue(allowed.continued)
+        self.assertIsNone(allowed.aborted)
+
+        blocked = Route("https://www.google-analytics.com/g/collect")
+        handlers[0](blocked)
+        self.assertFalse(blocked.continued)
+        self.assertEqual(blocked.aborted, "blockedbyclient")
+
+        challenge = Route(
+            "https://challenges.cloudflare.com/cdn-cgi/challenge",
+            resource_type="document",
+        )
+        handlers[0](challenge)
+        self.assertTrue(challenge.continued)
+        self.assertIsNone(challenge.aborted)
+
+    def test_guard_skips_when_already_installed(self) -> None:
+        page = MagicMock()
+        page._critique_chat_guard = self.CHAT
+        guard_page_network(page, self.CHAT)
+        page.route.assert_not_called()
 
 
 class HelpfulEdgeErrorTests(unittest.TestCase):

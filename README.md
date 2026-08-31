@@ -60,6 +60,8 @@ critique-bot setup --config config.json
 
 That serves a page on `127.0.0.1`, opens Edge on your chat URL, and lets you **click** the prompt box, the send button, a reply, and the stop button instead of hand-writing CSS. It ranks candidate selectors, saves them, and runs a live test round trip.
 
+Edge only talks to that chat URL after the page has loaded (plus loopback for CDP). Third-party XHR is aborted; the first navigation is left alone so login can finish.
+
 Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
 
 Set `selectors.stop_button` too. It is how the bot knows a reply actually finished rather than merely paused, and without it a model that thinks for longer than `idle_ms` mid-answer yields a silently truncated review.
