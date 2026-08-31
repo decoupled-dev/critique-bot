@@ -110,6 +110,15 @@ Copy-Item .\config.example.json .\config.json
 
 Edit `config.json` and set the chat URL plus CSS selectors. Keep `critique-bot` / `critique-bot.exe` next to `_internal`.
 
+Instead of editing selectors by hand, run the setup page. It opens Edge on your chat URL and lets you click the prompt box, send button, a reply, and the stop button:
+
+```bash
+./critique-bot setup --config config.json          # Linux
+.\critique-bot.exe setup --config config.json      # Windows
+```
+
+That serves on `127.0.0.1:8765` and writes the selectors it picks straight into `config.json`. Use `--port 0` if that port is taken and `--no-open` on a machine where you would rather open the printed URL yourself.
+
 ### First login (headed)
 
 Later runs can omit `--headed`. The Edge profile defaults to `.edge-profile` in the current working directory.
@@ -125,6 +134,15 @@ Later runs can omit `--headed`. The Edge profile defaults to `.edge-profile` in 
 ```powershell
 .\critique-bot.exe --config config.json --headed --mode general --prompt "hello"
 ```
+
+### Verify the install
+
+```bash
+./critique-bot doctor --config config.json           # Linux
+.\critique-bot.exe doctor --config config.json       # Windows
+```
+
+`doctor` checks the runtime, that Edge or Chrome is present, that the profile is signed in, that each configured selector matches something visible, and that a real prompt round trips. It exits non-zero only on failures (warnings are advice), so it is safe to run at the end of a provisioning script. Add `--no-live` to skip anything needing the network, `--json` for machine-readable output.
 
 ### Review a patch
 
@@ -274,10 +292,20 @@ Keep **one worker** running on the runner PC. CI jobs only call `submit`. The jo
    - **Windows:** [`packaging/worker-start.ps1`](packaging/worker-start.ps1) at logon, or a scheduled task.
 4. Attach CI:
    - **GitLab:** tag the runner `critique-bot`. Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) into the project. Set `CRITIQUE_CONFIG` to the same config the worker uses.
-   - **GitHub:** install a self-hosted Actions runner on that PC with labels `self-hosted` and `critique-bot`. Copy [`packaging/github-review.yml`](packaging/github-review.yml) to `.github/workflows/review.yml` in the app repo. Optional repo variable `CRITIQUE_CONFIG` (default `/opt/critique-bot/config.json`; on Windows set it to `C:\critique-bot\config.json`). The workflow posts `out/review.md` as a PR comment (`pull-requests: write`).
-5. Each MR/PR job writes `diff.patch`, runs `critique-bot submit … --output-dir out`, then posts `out/review.md`.
+   - **GitHub:** install a self-hosted Actions runner on that PC with labels `self-hosted` and `critique-bot`. Copy [`packaging/github-review.yml`](packaging/github-review.yml) to `.github/workflows/review.yml` in the app repo. Optional repo variable `CRITIQUE_CONFIG` (default `/opt/critique-bot/config.json`; on Windows set it to `C:\critique-bot\config.json`). The workflow posts the review with `critique-bot github-post` (`pull-requests: write`).
+5. Each MR/PR job writes `diff.patch`, runs `critique-bot submit … --output-dir out`, then posts it with `critique-bot gitlab-post` or `critique-bot github-post` (`--review-file out/review.md --patch-file diff.patch`). Those strip the machine-readable JSON block out of the comment and add inline comments on the changed lines. GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`); GitHub needs `GITHUB_TOKEN` with `pull-requests: write`.
 
 Concurrent jobs enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default 1) and waits `min_interval_seconds` (default 30) plus jitter between starts.
+
+The worker keeps itself out of failure loops: a job is retried at most `max_attempts` times (default 3) before it is failed, each job gets a wall-clock limit (`job_timeout_seconds`), jobs still running when the worker stops are requeued for the next worker, and finished result folders are pruned to the newest `result_retention` (default 200) so the queue directory does not grow forever.
+
+To check the runner without opening a MR:
+
+```bash
+critique-bot queue-status --config /opt/critique-bot/config.json
+```
+
+It prints worker liveness, waiting and in-progress jobs, and how recent jobs ended, and exits non-zero when no worker heartbeat is fresh — useful as a monitoring probe next to the systemd unit.
 
 GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run this: no signed-in Edge, no shared queue.
 

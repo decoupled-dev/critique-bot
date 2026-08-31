@@ -44,6 +44,9 @@ DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
 DEFAULT_MAX_PARALLEL_TABS = 1
 ABSOLUTE_MAX_PARALLEL_TABS = 8
+DEFAULT_MAX_ATTEMPTS = 3
+ABSOLUTE_MAX_ATTEMPTS = 20
+DEFAULT_RESULT_RETENTION = 200
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
@@ -73,6 +76,7 @@ class Selectors:
     model_dropdown_identifier: str = ""
     model_option: str = ""
     send_button: str = ""
+    stop_button: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,9 @@ class BotConfig:
     min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS
     interval_jitter_seconds: float = DEFAULT_INTERVAL_JITTER_SECONDS
     max_parallel_tabs: int = DEFAULT_MAX_PARALLEL_TABS
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    result_retention: int = DEFAULT_RESULT_RETENTION
+    job_timeout_seconds: float = 0.0
     max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
@@ -109,6 +116,18 @@ class BotConfig:
     @property
     def uses_browser(self) -> bool:
         return self.backend == BACKEND_BROWSER
+
+    @property
+    def job_timeout_sec(self) -> float:
+        """Wall-clock ceiling for one queued job.
+
+        Defaults to twice the per-call timeout plus a minute of setup, which is
+        generous for a healthy run but still unblocks a waiting CI job when the
+        browser wedges below the Playwright timeout.
+        """
+        if self.job_timeout_seconds > 0:
+            return self.job_timeout_seconds
+        return (self.timeout_ms / 1000.0) * 2 + 60.0
 
 
 def _clean(value: object) -> str:
@@ -189,6 +208,7 @@ def load_config(
         ),
         model_option=_clean(selectors_raw.get("model_option")),
         send_button=_clean(selectors_raw.get("send_button")),
+        stop_button=_clean(selectors_raw.get("stop_button")),
     )
 
     url = os.environ.get(ENV_CHAT_URL) or _clean(raw.get("url"))
@@ -307,6 +327,18 @@ def load_config(
             raw_parallel if raw_parallel else raw.get("max_parallel_tabs"),
             DEFAULT_MAX_PARALLEL_TABS,
             ABSOLUTE_MAX_PARALLEL_TABS,
+        ),
+        max_attempts=_clamped_positive_int(
+            "max_attempts",
+            raw.get("max_attempts"),
+            DEFAULT_MAX_ATTEMPTS,
+            ABSOLUTE_MAX_ATTEMPTS,
+        ),
+        result_retention=_positive_int(
+            "result_retention", raw.get("result_retention"), DEFAULT_RESULT_RETENTION
+        ),
+        job_timeout_seconds=_non_negative_float(
+            "job_timeout_seconds", raw.get("job_timeout_seconds"), 0.0
         ),
         max_prompt_chars=_clamped_positive_int(
             "max_prompt_chars",

@@ -62,10 +62,20 @@ Everything else has a default. For CI, set `queue_dir` (and for browser, `user_d
 
 Used only when `backend` is `browser`. Selectors are CSS (Playwright locators) for **this** site; they break when the site redesigns.
 
+The easy way is to let the bot write them:
+
+```bash
+critique-bot setup --config config.json
+```
+
+That opens a local page, launches Edge on your chat URL, and lets you **click** the prompt box, the send button, a reply, and the stop button. It ranks the candidate selectors (preferring stable `data-*` and `aria-label` attributes over generated class hashes), writes them to `config.json`, and runs a live test.
+
+By hand instead:
+
 1. Open the chat UI in Edge.
 2. Run `playwright codegen --channel msedge https://YOUR_CHAT_UI/` and click the prompt box, send, model picker, and an assistant reply.
 3. Copy stable attributes (`data-testid`, `id`, `role`) rather than generated class hashes.
-4. Verify with `--headed --mode general --prompt "hello"` before starting the worker.
+4. Verify with `critique-bot doctor --config config.json --headed` before starting the worker.
 
 Comma-separated lists are OR: the first matching node is used.
 
@@ -90,8 +100,9 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `prompt_input` | **yes** | Composer: `<textarea>`, contenteditable, or equivalent |
-| `assistant_messages` | **yes** | Nodes whose **visible text** is the assistant reply. The bot waits until the last match stops growing (`idle_ms`) |
+| `assistant_messages` | **yes** | Nodes whose **visible text** is the assistant reply. The bot reads the last match as it grows |
 | `send_button` | no | Send control. Empty → press Enter in the prompt |
+| `stop_button` | no | The "stop generating" control. **Strongly recommended:** it is how the bot knows a reply actually finished |
 | `model_dropdown_identifier` | no | Pin the model **opener** (see below). Also accepted at the **top level** of the JSON |
 | `model_dropdown` | no | CSS for the same opener, or a native `<select>` |
 | `model_option` | no | CSS for items **inside** the open model panel |
@@ -127,6 +138,20 @@ ChatGPT example:
 ```
 
 If this selector is too broad, the bot may think the reply finished too soon or grab the wrong text. If it is too narrow, it waits until `timeout_ms` and then fails.
+
+### `stop_button`
+
+Optional but the most important selector for review quality. While this control is visible the assistant is still writing, so the bot keeps waiting no matter how long the model pauses. When it disappears, the reply is finished and the bot returns it after a short settle.
+
+ChatGPT example:
+
+```text
+button[data-testid='stop-button'], button[aria-label*='Stop' i]
+```
+
+Leave it empty and the bot falls back to `idle_ms`: it assumes a reply that stopped changing for that long is done. A model that pauses longer than `idle_ms` mid-answer — extended thinking, a tool call, rate limiting — then yields a **silently truncated** review. When that happens the run logs a warning and `review.json` records `completion.complete: false`, so you can tell truncated output apart from finished output.
+
+Even with `stop_button` empty, the bot also treats a visible `aria-busy="true"` on a reply bubble as "still generating".
 
 ### Model picker (`model` + dropdown fields)
 
@@ -209,7 +234,18 @@ Budget for: page load, finding the prompt, selecting the model, sending, and wai
 | Type | integer > 0 |
 | Default | `4000` |
 
-After the assistant text stops changing for this long, the reply is treated as complete. Too low: truncated reviews. Too high: extra wait on every job. ChatGPT example uses `6000`.
+Fallback completion signal, used only when no generating indicator is visible (see `selectors.stop_button`). After the assistant text stops changing for this long *and* nothing says generation is in progress, the reply is treated as complete. Too low: truncated reviews. Too high: extra wait on every job. ChatGPT example uses `6000`.
+
+When `stop_button` is configured, `idle_ms` no longer decides completion — it only sizes the settle window after generation stops.
+
+### `job_timeout_seconds`
+
+| | |
+| --- | --- |
+| Type | number ≥ 0 |
+| Default | `0` (auto: `timeout_ms × 2 + 60s`) |
+
+Wall-clock ceiling for one queued job. If a job overruns, the worker marks it failed so a waiting `submit` (and the CI job behind it) stops blocking. A wedged Playwright call cannot be interrupted, so this bounds the *waiting*, not the work; the browser-restart path clears the session afterwards.
 
 ---
 
@@ -321,6 +357,26 @@ If the browser backend cannot open remote debugging, the worker logs a warning a
 
 CI recommendation: start at `1`. For Ollama, `2` or `3` is usually fine if the machine has enough RAM/VRAM.
 
+### `max_attempts`
+
+| | |
+| --- | --- |
+| Type | integer 1–20 |
+| Default | `3` |
+
+How many times one job may be handed back to the inbox after a recoverable browser error (a closed tab, a crashed Edge) before it is failed for good. Without a ceiling, a browser that is permanently broken — an expired login, say — would requeue the same job forever while the heartbeat stayed healthy, so every `submit` would burn its full `--wait-timeout`.
+
+A job that runs out of attempts gets a `status.json` with `"gave up after N attempt(s)"`, which is what `queue-status` and `submit` report.
+
+### `result_retention`
+
+| | |
+| --- | --- |
+| Type | integer > 0 |
+| Default | `200` |
+
+How many finished job folders to keep under `results/`. The oldest are removed at worker start and after each job. Each folder holds `job.json`, `status.json`, the review, and any failure screenshot, so an unbounded queue directory fills the disk on a busy runner.
+
 ---
 
 ## Environment override summary
@@ -356,11 +412,14 @@ Adjust `backend` (and for browser, `url` / `selectors`) to your setup. Keep path
     "model_option": "[role='menuitemradio'], [role='menuitem'], [role='option']",
     "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]",
     "send_button": "button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton",
+    "stop_button": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
     "assistant_messages": "[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']"
   },
   "model": "",
   "timeout_ms": 180000,
   "idle_ms": 6000,
+  "max_attempts": 3,
+  "result_retention": 200,
   "max_prompt_chars": 120000,
   "max_file_chars": 32000,
   "max_files": 80,
@@ -386,4 +445,6 @@ Do not commit this file if it contains a private chat URL, a `storage_state` pat
 - **openai:** an API key is present (`CRITIQUE_API_KEY`, `OPENAI_API_KEY`, or config).
 - **openai-compatible:** `base_url` is required.
 - If `storage_state` is set, that path is a file.
-- Integer/float fields: `timeout_ms`, `idle_ms`, and the `max_*` keys must be > 0; interval fields must be ≥ 0.
+- Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields and `job_timeout_seconds` must be ≥ 0.
+
+`critique-bot doctor --config config.json` checks all of the above plus the things the loader cannot see: whether Edge is installed, whether the profile holds a session, whether the selectors match anything on the live page, and whether a real prompt comes back answered.

@@ -52,7 +52,19 @@ For Groq, vLLM, LM Studio, or similar, copy [`config.openai-compatible.example.j
 
 ### Browser (ChatGPT-like UI)
 
-Copy [`config.example.json`](config.example.json) (or [`config.chatgpt.example.json`](config.chatgpt.example.json)) and set the real chat URL plus CSS selectors for the prompt/send/reply. Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
+Copy [`config.example.json`](config.example.json) (or [`config.chatgpt.example.json`](config.chatgpt.example.json)), then let the setup UI fill in the selectors:
+
+```bash
+critique-bot setup --config config.json
+```
+
+That serves a page on `127.0.0.1`, opens Edge on your chat URL, and lets you **click** the prompt box, the send button, a reply, and the stop button instead of hand-writing CSS. It ranks candidate selectors, saves them, and runs a live test round trip.
+
+Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
+
+Set `selectors.stop_button` too. It is how the bot knows a reply actually finished rather than merely paused, and without it a model that thinks for longer than `idle_ms` mid-answer yields a silently truncated review.
+
+To write selectors by hand instead:
 
 ```bash
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
@@ -67,6 +79,19 @@ To attach to an Edge window you already started yourself, launch it with `--remo
 Optional extra cookies: Playwright `storage_state` via config or `CRITIQUE_STORAGE_STATE`.
 
 Env overrides: `CRITIQUE_BACKEND`, `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_BASE_URL`, `CRITIQUE_API_KEY`, `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`.
+
+## Check the install
+
+`doctor` runs every setup check and exits non-zero if any of them fail, so it works as a smoke test in a provisioning script.
+
+```bash
+critique-bot doctor --config config.json            # includes a live round trip
+critique-bot doctor --config config.json --headed   # first login: shows the window
+critique-bot doctor --config config.json --no-live  # config and machine only
+critique-bot doctor --config config.json --json     # machine-readable
+```
+
+It checks Python and Playwright, that Edge or Chrome is installed, that the profile holds a session, that the configured selectors match visible elements on the live page, and that a real prompt comes back answered. Warnings are advice and do not fail the run.
 
 ## Run
 
@@ -125,7 +150,7 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 GitLab runner and project setup: [`docs/gitlab-ci.md`](docs/gitlab-ci.md).
 
-CI jobs must **not** each launch the model. On the runner PC, start **one worker**. The job calls **submit**, waits for `out/review.md`, then posts that file as a comment on the MR or PR. Browser backend: the worker owns the signed-in Edge. Ollama/OpenAI: the worker makes HTTP calls (no browser).
+CI jobs must **not** each launch the model. On the runner PC, start **one worker**. The job calls **submit**, waits for `out/review.md`, then posts it on the MR or PR. Browser backend: the worker owns the signed-in Edge. Ollama/OpenAI: the worker makes HTTP calls (no browser).
 
 ```bash
 # once, on the runner (systemd: packaging/critique-bot-worker.service)
@@ -134,14 +159,26 @@ critique-bot worker --config /opt/critique-bot/config.json --logs
 # each GitLab / GitHub job
 critique-bot submit --config /opt/critique-bot/config.json \
   --patch-file diff.patch --output-dir out
+
+# post the result (strips the JSON block, adds inline diff comments)
+critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch
+critique-bot github-post --review-file out/review.md --patch-file diff.patch
 ```
 
-The job and the worker must share `queue_dir` (default: `.critique-queue` next to `config.json`). Concurrent MRs/PRs enqueue; the worker runs up to `max_parallel_tabs` reviews at once (default 1) with `min_interval_seconds` between starts.
+The job and the worker must share `queue_dir` (default: `.critique-queue` next to `config.json`). Concurrent MRs/PRs enqueue; the worker runs up to `max_parallel_tabs` reviews at once (default 1) with `min_interval_seconds` between starts. A job that keeps hitting browser errors is retried `max_attempts` times and then failed, so a broken session cannot spin the queue forever.
 
-| Host | Job definition | Runner |
-| --- | --- | --- |
-| GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Self-hosted, **shell** executor, tag `critique-bot` |
-| GitHub | [`packaging/github-review.yml`](packaging/github-review.yml) → `.github/workflows/review.yml` | Self-hosted Actions runner, labels `self-hosted, critique-bot` |
+To see what CI sees:
+
+```bash
+critique-bot queue-status --config /opt/critique-bot/config.json
+```
+
+It prints whether the worker is alive, what is waiting or in progress, and how recent jobs ended; `--json` for scripts. It exits non-zero when no worker is running, which makes it a usable health check.
+
+| Host | Job definition | Runner | Posts with |
+| --- | --- | --- | --- |
+| GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Self-hosted, **shell** executor, tag `critique-bot` | `gitlab-post`, needs `CRITIQUE_GITLAB_TOKEN` (scope `api`) |
+| GitHub | [`packaging/github-review.yml`](packaging/github-review.yml) → `.github/workflows/review.yml` | Self-hosted Actions runner, labels `self-hosted, critique-bot` | `github-post`, needs `GITHUB_TOKEN` with `pull-requests: write` |
 
 GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run the **browser** backend: there is no signed-in Edge and no shared queue. Ollama or OpenAI on a self-hosted runner still uses the worker + `queue_dir` split.
 

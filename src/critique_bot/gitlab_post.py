@@ -92,6 +92,7 @@ def post_review(
             + log.kv(path=row.path, line=position.get("new_line") or position.get("old_line"))
         )
     summary = strip_json_block(review_md)
+    summary_ok = True
     if summary:
         header = ""
         if posted:
@@ -105,13 +106,14 @@ def post_review(
             )
             log.info("posted merge request summary note")
         except GitLabPostError as exc:
-            log.warn(f"could not post summary note: {exc}")
+            summary_ok = False
+            log.error(f"could not post summary note: {exc}")
     print(
         f"gitlab-post: {posted} inline comment(s), {skipped} skipped, "
-        f"summary={'yes' if summary else 'no'}",
+        f"summary={'yes' if summary and summary_ok else 'no'}",
         flush=True,
     )
-    return 0
+    return 0 if summary_ok else 1
 
 
 def _resolve_token() -> str:

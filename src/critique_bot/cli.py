@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -358,10 +359,17 @@ def build_parser() -> argparse.ArgumentParser:
             "--mode chat is an interactive terminal session."
         ),
         epilog=(
+            "first run on a new machine:\n"
+            "  critique-bot setup --config config.json\n"
+            "  critique-bot doctor --config config.json --headed\n"
+            "\n"
             "production (runner PC):\n"
             "  critique-bot worker --config config.json --logs\n"
+            "  critique-bot queue-status --config config.json\n"
             "  critique-bot submit --config config.json --patch-file diff.patch\n"
             "  critique-bot gitlab-post --review-file out/review.md "
+            "--patch-file diff.patch\n"
+            "  critique-bot github-post --review-file out/review.md "
             "--patch-file diff.patch\n"
             "\n"
             "one-shot (debug):\n"
@@ -582,16 +590,32 @@ def _add_submit_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+SUBCOMMANDS = {
+    "worker": "run the long-lived queue worker on the runner PC",
+    "submit": "enqueue a review and wait for the worker to finish it",
+    "doctor": "check this machine: browser, login, selectors, live round trip",
+    "setup": "open a local web UI to configure selectors by clicking them",
+    "queue-status": "show worker liveness, queued jobs, and recent results",
+    "gitlab-post": "post the review on a GitLab merge request",
+    "github-post": "post the review on a GitHub pull request",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in {"worker", "submit", "gitlab-post"}:
+    if argv and argv[0] in SUBCOMMANDS:
         command = argv[0]
         rest = argv[1:]
-        if command == "worker":
-            return _main_worker(rest)
-        if command == "submit":
-            return _main_submit(rest)
-        return _main_gitlab_post(rest)
+        handlers = {
+            "worker": _main_worker,
+            "submit": _main_submit,
+            "doctor": _main_doctor,
+            "setup": _main_setup,
+            "queue-status": _main_queue_status,
+            "gitlab-post": _main_gitlab_post,
+            "github-post": _main_github_post,
+        }
+        return handlers[command](rest)
     return _main_run(argv)
 
 
@@ -710,6 +734,236 @@ def _main_submit(argv: list[str]) -> int:
     return 0
 
 
+def _main_doctor(argv: list[str]) -> int:
+    from critique_bot import diagnostics
+
+    parser = argparse.ArgumentParser(
+        prog="critique-bot doctor",
+        description=(
+            "Check that this machine can actually run reviews: browser present, "
+            "config valid, chat UI reachable and signed in, selectors matching, "
+            "and a real prompt answered. Exits non-zero if any check fails."
+        ),
+    )
+    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument(
+        "--live",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="open the backend and test it for real (default: on)",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="show the browser window (needed for the first login)",
+    )
+    parser.add_argument(
+        "--round-trip",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="send a real prompt during live checks (default: on)",
+    )
+    parser.add_argument("--json", action="store_true", help="print JSON instead of text")
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="write diagnostic logs to stderr (default: off)",
+    )
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        if args.json:
+            print(
+                json.dumps({"ok": False, "checks": [], "error": str(exc)}, indent=2),
+                flush=True,
+            )
+        else:
+            print(f"[FAIL] config  {exc}", file=sys.stderr)
+        return 1
+
+    report = diagnostics.static_checks(config, config_path=Path(args.config))
+    if args.live:
+        live = diagnostics.run_live_checks(
+            config, headed=bool(args.headed), round_trip=bool(args.round_trip)
+        )
+        report.checks.extend(live.checks)
+
+    if args.json:
+        print(diagnostics.render_json(report), end="", flush=True)
+    else:
+        print(diagnostics.render_text(report), flush=True)
+        warnings = len(report.warnings)
+        if report.ok:
+            summary = "All checks passed."
+            if warnings:
+                summary += f" {warnings} warning(s) worth a look."
+            print(f"\n{summary}", flush=True)
+        else:
+            names = ", ".join(check.name for check in report.failures)
+            print(f"\n{len(report.failures)} check(s) failed: {names}", flush=True)
+            print(
+                "Run `critique-bot setup --config "
+                f"{args.config}` to fix selectors by clicking them.",
+                flush=True,
+            )
+    return 0 if report.ok else 1
+
+
+def _main_setup(argv: list[str]) -> int:
+    from critique_bot.setup_ui import DEFAULT_PORT, run_setup
+
+    parser = argparse.ArgumentParser(
+        prog="critique-bot setup",
+        description=(
+            "Open a small web UI on 127.0.0.1 to check the install, pick the "
+            "chat UI selectors by clicking them in a real browser window, and "
+            "run a live test. Writes the result to your config file."
+        ),
+    )
+    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"port to listen on (default: {DEFAULT_PORT}; 0 picks a free one)",
+    )
+    parser.add_argument(
+        "--open",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="open the page in your default browser (default: on)",
+    )
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="write diagnostic logs to stderr (default: off)",
+    )
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    return run_setup(Path(args.config), port=args.port, open_page=bool(args.open))
+
+
+def _main_queue_status(argv: list[str]) -> int:
+    from critique_bot.queue import FileQueue
+
+    parser = argparse.ArgumentParser(
+        prog="critique-bot queue-status",
+        description=(
+            "Show whether the worker is alive, what is waiting in the queue, "
+            "and how recent jobs ended."
+        ),
+    )
+    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument(
+        "--recent",
+        type=int,
+        default=10,
+        metavar="N",
+        help="how many finished jobs to list (default: 10)",
+    )
+    parser.add_argument("--json", action="store_true", help="print JSON instead of text")
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="write diagnostic logs to stderr (default: off)",
+    )
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        return _config_error(exc)
+
+    snapshot = FileQueue(Path(config.queue_dir)).snapshot(recent=max(args.recent, 0))
+    if args.json:
+        print(json.dumps(snapshot, indent=2, default=str), flush=True)
+        return 0 if snapshot["worker_alive"] else 1
+
+    print(f"queue      {snapshot['queue_dir']}", flush=True)
+    state = "running" if snapshot["worker_alive"] else "NOT RUNNING"
+    print(f"worker     {state} ({snapshot['worker_hint']})", flush=True)
+    print(
+        f"waiting    {len(snapshot['waiting'])} job(s); "
+        f"in progress {len(snapshot['processing'])}",
+        flush=True,
+    )
+    for job in snapshot["waiting"] + snapshot["processing"]:
+        age = job.get("age_seconds")
+        extra = f", {age:.0f}s old" if isinstance(age, (int, float)) else ""
+        attempts = job.get("attempts") or 0
+        retry = f", attempt {attempts + 1}" if attempts else ""
+        print(f"  - {job['id']} ({job.get('label') or 'no label'}{extra}{retry})", flush=True)
+    if snapshot["recent"]:
+        print("recent", flush=True)
+        for item in snapshot["recent"]:
+            if "ok" not in item:
+                print(f"  ? {item['id']}  {item.get('state', '')}", flush=True)
+                continue
+            mark = "ok  " if item["ok"] else "FAIL"
+            elapsed = item.get("elapsed_seconds")
+            timing = f" in {elapsed:.1f}s" if isinstance(elapsed, (int, float)) else ""
+            note = "" if item["ok"] else f"  {item.get('error') or ''}"
+            print(f"  {mark} {item['id']}{timing}{note}", flush=True)
+    if not snapshot["worker_alive"]:
+        print(
+            f"\nStart the worker: critique-bot worker --config {args.config} --logs",
+            flush=True,
+        )
+        return 1
+    return 0
+
+
+def _main_github_post(argv: list[str]) -> int:
+    from critique_bot.github_post import GitHubPostError, post_review
+
+    parser = argparse.ArgumentParser(
+        prog="critique-bot github-post",
+        description=(
+            "Post the review as a GitHub pull request comment plus inline diff "
+            "comments. Needs GITHUB_TOKEN with pull-requests: write (or "
+            "CRITIQUE_GITHUB_TOKEN)."
+        ),
+    )
+    parser.add_argument(
+        "--review-file", required=True, help="path to review.md from submit"
+    )
+    parser.add_argument(
+        "--patch-file",
+        help="unified diff used to map comments onto changed lines",
+    )
+    parser.add_argument("--repo", help="owner/name (or GITHUB_REPOSITORY)")
+    parser.add_argument("--pr", dest="pr_number", help="pull request number")
+    parser.add_argument(
+        "--api-url", help="GitHub API base URL (default: https://api.github.com)"
+    )
+    parser.add_argument(
+        "--logs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write diagnostic logs to stderr (default: on)",
+    )
+    args = parser.parse_args(argv)
+    log.configure(enabled=bool(args.logs))
+    try:
+        return post_review(
+            review_file=Path(args.review_file),
+            patch_file=Path(args.patch_file) if args.patch_file else None,
+            repo=args.repo,
+            pr_number=args.pr_number,
+            api_url=args.api_url,
+        )
+    except GitHubPostError as exc:
+        log.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _main_gitlab_post(argv: list[str]) -> int:
     from critique_bot.gitlab_post import GitLabPostError, post_review
 
@@ -799,11 +1053,12 @@ def _main_run(argv: list[str]) -> int:
         return _config_error(exc)
 
     from critique_bot.browser import BrowserError
-    from critique_bot.llm import LLMError, open_provider
+    from critique_bot.llm import COMPLETION_IDLE, LLMError, open_provider
 
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
     response = ""
+    completion: dict | None = None
     try:
         setup_msg = (
             "Starting browser..." if config.uses_browser else "Connecting to LLM..."
@@ -818,6 +1073,7 @@ def _main_run(argv: list[str]) -> int:
                         turns = _run_chat_session(session, config, prompt)
                     else:
                         response = session.send(prompt)
+                        completion = getattr(session, "last_detail", None)
                 except Exception:
                     page = getattr(session, "page", None)
                     if page is not None:
@@ -868,6 +1124,13 @@ def _main_run(argv: list[str]) -> int:
     }
     if turns:
         payload["turns"] = turns
+    if completion:
+        payload["completion"] = completion
+        if completion.get("completion") == COMPLETION_IDLE:
+            log.warn(
+                "reply ended on an idle timeout, not a generation-finished "
+                "signal; it may be truncated"
+            )
     write_output(output_dir, response, payload, stem=stem)
     log.info("critique-bot finished successfully")
     return 0

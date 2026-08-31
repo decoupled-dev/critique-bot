@@ -32,12 +32,34 @@ Starters: [`config.example.json`](config.example.json), [`config.ollama.example.
 
 ---
 
+## Setup and diagnostics
+
+| Command | Meaning |
+| --- | --- |
+| `critique-bot setup --config PATH` | Local setup page on `127.0.0.1`; click elements in the chat UI to fill `selectors` |
+| `critique-bot doctor --config PATH` | Check machine, config, login, selectors, and a live round trip |
+| `critique-bot queue-status --config PATH` | Worker liveness, waiting/processing jobs, recent results |
+
+**setup** serves a page with the standard library (no extra dependencies) and drives a real Edge window next to it. Click the prompt box, send button, a reply, and the stop button; it ranks candidate CSS selectors, writes them to your config, and can run a test prompt before you leave. Only for `backend: browser`.
+
+Flags: `--config` (required; the file must already exist, copy an example first), `--port` (default `8765`; `0` picks a free one), `--no-open` to print the URL instead of launching your browser, `--logs`.
+
+**doctor** never raises: each check reports `ok`, `warn`, `fail`, or `skip` with a hint. Warnings do not fail the run; the exit code is non-zero only when a check fails, so it works in a provisioning script.
+
+Flags: `--config` (required), `--no-live` to skip anything that needs the browser or network, `--no-round-trip` to keep the live checks but not spend a real prompt, `--headed` to watch the browser (needed for a first login), `--json`, `--logs`.
+
+**queue-status** exits non-zero when no worker heartbeat is fresh, so it doubles as a health check. Flags: `--config` (required), `--recent N` for how many finished jobs to list (default 10), `--json`, `--logs`.
+
+---
+
 ## Production commands (GitLab / GitHub runner)
 
 | Command | Where | Meaning |
 | --- | --- | --- |
 | `critique-bot worker --config PATH` | Runner PC, always on | One worker process; pulls jobs from `queue_dir` (browser: signed-in Edge; ollama/openai: HTTP) |
 | `critique-bot submit --config PATH --patch-file diff.patch` | GitLab or GitHub job | Enqueue, wait, write `{output-dir}/review.md` |
+| `critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch` | GitLab job | Post inline comments + summary on the MR |
+| `critique-bot github-post --review-file out/review.md --patch-file diff.patch` | GitHub job | Post inline comments + summary on the PR |
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
 
@@ -46,6 +68,12 @@ Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--
 Each submit creates its own job id and **only waits for that id**. The worker does not match by MR: it claims the oldest inbox file (FIFO, one at a time). GitLab/GitHub env (`CI_MERGE_REQUEST_IID`, `GITHUB_PR_NUMBER`, …) is stored on the job as `meta` and in the filename, e.g. `1735689600123-group-app-mr42-a1b2c3d4.json`.
 
 If the worker is not running, submit exits immediately with an error. Config: `queue_dir`, `max_parallel_tabs` (default 1), `min_interval_seconds` (default 30), `interval_jitter_seconds` (default 5). Env: `CRITIQUE_QUEUE_DIR`, `CRITIQUE_MAX_PARALLEL_TABS`.
+
+A job that fails is retried until it has been attempted `max_attempts` times (default 3), then marked failed so a broken browser session cannot spin the queue. Each job also gets a wall-clock limit (`job_timeout_seconds`, default derived from the reply timeouts); the worker fails it rather than hanging. Old result folders are pruned to the newest `result_retention` (default 200). Jobs still in flight when the worker stops are requeued so the next worker picks them up.
+
+**gitlab-post** / **github-post** take the review that submit wrote and post it. Both strip the machine-readable JSON block from the summary, and with `--patch-file` they turn the review's file/line findings into inline comments on the diff. Shared flags: `--review-file` (required), `--patch-file`, `--api-url`, `--logs` (default **on**). GitLab adds `--project-id` and `--mr-iid`; GitHub adds `--repo owner/name` and `--pr NUMBER`. Everything else is read from CI env. They exit non-zero if the summary could not be posted, so a silent token failure does not pass as a green job.
+
+Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`) since `CI_JOB_TOKEN` cannot create notes. GitHub uses `GITHUB_TOKEN` (or `CRITIQUE_GITHUB_TOKEN`) with `pull-requests: write`.
 
 ---
 
@@ -191,6 +219,32 @@ python -m critique_bot worker --config /opt/critique-bot/config.json --logs
 ```bash
 python -m critique_bot submit --config /opt/critique-bot/config.json \
   --patch-file diff.patch --output-dir ./out
+```
+
+```bash
+python -m critique_bot queue-status --config /opt/critique-bot/config.json
+```
+
+```bash
+python -m critique_bot gitlab-post --review-file ./out/review.md --patch-file diff.patch
+```
+
+```bash
+python -m critique_bot github-post --review-file ./out/review.md --patch-file diff.patch
+```
+
+### Setup / doctor
+
+```bash
+python -m critique_bot setup --config config.json
+```
+
+```bash
+python -m critique_bot doctor --config config.json
+```
+
+```bash
+python -m critique_bot doctor --config config.json --no-live --json
 ```
 
 ### Other
@@ -353,8 +407,15 @@ These override matching fields in `config.json`.
 | `CRITIQUE_CDP_URL` | `cdp_url` |
 | `CRITIQUE_QUEUE_DIR` | `queue_dir` |
 | `CRITIQUE_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
+| `CRITIQUE_BACKEND` | `backend` |
+| `CRITIQUE_BASE_URL` | `base_url` |
+| `CRITIQUE_API_KEY` (or `OPENAI_API_KEY`) | API key for `openai` / `openai-compatible` |
 
 Linux: `export NAME=value`. PowerShell: `$env:NAME = "value"`.
+
+Posting tokens are read from the environment only: `CRITIQUE_GITLAB_TOKEN` for `gitlab-post`, `GITHUB_TOKEN` or `CRITIQUE_GITHUB_TOKEN` for `github-post`.
+
+The worker limits (`max_attempts`, `result_retention`, `job_timeout_seconds`) are config-only. See [`docs/config.json.md`](docs/config.json.md).
 
 ---
 

@@ -13,7 +13,7 @@ from typing import Callable
 from critique_bot import log
 from critique_bot.browser import BrowserError, as_browser_error
 from critique_bot.config import BotConfig
-from critique_bot.llm import LLMError, LLMProvider, open_provider
+from critique_bot.llm import COMPLETION_IDLE, LLMError, LLMProvider, open_provider
 from critique_bot.output import isoformat, save_failure, write_output
 from critique_bot.queue import (
     HEARTBEAT_EVERY_SEC,
@@ -39,7 +39,8 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
 
     stop = _install_stop_flag()
     limiter = RateLimiter(config.min_interval_seconds, config.interval_jitter_seconds)
-    requeued = queue.requeue_stale_processing()
+    requeued = queue.requeue_stale_processing(max_attempts=config.max_attempts)
+    queue.prune_results(keep=config.result_retention)
     queue.beat()
     beater = threading.Thread(
         target=_heartbeat_loop,
@@ -76,6 +77,11 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
                 _session_loop(provider, config, queue, limiter, stop)
     finally:
         log.info("worker stopping")
+        # Nothing is executing by now (both loops drain before returning), so
+        # anything still claimed was interrupted and belongs back in the inbox.
+        handed_back = queue.requeue_stale_processing(max_attempts=config.max_attempts)
+        if handed_back:
+            log.info(f"handed {handed_back} unfinished job(s) back to the queue")
         lock.close()
     return 0
 
@@ -218,8 +224,56 @@ def _run_job(
         _execute_job(provider, config, queue, job, isolated=isolated)
     except BrowserError:
         if queue.read_status(job.id) is None:
-            queue.requeue_job(job.id)
+            queue.requeue_job(job.id, max_attempts=config.max_attempts)
         raise
+
+
+class _JobWatchdog:
+    """Fail a job that overruns its wall clock so a waiting CI job unblocks.
+
+    A stuck Playwright call cannot be interrupted from another thread, so this
+    does not stop the work: it records the failure, and the browser restart
+    logic clears the session afterwards.
+    """
+
+    def __init__(self, queue: FileQueue, job: Job, limit_sec: float) -> None:
+        self._queue = queue
+        self._job = job
+        # Floor only guards against a zero/negative timer; real limits come
+        # from BotConfig.job_timeout_sec, which is minutes.
+        self._limit = max(float(limit_sec), 0.01)
+        self._timer: threading.Timer | None = None
+        self.fired = False
+
+    def _fire(self) -> None:
+        if self._queue.read_status(self._job.id) is not None:
+            return
+        self.fired = True
+        log.error(
+            f"job {self._job.id} exceeded {self._limit:.0f}s; marking it failed "
+            "so the waiting job stops blocking"
+        )
+        try:
+            self._queue.fail(
+                self._job.id,
+                f"job exceeded the {self._limit:.0f}s worker time limit",
+                stem=self._job.stem,
+                label=self._job.label,
+                meta=self._job.meta,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug(f"watchdog could not fail job {self._job.id}: {exc}")
+
+    def __enter__(self) -> _JobWatchdog:
+        self._timer = threading.Timer(self._limit, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
 
 
 def _save_job_failure(session, out_dir: Path) -> None:
@@ -256,22 +310,27 @@ def _execute_job(
         )
     )
     response = ""
+    detail: dict | None = None
+    watchdog: _JobWatchdog | None = None
     try:
-        with provider.session(isolated=isolated, model=job.model) as session:
-            try:
-                response = session.send(job.prompt)
-            except Exception:
-                _save_job_failure(session, out_dir)
-                raise
+        with _JobWatchdog(queue, job, config.job_timeout_sec) as watchdog:
+            with provider.session(isolated=isolated, model=job.model) as session:
+                try:
+                    response = session.send(job.prompt)
+                except Exception:
+                    _save_job_failure(session, out_dir)
+                    raise
+                finally:
+                    detail = getattr(session, "last_detail", None)
     except BrowserError as exc:
         log.error(f"job {job.id} browser error: {exc}")
-        queue.requeue_job(job.id)
+        queue.requeue_job(job.id, max_attempts=config.max_attempts)
         raise
     except LLMError as exc:
         closed = as_browser_error(exc)
         if closed is not None:
             log.error(f"job {job.id} browser error: {closed}")
-            queue.requeue_job(job.id)
+            queue.requeue_job(job.id, max_attempts=config.max_attempts)
             raise closed from exc
         log.error(f"job {job.id} failed: {exc}")
         queue.fail(
@@ -282,7 +341,7 @@ def _execute_job(
         closed = as_browser_error(exc)
         if closed is not None:
             log.error(f"job {job.id} browser error: {closed}")
-            queue.requeue_job(job.id)
+            queue.requeue_job(job.id, max_attempts=config.max_attempts)
             raise closed from exc
         log.exception(f"job {job.id} unexpected failure: {exc}")
         queue.fail(
@@ -294,6 +353,11 @@ def _execute_job(
         )
         return
 
+    if watchdog is not None and watchdog.fired:
+        log.warn(
+            f"job {job.id} finished after the time limit had already expired; "
+            "the waiting job has moved on"
+        )
     finished = datetime.now(timezone.utc)
     elapsed = (finished - started).total_seconds()
     if not response.strip():
@@ -318,6 +382,13 @@ def _execute_job(
         "label": job.label,
         "meta": job.meta,
     }
+    if detail:
+        payload["completion"] = detail
+        if detail.get("completion") == COMPLETION_IDLE:
+            log.warn(
+                f"job {job.id} reply ended on an idle timeout, not a "
+                "generation-finished signal; it may be truncated"
+            )
     write_output(out_dir, response, payload, stem=job.stem, print_body=False)
     queue.finish(
         job.id,
@@ -337,6 +408,7 @@ def _execute_job(
         f"job {job.id} finished in {elapsed:.1f}s ({len(response)} chars)"
         + (f" label={job.label}" if job.label else "")
     )
+    queue.prune_results(keep=config.result_retention)
 
 
 def _install_stop_flag() -> Callable[[], bool]:
