@@ -28,10 +28,19 @@ class LLMError(RuntimeError):
     """The LLM backend did not complete a reply."""
 
 
+#: The chat UI told us generation had finished. The reply is whole.
+COMPLETION_STOPPED = "stop-signal"
+#: The reply merely stopped changing. It may have been cut off mid-answer.
+COMPLETION_IDLE = "idle-timeout"
+
+
 class LLMSession:
     """One conversation (one browser tab, or one HTTP message list)."""
 
     page: Any = None
+    #: How the last reply ended. Browser sessions fill this in so callers can
+    #: distinguish a reply the UI declared finished from one that went quiet.
+    last_detail: dict[str, Any] | None = None
 
     def send(self, prompt: str) -> str:
         raise NotImplementedError
@@ -254,6 +263,7 @@ class PageBrowserSession(LLMSession):
         self._config = config
         self._close_page = close_page
         self._prepared = False
+        self.last_detail: dict[str, Any] | None = None
 
     def send(self, prompt: str) -> str:
         from critique_bot.chat_client import prepare_chat, send_turn
@@ -261,7 +271,11 @@ class PageBrowserSession(LLMSession):
         if not self._prepared:
             prepare_chat(self.page, self._config)
             self._prepared = True
-        return send_turn(self.page, self._config, prompt)
+        detail: dict[str, Any] = {}
+        try:
+            return send_turn(self.page, self._config, prompt, detail=detail)
+        finally:
+            self.last_detail = detail
 
     def close(self) -> None:
         if not self._close_page or self.page is None:
@@ -280,6 +294,7 @@ class CdpBrowserSession(LLMSession):
         self._cm: Any = None
         self.page = None
         self._prepared = False
+        self.last_detail: dict[str, Any] | None = None
 
     def __enter__(self) -> CdpBrowserSession:
         from critique_bot.browser import connect_job_page
@@ -307,7 +322,11 @@ class CdpBrowserSession(LLMSession):
         if not self._prepared:
             prepare_chat(self.page, self._config)
             self._prepared = True
-        return send_turn(self.page, self._config, prompt)
+        detail: dict[str, Any] = {}
+        try:
+            return send_turn(self.page, self._config, prompt, detail=detail)
+        finally:
+            self.last_detail = detail
 
 
 def _completions_url(base_url: str) -> str:

@@ -29,14 +29,18 @@ Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs ca
 
 1. Install Microsoft Edge (`microsoft-edge-stable` on Linux).
 2. Unpack the OS zip (or `pip install` the wheel) to `/opt/critique-bot` (Windows: `C:\critique-bot`). Keep `_internal` next to the binary.
-3. Copy `config.example.json` → `config.json` in that directory. Fill it in ([`config.json.md`](config.json.md)). Use the **same absolute path** the job will pass (`CRITIQUE_CONFIG`).
+3. Copy `config.example.json` → `config.json` in that directory. Fill it in ([`config.json.md`](config.json.md)), or run `critique-bot setup --config /opt/critique-bot/config.json` and click the selectors in a real browser window. Use the **same absolute path** the job will pass (`CRITIQUE_CONFIG`).
 4. Sign in once (needs a display):
 
    ```bash
    /opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --headed --logs
    ```
 
-   Log in to the chat UI, confirm a prompt works, then Ctrl-C.
+   Log in to the chat UI, confirm a prompt works, then Ctrl-C. Then confirm the whole setup at once:
+
+   ```bash
+   /opt/critique-bot/critique-bot doctor --config /opt/critique-bot/config.json
+   ```
 5. Start the worker at boot, **as the same OS user as the GitLab runner** (so the job can read/write the queue):
 
    - Linux: copy [`packaging/critique-bot-worker.service`](../packaging/critique-bot-worker.service) to `/etc/systemd/system/`, set `User=` / `Group=` to the runner account, then `systemctl enable --now critique-bot-worker`.
@@ -45,7 +49,7 @@ Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs ca
 
 6. Register (or retag) the runner: tag `critique-bot`, executor **shell**, on this same machine.
 
-Check the worker is alive: `queue_dir` (default `/opt/critique-bot/.critique-queue`) should contain a fresh `worker.heartbeat` (updated every 5s; submit treats it stale after 20s).
+Check the worker is alive with `critique-bot queue-status --config /opt/critique-bot/config.json`. It exits non-zero if no worker is running and also lists waiting jobs and how recent ones ended. (Under the hood: `queue_dir`, default `/opt/critique-bot/.critique-queue`, holds a `worker.heartbeat` updated every 5s; submit treats it stale after 20s.)
 
 ## One-time: GitLab project
 
@@ -95,11 +99,15 @@ Each `submit` gets a unique job id and waits only for **that** id. It does not s
 
 ## Quick checks
 
+Start with `critique-bot doctor --config "$CRITIQUE_CONFIG"` (machine, login, selectors, real round trip) and `critique-bot queue-status --config "$CRITIQUE_CONFIG"` (worker, backlog, recent failures). Between them they explain most of the table below.
+
 | Symptom | Check |
 | --- | --- |
-| `worker is not running` | systemd/status; heartbeat file age; same `queue_dir` as the job |
+| `worker is not running` | `queue-status`; systemd status; same `queue_dir` as the job |
 | Job queued forever | Worker logs; chat UI login expired (`worker --headed`); selectors in `config.json` |
-| Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present, un-protected, scope `api` |
-| `No Chromium browser was found` | Edge installed for the runner user |
+| Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup` |
+| Same job retried and then failed | It hit `max_attempts` (default 3). The real error is in `status.json` and the worker log |
+| Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present, un-protected, scope `api`. `gitlab-post` exits non-zero when the summary fails to post |
+| `No Chromium browser was found` | Edge installed for the runner user (`doctor` reports this) |
 | Permission denied on queue | Worker user ≠ GitLab runner user |
 | Cloudflare / login page | Headless is blocked; re-login with `--headed` |

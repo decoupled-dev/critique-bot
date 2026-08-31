@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from critique_bot import log
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.llm import LLMError
+from critique_bot.llm import COMPLETION_IDLE, COMPLETION_STOPPED, LLMError
 from critique_bot.patch import strip_unsafe_controls
 
 if TYPE_CHECKING:
@@ -19,6 +19,12 @@ class ChatError(LLMError):
 
 POLL_MS = 250
 MENU_OPEN_MS = 700
+# Once the UI says generation stopped, the text only needs a moment to settle.
+_SETTLE_MIN_MS = 300
+_SETTLE_MAX_MS = 2_000
+# If the "generating" signal never clears while the text stays frozen, the
+# signal is lying to us; fall back to the idle heuristic instead of hanging.
+_SIGNAL_STALL_MS = 45_000
 _FILL_DIRECT_MAX = 8_000
 _FILL_CHUNK = 12_000
 _FILL_SINGLE_EVAL_MAX = 48_000
@@ -1127,6 +1133,97 @@ def _last_visible(locator: Locator) -> Locator | None:
     return None
 
 
+# A visible "stop generating" control is the only trustworthy signal that the
+# assistant is still writing. Text going quiet for a few seconds is not: models
+# pause mid-answer to think, call tools, or wait out a rate limit.
+_STOP_BUTTON_SELECTORS = (
+    "button[data-testid='stop-button']",
+    "button[data-testid*='stop-button']",
+    "button[aria-label*='Stop' i]",
+    "button[title*='Stop generating' i]",
+    "button[data-testid='composer-speech-button-container'] ~ button[aria-label*='stop' i]",
+)
+
+_STREAM_STATE_JS = """
+(payload) => {
+  const visible = (el) => {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    if (parseFloat(style.opacity || '1') === 0) return false;
+    if (el.getAttribute('aria-hidden') === 'true') return false;
+    return true;
+  };
+  const selectors = [];
+  if (payload && payload.stopSelector) selectors.push(payload.stopSelector);
+  for (const item of (payload && payload.defaults) || []) selectors.push(item);
+  for (const selector of selectors) {
+    let nodes = [];
+    try {
+      nodes = Array.from(document.querySelectorAll(selector));
+    } catch (err) {
+      continue;
+    }
+    for (const node of nodes) {
+      if (visible(node)) return { active: true, signal: 'stop-button' };
+    }
+  }
+  // aria-busy is only meaningful when it is on (or inside) a reply bubble;
+  // plenty of unrelated page chrome sets it while loading.
+  const assistant = (payload && payload.assistantSelector) || '';
+  if (assistant) {
+    let busy = [];
+    try {
+      busy = Array.from(document.querySelectorAll('[aria-busy="true"]'));
+    } catch (err) {
+      busy = [];
+    }
+    for (const node of busy) {
+      if (!visible(node)) continue;
+      try {
+        if (node.matches(assistant) || node.closest(assistant)) {
+          return { active: true, signal: 'aria-busy' };
+        }
+      } catch (err) {
+        continue;
+      }
+    }
+  }
+  return { active: false, signal: '' };
+}
+"""
+
+
+def _stream_state(page: Page, selectors: Selectors | None) -> tuple[bool, str]:
+    """True when the page still shows a generating indicator for this reply."""
+    if selectors is None:
+        return False, ""
+    evaluate = getattr(page, "evaluate", None)
+    if evaluate is None:
+        return False, ""
+    try:
+        result = evaluate(
+            _STREAM_STATE_JS,
+            {
+                "stopSelector": selectors.stop_button,
+                "defaults": list(_STOP_BUTTON_SELECTORS),
+                "assistantSelector": selectors.assistant_messages,
+            },
+        )
+    except Exception as exc:
+        log.debug(f"generation-state probe failed: {exc}")
+        return False, ""
+    if not isinstance(result, dict):
+        return False, ""
+    return bool(result.get("active")), str(result.get("signal") or "")
+
+
+def _settle_ms(idle_ms: int) -> int:
+    return max(min(idle_ms // 4, _SETTLE_MAX_MS), _SETTLE_MIN_MS)
+
+
 def _wait_for_reply(
     page: Page,
     selector: str,
@@ -1134,6 +1231,8 @@ def _wait_for_reply(
     previous_count: int,
     timeout_ms: int,
     idle_ms: int,
+    selectors: Selectors | None = None,
+    detail: dict[str, object] | None = None,
 ) -> str:
     deadline = time.monotonic() + timeout_ms / 1000
     messages = page.locator(selector)
@@ -1171,27 +1270,85 @@ def _wait_for_reply(
     last_text = ""
     last_change = time.monotonic()
     last_growth_log = 0.0
+    settle_ms = _settle_ms(idle_ms)
+    saw_generating = False
+    signal_trusted = True
+    signal_name = ""
+    generating_since = 0.0
+
+    def done(reason: str) -> str:
+        if detail is not None:
+            detail["completion"] = reason
+            detail["complete"] = reason == COMPLETION_STOPPED
+            detail["signal"] = signal_name
+            detail["chars"] = len(last_text.strip())
+        return last_text.strip()
+
     while time.monotonic() < deadline:
+        generating, signal = _stream_state(page, selectors)
+        if not signal_trusted:
+            generating = False
+        if generating:
+            if not saw_generating:
+                log.info(f"assistant is generating (signal={signal})")
+                generating_since = time.monotonic()
+            saw_generating = True
+            signal_name = signal
+
         target = _last_visible(messages)
         text = target.inner_text() if target is not None else ""
-        idle_so_far = (time.monotonic() - last_change) * 1000
+        now = time.monotonic()
         if text != last_text:
             last_text = text
-            last_change = time.monotonic()
-            now = time.monotonic()
+            last_change = now
             if now - last_growth_log >= 1.0:
                 log.debug(
                     f"reply streaming: {len(text)} chars, "
                     f"{_visible_count(messages)} message(s), "
+                    f"generating={generating}, "
                     f"preview={log.preview(text, 80)!r}"
                 )
                 last_growth_log = now
-        elif last_text.strip() and idle_so_far >= idle_ms:
-            log.info(
-                f"reply idle for {int(idle_so_far)}ms; treating as complete "
-                f"({len(last_text)} chars)"
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        idle_so_far = (now - last_change) * 1000
+        if saw_generating and not generating:
+            # The UI stopped generating: this reply really is finished.
+            if last_text.strip() and idle_so_far >= settle_ms:
+                log.info(
+                    f"generation finished (signal={signal_name}); "
+                    f"reply settled after {int(idle_so_far)}ms ({len(last_text)} chars)"
+                )
+                return done(COMPLETION_STOPPED)
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        if generating:
+            # Still generating. A quiet stretch here is a pause, not the end,
+            # so do not cut the reply short -- unless the signal looks stuck.
+            stalled_ms = (now - generating_since) * 1000
+            if stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, 1):
+                log.warn(
+                    f"generation signal ({signal_name}) has been on for "
+                    f"{int(stalled_ms)}ms with no new text; ignoring it for the "
+                    "rest of this reply and falling back to the idle heuristic"
+                )
+                signal_trusted = False
+                saw_generating = False
+                signal_name = ""
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        if last_text.strip() and idle_so_far >= idle_ms:
+            # No generating indicator on this page at all. Best effort only:
+            # the reply may still be mid-stream behind a long pause.
+            log.warn(
+                f"reply idle for {int(idle_so_far)}ms with no generation "
+                f"indicator; treating as complete ({len(last_text)} chars). "
+                "Set selectors.stop_button to detect this reliably."
             )
-            return last_text.strip()
+            return done(COMPLETION_IDLE)
         page.wait_for_timeout(POLL_MS)
 
     log.error(
@@ -1245,7 +1402,18 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
     log.info("chat UI is ready")
 
 
-def send_turn(page: Page, config: BotConfig, prompt: str) -> str:
+def send_turn(
+    page: Page,
+    config: BotConfig,
+    prompt: str,
+    *,
+    detail: dict[str, object] | None = None,
+) -> str:
+    """Send one prompt and return the reply.
+
+    ``detail``, when given, receives how completion was detected so callers can
+    tell a finished reply from one that merely went quiet.
+    """
     selectors = config.selectors
     timeout_ms = config.timeout_ms
     previous_count = _visible_count(page.locator(selectors.assistant_messages))
@@ -1263,6 +1431,8 @@ def send_turn(page: Page, config: BotConfig, prompt: str) -> str:
             previous_count=previous_count,
             timeout_ms=timeout_ms,
             idle_ms=config.idle_ms,
+            selectors=selectors,
+            detail=detail,
         )
     log.info(f"captured reply ({len(reply)} chars)")
     return reply
