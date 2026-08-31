@@ -74,7 +74,7 @@ playwright codegen --channel msedge https://YOUR_CHAT_UI/
 
 The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. First run with `--headed`, log in to the chat UI, then later runs (including headless) reuse that session.
 
-Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile, so the bot uses a dedicated Edge profile next to it (`microsoft-edge-critique-bot` on Linux). Log in once with `--headed`; later runs reuse that session. Everyday Edge is left alone. Without `--headed`, this path is headless too.
+Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile (Windows: `%LOCALAPPDATA%\Microsoft\Edge\User Data`; HTTP 403), so the bot uses a dedicated profile outside that folder (`%LOCALAPPDATA%\critique-bot\msedge-user-data` on Windows, `~/.config/critique-bot/msedge-user-data` on Linux). Log in once with `--headed`; later runs reuse that session. Everyday Edge is left alone. Without `--headed`, this path is headless too.
 
 To attach to an Edge window you already started yourself, launch it with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`, then set `cdp_url` to `http://127.0.0.1:9222`.
 
@@ -179,7 +179,7 @@ It prints whether the worker is alive, what is waiting or in progress, and how r
 
 | Host | Job definition | Runner | Posts with |
 | --- | --- | --- | --- |
-| GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Self-hosted, **shell** executor, tag `critique-bot` | `gitlab-post`, needs `CRITIQUE_GITLAB_TOKEN` (scope `api`) |
+| GitLab | [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux) or [`packaging/gitlab-ci.windows.yml`](packaging/gitlab-ci.windows.yml) (Windows) | Self-hosted, **shell** executor, tag `critique-bot` | `gitlab-post`, needs `CRITIQUE_GITLAB_TOKEN` (scope `api`) |
 | GitHub | [`packaging/github-review.yml`](packaging/github-review.yml) → `.github/workflows/review.yml` | Self-hosted Actions runner, labels `self-hosted, critique-bot` | `github-post`, needs `GITHUB_TOKEN` with `pull-requests: write` |
 
 GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run the **browser** backend: there is no signed-in Edge and no shared queue. Ollama or OpenAI on a self-hosted runner still uses the worker + `queue_dir` split.

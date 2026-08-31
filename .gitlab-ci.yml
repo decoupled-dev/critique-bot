@@ -1,6 +1,9 @@
 # Copy this file (or the `review` job) into the GitLab project that should
 # post critique-bot comments on merge requests.
 #
+# Linux bash (this file). Windows PowerShell: packaging/gitlab-ci.windows.yml
+# Do not rewrite $CRITIQUE_BIN as $env:CRITIQUE_BIN — see that file.
+#
 # Pipelines:
 #   - Merge requests: the review job runs automatically.
 #   - Branch / main pushes: a manual "review" job is created (click Play).

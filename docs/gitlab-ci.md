@@ -10,7 +10,12 @@ MR pipeline  →  critique-bot submit  →  .critique-queue  →  worker + Edge 
                                                          critique-bot gitlab-post  →  MR comments
 ```
 
-Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) into the **application** repo (the project whose MRs should be reviewed), not necessarily this repo.
+Copy the job definition into the **application** repo (the project whose MRs should be reviewed), not necessarily this repo:
+
+| Runner OS | Copy this file as `.gitlab-ci.yml` |
+| --- | --- |
+| Linux (bash) | [`.gitlab-ci.yml`](../.gitlab-ci.yml) |
+| Windows (PowerShell) | [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml) |
 
 ## What you need
 
@@ -19,7 +24,7 @@ Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) into the **application** repo (the pr
 | Runner | Self-hosted, **shell** executor (not Docker, not Kubernetes), tag `critique-bot` |
 | Machine | 64-bit Linux or Windows. **browser:** Microsoft Edge (Chrome is a fallback). **ollama / openai:** no Edge |
 | Shared disk | Job and worker must see the **same** `config.json` and `queue_dir` |
-| Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install path: `/opt/critique-bot` |
+| Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install: `/opt/critique-bot` (Linux) or `C:\critique-bot` (Windows) |
 | Session | **browser:** Edge signed in once (`--headed`). Later runs reuse `.edge-profile`. **HTTP:** `ollama serve` or API credentials |
 | Token | Project (or group) access token, scope `api`, role Developer+, in `CRITIQUE_GITLAB_TOKEN` |
 
@@ -53,19 +58,21 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
 
 ## One-time: GitLab project
 
-1. Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) into the app repo (or merge the `review` job into an existing pipeline).
+1. Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) (Linux) or [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml) (Windows) into the app repo as `.gitlab-ci.yml` (or merge the `review` job into an existing pipeline).
 2. Confirm the runner is available to that project (project or group runner).
 3. Create a **project access token**: Settings → Access Tokens → role Developer or higher, scope `api`.
 4. CI/CD variable `CRITIQUE_GITLAB_TOKEN`:
    - Value: that token
    - Masked: yes
    - **Protect variable: no** (protected variables are hidden from feature-branch MR pipelines)
-5. Optional variables (defaults are already in `.gitlab-ci.yml`):
+5. Optional variables (defaults are already in the Linux / Windows job files):
 
-   | Variable | Default | Meaning |
-   | --- | --- | --- |
-   | `CRITIQUE_CONFIG` | `/opt/critique-bot/config.json` | Same file the worker uses |
-   | `CRITIQUE_BIN` | `critique-bot` | Binary name or absolute path |
+   | Variable | Linux default | Windows default | Meaning |
+   | --- | --- | --- | --- |
+   | `CRITIQUE_CONFIG` | `/opt/critique-bot/config.json` | `C:\critique-bot\config.json` | Same file the worker uses |
+   | `CRITIQUE_BIN` | `critique-bot` | `C:\critique-bot\critique-bot.exe` | Binary name or absolute path |
+
+   On Windows, invoke it with `& "$CRITIQUE_BIN" submit …`. Do not write `$env:CRITIQUE_BIN submit`: GitLab expands `$env` as a CI variable (usually empty), so PowerShell tries to run `submit` and fails with `submit` not found. A literal PowerShell `$` (such as `$LASTEXITCODE`) must be written `$$` in the YAML.
 
 `CI_JOB_TOKEN` cannot create MR notes or inline discussions. If `CRITIQUE_GITLAB_TOKEN` is missing, the job still saves `out/review.md` as an artifact; posting comments is skipped.
 
@@ -103,6 +110,7 @@ Start with `critique-bot doctor --config "$CRITIQUE_CONFIG"` (machine, login, se
 
 | Symptom | Check |
 | --- | --- |
+| `$env:CRITIQUE_BIN submit` / `submit` not found | Windows job used `$env:CRITIQUE_BIN` without `&`. Use [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml): `& "$CRITIQUE_BIN" submit …` |
 | `worker is not running` | `queue-status`; systemd status; same `queue_dir` as the job |
 | Job queued forever | Worker logs; chat UI login expired (`worker --headed`); selectors in `config.json` |
 | Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup` |

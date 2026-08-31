@@ -270,8 +270,15 @@ class ParseHelpersTests(unittest.TestCase):
     def test_dedicated_edge_profile(self) -> None:
         dedicated = dedicated_edge_user_data_dir()
         system = system_edge_user_data_dir()
-        self.assertEqual(dedicated.parent, system.parent)
-        self.assertTrue(str(dedicated).endswith("-critique-bot"))
+        self.assertNotEqual(dedicated.resolve(), system.resolve())
+        # Chromium 136+ treats a path that string-prefix-matches the default
+        # User Data dir as the daily profile (HTTP 403). A sibling named
+        # "User Data-critique-bot" fails that check on Windows.
+        self.assertFalse(
+            str(dedicated.resolve()).startswith(str(system.resolve()))
+        )
+        self.assertIn("critique-bot", str(dedicated))
+        self.assertIn("msedge-user-data", str(dedicated))
 
 
 class LoadConfigErrorTests(EnvIsolated):

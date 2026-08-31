@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from critique_bot import log
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
@@ -162,8 +162,16 @@ def _is_system_profile(user_data_dir: str | None) -> bool:
     if not user_data_dir:
         return False
     try:
-        return Path(user_data_dir).expanduser().resolve() == system_edge_user_data_dir().resolve()
+        path = Path(user_data_dir).expanduser().resolve()
+        system = system_edge_user_data_dir().expanduser().resolve()
     except OSError:
+        return False
+    if path == system:
+        return True
+    try:
+        path.relative_to(system)
+        return True
+    except ValueError:
         return False
 
 
@@ -442,35 +450,94 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _cdp_version_urls(cdp_url: str) -> tuple[str, ...]:
+    parsed = urlsplit(cdp_url.rstrip("/"))
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    netloc_port = f":{port}" if port else ""
+    hosts = [parsed.hostname or host]
+    if host == "127.0.0.1":
+        hosts.append("localhost")
+    elif host == "localhost":
+        hosts.append("127.0.0.1")
+    urls: list[str] = []
+    for name in hosts:
+        if not name:
+            continue
+        alt = parsed._replace(netloc=f"{name}{netloc_port}")
+        urls.append(urlunsplit(alt).rstrip("/") + "/json/version")
+    return tuple(dict.fromkeys(urls))
+
+
+def _open_cdp_version(url: str):
+    parsed = urlsplit(url)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "*/*",
+            "Origin": f"{parsed.scheme}://{parsed.netloc}",
+        },
+    )
+    return urllib.request.urlopen(request, timeout=1)
+
+
 def _wait_for_cdp(
     cdp_url: str,
     *,
     timeout_s: float = 45,
     process: subprocess.Popen[bytes] | None = None,
     stderr_path: Path | None = None,
+    user_data_dir: Path | None = None,
 ) -> None:
-    version_url = cdp_url.rstrip("/") + "/json/version"
+    version_urls = _cdp_version_urls(cdp_url)
     deadline = time.time() + timeout_s
     last_error: Exception | None = None
+    saw_403 = False
+    forbidden_since: float | None = None
     while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(version_url, timeout=1) as response:
-                if 200 <= response.status < 300:
-                    log.debug(f"Edge remote debugging is ready at {cdp_url}")
-                    return
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last_error = exc
-            time.sleep(0.2)
+        for version_url in version_urls:
+            try:
+                with _open_cdp_version(version_url) as response:
+                    if 200 <= response.status < 300:
+                        log.debug(f"Edge remote debugging is ready at {cdp_url}")
+                        return
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code == 403:
+                    saw_403 = True
+                    if forbidden_since is None:
+                        forbidden_since = time.time()
+                    try:
+                        exc.read()
+                    except OSError:
+                        pass
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+        if forbidden_since is not None and time.time() - forbidden_since >= 1.5:
+            break
+        time.sleep(0.2)
     detail = _stderr_tail(stderr_path)
     exited = ""
     if process is not None and process.poll() is not None:
         exited = f" Edge process already exited ({process.returncode})."
+    extra = f" Edge output: {detail}" if detail else ""
+    profile = f" Profile: {user_data_dir}." if user_data_dir else ""
+    if saw_403:
+        raise BrowserError(
+            f"Edge refused remote debugging at {cdp_url} (HTTP 403). "
+            "Chromium 136+ blocks CDP on the daily desktop profile "
+            r"(Windows: %LOCALAPPDATA%\Microsoft\Edge\User Data). "
+            "The bot must use a non-default --user-data-dir; close everyday "
+            "Edge if it reused that window, then retry with --headed and log "
+            f"in on the bot profile.{profile} Last error: {last_error}.{exited}"
+            + extra
+        )
     raise BrowserError(
         f"Edge did not open remote debugging at {cdp_url}. "
         "Chromium 136+ ignores --remote-debugging-port on the daily desktop "
         "profile; the bot must use a non-default --user-data-dir. "
-        f"Last error: {last_error}.{exited}"
-        + (f" Edge output: {detail}" if detail else "")
+        f"Last error: {last_error}.{exited}{profile}"
+        + extra
     )
 
 
@@ -495,6 +562,7 @@ def _start_desktop_edge(
 ) -> tuple[str, subprocess.Popen[bytes]]:
     """Start desktop Edge the same way a user would, plus CDP so we can drive it."""
     executable, _channel = resolve_browser()
+    user_data_dir = user_data_dir.expanduser().resolve()
     user_data_dir.mkdir(parents=True, exist_ok=True)
     port = _free_port()
     cdp_url = f"http://127.0.0.1:{port}"
@@ -554,6 +622,7 @@ def _start_desktop_edge(
             cdp_url,
             process=process,
             stderr_path=stderr_path,
+            user_data_dir=user_data_dir,
         )
     except Exception:
         _stop_desktop_edge(process, user_data_dir)
@@ -1046,7 +1115,7 @@ def launch_edge(
             profile_dir = dedicated_edge_user_data_dir()
             log.warn(
                 "Edge (Chrome 136+) refuses remote debugging on the daily desktop "
-                "profile, so using a dedicated profile at "
+                "profile (HTTP 403), so using a dedicated profile at "
                 f"{profile_dir}. Log in once with --headed; later runs reuse that "
                 "session. Everyday Edge is left open."
             )
@@ -1127,7 +1196,9 @@ def launch_edge(
         _log_context(context, via="persistent")
         if debug_url and cdp_out is not None:
             try:
-                _wait_for_cdp(debug_url, timeout_s=20)
+                _wait_for_cdp(
+                    debug_url, timeout_s=20, user_data_dir=profile_dir
+                )
                 cdp_out["url"] = debug_url
                 log.info(f"persistent Edge CDP ready at {debug_url}")
             except BrowserError as exc:

@@ -414,9 +414,26 @@ def _resolve_api_key(raw: dict, backend: str) -> str:
 
 
 def dedicated_edge_user_data_dir() -> Path:
-    """Persistent Edge profile the bot can debug (not the daily desktop profile)."""
-    system = system_edge_user_data_dir()
-    return system.parent / f"{system.name}-critique-bot"
+    """Bot-owned Edge profile, outside Chromium's default User Data directory.
+
+    A sibling named ``User Data-critique-bot`` still string-prefix-matches
+    Windows ``User Data``, so Chromium 136+ treats it as the daily profile and
+    CDP returns HTTP 403.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(
+            Path.home() / "AppData" / "Local"
+        )
+        return Path(base) / "critique-bot" / "msedge-user-data"
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "critique-bot"
+            / "msedge-user-data"
+        )
+    return Path.home() / ".config" / "critique-bot" / "msedge-user-data"
 
 
 def system_edge_user_data_dir() -> Path:

@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import urllib.error
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from critique_bot.browser import (
     BrowserError,
+    _cdp_version_urls,
     _first_existing,
     _helpful_edge_error,
     _is_system_profile,
     _stderr_tail,
     _urls_match,
+    _wait_for_cdp,
     allowed_chat_hosts,
     as_browser_error,
     describe_page,
@@ -267,6 +272,15 @@ class ProfileAndTailTests(unittest.TestCase):
         self.assertFalse(_is_system_profile(None))
         self.assertFalse(_is_system_profile(""))
 
+    def test_system_profile_includes_default_subdir(self) -> None:
+        from critique_bot.config import dedicated_edge_user_data_dir
+        from critique_bot.config import system_edge_user_data_dir
+
+        system = system_edge_user_data_dir()
+        self.assertTrue(_is_system_profile(str(system)))
+        self.assertTrue(_is_system_profile(str(system / "Default")))
+        self.assertFalse(_is_system_profile(str(dedicated_edge_user_data_dir())))
+
     def test_stderr_tail_missing(self) -> None:
         self.assertEqual(_stderr_tail(None), "")
         self.assertEqual(_stderr_tail(Path("/no/such/file")), "")
@@ -284,6 +298,38 @@ class ProfileAndTailTests(unittest.TestCase):
             hit.write_text("x", encoding="utf-8")
             self.assertEqual(_first_existing(["/nope", str(hit), "/also-no"]), str(hit))
             self.assertIsNone(_first_existing(["/nope", ""]))
+
+
+class WaitForCdpTests(unittest.TestCase):
+    def test_version_urls_try_localhost(self) -> None:
+        urls = _cdp_version_urls("http://127.0.0.1:52979")
+        self.assertEqual(
+            urls,
+            (
+                "http://127.0.0.1:52979/json/version",
+                "http://localhost:52979/json/version",
+            ),
+        )
+
+    def test_403_mentions_non_default_profile(self) -> None:
+        err = urllib.error.HTTPError(
+            "http://127.0.0.1:9/json/version",
+            403,
+            "Forbidden",
+            Message(),
+            BytesIO(b""),
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(BrowserError) as ctx:
+                _wait_for_cdp(
+                    "http://127.0.0.1:9",
+                    timeout_s=0.05,
+                    user_data_dir=Path("C:/critique-bot/msedge-user-data"),
+                )
+        text = str(ctx.exception)
+        self.assertIn("403", text)
+        self.assertIn("non-default", text.lower())
+        self.assertIn("User Data", text)
 
 
 class ChatClientHelperTests(unittest.TestCase):

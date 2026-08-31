@@ -282,7 +282,7 @@ Persistent Edge profile so cookies survive restarts.
 | --- | --- |
 | Relative path (default `.edge-profile`) | Resolved against the **process cwd**, not the config file. Worker systemd `WorkingDirectory=/opt/critique-bot` → `/opt/critique-bot/.edge-profile` |
 | Absolute path | Used as-is. Prefer this on CI |
-| `system` or `default` | Not the daily desktop profile (Chromium 136+ blocks remote debugging there). Uses a sibling dir: Linux `~/.config/microsoft-edge-critique-bot`, Windows `%LOCALAPPDATA%\Microsoft\Edge\User Data-critique-bot` |
+| `system` or `default` | Not the daily desktop profile (Chromium 136+ blocks remote debugging there and returns HTTP 403). Uses a dedicated dir **outside** Edge's default User Data path: Linux `~/.config/critique-bot/msedge-user-data`, Windows `%LOCALAPPDATA%\critique-bot\msedge-user-data` |
 
 Do not share this directory with a human’s everyday Edge. Do not copy it between machines. Two processes must not use it at once (the worker already serializes jobs).
 
