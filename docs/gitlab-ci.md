@@ -65,12 +65,19 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
    - Value: that token
    - Masked: yes
    - **Protect variable: no** (protected variables are hidden from feature-branch MR pipelines)
-5. Optional variables (defaults are already in the Linux / Windows job files):
+5. `CRITIQUE_BIN` and `CRITIQUE_CONFIG` belong in the job YAML (`variables:`), not in GitLab **Settings → CI/CD → Variables**. That UI is only needed for `CRITIQUE_GITLAB_TOKEN`.
 
-   | Variable | Linux default | Windows default | Meaning |
+   | YAML variable | Linux default | Windows default | Meaning |
    | --- | --- | --- | --- |
    | `CRITIQUE_CONFIG` | `/opt/critique-bot/config.json` | `C:\critique-bot\config.json` | Same file the worker uses |
-   | `CRITIQUE_BIN` | `critique-bot` | `C:\critique-bot\critique-bot.exe` | Binary name or absolute path |
+   | `CRITIQUE_BIN` | `critique-bot` | `critique-bot` | Name on `PATH`, or an absolute path to the exe |
+
+   Put the install on the **runner PATH** so `CRITIQUE_BIN` can stay `critique-bot`:
+
+   - Linux: install so `/usr/local/bin/critique-bot` (or similar) is on the runner user’s `PATH`.
+   - Windows: [`packaging/worker-start.ps1`](../packaging/worker-start.ps1) prepends the zip/`\.venv\Scripts` directory to the current user’s `PATH`. Restart `gitlab-runner` once so jobs see it. If the runner is a Windows service running as Local System, add that directory to the **system** PATH, or set `CRITIQUE_BIN` in the YAML to the full path of `critique-bot.exe`.
+
+   `config.json` is not found via `PATH`. Edit `CRITIQUE_CONFIG` in `.gitlab-ci.yml` to the worker’s file (pip/venv: the clone’s `config.json`).
 
    On Windows, invoke it with `& "$CRITIQUE_BIN" submit …`. Do not write `$env:CRITIQUE_BIN submit`: GitLab expands `$env` as a CI variable (usually empty), so PowerShell tries to run `submit` and fails with `submit` not found. A literal PowerShell `$` (such as `$LASTEXITCODE`) must be written `$$` in the YAML.
 

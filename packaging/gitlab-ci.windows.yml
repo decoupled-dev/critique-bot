@@ -22,7 +22,11 @@
 #   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
 #     or one-shot `--headed`).
 #   - Worker already running: packaging/worker-start.ps1 at logon or a scheduled task.
-#   - critique-bot.exe and config.json on a shared path (defaults below).
+#   - `critique-bot` on the runner user's PATH (worker-start.ps1 adds it),
+#     and config.json on a shared path. Edit the two `variables:` lines
+#     in this file — do not set CRITIQUE_BIN / CRITIQUE_CONFIG in GitLab
+#     Settings → CI/CD → Variables. If PATH is not an option, set
+#     CRITIQUE_BIN to the full path of critique-bot.exe here.
 #
 # Inline + summary comments need a project (or group) access token:
 #   1. Settings → Access Tokens → project access token
@@ -45,8 +49,11 @@ stages:
   - review
 
 variables:
+  # Job YAML only (not GitLab CI/CD variables). BIN is looked up on PATH;
+  # CONFIG must be the same file the worker uses. Edit if your install is
+  # not C:\critique-bot (pip/venv: ...\critique-bot\config.json).
+  CRITIQUE_BIN: critique-bot
   CRITIQUE_CONFIG: 'C:\critique-bot\config.json'
-  CRITIQUE_BIN: 'C:\critique-bot\critique-bot.exe'
 
 review:
   stage: review
