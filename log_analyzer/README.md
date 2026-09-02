@@ -27,6 +27,8 @@ pip install -r log_analyzer/requirements.txt
 After `pip install -e ./log_analyzer` (works from any directory):
 
 ```bash
+python3 -m log_analyzer /path/to/android-project --output log-report.html
+# or, if ~/.local/bin is on PATH:
 log-analyzer /path/to/android-project --output log-report.html
 ```
 
