@@ -3,10 +3,9 @@ from __future__ import annotations
 import unittest
 
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.llm import (
+from critique_bot.provider import (
     BrowserProvider,
-    LLMError,
-    LLMSession,
+    ChatSession,
     open_provider,
 )
 
@@ -24,7 +23,7 @@ def _config(**overrides: object) -> BotConfig:
 
 class BrowserProviderTests(unittest.TestCase):
     def test_job_config_replace(self) -> None:
-        from critique_bot.llm import _job_config
+        from critique_bot.provider import _job_config
 
         cfg = _config(model="GPT-5.1")
         self.assertEqual(_job_config(cfg, None).model, "GPT-5.1")
@@ -32,7 +31,7 @@ class BrowserProviderTests(unittest.TestCase):
 
     def test_session_base_not_implemented(self) -> None:
         with self.assertRaises(NotImplementedError):
-            LLMSession().send("x")
+            ChatSession().send("x")
 
     def test_open_provider_is_browser(self) -> None:
         provider = open_provider(_config())
@@ -83,8 +82,10 @@ class BrowserProviderTests(unittest.TestCase):
             provider.session()
         self.assertIn("home tab", str(ctx.exception).lower())
 
-    def test_llm_error_is_runtime_error(self) -> None:
-        self.assertIsInstance(LLMError("boom"), RuntimeError)
+    def test_chat_error_is_runtime_error(self) -> None:
+        from critique_bot.chat_client import ChatError
+
+        self.assertIsInstance(ChatError("boom"), RuntimeError)
 
 
 if __name__ == "__main__":

@@ -6,15 +6,20 @@ from typing import TYPE_CHECKING
 
 from critique_bot import log
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.llm import COMPLETION_IDLE, COMPLETION_STOPPED, LLMError
 from critique_bot.patch import strip_unsafe_controls
 
 if TYPE_CHECKING:
     from playwright.sync_api import Frame, Locator, Page
 
 
-class ChatError(LLMError):
+class ChatError(RuntimeError):
     """The web chat UI did not complete a reply."""
+
+
+#: The chat UI told us generation had finished. The reply is whole.
+COMPLETION_STOPPED = "stop-signal"
+#: The reply merely stopped changing. It may have been cut off mid-answer.
+COMPLETION_IDLE = "idle-timeout"
 
 
 POLL_MS = 250

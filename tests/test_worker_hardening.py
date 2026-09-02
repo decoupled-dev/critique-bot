@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 from critique_bot.browser import BrowserError
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.llm import COMPLETION_IDLE, COMPLETION_STOPPED, LLMProvider, LLMSession
+from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED
+from critique_bot.provider import ChatProvider, ChatSession
 from critique_bot.queue import FileQueue, Job
 from critique_bot.worker import _execute_job, _JobWatchdog
 
@@ -30,7 +31,7 @@ def _config(queue_dir: str, **overrides: object) -> BotConfig:
     return BotConfig(**values)  # type: ignore[arg-type]
 
 
-class _Session(LLMSession):
+class _Session(ChatSession):
     def __init__(self, reply: str | BaseException, detail: dict | None = None) -> None:
         self._reply = reply
         self.last_detail = detail
@@ -42,7 +43,7 @@ class _Session(LLMSession):
         return self._reply
 
 
-class _Provider(LLMProvider):
+class _Provider(ChatProvider):
     def __init__(self, reply: str | BaseException, detail: dict | None = None) -> None:
         self._reply = reply
         self._detail = detail

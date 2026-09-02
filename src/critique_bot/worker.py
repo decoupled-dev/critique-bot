@@ -13,7 +13,8 @@ from typing import Callable
 from critique_bot import log
 from critique_bot.browser import BrowserError, as_browser_error
 from critique_bot.config import BotConfig
-from critique_bot.llm import COMPLETION_IDLE, LLMError, LLMProvider, open_provider
+from critique_bot.chat_client import COMPLETION_IDLE, ChatError
+from critique_bot.provider import ChatProvider, open_provider
 from critique_bot.output import isoformat, save_failure, write_output
 from critique_bot.queue import (
     HEARTBEAT_EVERY_SEC,
@@ -112,7 +113,7 @@ def _browser_provider_loop(
 
 
 def _session_loop(
-    provider: LLMProvider,
+    provider: ChatProvider,
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
@@ -132,7 +133,7 @@ def _session_loop(
 
 
 def _sequential_loop(
-    provider: LLMProvider,
+    provider: ChatProvider,
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
@@ -148,7 +149,7 @@ def _sequential_loop(
 
 
 def _parallel_loop(
-    provider: LLMProvider,
+    provider: ChatProvider,
     config: BotConfig,
     queue: FileQueue,
     limiter: RateLimiter,
@@ -207,7 +208,7 @@ def _parallel_loop(
 
 
 def _run_job(
-    provider: LLMProvider,
+    provider: ChatProvider,
     config: BotConfig,
     queue: FileQueue,
     job: Job,
@@ -280,7 +281,7 @@ def _save_job_failure(session, out_dir: Path) -> None:
 
 
 def _execute_job(
-    provider: LLMProvider,
+    provider: ChatProvider,
     config: BotConfig,
     queue: FileQueue,
     job: Job,
@@ -318,7 +319,7 @@ def _execute_job(
         log.error(f"job {job.id} browser error: {exc}")
         queue.requeue_job(job.id, max_attempts=config.max_attempts)
         raise
-    except LLMError as exc:
+    except ChatError as exc:
         closed = as_browser_error(exc)
         if closed is not None:
             log.error(f"job {job.id} browser error: {closed}")

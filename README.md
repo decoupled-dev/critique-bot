@@ -1,6 +1,6 @@
 # Critique bot
 
-LLM bot that drives a ChatGPT-like web UI in Microsoft Edge. Prompt composition, the job queue, and review output stay the same; the model is whatever is signed into that page.
+Patch-review bot that drives a ChatGPT-like web UI in Microsoft Edge. Prompt composition, the job queue, and review output stay the same; the model is whatever is signed into that page.
 
 **Default mode is a specialized code reviewer.** Pass a patch and the bot wraps it in the review template. `--mode general` sends a one-shot prompt. `--mode chat` is an interactive conversation in the terminal.
 

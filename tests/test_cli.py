@@ -202,6 +202,40 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("REVIEW:", prompt)
         self.assertIn("+hi", prompt)
 
+    def test_review_injects_gitlab_mr_context(self) -> None:
+        from critique_bot.config import BotConfig, GitLabConfig, Selectors
+        from critique_bot.gitlab import MrContext
+
+        patch_path = self.folder / "d.patch"
+        patch_path.write_text("diff --git a/a b/a\n+hi\n", encoding="utf-8")
+        template = self.folder / "t.txt"
+        template.write_text("CTX {mr_context}\n{patch}\n", encoding="utf-8")
+        args = argparse.Namespace(
+            patch_file=str(patch_path),
+            files=None,
+            paths=[],
+            prompt=None,
+            prompt_file=None,
+            prompt_template=str(template),
+        )
+        config = BotConfig(
+            url="https://example.invalid/chat",
+            selectors=Selectors(prompt_input="textarea", assistant_messages=".a"),
+            gitlab=GitLabConfig(
+                base_url="https://gitlab.example.com", project_id="1", mr_iid="2"
+            ),
+        )
+        ctx = MrContext(
+            title="AAOS-1 HVAC",
+            tickets=("AAOS-1",),
+            commits=("abc Fix leak",),
+        )
+        with patch("critique_bot.cli._load_gitlab_mr_context", return_value=ctx):
+            prompt = _build_prompt(args, MODE_REVIEW, self.limits, config)
+        self.assertIn("AAOS-1 HVAC", prompt)
+        self.assertIn("AAOS-1", prompt)
+        self.assertIn("+hi", prompt)
+
     def test_general_appends_files(self) -> None:
         src = self.folder / "a.py"
         src.write_text("x = 1\n", encoding="utf-8")
@@ -330,7 +364,7 @@ class MainDispatchTests(unittest.TestCase):
                 return None
 
         buf = io.StringIO()
-        with patch("critique_bot.llm.open_provider", return_value=Provider()):
+        with patch("critique_bot.provider.open_provider", return_value=Provider()):
             with redirect_stdout(buf), redirect_stderr(io.StringIO()):
                 code = main(
                     [
@@ -375,7 +409,7 @@ class MainDispatchTests(unittest.TestCase):
                 return None
 
         err = io.StringIO()
-        with patch("critique_bot.llm.open_provider", return_value=Provider()):
+        with patch("critique_bot.provider.open_provider", return_value=Provider()):
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
                 code = main(
                     [
@@ -392,18 +426,18 @@ class MainDispatchTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("empty", err.getvalue().lower())
 
-    def test_llm_error_returns_one(self) -> None:
-        from critique_bot.llm import LLMError
+    def test_chat_error_returns_one(self) -> None:
+        from critique_bot.chat_client import ChatError
 
         class Provider:
             def __enter__(self) -> Provider:
-                raise LLMError("down")
+                raise ChatError("down")
 
             def __exit__(self, *exc: object) -> None:
                 return None
 
         err = io.StringIO()
-        with patch("critique_bot.llm.open_provider", return_value=Provider()):
+        with patch("critique_bot.provider.open_provider", return_value=Provider()):
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
                 code = main(
                     [

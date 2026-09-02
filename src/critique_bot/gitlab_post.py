@@ -1,29 +1,27 @@
-"""Post a summary note and inline diff discussions on a GitLab merge request."""
+"""Post summary and inline discussion threads on a GitLab merge request."""
 
 from __future__ import annotations
 
-import json
-import os
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
+from critique_bot import gitlab as gl
 from critique_bot import log
+from critique_bot.config import GitLabConfig
 from critique_bot.review_comments import (
+    DiffLine,
+    InlineComment,
+    discussion_position,
+    format_gitlab_comment,
+    format_gitlab_summary,
     parse_diff_lines,
     parse_inline_comments,
-    position_for,
     resolve_comment,
     strip_json_block,
 )
 
-TOKEN_ENV = ("CRITIQUE_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN")
-
-
-class GitLabPostError(RuntimeError):
-    """GitLab rejected or could not complete a review post."""
+TOKEN_ENV = gl.TOKEN_ENV
+GitLabPostError = gl.GitLabError
 
 
 def post_review(
@@ -33,155 +31,168 @@ def post_review(
     project_id: str | None = None,
     mr_iid: str | None = None,
     api_url: str | None = None,
+    mr_url: str | None = None,
     token: str | None = None,
+    gitlab: GitLabConfig | None = None,
 ) -> int:
-    project_id = project_id or os.environ.get("CI_PROJECT_ID") or ""
-    mr_iid = mr_iid or os.environ.get("CI_MERGE_REQUEST_IID") or ""
-    api_url = (api_url or os.environ.get("CI_API_V4_URL") or "").rstrip("/")
-    token = token or _resolve_token()
-    if not api_url:
-        raise GitLabPostError("need --api-url or CI_API_V4_URL")
-    if not project_id or not mr_iid:
-        raise GitLabPostError("need --project-id and --mr-iid (or CI_PROJECT_ID / CI_MERGE_REQUEST_IID)")
-    if not token:
+    target = gl.resolve_target(
+        gitlab,
+        api_url=api_url,
+        project_id=project_id,
+        mr_iid=mr_iid,
+        mr_url=mr_url,
+        token=token,
+    )
+    if not target.api_url:
+        raise GitLabPostError(
+            "need GitLab API URL: set gitlab.base_url in config.json, "
+            "--api-url, CI_API_V4_URL, or CI_SERVER_URL"
+        )
+    if not target.project_id or not target.mr_iid:
+        raise GitLabPostError(
+            "need project and merge request: set gitlab.project_id / "
+            "gitlab.mr_iid (or gitlab.mr_url) in config.json, --project-id / "
+            "--mr-iid, or CI_PROJECT_ID / CI_MERGE_REQUEST_IID"
+        )
+    resolved_token = target.token or _resolve_token()
+    if not resolved_token:
         raise GitLabPostError(
             "no GitLab token. Create a project access token with scope `api` "
             "and set CI/CD variable CRITIQUE_GITLAB_TOKEN (unprotected, masked)"
         )
+    project_id = target.project_id
+    mr_iid = target.mr_iid
+    api_url = target.api_url
     review_md = review_file.read_text(encoding="utf-8")
     if not review_md.strip():
         raise GitLabPostError(f"review file is empty: {review_file}")
     patch = patch_file.read_text(encoding="utf-8") if patch_file and patch_file.is_file() else ""
     comments = parse_inline_comments(review_md)
-    diff_lines = parse_diff_lines(patch) if patch else []
-    refs = _diff_refs(api_url, project_id, mr_iid, token)
-    posted = 0
+    local_lines = parse_diff_lines(patch) if patch else []
+    remote_lines: list[DiffLine] | None = None
+    refs = _diff_refs(api_url, project_id, mr_iid, resolved_token)
+    discussions = f"{gl.mr_api_url(api_url, project_id, mr_iid)}/discussions"
+    inline = 0
+    overview = 0
     skipped = 0
+
+    def lines_for(comment: InlineComment) -> DiffLine | None:
+        nonlocal remote_lines
+        row = resolve_comment(comment, local_lines) if local_lines else None
+        if row is not None:
+            return row
+        if remote_lines is None:
+            remote_lines = parse_diff_lines(
+                _fetch_mr_patch(api_url, project_id, mr_iid, resolved_token)
+            )
+        if remote_lines:
+            return resolve_comment(comment, remote_lines)
+        return None
+
     for comment in comments:
-        row = resolve_comment(comment, diff_lines) if diff_lines else None
-        if row is None:
-            skipped += 1
-            log.warn(
-                "skipping inline comment; line not in diff "
-                + log.kv(path=comment.path, line=comment.line, side=comment.side)
+        row = lines_for(comment)
+        body = format_gitlab_comment(comment)
+        posted = False
+        if row is not None:
+            posted = _post_diff_thread(
+                discussions, resolved_token, body, refs, row
             )
+            if posted:
+                inline += 1
+                log.info(
+                    "posted inline thread "
+                    + log.kv(
+                        path=row.path,
+                        line=row.new_line or row.old_line,
+                    )
+                )
+        if posted:
             continue
-        position = {
-            "base_sha": refs["base_sha"],
-            "start_sha": refs["start_sha"],
-            "head_sha": refs["head_sha"],
-            "old_path": row.old_path or row.path,
-            "new_path": row.path,
-            "position_type": "text",
-            **position_for(row),
-        }
+        fallback = format_gitlab_comment(comment, include_location=True)
         try:
-            _request(
-                "POST",
-                f"{api_url}/projects/{_quote(project_id)}/merge_requests/{mr_iid}/discussions",
-                token,
-                {"body": comment.body, "position": position},
-            )
+            _post_discussion(discussions, resolved_token, fallback)
         except GitLabPostError as exc:
             skipped += 1
-            log.warn(f"inline comment rejected: {exc}")
+            log.warn(
+                "skipping comment; could not post thread "
+                + log.kv(path=comment.path, line=comment.line)
+                + f" {exc}"
+            )
             continue
-        posted += 1
+        overview += 1
         log.info(
-            "posted inline comment "
-            + log.kv(path=row.path, line=position.get("new_line") or position.get("old_line"))
+            "posted overview thread "
+            + log.kv(path=comment.path, line=comment.line)
         )
+
     summary = strip_json_block(review_md)
     summary_ok = True
     if summary:
-        header = ""
-        if posted:
-            header = f"_Posted {posted} inline comment(s) on the Changes tab._\n\n"
         try:
-            _request(
-                "POST",
-                f"{api_url}/projects/{_quote(project_id)}/merge_requests/{mr_iid}/notes",
-                token,
-                {"body": header + summary},
+            _post_discussion(
+                discussions,
+                resolved_token,
+                format_gitlab_summary(
+                    summary, inline_count=inline, overview_count=overview
+                ),
             )
-            log.info("posted merge request summary note")
+            log.info("posted merge request summary thread")
         except GitLabPostError as exc:
             summary_ok = False
-            log.error(f"could not post summary note: {exc}")
+            log.error(f"could not post summary thread: {exc}")
     print(
-        f"gitlab-post: {posted} inline comment(s), {skipped} skipped, "
-        f"summary={'yes' if summary and summary_ok else 'no'}",
+        f"gitlab-post: {inline} inline thread(s), {overview} overview thread(s), "
+        f"{skipped} skipped, summary={'yes' if summary and summary_ok else 'no'}",
         flush=True,
     )
     return 0 if summary_ok else 1
 
 
+def _post_diff_thread(
+    url: str,
+    token: str,
+    body: str,
+    refs: dict[str, str],
+    row: DiffLine,
+) -> bool:
+    """Try a Changes-tab diff discussion; False if GitLab rejects the position."""
+    for with_range in (True, False):
+        position = discussion_position(refs, row, with_line_range=with_range)
+        try:
+            _post_discussion(url, token, body, position=position)
+            return True
+        except GitLabPostError as exc:
+            log.warn(f"inline thread rejected: {exc}")
+    return False
+
+
+def _post_discussion(
+    url: str,
+    token: str,
+    body: str,
+    position: dict[str, Any] | None = None,
+) -> Any:
+    payload: dict[str, Any] = {"body": body}
+    if position:
+        payload["position"] = position
+    return _request("POST", url, token, payload)
+
+
 def _resolve_token() -> str:
-    for name in TOKEN_ENV:
-        value = os.environ.get(name, "").strip()
-        if value:
-            if name == "CI_JOB_TOKEN":
-                log.warn(
-                    "CI_JOB_TOKEN cannot create MR notes; "
-                    "set CRITIQUE_GITLAB_TOKEN to a project access token (scope api)"
-                )
-            return value
-    return ""
+    return gl.resolve_token()
 
 
 def _diff_refs(api_url: str, project_id: str, mr_iid: str, token: str) -> dict[str, str]:
-    env_refs = {
-        "base_sha": os.environ.get("CI_MERGE_REQUEST_DIFF_BASE_SHA") or "",
-        "start_sha": os.environ.get("CI_MERGE_REQUEST_DIFF_BASE_SHA") or "",
-        "head_sha": os.environ.get("CI_COMMIT_SHA") or "",
-    }
-    try:
-        data = _request(
-            "GET",
-            f"{api_url}/projects/{_quote(project_id)}/merge_requests/{mr_iid}",
-            token,
-        )
-    except GitLabPostError as exc:
-        if all(env_refs.values()):
-            log.warn(f"using CI sha env; could not load MR diff_refs: {exc}")
-            return env_refs
-        raise
-    refs = data.get("diff_refs") if isinstance(data, dict) else None
-    if isinstance(refs, dict) and refs.get("base_sha") and refs.get("head_sha"):
-        return {
-            "base_sha": str(refs["base_sha"]),
-            "start_sha": str(refs.get("start_sha") or refs["base_sha"]),
-            "head_sha": str(refs["head_sha"]),
-        }
-    if all(env_refs.values()):
-        return env_refs
-    raise GitLabPostError("merge request has no diff_refs yet; retry the job")
+    return gl.diff_refs(api_url, project_id, mr_iid, token, do_request=_request)
+
+
+def _fetch_mr_patch(api_url: str, project_id: str, mr_iid: str, token: str) -> str:
+    return gl.fetch_mr_patch(api_url, project_id, mr_iid, token, do_request=_request)
 
 
 def _request(method: str, url: str, token: str, payload: dict[str, Any] | None = None) -> Any:
-    headers = {"PRIVATE-TOKEN": token}
-    if token == os.environ.get("CI_JOB_TOKEN"):
-        headers = {"JOB-TOKEN": token}
-    body = None
-    if payload is not None:
-        headers["Content-Type"] = "application/json"
-        body = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:500]
-        raise GitLabPostError(f"HTTP {exc.code} {method} {url}: {detail}") from exc
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    return gl.request(method, url, token, payload)
 
 
 def _quote(project_id: str) -> str:
-    if project_id.isdigit():
-        return project_id
-    return urllib.parse.quote(project_id, safe="")
+    return gl.quote(project_id)

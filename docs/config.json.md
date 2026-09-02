@@ -328,6 +328,25 @@ How many finished job folders to keep under `results/`. The oldest are removed a
 
 ---
 
+## `gitlab` (object, optional)
+
+Used when reviewing a merge request: the bot loads title, ticket IDs, description, commit messages, and changed file/line ranges into the SYSTEM prompt, and `gitlab-post` uses the same targeting.
+
+| Key | Meaning |
+| --- | --- |
+| `base_url` | GitLab origin, e.g. `https://gitlab.example.com`. API root is `{base_url}/api/v4`. Env: `CRITIQUE_GITLAB_URL`. In CI, `CI_SERVER_URL` / `CI_API_V4_URL` also work |
+| `project_id` | Numeric ID or `group/project` path. Optional when `CI_PROJECT_ID` / `CI_PROJECT_PATH` or `mr_url` is set |
+| `mr_iid` | Merge request IID. Optional when `CI_MERGE_REQUEST_IID` or `mr_url` is set |
+| `mr_url` | Full MR web URL. Parsed for host, project path, and IID when those are missing |
+
+The merge-request endpoint is:
+
+`{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}`
+
+Posting still needs `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
+
+---
+
 ## Environment override summary
 
 | Env | Config key |
@@ -339,6 +358,7 @@ How many finished job folders to keep under `results/`. The oldest are removed a
 | `CRITIQUE_CDP_URL` | `cdp_url` |
 | `CRITIQUE_QUEUE_DIR` | `queue_dir` |
 | `CRITIQUE_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
+| `CRITIQUE_GITLAB_URL` | `gitlab.base_url` |
 
 `--model` and `--cdp-url` override env and file. GitLab comment posting uses `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
 
@@ -376,7 +396,13 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
   "queue_dir": "/opt/critique-bot/.critique-queue",
   "min_interval_seconds": 30,
   "interval_jitter_seconds": 5,
-  "max_parallel_tabs": 1
+  "max_parallel_tabs": 1,
+  "gitlab": {
+    "base_url": "https://gitlab.example.com",
+    "project_id": "",
+    "mr_iid": "",
+    "mr_url": ""
+  }
 }
 ```
 

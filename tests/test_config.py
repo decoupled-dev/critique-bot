@@ -39,6 +39,7 @@ _ENV = (
     "CRITIQUE_CDP_URL",
     "CRITIQUE_QUEUE_DIR",
     "CRITIQUE_MAX_PARALLEL_TABS",
+    "CRITIQUE_GITLAB_URL",
 )
 
 
@@ -77,6 +78,22 @@ class EnvIsolated(unittest.TestCase):
 class ComposePromptTests(unittest.TestCase):
     def test_replaces_patch(self) -> None:
         self.assertEqual(compose_prompt("before {patch} after", "DIFF"), "before DIFF after")
+
+    def test_replaces_mr_context_placeholder(self) -> None:
+        out = compose_prompt("CTX {mr_context}\n{patch}", "DIFF", "Title: Hello")
+        self.assertIn("Title: Hello", out)
+        self.assertIn("DIFF", out)
+        self.assertNotIn("{mr_context}", out)
+
+    def test_injects_mr_context_without_placeholder(self) -> None:
+        out = compose_prompt("REVIEW:\n{patch}", "DIFF", "Tickets: AAOS-1")
+        self.assertTrue(out.startswith("SYSTEM"))
+        self.assertIn("Tickets: AAOS-1", out)
+        self.assertIn("DIFF", out)
+
+    def test_empty_mr_context_placeholder(self) -> None:
+        out = compose_prompt("{mr_context}\n{patch}", "DIFF", "")
+        self.assertIn("No GitLab merge-request metadata", out)
 
     def test_missing_placeholder(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
@@ -383,6 +400,30 @@ class LoadConfigSuccessTests(EnvIsolated):
         config = load_config(path)
         self.assertEqual(config.user_data_dir, str(custom.resolve()))
 
+    def test_gitlab_nested_and_flat_keys(self) -> None:
+        path = self._write(
+            self._browser(
+                {
+                    "gitlab": {
+                        "base_url": "https://gitlab.example.com/",
+                        "project_id": "group/app",
+                        "mr_iid": "42",
+                        "mr_url": "https://gitlab.example.com/group/app/-/merge_requests/42",
+                    }
+                }
+            )
+        )
+        config = load_config(path)
+        self.assertEqual(config.gitlab.base_url, "https://gitlab.example.com/")
+        self.assertEqual(config.gitlab.project_id, "group/app")
+        self.assertEqual(config.gitlab.mr_iid, "42")
+
+    def test_gitlab_base_url_env_and_flat_alias(self) -> None:
+        path = self._write(self._browser({"gitlab_base_url": "https://from-file.example"}))
+        os.environ["CRITIQUE_GITLAB_URL"] = "https://from-env.example"
+        config = load_config(path)
+        self.assertEqual(config.gitlab.base_url, "https://from-env.example")
+
     def test_absolute_max_parallel_constant(self) -> None:
         self.assertEqual(ABSOLUTE_MAX_PARALLEL_TABS, 8)
 
@@ -391,7 +432,15 @@ class DefaultTemplateTests(unittest.TestCase):
     def test_finds_bundled_or_cwd_template(self) -> None:
         path = default_prompt_template_path()
         self.assertTrue(path.is_file())
-        self.assertIn("{patch}", path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("{patch}", text)
+        self.assertIn("{mr_context}", text)
+        self.assertIn("AAOS", text)
+        self.assertIn("SYSTEM", text)
+        self.assertIn("ROLE", text)
+        self.assertIn("FEW-SHOT", text)
+        self.assertIn("privapp-permissions", text)
+        self.assertIn("No actionable findings.", text)
 
     def test_missing_template_error(self) -> None:
         with patch("critique_bot.config.Path.is_file", return_value=False):

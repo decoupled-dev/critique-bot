@@ -185,7 +185,10 @@ class ReviewCommentTests(unittest.TestCase):
             "-x\n"
         )
         lines = parse_diff_lines(patch)
-        self.assertEqual(lines, [])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].path, "gone.py")
+        self.assertEqual(lines[0].kind, "del")
+        self.assertEqual(lines[0].old_line, 1)
 
     def test_json_fence_case_insensitive(self) -> None:
         text = 'hi\n```JSON\n{"comments":[{"path":"a.py","line":1,"body":"x"}]}\n```\n'
@@ -207,6 +210,96 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertEqual(position_for(row), {"old_line": 4})
         empty = DiffLine("a.py", "a.py", None, None, "other")
         self.assertEqual(position_for(empty), {})
+
+    def test_skips_nit_severity(self) -> None:
+        comments = parse_inline_comments(
+            json.dumps(
+                {
+                    "comments": [
+                        {"path": "a.py", "line": 1, "severity": "nit", "body": "rename"},
+                        {
+                            "path": "a.py",
+                            "line": 2,
+                            "severity": "must-fix",
+                            "body": "restore Binder identity",
+                        },
+                    ]
+                }
+            )
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].severity, "must-fix")
+
+    def test_prefers_last_comments_json_fence(self) -> None:
+        text = (
+            "ignore\n"
+            '```json\n{"comments":[{"path":"old.py","line":1,"body":"stale"}]}\n```\n'
+            "real\n"
+            '```json\n{"comments":[{"path":"a.py","line":3,"body":"keep"}]}\n```\n'
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "a.py")
+        self.assertEqual(strip_json_block(text), "ignore\n\nreal")
+
+    def test_line_code_and_range(self) -> None:
+        import hashlib
+
+        from critique_bot.review_comments import (
+            DiffLine,
+            discussion_position,
+            line_code_for,
+            line_range_for,
+        )
+
+        digest = hashlib.sha1(b"src/pay.py").hexdigest()
+        self.assertEqual(line_code_for("src/pay.py", None, 12), f"{digest}_0_12")
+        row = DiffLine("src/pay.py", "src/pay.py", None, 12, "add")
+        span = line_range_for(row)
+        self.assertEqual(span["start"]["line_code"], f"{digest}_0_12")
+        self.assertEqual(span["start"]["type"], "new")
+        self.assertEqual(span["start"]["new_line"], 12)
+        self.assertNotIn("old_line", span["start"])
+        refs = {"base_sha": "b", "start_sha": "s", "head_sha": "h"}
+        pos = discussion_position(refs, row)
+        self.assertEqual(pos["new_line"], 12)
+        self.assertNotIn("old_line", pos)
+        self.assertIn("line_range", pos)
+        bare = discussion_position(refs, row, with_line_range=False)
+        self.assertNotIn("line_range", bare)
+
+    def test_format_gitlab_comment_and_summary(self) -> None:
+        from critique_bot.review_comments import (
+            InlineComment,
+            format_gitlab_comment,
+            format_gitlab_summary,
+            truncate_markdown,
+        )
+
+        titled = InlineComment(
+            path="Foo.java",
+            line=8,
+            side="new",
+            body="**Security**\n\nRestore identity.",
+            severity="security",
+        )
+        self.assertEqual(
+            format_gitlab_comment(titled), "**Security**\n\nRestore identity."
+        )
+        untitled = InlineComment(
+            path="Foo.java", line=8, side="new", body="Restore identity.", severity="test"
+        )
+        self.assertIn("**Missing test**", format_gitlab_comment(untitled))
+        located = format_gitlab_comment(untitled, include_location=True)
+        self.assertIn("`Foo.java:8`", located)
+        summary = format_gitlab_summary(
+            "1. Restore Binder identity.", inline_count=1, overview_count=1
+        )
+        self.assertIn("### AAOS system-app review", summary)
+        self.assertIn("Changes", summary)
+        self.assertIn("overview thread", summary)
+        self.assertTrue(truncate_markdown("short", 10) == "short")
+        self.assertTrue(truncate_markdown("a" * 50, 10).endswith("…"))
 
 
 if __name__ == "__main__":

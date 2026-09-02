@@ -29,6 +29,7 @@ ENV_USER_DATA_DIR = "CRITIQUE_USER_DATA_DIR"
 ENV_CDP_URL = "CRITIQUE_CDP_URL"
 ENV_QUEUE_DIR = "CRITIQUE_QUEUE_DIR"
 ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
+ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
 
 BACKEND_BROWSER = "browser"
 
@@ -47,6 +48,21 @@ _BROWSER_ALIASES = frozenset({"", "browser", "web", "playwright", "ui"})
 
 class ConfigError(ValueError):
     """Invalid or incomplete bot configuration."""
+
+
+@dataclass(frozen=True)
+class GitLabConfig:
+    """Host and optional MR targeting used to call GitLab's API v4.
+
+    ``base_url`` is the GitLab origin (``https://gitlab.example.com``). The
+    review bot builds
+    ``{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}``.
+    """
+
+    base_url: str = ""
+    project_id: str = ""
+    mr_iid: str = ""
+    mr_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,7 @@ class BotConfig:
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
     backend: str = BACKEND_BROWSER
+    gitlab: GitLabConfig = GitLabConfig()
 
     @property
     def input_limits(self) -> InputLimits:
@@ -311,6 +328,7 @@ def load_config(
             ABSOLUTE_MAX_READ_BYTES,
         ),
         backend=BACKEND_BROWSER,
+        gitlab=_load_gitlab(raw),
     )
 
 
@@ -397,9 +415,42 @@ def _resolve_user_data_dir(value: str) -> str:
     return resolved
 
 
-def compose_prompt(template: str, patch: str) -> str:
+def _load_gitlab(raw: dict) -> GitLabConfig:
+    nested = raw.get("gitlab") if isinstance(raw.get("gitlab"), dict) else {}
+    base_url = (
+        os.environ.get(ENV_GITLAB_URL)
+        or _clean(nested.get("base_url"))
+        or _clean(raw.get("gitlab_base_url"))
+    )
+    if os.environ.get(ENV_GITLAB_URL):
+        log.debug(f"gitlab.base_url overridden by {ENV_GITLAB_URL}")
+    return GitLabConfig(
+        base_url=base_url,
+        project_id=_clean(nested.get("project_id") or raw.get("gitlab_project_id")),
+        mr_iid=_clean(
+            nested.get("mr_iid")
+            or nested.get("merge_request_iid")
+            or raw.get("gitlab_mr_iid")
+        ),
+        mr_url=_clean(nested.get("mr_url") or raw.get("gitlab_mr_url")),
+    )
+
+
+def compose_prompt(template: str, patch: str, mr_context: str = "") -> str:
     if "{patch}" not in template:
         raise ConfigError("prompt template must contain the {patch} placeholder")
+    context = (mr_context or "").strip()
+    if "{mr_context}" in template:
+        template = template.replace(
+            "{mr_context}",
+            context or "No GitLab merge-request metadata was available.",
+        )
+    elif context:
+        template = (
+            "SYSTEM — merge request context from GitLab\n"
+            f"{context}\n\n"
+            + template
+        )
     return template.replace("{patch}", patch)
 
 

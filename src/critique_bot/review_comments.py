@@ -2,13 +2,43 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.S | re.I)
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_TITLED_BODY_RE = re.compile(
+    r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action)\*\*",
+    re.I,
+)
 MAX_INLINE_COMMENTS = 12
+MAX_INLINE_BODY_CHARS = 700
+MAX_SUMMARY_CHARS = 2000
+SKIP_SEVERITIES = {
+    "nit",
+    "nits",
+    "praise",
+    "lgtm",
+    "style",
+    "info",
+    "note",
+    "ok",
+    "n/a",
+}
+SEVERITY_TITLES = {
+    "blocker": "Blocker",
+    "must-fix": "Must fix",
+    "must_fix": "Must fix",
+    "high": "Must fix",
+    "security": "Security",
+    "test": "Missing test",
+    "missing-test": "Missing test",
+    "compat": "Compat",
+    "compatibility": "Compat",
+}
 
 
 @dataclass(frozen=True)
@@ -17,6 +47,7 @@ class InlineComment:
     line: int
     side: str
     body: str
+    severity: str = ""
 
 
 @dataclass(frozen=True)
@@ -29,11 +60,8 @@ class DiffLine:
 
 
 def strip_json_block(review_md: str) -> str:
-    """Prose for the summary MR note, without the trailing JSON fence."""
-    match = _JSON_FENCE_RE.search(review_md)
-    if not match:
-        return review_md.strip()
-    return (review_md[: match.start()] + review_md[match.end() :]).strip()
+    """Prose for the summary MR thread, without fenced JSON."""
+    return _JSON_FENCE_RE.sub("", review_md).strip()
 
 
 def parse_inline_comments(review_md: str) -> list[InlineComment]:
@@ -49,6 +77,9 @@ def parse_inline_comments(review_md: str) -> list[InlineComment]:
             continue
         path = _clean_path(str(item.get("path") or item.get("file") or ""))
         body = str(item.get("body") or item.get("message") or "").strip()
+        severity = str(item.get("severity") or item.get("sev") or "").strip().lower()
+        if severity in SKIP_SEVERITIES:
+            continue
         side = str(item.get("side") or "new").strip().lower()
         if side in {"right", "added", "+"}:
             side = "new"
@@ -62,7 +93,11 @@ def parse_inline_comments(review_md: str) -> list[InlineComment]:
             continue
         if not path or not body or line < 1:
             continue
-        comments.append(InlineComment(path=path, line=line, side=side, body=body))
+        comments.append(
+            InlineComment(
+                path=path, line=line, side=side, body=body, severity=severity
+            )
+        )
         if len(comments) >= MAX_INLINE_COMMENTS:
             break
     return comments
@@ -84,7 +119,7 @@ def parse_diff_lines(patch: str) -> list[DiffLine]:
             in_hunk = False
             continue
         if raw.startswith("+++ "):
-            new_path = _clean_path(raw[4:])
+            new_path = _clean_path(raw[4:]) or old_path
             in_hunk = False
             continue
         hunk = _HUNK_RE.match(raw)
@@ -93,21 +128,18 @@ def parse_diff_lines(patch: str) -> list[DiffLine]:
             new_line = int(hunk.group(2))
             in_hunk = True
             continue
-        if not in_hunk or not new_path or raw.startswith("\\"):
+        path = new_path or old_path
+        if not in_hunk or not path or raw.startswith("\\"):
             continue
         if raw.startswith("+"):
-            lines.append(
-                DiffLine(new_path, old_path or new_path, None, new_line, "add")
-            )
+            lines.append(DiffLine(path, old_path or path, None, new_line, "add"))
             new_line += 1
         elif raw.startswith("-"):
-            lines.append(
-                DiffLine(new_path, old_path or new_path, old_line, None, "del")
-            )
+            lines.append(DiffLine(path, old_path or path, old_line, None, "del"))
             old_line += 1
         elif raw.startswith(" "):
             lines.append(
-                DiffLine(new_path, old_path or new_path, old_line, new_line, "context")
+                DiffLine(path, old_path or path, old_line, new_line, "context")
             )
             old_line += 1
             new_line += 1
@@ -158,6 +190,102 @@ def position_for(row: DiffLine) -> dict[str, int]:
     return {}
 
 
+def line_code_for(path: str, old_line: int | None, new_line: int | None) -> str:
+    """GitLab line_code: sha1(path)_old_new, with 0 for a missing side."""
+    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()
+    old = 0 if old_line is None else old_line
+    new = 0 if new_line is None else new_line
+    return f"{digest}_{old}_{new}"
+
+
+def line_range_for(row: DiffLine) -> dict[str, Any]:
+    """Single-line line_range some GitLab versions require for diff threads."""
+    code = line_code_for(row.path, row.old_line, row.new_line)
+    side = "old" if row.kind == "del" else "new"
+    point: dict[str, Any] = {"line_code": code, "type": side}
+    if row.old_line is not None:
+        point["old_line"] = row.old_line
+    if row.new_line is not None:
+        point["new_line"] = row.new_line
+    return {"start": point, "end": dict(point)}
+
+
+def discussion_position(
+    refs: dict[str, str],
+    row: DiffLine,
+    *,
+    with_line_range: bool = True,
+) -> dict[str, Any]:
+    position: dict[str, Any] = {
+        "base_sha": refs["base_sha"],
+        "start_sha": refs["start_sha"],
+        "head_sha": refs["head_sha"],
+        "old_path": row.old_path or row.path,
+        "new_path": row.path,
+        "position_type": "text",
+        **position_for(row),
+    }
+    if with_line_range:
+        position["line_range"] = line_range_for(row)
+    return position
+
+
+def format_gitlab_comment(
+    comment: InlineComment,
+    *,
+    include_location: bool = False,
+) -> str:
+    """GitLab-flavored markdown for an inline or overview discussion thread."""
+    body = truncate_markdown(comment.body.strip(), MAX_INLINE_BODY_CHARS)
+    title = SEVERITY_TITLES.get(comment.severity, "")
+    lines: list[str] = []
+    if include_location:
+        loc = f"`{comment.path}:{comment.line}`"
+        header = f"**{title}** · {loc}" if title else f"**{loc}**"
+        lines.append(header)
+        lines.append("")
+    elif title and not _TITLED_BODY_RE.match(body):
+        lines.append(f"**{title}**")
+        lines.append("")
+    lines.append(body)
+    return "\n".join(lines).strip()
+
+
+def format_gitlab_summary(
+    summary: str,
+    *,
+    inline_count: int = 0,
+    overview_count: int = 0,
+) -> str:
+    text = truncate_markdown(summary.strip(), MAX_SUMMARY_CHARS)
+    parts = ["### AAOS system-app review", "", text]
+    bits: list[str] = []
+    if inline_count:
+        bits.append(f"{inline_count} inline thread(s) on the **Changes** tab")
+    if overview_count:
+        bits.append(
+            f"{overview_count} overview thread(s) (diff line could not be mapped)"
+        )
+    if bits:
+        parts.extend(
+            [
+                "",
+                "---",
+                "_" + "; ".join(bits) + ". Reply on a thread to discuss._",
+            ]
+        )
+    return "\n".join(parts)
+
+
+def truncate_markdown(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit("\n", 1)[0]
+    if len(cut) < limit // 2:
+        cut = text[:limit].rsplit(" ", 1)[0]
+    return cut.rstrip() + "\n…"
+
+
 def _nearest(
     rows: list[DiffLine],
     target: int,
@@ -187,7 +315,12 @@ def _clean_path(value: str) -> str:
 
 
 def _extract_json(text: str) -> dict | None:
-    for match in _JSON_FENCE_RE.finditer(text):
+    matches = list(_JSON_FENCE_RE.finditer(text))
+    for match in reversed(matches):
+        parsed = _loads_object(match.group(1))
+        if parsed is not None and isinstance(parsed.get("comments"), list):
+            return parsed
+    for match in reversed(matches):
         parsed = _loads_object(match.group(1))
         if parsed is not None:
             return parsed

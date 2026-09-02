@@ -13,17 +13,7 @@ from typing import Any
 from critique_bot.config import BotConfig
 
 
-class LLMError(RuntimeError):
-    """The chat UI did not complete a reply."""
-
-
-#: The chat UI told us generation had finished. The reply is whole.
-COMPLETION_STOPPED = "stop-signal"
-#: The reply merely stopped changing. It may have been cut off mid-answer.
-COMPLETION_IDLE = "idle-timeout"
-
-
-class LLMSession:
+class ChatSession:
     """One conversation (one browser tab)."""
 
     page: Any = None
@@ -37,14 +27,14 @@ class LLMSession:
     def close(self) -> None:
         return None
 
-    def __enter__(self) -> LLMSession:
+    def __enter__(self) -> ChatSession:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
 
-class LLMProvider:
+class ChatProvider:
     """Process-level Edge resources."""
 
     can_parallelize: bool = False
@@ -54,20 +44,20 @@ class LLMProvider:
         *,
         isolated: bool = False,
         model: str | None = None,
-    ) -> LLMSession:
+    ) -> ChatSession:
         raise NotImplementedError
 
     def close(self) -> None:
         return None
 
-    def __enter__(self) -> LLMProvider:
+    def __enter__(self) -> ChatProvider:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
 
-def open_provider(config: BotConfig, *, headed: bool = False) -> LLMProvider:
+def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
     return BrowserProvider(config, headed=headed)
 
 
@@ -77,7 +67,7 @@ def _job_config(config: BotConfig, model: str | None) -> BotConfig:
     return config
 
 
-class BrowserProvider(LLMProvider):
+class BrowserProvider(ChatProvider):
     def __init__(self, config: BotConfig, *, headed: bool) -> None:
         self._config = config
         self._headed = headed
@@ -117,7 +107,7 @@ class BrowserProvider(LLMProvider):
         *,
         isolated: bool = False,
         model: str | None = None,
-    ) -> LLMSession:
+    ) -> ChatSession:
         cfg = _job_config(self._config, model)
         from critique_bot.browser import BrowserError, as_browser_error
 
@@ -144,7 +134,7 @@ class BrowserProvider(LLMProvider):
         return PageBrowserSession(page, cfg, close_page=True)
 
 
-class PageBrowserSession(LLMSession):
+class PageBrowserSession(ChatSession):
     def __init__(self, page: Any, config: BotConfig, *, close_page: bool) -> None:
         self.page = page
         self._config = config
@@ -176,7 +166,7 @@ class PageBrowserSession(LLMSession):
             log.debug(f"tab close: {exc}")
 
 
-class CdpBrowserSession(LLMSession):
+class CdpBrowserSession(ChatSession):
     def __init__(self, cdp_url: str, config: BotConfig) -> None:
         self._cdp_url = cdp_url
         self._config = config

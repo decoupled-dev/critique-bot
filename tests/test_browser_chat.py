@@ -38,7 +38,6 @@ from critique_bot.chat_client import (
     _wait_for_reply,
 )
 from critique_bot.config import Selectors
-from critique_bot.llm import LLMError
 
 
 class BlankUrlTests(unittest.TestCase):
@@ -372,8 +371,8 @@ class ChatClientHelperTests(unittest.TestCase):
         self.assertEqual(_click_timeout(500), 500)
         self.assertEqual(_click_timeout(90_000), 8_000)
 
-    def test_chat_error_is_llm_error(self) -> None:
-        self.assertTrue(issubclass(ChatError, LLMError))
+    def test_chat_error_is_runtime_error(self) -> None:
+        self.assertTrue(issubclass(ChatError, RuntimeError))
 
 
 class _Item:

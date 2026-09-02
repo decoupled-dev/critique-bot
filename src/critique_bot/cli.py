@@ -156,13 +156,41 @@ def _load_template(path: Path, limits: InputLimits) -> str:
     ).text
 
 
-def _build_prompt(args: argparse.Namespace, mode: str, limits: InputLimits) -> str:
+def _build_prompt(
+    args: argparse.Namespace,
+    mode: str,
+    limits: InputLimits,
+    config=None,
+) -> str:
     loaded_attachments = _collect_attachments(
         args.patch_file,
         list(args.files or []) + list(args.paths or []),
         limits,
-        allow_stdin=mode == MODE_REVIEW,
+        allow_stdin=False,
     )
+    mr_context = ""
+    if mode == MODE_REVIEW and config is not None:
+        fetched = _load_gitlab_mr_context(
+            config, need_patch=not loaded_attachments
+        )
+        if fetched is not None:
+            from critique_bot.gitlab import format_mr_context
+
+            mr_context = format_mr_context(fetched)
+            if not loaded_attachments and fetched.patch.strip():
+                loaded_attachments = [
+                    LoadedInput(name="merge_request.diff", text=fetched.patch)
+                ]
+                log.info(
+                    f"using merge request diff from GitLab ({len(fetched.patch)} chars)"
+                )
+    if mode == MODE_REVIEW and not loaded_attachments:
+        loaded_attachments = _collect_attachments(
+            args.patch_file,
+            list(args.files or []) + list(args.paths or []),
+            limits,
+            allow_stdin=True,
+        )
     raw_attachments = [(item.name, item.text) for item in loaded_attachments]
     read_capped = any(item.truncated_read for item in loaded_attachments)
 
@@ -219,7 +247,7 @@ def _build_prompt(args: argparse.Namespace, mode: str, limits: InputLimits) -> s
         else default_prompt_template_path()
     )
     template = _load_template(template_path, limits)
-    overhead = max(len(template) - 7, 0)
+    overhead = max(len(template) - 7, 0) + len(mr_context)
     attachments, stats = sanitize_attachments(
         raw_attachments,
         limits,
@@ -227,13 +255,47 @@ def _build_prompt(args: argparse.Namespace, mode: str, limits: InputLimits) -> s
     )
     stats.truncated_read = stats.truncated_read or read_capped
     body = format_attachments(attachments, named=len(attachments) > 1)
-    prompt = finalize_prompt(compose_prompt(template, body), limits, stats)
+    prompt = finalize_prompt(
+        compose_prompt(template, body, mr_context), limits, stats
+    )
     log.info(
         f"composed review prompt ({len(prompt)} chars"
         + (", sanitized" if stats.did_sanitize else "")
+        + (", gitlab mr context" if mr_context else "")
         + ")"
     )
     return prompt
+
+
+def _load_gitlab_mr_context(config, *, need_patch: bool):
+    """Fetch MR title, tickets, description, commits, and diffs when targeting is set."""
+    from critique_bot.gitlab import GitLabError, fetch_mr_context, resolve_target
+
+    gitlab_cfg = getattr(config, "gitlab", None) if config is not None else None
+    target = resolve_target(gitlab_cfg)
+    if not target.api_url or not target.project_id or not target.mr_iid:
+        return None
+    if not target.token:
+        log.warn("skipping GitLab MR context; no CRITIQUE_GITLAB_TOKEN")
+        return None
+    try:
+        ctx = fetch_mr_context(target, include_patch=True)
+    except GitLabError as exc:
+        log.warn(f"could not load GitLab MR context: {exc}")
+        return None
+    log.info(
+        "loaded GitLab MR context "
+        + log.kv(
+            project=target.project_id,
+            mr=target.mr_iid,
+            title=log.preview(ctx.title),
+            tickets=",".join(ctx.tickets) or None,
+            commits=len(ctx.commits),
+        )
+    )
+    if need_patch and not ctx.patch.strip():
+        log.warn("GitLab MR diffs were empty")
+    return ctx
 
 
 _CHAT_HELP = (
@@ -351,7 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="critique-bot",
         description=(
-            "General-purpose LLM bot. Drives a web chat UI in headless "
+            "Browser chat automation bot. Drives a web chat UI in headless "
             "Microsoft Edge. Default mode is a specialized code reviewer; "
             "--mode general sends any prompt and optional files; "
             "--mode chat is an interactive terminal session."
@@ -480,6 +542,9 @@ def _log_config(config) -> None:
             model_dropdown_identifier=(
                 config.selectors.model_dropdown_identifier or "(none)"
             ),
+            gitlab_base_url=config.gitlab.base_url or "(none)",
+            gitlab_project_id=config.gitlab.project_id or "(none)",
+            gitlab_mr_iid=config.gitlab.mr_iid or "(none)",
         )
     )
 
@@ -648,7 +713,7 @@ def _main_submit(argv: list[str]) -> int:
             cdp_url_override=args.cdp_url,
         )
         _log_config(config)
-        prompt = _build_prompt(args, mode, config.input_limits)
+        prompt = _build_prompt(args, mode, config.input_limits, config)
     except ConfigError as exc:
         return _config_error(exc)
     if not prompt.strip():
@@ -811,9 +876,10 @@ def _main_gitlab_post(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="critique-bot gitlab-post",
         description=(
-            "Post the review as a GitLab MR summary note and inline diff "
-            "comments. Needs CRITIQUE_GITLAB_TOKEN (project access token, "
-            "scope api). CI_JOB_TOKEN cannot create notes."
+            "Post the review as GitLab MR discussion threads: a summary "
+            "thread plus inline diff threads (replyable). Needs "
+            "CRITIQUE_GITLAB_TOKEN (project access token, scope api). "
+            "CI_JOB_TOKEN cannot create discussions."
         ),
     )
     parser.add_argument(
@@ -823,13 +889,22 @@ def _main_gitlab_post(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--patch-file",
-        help="unified diff used to map comments onto changed lines",
+        help="unified diff used to map comments onto changed lines "
+        "(fetched from the MR if omitted)",
+    )
+    parser.add_argument(
+        "--config",
+        help="config.json with gitlab.base_url (or CRITIQUE_CONFIG)",
     )
     parser.add_argument("--project-id", help="GitLab project ID or path")
     parser.add_argument("--mr-iid", help="merge request IID")
     parser.add_argument(
+        "--mr-url",
+        help="merge request web URL (fills host, project, and IID if omitted)",
+    )
+    parser.add_argument(
         "--api-url",
-        help="GitLab API v4 URL (or CI_API_V4_URL; required outside GitLab CI)",
+        help="GitLab API v4 URL (or gitlab.base_url/api/v4, or CI_API_V4_URL)",
     )
     parser.add_argument(
         "--logs",
@@ -839,6 +914,13 @@ def _main_gitlab_post(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
+    gitlab_cfg = None
+    config_path = args.config or os.environ.get("CRITIQUE_CONFIG") or ""
+    if config_path:
+        try:
+            gitlab_cfg = load_config(config_path).gitlab
+        except ConfigError as exc:
+            return _config_error(exc)
     try:
         return post_review(
             review_file=Path(args.review_file),
@@ -846,6 +928,8 @@ def _main_gitlab_post(argv: list[str]) -> int:
             project_id=args.project_id,
             mr_iid=args.mr_iid,
             api_url=args.api_url,
+            mr_url=args.mr_url,
+            gitlab=gitlab_cfg,
         )
     except GitLabPostError as exc:
         log.error(str(exc))
@@ -889,12 +973,13 @@ def _main_run(argv: list[str]) -> int:
             cdp_url_override=args.cdp_url,
         )
         _log_config(config)
-        prompt = _build_prompt(args, mode, config.input_limits)
+        prompt = _build_prompt(args, mode, config.input_limits, config)
     except ConfigError as exc:
         return _config_error(exc)
 
     from critique_bot.browser import BrowserError
-    from critique_bot.llm import COMPLETION_IDLE, LLMError, open_provider
+    from critique_bot.chat_client import COMPLETION_IDLE, ChatError
+    from critique_bot.provider import open_provider
 
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
@@ -923,7 +1008,7 @@ def _main_run(argv: list[str]) -> int:
                     else:
                         log.exception("chat flow failed")
                     raise
-    except (BrowserError, LLMError) as exc:
+    except (BrowserError, ChatError) as exc:
         log.error(str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 1

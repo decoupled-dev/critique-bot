@@ -184,13 +184,60 @@ class PostReviewFlowTests(EnvIsolated):
         methods = [c[0] for c in calls]
         self.assertEqual(methods[0], "GET")
         self.assertIn("POST", methods)
-        self.assertIn("1 inline comment", buf.getvalue())
-        discussion = next(c for c in calls if c[0] == "POST" and "discussions" in c[1])
-        self.assertEqual(discussion[2]["body"], "coupon is not defined")
-        self.assertEqual(discussion[2]["position"]["new_line"], 12)
-        note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
-        self.assertIn("Looks risky.", note[2]["body"])
-        self.assertIn("Posted 1 inline comment", note[2]["body"])
+        self.assertIn("1 inline thread", buf.getvalue())
+        discussion_posts = [
+            c for c in calls if c[0] == "POST" and "discussions" in c[1]
+        ]
+        inline = next(c for c in discussion_posts if c[2] and c[2].get("position"))
+        summary = next(
+            c for c in discussion_posts if c[2] and not c[2].get("position")
+        )
+        self.assertEqual(inline[2]["body"], "coupon is not defined")
+        self.assertEqual(inline[2]["position"]["new_line"], 12)
+        self.assertIn("line_range", inline[2]["position"])
+        self.assertIn("Looks risky.", summary[2]["body"])
+        self.assertIn("### AAOS system-app review", summary[2]["body"])
+        self.assertIn("Changes", summary[2]["body"])
+        self.assertFalse(any(c[1].endswith("/notes") for c in calls if c[0] == "POST"))
+
+    def test_uses_config_base_url(self) -> None:
+        from critique_bot.config import GitLabConfig
+
+        review = self.folder / "review.md"
+        review.write_text("summary only", encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {}
+
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(io.StringIO()):
+                code = post_review(
+                    review_file=review,
+                    gitlab=GitLabConfig(
+                        base_url="https://gitlab.example.com",
+                        project_id="9",
+                        mr_iid="4",
+                    ),
+                    token="pat",
+                )
+        self.assertEqual(code, 0)
+        self.assertTrue(
+            any(
+                "https://gitlab.example.com/api/v4/projects/9/merge_requests/4"
+                in c[1]
+                for c in calls
+            )
+        )
 
     def test_skips_unmapped_comment(self) -> None:
         review = self.folder / "review.md"
@@ -217,7 +264,8 @@ class PostReviewFlowTests(EnvIsolated):
                     api_url="https://gitlab.example/api/v4",
                     token="t",
                 )
-        self.assertIn("1 skipped", buf.getvalue())
+        self.assertIn("1 overview thread", buf.getvalue())
+        self.assertIn("0 skipped", buf.getvalue())
 
     def test_inline_rejection_is_skipped(self) -> None:
         review = self.folder / "review.md"
@@ -228,7 +276,7 @@ class PostReviewFlowTests(EnvIsolated):
         def fake_request(method, url, token, payload=None):
             if method == "GET":
                 return {"diff_refs": {"base_sha": "a", "start_sha": "a", "head_sha": "b"}}
-            if "discussions" in url:
+            if payload and payload.get("position"):
                 raise GitLabPostError("HTTP 400")
             return {}
 
@@ -243,7 +291,60 @@ class PostReviewFlowTests(EnvIsolated):
                     api_url="https://gitlab.example/api/v4",
                     token="t",
                 )
-        self.assertIn("1 skipped", buf.getvalue())
+        self.assertIn("1 overview thread", buf.getvalue())
+        self.assertIn("0 inline thread", buf.getvalue())
+
+    def test_maps_from_gitlab_diffs_when_patch_missing(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(REVIEW, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                if "/diffs" in url:
+                    return [
+                        {
+                            "old_path": "src/pay.py",
+                            "new_path": "src/pay.py",
+                            "diff": (
+                                "@@ -8,7 +8,9 @@ def total(qty, price):\n"
+                                "     if qty < 0:\n"
+                                "         return 0\n"
+                                "-    return qty * price\n"
+                                "+    # trusted caller\n"
+                                "+    return qty * price * coupon\n"
+                                "+\n"
+                            ),
+                        }
+                    ]
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                code = post_review(
+                    review_file=review,
+                    project_id="9",
+                    mr_iid="4",
+                    api_url="https://gitlab.example/api/v4",
+                    token="pat",
+                )
+        self.assertEqual(code, 0)
+        self.assertIn("1 inline thread", buf.getvalue())
+        inline = next(
+            c
+            for c in calls
+            if c[0] == "POST" and isinstance(c[2], dict) and c[2].get("position")
+        )
+        self.assertEqual(inline[2]["position"]["new_line"], 12)
 
     def test_reads_ids_from_env(self) -> None:
         review = self.folder / "review.md"
@@ -266,6 +367,22 @@ class PostReviewFlowTests(EnvIsolated):
 
 
 class DiffRefsTests(EnvIsolated):
+    def test_from_versions_endpoint(self) -> None:
+        with patch(
+            "critique_bot.gitlab_post._request",
+            return_value=[
+                {
+                    "head_commit_sha": "h",
+                    "base_commit_sha": "b",
+                    "start_commit_sha": "s",
+                }
+            ],
+        ):
+            refs = _diff_refs("https://g/api/v4", "1", "2", "t")
+        self.assertEqual(refs["head_sha"], "h")
+        self.assertEqual(refs["base_sha"], "b")
+        self.assertEqual(refs["start_sha"], "s")
+
     def test_from_api(self) -> None:
         with patch(
             "critique_bot.gitlab_post._request",

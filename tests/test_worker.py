@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from critique_bot.browser import BrowserError
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.llm import LLMError, LLMProvider, LLMSession
+from critique_bot.provider import ChatProvider, ChatSession
 from critique_bot.queue import FileQueue, Job, RateLimiter
 from critique_bot.worker import (
     _execute_job,
@@ -35,7 +35,7 @@ def _config(queue_dir: str, **overrides: object) -> BotConfig:
     return BotConfig(**values)  # type: ignore[arg-type]
 
 
-class FakeSession(LLMSession):
+class FakeSession(ChatSession):
     def __init__(self, reply: str | BaseException, *, page: object | None = None) -> None:
         self._reply = reply
         self.page = page
@@ -51,7 +51,7 @@ class FakeSession(LLMSession):
         return None
 
 
-class FakeProvider(LLMProvider):
+class FakeProvider(ChatProvider):
     can_parallelize = True
 
     def __init__(self, reply: str | BaseException = "looks good") -> None:
@@ -107,10 +107,12 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertFalse(status.ok)
         self.assertIn("empty", status.error or "")
 
-    def test_llm_error_fails_without_raising(self) -> None:
+    def test_chat_error_fails_without_raising(self) -> None:
+        from critique_bot.chat_client import ChatError
+
         job = self._job()
         _execute_job(
-            FakeProvider(LLMError("model down")),
+            FakeProvider(ChatError("model down")),
             self.config,
             self.queue,
             job,
@@ -167,12 +169,14 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertIsNone(self.queue.read_status(job.id))
         self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
 
-    def test_llm_closed_page_is_requeued(self) -> None:
+    def test_chat_closed_page_is_requeued(self) -> None:
+        from critique_bot.chat_client import ChatError
+
         job = self._job()
         with self.assertRaises(BrowserError):
             _execute_job(
                 FakeProvider(
-                    LLMError("Target page, context or browser has been closed")
+                    ChatError("Target page, context or browser has been closed")
                 ),
                 self.config,
                 self.queue,
