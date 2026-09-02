@@ -6,8 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "critique-bot"
 version = "0.1.0"
 description = "LLM bot for patch review via a web chat UI in Microsoft Edge."
+license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = ["playwright>=1.49.0"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 
 [project.scripts]
 critique-bot = "critique_bot.cli:main"

@@ -149,3 +149,7 @@ Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux) or [`packaging/gitlab-ci.windows
 ## Deploy
 
 Windows PowerShell and Linux zip (and pip wheel) instructions: [DEPLOY.md](DEPLOY.md).
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

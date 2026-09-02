@@ -126,6 +126,8 @@ def _write_readme(dest: Path, binary_name: str) -> None:
                 f'  {invoke} --config config.json --mode general '
                 '--prompt "Summarize this" notes.txt',
                 "",
+                "Licensed under the Apache License, Version 2.0. See LICENSE.",
+                "",
             ]
         )
         + "\n",
@@ -152,6 +154,8 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     for extra in (
         ROOT / "packaging" / "critique-bot-worker.service",
         ROOT / "packaging" / "worker-start.ps1",
+        ROOT / "LICENSE",
+        ROOT / "NOTICE",
     ):
         if extra.is_file():
             shutil.copy2(extra, payload / extra.name)
