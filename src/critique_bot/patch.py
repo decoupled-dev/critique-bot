@@ -383,6 +383,62 @@ def _path_from_section(section: str) -> str:
     return "(unknown)"
 
 
+_LOCKFILE_NAMES = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "poetry.lock",
+        "cargo.lock",
+        "composer.lock",
+        "go.sum",
+        "gemfile.lock",
+    }
+)
+_SKIP_PATH_MARKERS = frozenset({"(unknown)", "/dev/null", "dev/null", "nul"})
+
+
+def changed_file_paths(patch: str) -> list[str]:
+    """New-side text paths from a unified diff, in patch order.
+
+    Skips binaries, lockfiles, and deleted files (``/dev/null``).
+    """
+    seen: set[str] = set()
+    paths: list[str] = []
+    for kind, section in _iter_sections(patch):
+        if kind != "file":
+            continue
+        path = _path_from_section(section)
+        if not path or path in _SKIP_PATH_MARKERS:
+            continue
+        if path in seen:
+            continue
+        if "+++ /dev/null" in section.splitlines()[:16]:
+            continue
+        if _section_is_binary(section, path) or looks_binary_path(path):
+            continue
+        if Path(path).name.lower() in _LOCKFILE_NAMES:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def context_file_priority(path: str) -> tuple[int, str]:
+    """Lower is loaded first when the prompt budget is tight."""
+    name = Path(path).name.lower()
+    suffix = Path(path).suffix.lower()
+    if suffix in {".java", ".kt", ".kts", ".aidl"}:
+        rank = 0
+    elif name == "androidmanifest.xml":
+        rank = 1
+    elif suffix in {".xml", ".bp", ".mk"}:
+        rank = 2
+    else:
+        rank = 5
+    return (rank, path)
+
+
 def _section_is_binary(section: str, path: str) -> bool:
     if _BINARY_SECTION_RE.search(section):
         return True

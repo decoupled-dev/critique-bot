@@ -95,6 +95,22 @@ class ComposePromptTests(unittest.TestCase):
         out = compose_prompt("{mr_context}\n{patch}", "DIFF", "")
         self.assertIn("No GitLab merge-request metadata", out)
 
+    def test_replaces_files_placeholder(self) -> None:
+        out = compose_prompt("FILES\n{files}\nPATCH\n{patch}", "DIFF", "", "class Foo {}")
+        self.assertIn("class Foo {}", out)
+        self.assertIn("DIFF", out)
+        self.assertNotIn("{files}", out)
+
+    def test_empty_files_placeholder(self) -> None:
+        out = compose_prompt("{files}\n{patch}", "DIFF", "", "")
+        self.assertIn("No full-file context was attached.", out)
+
+    def test_injects_files_without_placeholder(self) -> None:
+        out = compose_prompt("REVIEW:\n{patch}", "DIFF", "", "class Foo {}")
+        self.assertIn("FILE CONTEXT", out)
+        self.assertIn("class Foo {}", out)
+        self.assertIn("DIFF", out)
+
     def test_missing_placeholder(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
             compose_prompt("no placeholder", "x")
@@ -432,6 +448,7 @@ class DefaultTemplateTests(unittest.TestCase):
         self.assertTrue(path.is_file())
         text = path.read_text(encoding="utf-8")
         self.assertIn("{patch}", text)
+        self.assertIn("{files}", text)
         self.assertIn("{mr_context}", text)
         self.assertIn("AAOS", text)
         self.assertIn("SYSTEM", text)

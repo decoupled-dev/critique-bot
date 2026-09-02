@@ -37,12 +37,12 @@ Flags: `--config` (required; the file must already exist, copy an example first)
 | Command | Where | Meaning |
 | --- | --- | --- |
 | `critique-bot worker --config PATH` | Runner PC, always on | One worker process; pulls jobs from `queue_dir` (one signed-in Edge) |
-| `critique-bot submit --config PATH --patch-file diff.patch` | GitLab job | Enqueue, wait, write `{output-dir}/review.md` |
+| `critique-bot submit --config PATH` | GitLab job | Build diff + file context from the checkout, enqueue, wait, write `{output-dir}/review.md` |
 | `critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch` | GitLab job | Post inline comments + summary on the MR |
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
 
-Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected.
+Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected. In GitLab CI, omit `--patch-file` so submit builds `diff.patch` from the job checkout and loads changed files. Small reviews still go as one paste; if template + files + patch would exceed `max_prompt_chars`, the worker sends files one per chat turn on the same Edge tab, then the review prompt. `--include-changed-files` / `--repo-dir` do the same against a local clone.
 
 Each submit creates its own job id and **only waits for that id**. The worker does not match by MR: it claims the oldest inbox file (FIFO, one at a time). GitLab env (`CI_MERGE_REQUEST_IID`, `CI_PROJECT_PATH`, …) is stored on the job as `meta` and in the filename, e.g. `1735689600123-group-app-mr42-a1b2c3d4.json`.
 
@@ -62,7 +62,7 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 
 | Mode | When to use | Prompt | Files | Output |
 | --- | --- | --- | --- | --- |
-| `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin) | `{output-dir}/review.md` + `review.json` |
+| `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). Changed files are inlined when they fit; otherwise one per chat turn | `{output-dir}/review.md` + `review.json` |
 | `general` | One-shot question | `--prompt` or `--prompt-file` (required) | Optional | `{output-dir}/reply.md` + `reply.json` |
 | `chat` | Interactive conversation | Optional first message via `--prompt` / `--prompt-file` | Optional on the first turn; more via `/file` | `{output-dir}/chat.md` + `chat.json` |
 
@@ -72,7 +72,7 @@ Chat mode is headless unless you pass `--headed`.
 
 ### Placeholders
 
-In **review** templates, `{patch}` is required and is replaced with the patch/file body.
+In **review** templates, `{patch}` is required (the unified diff). `{files}` is the HEAD contents of changed files when they fit in one paste; otherwise the worker sends those files one per chat turn first. `{mr_context}` is GitLab MR metadata.
 
 In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, those are replaced with attached file contents. Otherwise files are appended after the prompt, labeled `--- file: <path> ---`.
 
@@ -88,7 +88,10 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--prompt-file PATH` | general, chat | Read prompt text from a file. |
 | `--file PATH` | all | Attach a UTF-8 file (repeatable). Patch, source, or any text file. |
 | `FILE ...` | all | Trailing paths; same as `--file`. |
-| `--patch-file PATH` | all | Patch/diff to include. In review, omit this to read a patch from stdin. |
+| `--patch-file PATH` | all | Patch/diff to include. In review, omit in GitLab CI to build it from the checkout; locally, omit to read stdin. |
+| `--include-changed-files` | review | Load HEAD contents of paths in the patch from `--repo-dir`. Inlined when they fit one paste; otherwise sent one per chat turn. Implied when CI builds the workspace diff. |
+| `--repo-dir DIR` | review | Checkout to read changed files from (default: current directory). |
+| `--write-patch PATH` | review | Where to write a generated git diff (default: `diff.patch`). |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
 | `--output-dir DIR` | all | Where replies and failure screenshots go. Default: `out`. |
 | `--headed` | all | Show the Edge window. |
@@ -197,7 +200,7 @@ python -m critique_bot worker --config /opt/critique-bot/config.json --logs
 
 ```bash
 python -m critique_bot submit --config /opt/critique-bot/config.json \
-  --patch-file diff.patch --output-dir ./out
+  --output-dir ./out
 ```
 
 ```bash
@@ -330,7 +333,7 @@ python -m critique_bot worker --config C:\critique-bot\config.json --logs
 
 ```powershell
 python -m critique_bot submit --config C:\critique-bot\config.json `
-  --patch-file diff.patch --output-dir .\out
+  --output-dir .\out
 ```
 
 ### Other

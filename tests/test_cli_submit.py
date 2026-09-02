@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 import unittest.mock
@@ -193,6 +194,27 @@ class SubmitCliTests(unittest.TestCase):
                                 "--headed",
                             ]
                         )
+        self.assertEqual(code, 0)
+
+    def test_submit_empty_workspace_diff_exits_zero(self) -> None:
+        from critique_bot.workspace import EmptyDiff
+
+        stderr = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"GITLAB_CI": "true"}, clear=False):
+            with unittest.mock.patch(
+                "critique_bot.cli.prepare_workspace_patch",
+                side_effect=EmptyDiff("empty diff; nothing to review"),
+            ):
+                with redirect_stderr(stderr):
+                    code = main(
+                        [
+                            "submit",
+                            "--config",
+                            str(self.config),
+                            "--output-dir",
+                            str(self.out),
+                        ]
+                    )
         self.assertEqual(code, 0)
 
     def test_submit_bad_config(self) -> None:

@@ -37,6 +37,7 @@ DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
 DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
+DEFAULT_TURN_PAUSE_SECONDS = 2.0
 DEFAULT_MAX_PARALLEL_TABS = 1
 ABSOLUTE_MAX_PARALLEL_TABS = 8
 DEFAULT_MAX_ATTEMPTS = 3
@@ -87,6 +88,7 @@ class BotConfig:
     queue_dir: str = ""
     min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS
     interval_jitter_seconds: float = DEFAULT_INTERVAL_JITTER_SECONDS
+    turn_pause_seconds: float = DEFAULT_TURN_PAUSE_SECONDS
     max_parallel_tabs: int = DEFAULT_MAX_PARALLEL_TABS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     result_retention: int = DEFAULT_RESULT_RETENTION
@@ -283,6 +285,11 @@ def load_config(
             raw.get("interval_jitter_seconds"),
             DEFAULT_INTERVAL_JITTER_SECONDS,
         ),
+        turn_pause_seconds=_non_negative_float(
+            "turn_pause_seconds",
+            raw.get("turn_pause_seconds"),
+            DEFAULT_TURN_PAUSE_SECONDS,
+        ),
         max_parallel_tabs=_clamped_positive_int(
             "max_parallel_tabs",
             raw_parallel if raw_parallel else raw.get("max_parallel_tabs"),
@@ -427,10 +434,16 @@ def _load_gitlab(raw: dict) -> GitLabConfig:
     )
 
 
-def compose_prompt(template: str, patch: str, mr_context: str = "") -> str:
+def compose_prompt(
+    template: str,
+    patch: str,
+    mr_context: str = "",
+    files: str = "",
+) -> str:
     if "{patch}" not in template:
         raise ConfigError("prompt template must contain the {patch} placeholder")
     context = (mr_context or "").strip()
+    file_body = (files or "").strip()
     if "{mr_context}" in template:
         template = template.replace(
             "{mr_context}",
@@ -441,6 +454,13 @@ def compose_prompt(template: str, patch: str, mr_context: str = "") -> str:
             "SYSTEM — merge request context from GitLab\n"
             f"{context}\n\n"
             + template
+        )
+    if "{files}" not in template and file_body:
+        template = "FILE CONTEXT\n{files}\n\n" + template
+    if "{files}" in template:
+        template = template.replace(
+            "{files}",
+            file_body or "No full-file context was attached.",
         )
     return template.replace("{patch}", patch)
 

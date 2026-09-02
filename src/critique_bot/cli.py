@@ -12,10 +12,8 @@ from pathlib import Path
 from critique_bot import log
 from critique_bot.config import (
     ConfigError,
-    compose_prompt,
     compose_prompt_from_args,
     default_prompt_template_path,
-    format_attachments,
     load_config,
 )
 from critique_bot.output import isoformat, save_failure, write_output
@@ -29,6 +27,21 @@ from critique_bot.patch import (
     load_path,
     load_stdin,
     sanitize_attachments,
+    sanitize_one,
+)
+from critique_bot.review_session import (
+    PromptPayload,
+    run_review_session,
+    sanitize_context_files,
+    split_review_payload,
+)
+from critique_bot.workspace import (
+    DEFAULT_PATCH_NAME,
+    EmptyDiff,
+    WorkspaceError,
+    load_changed_files,
+    prepare_workspace_patch,
+    should_prepare_workspace,
 )
 
 MODE_REVIEW = "review"
@@ -162,39 +175,25 @@ def _build_prompt(
     limits: InputLimits,
     config=None,
 ) -> str:
-    loaded_attachments = _collect_attachments(
-        args.patch_file,
-        list(args.files or []) + list(args.paths or []),
-        limits,
-        allow_stdin=False,
-    )
-    mr_context = ""
-    if mode == MODE_REVIEW and config is not None:
-        fetched = _load_gitlab_mr_context(
-            config, need_patch=not loaded_attachments
-        )
-        if fetched is not None:
-            from critique_bot.gitlab import format_mr_context
+    return _build_prompt_payload(args, mode, limits, config).prompt
 
-            mr_context = format_mr_context(fetched)
-            if not loaded_attachments and fetched.patch.strip():
-                loaded_attachments = [
-                    LoadedInput(name="merge_request.diff", text=fetched.patch)
-                ]
-                log.info(
-                    f"using merge request diff from GitLab ({len(fetched.patch)} chars)"
-                )
-    if mode == MODE_REVIEW and not loaded_attachments:
+
+def _build_prompt_payload(
+    args: argparse.Namespace,
+    mode: str,
+    limits: InputLimits,
+    config=None,
+) -> PromptPayload:
+    extra_files = list(args.files or []) + list(args.paths or [])
+    if mode in (MODE_GENERAL, MODE_CHAT):
         loaded_attachments = _collect_attachments(
             args.patch_file,
-            list(args.files or []) + list(args.paths or []),
+            extra_files,
             limits,
-            allow_stdin=True,
+            allow_stdin=False,
         )
-    raw_attachments = [(item.name, item.text) for item in loaded_attachments]
-    read_capped = any(item.truncated_read for item in loaded_attachments)
-
-    if mode in (MODE_GENERAL, MODE_CHAT):
+        raw_attachments = [(item.name, item.text) for item in loaded_attachments]
+        read_capped = any(item.truncated_read for item in loaded_attachments)
         has_input = bool(
             args.prompt
             or args.prompt_file
@@ -203,7 +202,7 @@ def _build_prompt(
             or args.paths
         )
         if mode == MODE_CHAT and not has_input:
-            return ""
+            return PromptPayload(prompt="")
         if args.prompt_file:
             prompt_text = _read_text_file(
                 args.prompt_file, limits, label="prompt file", allow_binary=False
@@ -239,7 +238,80 @@ def _build_prompt(
             + (", sanitized" if stats.did_sanitize else "")
             + ")"
         )
-        return prompt
+        return PromptPayload(prompt=prompt)
+
+    return _build_review_prompt(args, extra_files, limits, config)
+
+
+def _build_review_prompt(
+    args: argparse.Namespace,
+    extra_files: list[str],
+    limits: InputLimits,
+    config=None,
+) -> PromptPayload:
+    repo_dir = Path(getattr(args, "repo_dir", None) or ".")
+    include_changed = bool(getattr(args, "include_changed_files", False))
+    patch_file = args.patch_file
+    patch_input: LoadedInput | None = None
+    extra_loaded: list[LoadedInput] = []
+
+    if should_prepare_workspace(patch_file=patch_file, extra_files=extra_files):
+        write_to = Path(getattr(args, "write_patch", None) or DEFAULT_PATCH_NAME)
+        try:
+            text = prepare_workspace_patch(repo_dir, write_to)
+        except EmptyDiff:
+            raise
+        except WorkspaceError as exc:
+            raise ConfigError(str(exc)) from exc
+        patch_input = LoadedInput(name=str(write_to), text=text)
+        patch_file = str(write_to)
+        include_changed = True
+
+    if patch_input is None:
+        loaded = _collect_attachments(
+            patch_file, extra_files, limits, allow_stdin=False
+        )
+        patch_input, extra_loaded = _split_patch_and_files(loaded, patch_file)
+    elif extra_files:
+        extra_loaded = _collect_attachments(
+            None, extra_files, limits, allow_stdin=False
+        )
+
+    mr_context = ""
+    if config is not None:
+        fetched = _load_gitlab_mr_context(
+            config, need_patch=patch_input is None
+        )
+        if fetched is not None:
+            from critique_bot.gitlab import format_mr_context
+
+            mr_context = format_mr_context(fetched)
+            if patch_input is None and fetched.patch.strip():
+                patch_input = LoadedInput(
+                    name="merge_request.diff", text=fetched.patch
+                )
+                log.info(
+                    f"using merge request diff from GitLab "
+                    f"({len(fetched.patch)} chars)"
+                )
+
+    if patch_input is None:
+        loaded = _collect_attachments(
+            patch_file, extra_files, limits, allow_stdin=True
+        )
+        patch_input, extra_loaded = _split_patch_and_files(loaded, patch_file)
+
+    if patch_input is None:
+        raise ConfigError("review mode needs a patch")
+
+    context_inputs = list(extra_loaded)
+    if include_changed:
+        seen = {item.name for item in context_inputs}
+        for item in load_changed_files(repo_dir, patch_input.text, limits):
+            if item.name in seen:
+                continue
+            context_inputs.append(item)
+            seen.add(item.name)
 
     template_path = (
         Path(args.prompt_template)
@@ -248,23 +320,53 @@ def _build_prompt(
     )
     template = _load_template(template_path, limits)
     overhead = max(len(template) - 7, 0) + len(mr_context)
-    attachments, stats = sanitize_attachments(
-        raw_attachments,
+    patch_budget = max(limits.max_prompt_chars - overhead - NOTE_RESERVE_CHARS, 2_000)
+
+    patch_body, patch_stats = sanitize_one(
+        patch_input.name,
+        patch_input.text,
         limits,
-        extra_overhead=overhead + NOTE_RESERVE_CHARS,
+        remaining_chars=patch_budget,
+        remaining_files=limits.max_files,
     )
-    stats.truncated_read = stats.truncated_read or read_capped
-    body = format_attachments(attachments, named=len(attachments) > 1)
-    prompt = finalize_prompt(
-        compose_prompt(template, body, mr_context), limits, stats
+    patch_stats.truncated_read = patch_input.truncated_read
+    file_pairs = [(item.name, item.text) for item in context_inputs]
+    file_attachments, file_stats = sanitize_context_files(file_pairs, limits)
+    patch_stats.merge(file_stats)
+    patch_stats.truncated_read = patch_stats.truncated_read or patch_input.truncated_read
+    if any(item.truncated_read for item in context_inputs):
+        patch_stats.truncated_read = True
+    payload = split_review_payload(
+        template,
+        patch_body,
+        mr_context,
+        file_attachments,
+        limits,
+        patch_stats,
     )
     log.info(
-        f"composed review prompt ({len(prompt)} chars"
-        + (", sanitized" if stats.did_sanitize else "")
+        f"composed review prompt ({len(payload.prompt)} chars"
+        + (f", {len(file_attachments)} file(s)" if file_attachments else "")
+        + (", staged" if payload.files else "")
+        + (", sanitized" if patch_stats.did_sanitize else "")
         + (", gitlab mr context" if mr_context else "")
         + ")"
     )
-    return prompt
+    return payload
+
+
+def _split_patch_and_files(
+    loaded: list[LoadedInput],
+    patch_file: str | None,
+) -> tuple[LoadedInput | None, list[LoadedInput]]:
+    """First attachment is the patch when ``--patch-file`` was set; else all files."""
+    if not loaded:
+        return None, []
+    if patch_file:
+        return loaded[0], loaded[1:]
+    if len(loaded) == 1:
+        return loaded[0], []
+    return loaded[0], loaded[1:]
 
 
 def _load_gitlab_mr_context(config, *, need_patch: bool):
@@ -476,7 +578,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--patch-file",
-        help="patch/diff to include; in review mode, omit to read a patch from stdin",
+        help=(
+            "patch/diff to include; in review mode, omit in GitLab CI to build "
+            "it from the job checkout, or pipe a patch on stdin locally"
+        ),
+    )
+    parser.add_argument(
+        "--include-changed-files",
+        action="store_true",
+        help=(
+            "load HEAD contents of paths in the patch from --repo-dir "
+            "(inlined when they fit one paste; otherwise sent one per chat "
+            "turn). Implied when CI builds the workspace diff"
+        ),
+    )
+    parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="git checkout to read changed files from (default: current directory)",
+    )
+    parser.add_argument(
+        "--write-patch",
+        metavar="PATH",
+        help=(
+            f"where to write a generated git diff (default: {DEFAULT_PATCH_NAME} "
+            "when building from the CI checkout)"
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -533,6 +660,7 @@ def _log_config(config) -> None:
             queue_dir=config.queue_dir,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
+            turn_pause_seconds=config.turn_pause_seconds,
             max_parallel_tabs=config.max_parallel_tabs,
             storage_state=config.storage_state,
             prompt_input=config.selectors.prompt_input,
@@ -711,10 +839,13 @@ def _main_submit(argv: list[str]) -> int:
             cdp_url_override=args.cdp_url,
         )
         _log_config(config)
-        prompt = _build_prompt(args, mode, config.input_limits, config)
+        payload = _build_prompt_payload(args, mode, config.input_limits, config)
+    except EmptyDiff:
+        print("empty diff; nothing to review", flush=True)
+        return 0
     except ConfigError as exc:
         return _config_error(exc)
-    if not prompt.strip():
+    if not payload.prompt.strip():
         return _config_error(ConfigError("prompt is empty"))
 
     queue = FileQueue(Path(config.queue_dir))
@@ -732,7 +863,8 @@ def _main_submit(argv: list[str]) -> int:
         job_id = queue.enqueue(
             mode=mode,
             stem=stem,
-            prompt=prompt,
+            prompt=payload.prompt,
+            files=payload.files,
             model=args.model,
             meta=meta,
             label=args.label,
@@ -971,10 +1103,14 @@ def _main_run(argv: list[str]) -> int:
             cdp_url_override=args.cdp_url,
         )
         _log_config(config)
-        prompt = _build_prompt(args, mode, config.input_limits, config)
+        payload = _build_prompt_payload(args, mode, config.input_limits, config)
+    except EmptyDiff:
+        print("empty diff; nothing to review", flush=True)
+        return 0
     except ConfigError as exc:
         return _config_error(exc)
 
+    prompt = payload.prompt
     from critique_bot.browser import BrowserError
     from critique_bot.chat_client import COMPLETION_IDLE, ChatError
     from critique_bot.provider import open_provider
@@ -993,6 +1129,15 @@ def _main_run(argv: list[str]) -> int:
                 try:
                     if mode == MODE_CHAT:
                         turns = _run_chat_session(session, config, prompt)
+                    elif mode == MODE_REVIEW:
+                        response = run_review_session(
+                            session,
+                            prompt,
+                            payload.files,
+                            config.input_limits,
+                            turn_pause_seconds=config.turn_pause_seconds,
+                        )
+                        completion = getattr(session, "last_detail", None)
                     else:
                         response = session.send(prompt)
                         completion = getattr(session, "last_detail", None)

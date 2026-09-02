@@ -28,6 +28,7 @@
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the
 # worker serializes Edge and applies min_interval_seconds from config.
+# submit builds diff.patch from the job checkout and attaches changed files.
 
 workflow:
   rules:
@@ -60,15 +61,7 @@ review:
       - out/
       - diff.patch
   script:
-    - |
-      if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
-        git fetch --depth=50 origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-}" || true
-        git diff "${CI_MERGE_REQUEST_DIFF_BASE_SHA}...${CI_COMMIT_SHA}" > diff.patch
-      else
-        git diff HEAD~1...HEAD > diff.patch
-      fi
-    - test -s diff.patch || { echo "empty diff; nothing to review"; exit 0; }
-    - $CRITIQUE_BIN submit --config "$CRITIQUE_CONFIG" --patch-file diff.patch --output-dir out --wait-timeout 1800
+    - $CRITIQUE_BIN submit --config "$CRITIQUE_CONFIG" --output-dir out --wait-timeout 1800
     - |
       if [ -n "${CI_MERGE_REQUEST_IID:-}" ] && [ -f out/review.md ]; then
         $CRITIQUE_BIN gitlab-post \

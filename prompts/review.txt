@@ -165,6 +165,15 @@ Do not write a recap of the patch, praise (“clean abstraction”, “nice test
 nits, or a multi-paragraph essay. Do not dump all findings only in the summary —
 put each action on a diff line in `comments`.
 
+FILE CONTEXT
+Full current contents of changed files at HEAD of this MR, either inlined below
+or already sent earlier in this conversation.
+Use them to understand enclosing methods and classes the diff does not show.
+`comments[].line` on `side: "new"` must match line numbers in these files.
+Review the PATCH. Do not restyle or rewrite unchanged code.
+
+{files}
+
 PATCH
 Review this unified diff:
 

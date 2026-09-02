@@ -204,12 +204,23 @@ These protect the chat UI from huge patches. Values above the absolute max are c
 
 | Key | Default | Absolute max | Meaning |
 | --- | --- | --- | --- |
-| `max_prompt_chars` | `120000` | `400000` | Entire prompt sent to the UI (template + patch) |
+| `max_prompt_chars` | `120000` | `400000` | Entire prompt sent in **one** paste (template + files + patch). If files would push past this, they are sent one per chat turn instead |
 | `max_file_chars` | `32000` | `200000` | Per attached file, after read |
 | `max_files` | `80` | `400` | How many files are included |
 | `max_read_bytes` | `16000000` | `64000000` | Bytes read from each path before decode |
 
 Oversized / binary files are truncated or omitted and a short note is added to the prompt. Raise these only if the chat UI can actually accept that much paste.
+
+When changed-file bodies plus the patch fit in `max_prompt_chars`, the worker (or local one-shot) still sends **one** paste. When they would not, the same Edge tab gets a short prime message, then one file per turn (`ACK` only), then the review template and patch. Intermediate replies are discarded; only the last reply is `review.md`.
+
+### `turn_pause_seconds`
+
+| | |
+| --- | --- |
+| Type | number ≥ 0 |
+| Default | `2` |
+
+Pause between **turns in the same job** when files are staged across chat turns. `0` sends the next paste immediately. This is not `min_interval_seconds` (that spaces **jobs**).
 
 ---
 
@@ -395,6 +406,7 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
   "queue_dir": "/opt/critique-bot/.critique-queue",
   "min_interval_seconds": 30,
   "interval_jitter_seconds": 5,
+  "turn_pause_seconds": 2,
   "max_parallel_tabs": 1,
   "gitlab": {
     "base_url": "https://gitlab.example.com"
@@ -410,6 +422,6 @@ Do not commit this file if it contains a private chat URL or a `storage_state` p
 - If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui`).
 - `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
 - If `storage_state` is set, that path is a file.
-- Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields and `job_timeout_seconds` must be ≥ 0.
+- Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 
 A one-shot `--mode general` prompt (or **Send test prompt** in `critique-bot setup`) is the check the loader cannot do: Edge is installed, the profile holds a session, the selectors match the live page, and a real reply comes back.

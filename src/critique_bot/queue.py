@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ class Job:
     label: str
     meta: dict[str, Any]
     attempts: int = 0
+    files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -257,8 +258,10 @@ class FileQueue:
         model: str | None = None,
         meta: dict[str, Any] | None = None,
         label: str | None = None,
+        files: dict[str, str] | None = None,
     ) -> str:
         meta = dict(meta or {})
+        file_map = _job_files({"files": files} if files else {})
         slug = job_label(meta, explicit=label)
         job_id = _new_job_id(slug)
         payload = {
@@ -272,10 +275,14 @@ class FileQueue:
             "meta": meta,
             "attempts": 0,
         }
+        if file_map:
+            payload["files"] = file_map
         dest = self.inbox / f"{job_id}.json"
         _atomic_write_json(dest, payload)
         log.info(
-            f"enqueued job {job_id} ({len(prompt)} chars, mode={mode}, label={slug})"
+            f"enqueued job {job_id} ({len(prompt)} chars, mode={mode}, label={slug}"
+            + (f", {len(file_map)} staged file(s)" if file_map else "")
+            + ")"
         )
         return job_id
 
@@ -318,6 +325,7 @@ class FileQueue:
                 "created_at": job.created_at,
                 "meta": job.meta,
                 "prompt_chars": len(job.prompt),
+                "staged_files": len(job.files) or None,
             },
         )
 
@@ -577,7 +585,25 @@ def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
         label=label,
         meta=meta,
         attempts=_attempt_count(data),
+        files=_job_files(data),
     )
+
+
+def _job_files(data: dict[str, Any]) -> dict[str, str]:
+    raw = data.get("files")
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise QueueError("job files must be an object of path to text")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        path = str(key).strip()
+        if not path:
+            continue
+        if not isinstance(value, str):
+            raise QueueError(f"job file {path!r} must be a string")
+        out[path] = value
+    return out
 
 
 def _attempt_count(data: dict[str, Any]) -> int:

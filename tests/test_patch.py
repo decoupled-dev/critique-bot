@@ -19,6 +19,8 @@ from critique_bot.patch import (
     InputLimits,
     SanitizeStats,
     cap_text,
+    changed_file_paths,
+    context_file_priority,
     finalize_prompt,
     format_sanitize_note,
     load_path,
@@ -72,6 +74,47 @@ Index: src/Foo.java
 -a
 +b
 """
+
+
+class ChangedFilePathsTests(unittest.TestCase):
+    def test_git_diff_path(self) -> None:
+        self.assertEqual(changed_file_paths(GIT_DIFF), ["src/app.py"])
+
+    def test_skips_binary_and_lockfile(self) -> None:
+        patch = (
+            "diff --git a/photo.png b/photo.png\n"
+            "Binary files a/photo.png and b/photo.png differ\n"
+            "diff --git a/package-lock.json b/package-lock.json\n"
+            "--- a/package-lock.json\n"
+            "+++ b/package-lock.json\n"
+            "@@ -1 +1 @@\n"
+            "-a\n"
+            "+b\n"
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-a\n"
+            "+b\n"
+        )
+        self.assertEqual(changed_file_paths(patch), ["src/app.py"])
+
+    def test_skips_deleted_file(self) -> None:
+        patch = (
+            "diff --git a/gone.py b/gone.py\n"
+            "deleted file mode 100644\n"
+            "--- a/gone.py\n"
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            "-old\n"
+        )
+        self.assertEqual(changed_file_paths(patch), [])
+
+    def test_java_before_xml(self) -> None:
+        self.assertLess(
+            context_file_priority("a/Foo.java")[0],
+            context_file_priority("res/values/strings.xml")[0],
+        )
 
 
 class StripControlsTests(unittest.TestCase):

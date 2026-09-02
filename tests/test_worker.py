@@ -36,7 +36,9 @@ def _config(queue_dir: str, **overrides: object) -> BotConfig:
 
 
 class FakeSession(ChatSession):
-    def __init__(self, reply: str | BaseException, *, page: object | None = None) -> None:
+    def __init__(
+        self, reply: str | BaseException | list, *, page: object | None = None
+    ) -> None:
         self._reply = reply
         self.page = page
         self.prompts: list[str] = []
@@ -45,6 +47,12 @@ class FakeSession(ChatSession):
         self.prompts.append(prompt)
         if isinstance(self._reply, BaseException):
             raise self._reply
+        if isinstance(self._reply, list):
+            idx = len(self.prompts) - 1
+            item = self._reply[idx] if idx < len(self._reply) else self._reply[-1]
+            if isinstance(item, BaseException):
+                raise item
+            return item
         return self._reply
 
     def close(self) -> None:
@@ -54,7 +62,7 @@ class FakeSession(ChatSession):
 class FakeProvider(ChatProvider):
     can_parallelize = True
 
-    def __init__(self, reply: str | BaseException = "looks good") -> None:
+    def __init__(self, reply: str | BaseException | list = "looks good") -> None:
         self.reply = reply
         self.sessions: list[FakeSession] = []
         self.isolated_flags: list[bool] = []
@@ -98,6 +106,33 @@ class ExecuteJobTests(unittest.TestCase):
         )
         self.assertEqual(record["id"], job.id)
         self.assertEqual(provider.isolated_flags, [False])
+
+    def test_staged_files_keep_last_reply(self) -> None:
+        job_id = self.queue.enqueue(
+            mode="review",
+            stem="review",
+            prompt="FINAL PROMPT",
+            files={"a.java": "class A {}", "b.java": "class B {}"},
+            label="t",
+        )
+        job = self.queue.claim()
+        assert job is not None
+        self.assertEqual(job.id, job_id)
+        self.config = _config(str(self.root), turn_pause_seconds=0)
+        provider = FakeProvider(
+            ["prime-ack", "ACK a.java", "yap about b", "**Risk: Safe**\n```json\n{}\n```"]
+        )
+        _execute_job(provider, self.config, self.queue, job, isolated=False)
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertTrue(status.ok)
+        body = (self.queue.result_dir(job.id) / "review.md").read_text(encoding="utf-8")
+        self.assertIn("Risk: Safe", body)
+        session = provider.sessions[0]
+        self.assertEqual(len(session.prompts), 4)
+        self.assertIn("class A {}", session.prompts[1])
+        self.assertNotIn("class B {}", session.prompts[1])
+        self.assertTrue(session.prompts[3].rstrip().endswith("REVIEW NOW"))
 
     def test_empty_reply_fails(self) -> None:
         job = self._job()

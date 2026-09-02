@@ -117,7 +117,7 @@ def _write_readme(dest: Path, binary_name: str) -> None:
                 "",
                 "Production on a GitLab runner (keep one worker running):",
                 f"  {invoke} worker --config config.json --logs",
-                f"  {invoke} submit --config config.json --patch-file diff.patch",
+                f"  {invoke} submit --config config.json",
                 "",
                 "One-shot review (debug, not for parallel CI jobs):",
                 f"  {invoke} --config config.json --patch-file diff.patch",

@@ -15,6 +15,7 @@ from critique_bot.cli import (
     MODE_GENERAL,
     MODE_REVIEW,
     _build_prompt,
+    _build_prompt_payload,
     _chat_file_turn,
     _ci_meta,
     _collect_attachments,
@@ -233,6 +234,77 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("AAOS-1 HVAC", prompt)
         self.assertIn("AAOS-1", prompt)
         self.assertIn("+hi", prompt)
+
+    def test_review_attaches_changed_files_outside_diff_fence(self) -> None:
+        src = self.folder / "Foo.java"
+        src.write_text("class Foo {\n    void bar() {}\n}\n", encoding="utf-8")
+        patch = self.folder / "d.patch"
+        patch.write_text(
+            "diff --git a/Foo.java b/Foo.java\n"
+            "--- a/Foo.java\n"
+            "+++ b/Foo.java\n"
+            "@@ -1,2 +1,3 @@\n"
+            " class Foo {\n"
+            "+    void bar() {}\n"
+            " }\n",
+            encoding="utf-8",
+        )
+        template = self.folder / "t.txt"
+        template.write_text("FILES\n{files}\nPATCH\n```diff\n{patch}\n```\n", encoding="utf-8")
+        args = argparse.Namespace(
+            patch_file=str(patch),
+            files=None,
+            paths=[],
+            prompt=None,
+            prompt_file=None,
+            prompt_template=str(template),
+            include_changed_files=True,
+            repo_dir=str(self.folder),
+            write_patch=None,
+        )
+        prompt = _build_prompt(args, MODE_REVIEW, self.limits)
+        self.assertIn("class Foo {", prompt)
+        self.assertIn("--- file: Foo.java ---", prompt)
+        self.assertIn("```diff", prompt)
+        files_part, patch_part = prompt.split("```diff", 1)
+        self.assertIn("class Foo {", files_part)
+        self.assertIn("+    void bar() {}", patch_part)
+        self.assertNotIn("--- file: Foo.java ---", patch_part)
+
+    def test_review_overflow_stages_files_out_of_the_prompt(self) -> None:
+        src = self.folder / "Foo.java"
+        src.write_text("class Foo {\n" + ("    int n;\n" * 80) + "}\n", encoding="utf-8")
+        patch = self.folder / "d.patch"
+        patch.write_text(
+            "diff --git a/Foo.java b/Foo.java\n"
+            "--- a/Foo.java\n"
+            "+++ b/Foo.java\n"
+            "@@ -1 +1,2 @@\n"
+            " class Foo {\n"
+            "+    int n;\n"
+            " }\n",
+            encoding="utf-8",
+        )
+        template = self.folder / "t.txt"
+        template.write_text("FILES\n{files}\nPATCH\n```diff\n{patch}\n```\n", encoding="utf-8")
+        args = argparse.Namespace(
+            patch_file=str(patch),
+            files=None,
+            paths=[],
+            prompt=None,
+            prompt_file=None,
+            prompt_template=str(template),
+            include_changed_files=True,
+            repo_dir=str(self.folder),
+            write_patch=None,
+        )
+        limits = InputLimits(max_prompt_chars=500, max_file_chars=8_000)
+        payload = _build_prompt_payload(args, MODE_REVIEW, limits)
+        self.assertIn("Foo.java", payload.files)
+        self.assertGreater(payload.files["Foo.java"].count("int n;"), 10)
+        self.assertNotIn("--- file: Foo.java ---", payload.prompt)
+        self.assertIn("already sent", payload.prompt)
+        self.assertIn("```diff", payload.prompt)
 
     def test_general_appends_files(self) -> None:
         src = self.folder / "a.py"

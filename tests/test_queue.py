@@ -120,6 +120,29 @@ class FileQueueTests(unittest.TestCase):
         self.assertEqual(record["label"], "group-app-mr42")
         self.assertEqual(record["meta"]["CI_JOB_ID"], "99")
 
+    def test_enqueue_round_trips_staged_files(self) -> None:
+        job_id = self.queue.enqueue(
+            mode="review",
+            stem="review",
+            prompt="REVIEW NOW patch",
+            files={"Foo.java": "class Foo {}", "Bar.kt": "class Bar"},
+        )
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.id, job_id)
+        self.assertEqual(claimed.files["Foo.java"], "class Foo {}")
+        self.assertEqual(claimed.files["Bar.kt"], "class Bar")
+        raw = json.loads((self.root / "processing" / f"{job_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["files"]["Foo.java"], "class Foo {}")
+
+    def test_enqueue_omits_empty_files(self) -> None:
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="p")
+        raw = json.loads((self.root / "inbox" / f"{job_id}.json").read_text(encoding="utf-8"))
+        self.assertNotIn("files", raw)
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.files, {})
+
     def test_enqueue_explicit_label_overrides_meta(self) -> None:
         job_id = self.queue.enqueue(
             mode="review",

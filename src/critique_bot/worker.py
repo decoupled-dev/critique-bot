@@ -25,6 +25,7 @@ from critique_bot.queue import (
     QueueError,
     RateLimiter,
 )
+from critique_bot.review_session import run_review_session
 
 BROWSER_RESTART_SEC = 5.0
 
@@ -298,6 +299,7 @@ def _execute_job(
             label=job.label or None,
             mode=job.mode,
             prompt_chars=len(job.prompt),
+            staged_files=len(job.files) or None,
             model=model or "(none)",
             meta=job.meta or None,
         )
@@ -309,7 +311,16 @@ def _execute_job(
         with _JobWatchdog(queue, job, config.job_timeout_sec) as watchdog:
             with provider.session(isolated=isolated, model=job.model) as session:
                 try:
-                    response = session.send(job.prompt)
+                    if job.mode == "review":
+                        response = run_review_session(
+                            session,
+                            job.prompt,
+                            job.files,
+                            config.input_limits,
+                            turn_pause_seconds=config.turn_pause_seconds,
+                        )
+                    else:
+                        response = session.send(job.prompt)
                 except Exception:
                     _save_job_failure(session, out_dir)
                     raise

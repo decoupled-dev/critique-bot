@@ -25,6 +25,7 @@
   "queue_dir": ".critique-queue",
   "min_interval_seconds": 30,
   "interval_jitter_seconds": 5,
+  "turn_pause_seconds": 2,
   "max_parallel_tabs": 1,
   "gitlab": {
     "base_url": "https://gitlab.example.com"

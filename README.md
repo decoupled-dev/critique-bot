@@ -71,7 +71,7 @@ Wraps the patch in [`prompts/review.txt`](prompts/review.txt) and writes `{outpu
 python -m critique_bot --config config.json --patch-file diff.patch --output-dir ./out
 ```
 
-`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` placeholder required).
+`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` required; `{files}` is HEAD contents of changed files when they fit one paste). `--include-changed-files` loads those files from `--repo-dir` and inlines them, or sends them one per chat turn if the prompt would overflow.
 
 ### General
 
@@ -125,8 +125,7 @@ CI jobs must **not** each launch Edge. On the runner PC, start **one worker**. T
 critique-bot worker --config /opt/critique-bot/config.json --logs
 
 # each GitLab job
-critique-bot submit --config /opt/critique-bot/config.json \
-  --patch-file diff.patch --output-dir out
+critique-bot submit --config /opt/critique-bot/config.json --output-dir out
 
 # post the result (project + MR come from CI_PROJECT_ID / CI_MERGE_REQUEST_IID)
 critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch
