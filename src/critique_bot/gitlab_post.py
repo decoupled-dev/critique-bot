@@ -16,6 +16,7 @@ from critique_bot.review_comments import (
     format_gitlab_summary,
     parse_diff_lines,
     parse_inline_comments,
+    parse_review_risk,
     resolve_comment,
     strip_json_block,
 )
@@ -133,7 +134,10 @@ def post_review(
                 discussions,
                 resolved_token,
                 format_gitlab_summary(
-                    summary, inline_count=inline, overview_count=overview
+                    summary,
+                    inline_count=inline,
+                    overview_count=overview,
+                    risk=parse_review_risk(review_md),
                 ),
             )
             log.info("posted merge request summary thread")

@@ -17,6 +17,46 @@ _TITLED_BODY_RE = re.compile(
 MAX_INLINE_COMMENTS = 12
 MAX_INLINE_BODY_CHARS = 700
 MAX_SUMMARY_CHARS = 2000
+_RISK_LINE_RE = re.compile(
+    r"^\s*\*?\*?Risk:\s*([^*\n]+)\*?\*?\s*$",
+    re.I | re.M,
+)
+RISK_LABELS = {
+    "safe": "Safe",
+    "moderate": "Moderate risk",
+    "risky": "Risky",
+    "blocker": "Blocker",
+}
+RISK_CANONICAL = {
+    "safe": "safe",
+    "low": "safe",
+    "ok": "safe",
+    "moderate": "moderate",
+    "moderate risk": "moderate",
+    "moderate-risk": "moderate",
+    "medium": "moderate",
+    "risky": "risky",
+    "high": "risky",
+    "blocker": "blocker",
+    "critical": "blocker",
+}
+RISK_EMOJI = {
+    "safe": ":white_check_mark:",
+    "moderate": ":large_yellow_circle:",
+    "risky": ":red_circle:",
+    "blocker": ":no_entry:",
+}
+_SEVERITY_RISK = {
+    "blocker": "blocker",
+    "security": "risky",
+    "must-fix": "risky",
+    "must_fix": "risky",
+    "high": "risky",
+    "test": "moderate",
+    "missing-test": "moderate",
+    "compat": "moderate",
+    "compatibility": "moderate",
+}
 SKIP_SEVERITIES = {
     "nit",
     "nits",
@@ -62,6 +102,45 @@ class DiffLine:
 def strip_json_block(review_md: str) -> str:
     """Prose for the summary MR thread, without fenced JSON."""
     return _JSON_FENCE_RE.sub("", review_md).strip()
+
+
+def parse_review_risk(review_md: str) -> str:
+    """Canonical risk: safe, moderate, risky, or blocker."""
+    payload = _extract_json(review_md)
+    if payload is not None:
+        raw = str(
+            payload.get("risk")
+            or payload.get("level")
+            or payload.get("verdict")
+            or ""
+        )
+        canonical = _canonical_risk(raw)
+        if canonical:
+            return canonical
+    match = _RISK_LINE_RE.search(review_md)
+    if match:
+        canonical = _canonical_risk(match.group(1))
+        if canonical:
+            return canonical
+    return infer_risk_from_comments(parse_inline_comments(review_md))
+
+
+def infer_risk_from_comments(comments: list[InlineComment]) -> str:
+    if not comments:
+        return "safe"
+    rank = {"safe": 0, "moderate": 1, "risky": 2, "blocker": 3}
+    worst = "safe"
+    for comment in comments:
+        level = _SEVERITY_RISK.get(comment.severity, "moderate")
+        if rank[level] > rank[worst]:
+            worst = level
+    return worst
+
+
+def _canonical_risk(raw: str) -> str:
+    key = re.sub(r"\s+", " ", (raw or "").strip().lower())
+    key = key.replace("_", "-").strip(" :.-")
+    return RISK_CANONICAL.get(key, "")
 
 
 def parse_inline_comments(review_md: str) -> list[InlineComment]:
@@ -256,9 +335,21 @@ def format_gitlab_summary(
     *,
     inline_count: int = 0,
     overview_count: int = 0,
+    risk: str = "",
 ) -> str:
     text = truncate_markdown(summary.strip(), MAX_SUMMARY_CHARS)
-    parts = ["### AAOS system-app review", "", text]
+    if risk:
+        text = _RISK_LINE_RE.sub("", text, count=1).strip()
+    parts = ["### AAOS system-app review", ""]
+    canonical = _canonical_risk(risk) or risk
+    if canonical:
+        label = RISK_LABELS.get(canonical, canonical.replace("-", " ").title())
+        emoji = RISK_EMOJI.get(canonical, "")
+        heading = f"**Risk: {label}**"
+        if emoji:
+            heading = f"{emoji} {heading}"
+        parts.extend([heading, ""])
+    parts.append(text)
     bits: list[str] = []
     if inline_count:
         bits.append(f"{inline_count} inline thread(s) on the **Changes** tab")

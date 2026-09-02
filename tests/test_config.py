@@ -441,6 +441,8 @@ class DefaultTemplateTests(unittest.TestCase):
         self.assertIn("FEW-SHOT", text)
         self.assertIn("privapp-permissions", text)
         self.assertIn("No actionable findings.", text)
+        self.assertIn("**Risk: Safe**", text)
+        self.assertIn('"risk"', text)
 
     def test_missing_template_error(self) -> None:
         with patch("critique_bot.config.Path.is_file", return_value=False):

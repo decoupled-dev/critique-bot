@@ -301,6 +301,36 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertTrue(truncate_markdown("short", 10) == "short")
         self.assertTrue(truncate_markdown("a" * 50, 10).endswith("…"))
 
+    def test_parse_and_format_risk(self) -> None:
+        from critique_bot.review_comments import (
+            format_gitlab_summary,
+            infer_risk_from_comments,
+            parse_review_risk,
+        )
+
+        text = (
+            "**Risk: Risky**\n1. Restore identity.\n"
+            '```json\n{"risk":"risky","comments":['
+            '{"path":"a.py","line":1,"severity":"security","body":"x"}]}\n```\n'
+        )
+        self.assertEqual(parse_review_risk(text), "risky")
+        self.assertEqual(parse_review_risk('{"risk":"Blocker","comments":[]}'), "blocker")
+        self.assertEqual(parse_review_risk("**Risk: Moderate risk**\nNo JSON"), "moderate")
+        self.assertEqual(parse_review_risk("just prose"), "safe")
+        self.assertEqual(
+            infer_risk_from_comments(parse_inline_comments(
+                '{"comments":[{"path":"a.py","line":1,"severity":"test","body":"x"}]}'
+            )),
+            "moderate",
+        )
+        formatted = format_gitlab_summary(
+            "**Risk: Risky**\n1. Restore identity.", risk="risky"
+        )
+        self.assertIn("**Risk: Risky**", formatted)
+        self.assertIn(":red_circle:", formatted)
+        self.assertIn("1. Restore identity.", formatted)
+        self.assertEqual(formatted.count("Risk: Risky"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -197,6 +197,7 @@ class PostReviewFlowTests(EnvIsolated):
         self.assertIn("line_range", inline[2]["position"])
         self.assertIn("Looks risky.", summary[2]["body"])
         self.assertIn("### AAOS system-app review", summary[2]["body"])
+        self.assertIn("**Risk:", summary[2]["body"])
         self.assertIn("Changes", summary[2]["body"])
         self.assertFalse(any(c[1].endswith("/notes") for c in calls if c[0] == "POST"))
 
