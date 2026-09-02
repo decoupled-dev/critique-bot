@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Android Log Analyzer</title>
+  <style>
+    :root {
+      --bg: #0c1017;
+      --bg-elev: #121826;
+      --bg-elev-2: #182033;
+      --line: #273044;
+      --text: #e7edf7;
+      --muted: #8b97ad;
+      --accent: #7dd3fc;
+      --v: #94a3b8;
+      --d: #38bdf8;
+      --i: #34d399;
+      --w: #fbbf24;
+      --e: #f87171;
+      --wtf: #c084fc;
+      --print: #fb923c;
+      --loop: #f472b6;
+      --observer: #22d3ee;
+      --listener: #a3e635;
+      --hot: #fb7185;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      --mono: "IBM Plex Mono", "ui-monospace", "SFMono-Regular", Menlo, Consolas, monospace;
+      --sans: "Segoe UI", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+    body {
+      background-image:
+        radial-gradient(1200px 500px at 10% -10%, rgba(56, 189, 248, 0.08), transparent 50%),
+        radial-gradient(900px 400px at 90% 0%, rgba(192, 132, 252, 0.07), transparent 45%);
+    }
+    button, input { font: inherit; }
+    header.app {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 16px 22px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12, 16, 23, 0.9);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    .brand { min-width: 260px; }
+    .brand h1 { margin: 0; font-size: 18px; letter-spacing: 0.04em; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .kpis { display: flex; gap: 10px; flex-wrap: wrap; flex: 1; }
+    .kpi {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px 12px;
+      min-width: 88px;
+    }
+    .kpi b { display: block; font-size: 18px; }
+    .kpi span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 78px); }
+    aside {
+      border-right: 1px solid var(--line);
+      background: rgba(18, 24, 38, 0.7);
+      padding: 14px;
+      overflow: auto;
+    }
+    .search {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 9px 11px;
+      outline: none;
+    }
+    .search:focus { border-color: var(--accent); }
+    .tree { margin-top: 12px; font-size: 13px; }
+    .tree button.file, .tree .dir > summary {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      text-align: left;
+      padding: 6px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .tree button.file:hover, .tree .dir > summary:hover, .tree button.file.active { background: var(--bg-elev-2); }
+    .tree .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .tree details { margin-left: 8px; }
+    .tree details.dir { margin-left: 0; }
+    main { padding: 16px 20px 40px; overflow: auto; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 5px 11px;
+      cursor: pointer;
+    }
+    .chip.on { border-color: currentColor; background: rgba(125, 211, 252, 0.1); }
+    .chip.v { color: var(--v); } .chip.d { color: var(--d); } .chip.i { color: var(--i); }
+    .chip.w { color: var(--w); } .chip.e { color: var(--e); } .chip.wtf { color: var(--wtf); }
+    .chip.println, .chip.print { color: var(--print); }
+    .chip.loop { color: var(--loop); } .chip.observer { color: var(--observer); }
+    .chip.listener { color: var(--listener); } .chip.hot_path { color: var(--hot); }
+    .table-wrap { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--bg-elev); box-shadow: var(--shadow); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); text-align: left; background: #101624; position: sticky; top: 0; }
+    tr { cursor: pointer; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    tr.open td { background: rgba(125, 211, 252, 0.06); }
+    .lvl {
+      display: inline-block; min-width: 54px; text-align: center; border-radius: 6px;
+      font-family: var(--mono); font-size: 11px; padding: 2px 6px; font-weight: 700;
+    }
+    .lvl.v { color: #0b1220; background: var(--v); }
+    .lvl.d { color: #08202c; background: var(--d); }
+    .lvl.i { color: #042016; background: var(--i); }
+    .lvl.w { color: #2a1d00; background: var(--w); }
+    .lvl.e { color: #3b0a0a; background: var(--e); }
+    .lvl.wtf { color: #2a0b3d; background: var(--wtf); }
+    .lvl.println, .lvl.print { color: #2a1400; background: var(--print); }
+    .badge { display: inline-block; font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; margin: 0 4px 4px 0; color: var(--muted); }
+    .badge.loop { color: var(--loop); border-color: rgba(244,114,182,.4); }
+    .badge.observer { color: var(--observer); border-color: rgba(34,211,238,.4); }
+    .badge.listener { color: var(--listener); border-color: rgba(163,230,53,.4); }
+    .badge.hot_path { color: var(--hot); border-color: rgba(251,113,133,.4); }
+    .path, .fn, .snippet { font-family: var(--mono); font-size: 12px; }
+    .snippet { color: #cbd5e1; }
+    .why { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .detail {
+      margin: 8px 12px 14px;
+      padding: 12px;
+      border-radius: 10px;
+      background: #0b1220;
+      border: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      color: #dbeafe;
+    }
+    .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; color: var(--muted); font-size: 13px; }
+    .pager button { background: var(--bg-elev); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+    .empty { padding: 40px; text-align: center; color: var(--muted); }
+    .errors { margin-top: 18px; color: var(--e); font-size: 13px; }
+    .meta { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header class="app">
+    <div class="brand">
+      <h1>Android Log Analyzer</h1>
+      <p id="subtitle">Offline scan of Java and Kotlin sources</p>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </header>
+  <div class="layout">
+    <aside>
+      <input class="search" id="fileSearch" placeholder="Filter files  /" aria-label="Filter files">
+      <div class="tree" id="tree"></div>
+    </aside>
+    <main>
+      <div class="filters" id="filters"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>Level</th>
+              <th>File / line</th>
+              <th>Where</th>
+              <th>Call</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden>No log calls match the current filters.</div>
+      </div>
+      <div class="pager">
+        <span id="pageInfo"></span>
+        <button id="prevPage" type="button">Previous</button>
+        <button id="nextPage" type="button">Next</button>
+      </div>
+      <div class="errors" id="errors"></div>
+    </main>
+  </div>
+  <script id="log-analyzer-data" type="application/json"><<<LOG_ANALYZER_JSON>>></script>
+  <script>
+    const DATA = JSON.parse(document.getElementById("log-analyzer-data").textContent);
+    const PAGE = 80;
+    const state = {
+      levels: new Set(),
+      contexts: new Set(),
+      chattyOnly: false,
+      file: "",
+      query: "",
+      page: 0,
+      open: null,
+    };
+
+    const levelOrder = ["v","d","i","w","e","wtf","println","print"];
+    const contextOrder = ["loop","observer","listener","hot_path"];
+
+    function $(id) { return document.getElementById(id); }
+
+    function renderKpis() {
+      const s = DATA.stats;
+      const items = [
+        ["Files", s.files_scanned],
+        ["Log calls", s.findings],
+        ["High frequency", s.high_freq],
+        ["V", s.by_level.v || 0],
+        ["D", s.by_level.d || 0],
+        ["I", s.by_level.i || 0],
+        ["W", s.by_level.w || 0],
+        ["E", s.by_level.e || 0],
+      ];
+      $("kpis").innerHTML = items.map(([label, value]) =>
+        `<div class="kpi"><b>${value}</b><span>${label}</span></div>`
+      ).join("");
+      $("subtitle").textContent = `${DATA.root} · generated ${DATA.generated_at}`;
+    }
+
+    function treeModel() {
+      const root = { name: "all files", kids: {}, files: [] };
+      for (const file of DATA.files) {
+        const parts = file.path.split("/");
+        let node = root;
+        parts.forEach((part, i) => {
+          if (i === parts.length - 1) {
+            node.files.push(file);
+          } else {
+            node.kids[part] = node.kids[part] || { name: part, kids: {}, files: [] };
+            node = node.kids[part];
+          }
+        });
+      }
+      return root;
+    }
+
+    function renderTree(filter) {
+      const q = (filter || "").toLowerCase();
+      const root = treeModel();
+      const allCount = DATA.files.reduce((n, f) => n + f.count, 0);
+      let html = `<button class="file ${state.file ? "" : "active"}" data-file="">
+        <span>All files</span><span class="count">${allCount}</span></button>`;
+
+      function walk(node, depth) {
+        const dirs = Object.keys(node.kids).sort();
+        for (const name of dirs) {
+          const child = node.kids[name];
+          html += `<details class="dir" open><summary><span>${name}/</span></summary>`;
+          walk(child, depth + 1);
+          html += `</details>`;
+        }
+        for (const file of node.files) {
+          if (q && !file.path.toLowerCase().includes(q)) continue;
+          const cls = state.file === file.path ? "active" : "";
+          html += `<button class="file ${cls}" data-file="${file.path}">
+            <span>${file.path.split("/").pop()}</span>
+            <span class="count">${file.count}${file.high_freq ? " · " + file.high_freq + " hot" : ""}</span>
+          </button>`;
+        }
+      }
+      walk(root, 0);
+      $("tree").innerHTML = html;
+      $("tree").querySelectorAll("button.file").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.file = btn.getAttribute("data-file") || "";
+          state.page = 0;
+          renderTree(state.query);
+          renderRows();
+        });
+      });
+    }
+
+    function renderFilters() {
+      const chips = [];
+      for (const level of levelOrder) {
+        const n = DATA.stats.by_level[level] || 0;
+        if (!n) continue;
+        chips.push(`<button type="button" class="chip ${level}" data-kind="level" data-value="${level}">${level.toUpperCase()} ${n}</button>`);
+      }
+      for (const ctx of contextOrder) {
+        const n = DATA.stats.by_context[ctx] || 0;
+        chips.push(`<button type="button" class="chip ${ctx}" data-kind="context" data-value="${ctx}">${ctx.replace("_", " ")} ${n}</button>`);
+      }
+      chips.push(`<button type="button" class="chip" data-kind="chatty">Chatty only</button>`);
+      $("filters").innerHTML = chips.join("");
+      $("filters").addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".chip");
+        if (!btn) return;
+        const kind = btn.dataset.kind;
+        if (kind === "chatty") {
+          state.chattyOnly = !state.chattyOnly;
+        } else if (kind === "level") {
+          toggleSet(state.levels, btn.dataset.value);
+        } else if (kind === "context") {
+          toggleSet(state.contexts, btn.dataset.value);
+        }
+        state.page = 0;
+        syncChips();
+        renderRows();
+      });
+      syncChips();
+    }
+
+    function toggleSet(set, value) {
+      if (set.has(value)) set.delete(value);
+      else set.add(value);
+    }
+
+    function syncChips() {
+      $("filters").querySelectorAll(".chip").forEach((btn) => {
+        const kind = btn.dataset.kind;
+        let on = false;
+        if (kind === "chatty") on = state.chattyOnly;
+        if (kind === "level") on = state.levels.has(btn.dataset.value);
+        if (kind === "context") on = state.contexts.has(btn.dataset.value);
+        btn.classList.toggle("on", on);
+      });
+    }
+
+    function filtered() {
+      return DATA.findings.filter((f) => {
+        if (state.file && f.file !== state.file) return false;
+        if (state.levels.size && !state.levels.has(f.level)) return false;
+        if (state.contexts.size && !f.contexts.some((c) => state.contexts.has(c))) return false;
+        if (state.chattyOnly && (!f.contexts.length && f.chatty_score < 6)) return false;
+        if (state.query) {
+          const blob = `${f.file} ${f.snippet} ${f.enclosing_function} ${f.enclosing_class} ${f.why}`.toLowerCase();
+          if (!blob.includes(state.query.toLowerCase())) return false;
+        }
+        return true;
+      });
+    }
+
+    function badges(finding) {
+      return (finding.contexts || []).map((c) => `<span class="badge ${c}">${c.replace("_", " ")}</span>`).join("");
+    }
+
+    function renderRows() {
+      const rows = filtered();
+      const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+      if (state.page >= pages) state.page = pages - 1;
+      const slice = rows.slice(state.page * PAGE, (state.page + 1) * PAGE);
+      $("empty").hidden = rows.length > 0;
+      $("rows").innerHTML = slice.map((f, idx) => {
+        const id = state.page * PAGE + idx;
+        const open = state.open === `${f.file}:${f.line}:${f.column}:${f.method}`;
+        return `<tr data-key="${f.file}:${f.line}:${f.column}:${f.method}" class="${open ? "open" : ""}">
+          <td><b>${f.chatty_score}</b></td>
+          <td><span class="lvl ${f.level}">${f.level.toUpperCase()}</span></td>
+          <td class="path">${f.file}:${f.line}<div class="meta">${(f.parse_sources || []).join(" + ")}</div></td>
+          <td class="fn">${f.enclosing_class || "—"}${f.enclosing_function ? "." + f.enclosing_function : ""}<div>${badges(f)}</div></td>
+          <td><div class="snippet">${escapeHtml(f.snippet)}</div><div class="why">${escapeHtml(f.why)}</div></td>
+        </tr>${open ? `<tr class="open"><td colspan="5"><div class="detail">${escapeHtml(detailText(f))}</div></td></tr>` : ""}`;
+      }).join("");
+      $("rows").querySelectorAll("tr[data-key]").forEach((tr) => {
+        tr.addEventListener("click", () => {
+          state.open = state.open === tr.dataset.key ? null : tr.dataset.key;
+          renderRows();
+        });
+      });
+      $("pageInfo").textContent = `${rows.length} matches · page ${state.page + 1} / ${pages}`;
+      $("prevPage").disabled = state.page <= 0;
+      $("nextPage").disabled = state.page >= pages - 1;
+      if (DATA.errors && DATA.errors.length) {
+        $("errors").innerHTML = DATA.errors.map((e) => `${e.file}: ${e.error}`).join("<br>");
+      }
+    }
+
+    function detailText(f) {
+      return [
+        `${f.api}.${f.method}`,
+        `Receiver: ${f.receiver || "(none)"}`,
+        `Location: ${f.file}:${f.line}:${f.column}`,
+        `Function: ${f.enclosing_class || "?"}.${f.enclosing_function || "?"}`,
+        `Contexts: ${(f.contexts || []).join(", ") || "none"}`,
+        `Parsers: ${(f.parse_sources || []).join(", ")}`,
+        `Why noisy: ${f.why}`,
+        "",
+        f.snippet,
+      ].join("\n");
+    }
+
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    $("prevPage").addEventListener("click", () => { state.page -= 1; renderRows(); });
+    $("nextPage").addEventListener("click", () => { state.page += 1; renderRows(); });
+    $("fileSearch").addEventListener("input", (ev) => {
+      state.query = ev.target.value;
+      state.page = 0;
+      renderTree(state.query);
+      renderRows();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "/" && document.activeElement !== $("fileSearch")) {
+        ev.preventDefault();
+        $("fileSearch").focus();
+      }
+      if (ev.key === "Escape") {
+        state.open = null;
+        renderRows();
+      }
+    });
+
+    renderKpis();
+    renderFilters();
+    renderTree("");
+    renderRows();
+  </script>
+</body>
+</html>
