@@ -1,4 +1,8 @@
-"""Allow `python -m log_analyzer` when the repo root is on sys.path."""
+#!/usr/bin/env python3
+"""Run the analyzer without installing the package or being in the repo root.
+
+    python log_analyzer/run.py /path/to/android -o report.html
+"""
 
 from __future__ import annotations
 
@@ -9,10 +13,7 @@ _PARENT = str(Path(__file__).resolve().parent.parent)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-if __package__ is None or __package__ == "":
-    __package__ = "log_analyzer"
-
-from .analyze import main
+from log_analyzer.analyze import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

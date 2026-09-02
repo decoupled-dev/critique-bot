@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +9,8 @@ from pathlib import Path
 from log_analyzer.analyze import analyze_path, main
 from log_analyzer.detect import detect_source
 from log_analyzer.models import Finding
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -114,6 +118,29 @@ class DetectTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(out.is_file())
             self.assertGreater(out.stat().st_size, 1000)
+
+    def test_run_py_works_from_any_cwd(self) -> None:
+        script = REPO_ROOT / "log_analyzer" / "run.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd="/tmp",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Android Java/Kotlin", result.stdout)
+
+    def test_typo_module_log_nalayzer(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "log_nalayzer", "--help"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout.lower())
 
 
 if __name__ == "__main__":

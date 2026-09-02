@@ -2,6 +2,8 @@
 
 Offline Python tool that scans an Android Java/Kotlin tree for chatty logging calls and writes a single HTML report you can open in a browser.
 
+The package name is **`log_analyzer`** (not `log_nalayzer` or `log_analzyer`).
+
 It is meant for large codebases: thousand-line files and deep source trees. Parsing uses tree-sitter (Java + Kotlin), javalang as a Java second pass, and regex as a fallback when a file does not parse cleanly.
 
 ## Install
@@ -9,16 +11,39 @@ It is meant for large codebases: thousand-line files and deep source trees. Pars
 Python 3.10+ is required. From the repository root:
 
 ```bash
+pip install -e ./log_analyzer
+```
+
+That installs the `log-analyzer` command and the `log_analyzer` module so you can run it from any directory. All packages run locally. No network calls are made while scanning.
+
+If you only want the parser libraries and will launch the script yourself:
+
+```bash
 pip install -r log_analyzer/requirements.txt
 ```
 
-All packages run locally. No network calls are made while scanning.
-
 ## Usage
 
+After `pip install -e ./log_analyzer` (works from any directory):
+
 ```bash
+log-analyzer /path/to/android-project --output log-report.html
+```
+
+Without installing the package, run the launcher (works from any directory):
+
+```bash
+python /path/to/critique-bot/log_analyzer/run.py /path/to/android-project --output log-report.html
+```
+
+`python -m log_analyzer` only works when the **repository root** (the folder that contains `log_analyzer/`) is the current directory, or when the package is installed:
+
+```bash
+cd /path/to/critique-bot
 python -m log_analyzer /path/to/android-project --output log-report.html
 ```
+
+Do not `cd` into `log_analyzer/` and then run `python -m log_analyzer`. Python will look for a nested `log_analyzer` package and raise `No module named log_analyzer`.
 
 Useful flags:
 

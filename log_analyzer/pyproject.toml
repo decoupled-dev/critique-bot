@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "android-log-analyzer"
+version = "0.1.0"
+description = "Offline Android Java/Kotlin log analyzer with an HTML report."
+requires-python = ">=3.10"
+dependencies = [
+    "tree-sitter>=0.23,<0.27",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-kotlin>=1.1",
+    "javalang>=0.13",
+]
+
+[project.scripts]
+log-analyzer = "log_analyzer.analyze:main"
+log_analyzer = "log_analyzer.analyze:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["log_analyzer", "log_analyzer.parsers"]
+
+[tool.setuptools.package-dir]
+log_analyzer = "."
+"log_analyzer.parsers" = "parsers"
+
+[tool.setuptools.package-data]
+log_analyzer = ["templates/*.html"]
