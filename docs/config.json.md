@@ -196,6 +196,8 @@ When `stop_button` is configured, `idle_ms` no longer decides completion — it 
 
 Wall-clock ceiling for one queued job. If a job overruns, the worker marks it failed so a waiting `submit` (and the CI job behind it) stops blocking. A wedged Playwright call cannot be interrupted, so this bounds the *waiting*, not the work; the browser-restart path clears the session afterwards.
 
+When files are staged across chat turns, the auto ceiling becomes `(staged files + 2) × timeout_ms + 60s` so ACK turns are not killed at the single-paste 420s default.
+
 ---
 
 ## Input caps
@@ -207,20 +209,21 @@ These protect the chat UI from huge patches. Values above the absolute max are c
 | `max_prompt_chars` | `120000` | `400000` | Entire prompt sent in **one** paste (template + files + patch). If files would push past this, they are sent one per chat turn instead |
 | `max_file_chars` | `32000` | `200000` | Per attached file, after read |
 | `max_files` | `80` | `400` | How many files are read from the checkout. At most 8 are pasted as separate chat turns |
+| `patch_only_file_count` | `10` | `400` | Skip HEAD file bodies when the MR has this many changed files or more; review the patch only |
 | `max_read_bytes` | `16000000` | `64000000` | Bytes read from each path before decode |
 
 Oversized / binary files are truncated or omitted and a short note is added to the prompt. Raise these only if the chat UI can actually accept that much paste.
 
-When changed-file bodies plus the patch fit in `max_prompt_chars`, the worker (or local one-shot) still sends **one** paste. When they would not, the same Edge tab gets a short prime message, then at most 8 files one per turn (`ACK` only), then the review template and patch. Markdown/RST bodies are skipped (their diffs are already in the patch). If a file turn gets no assistant reply, remaining file sends are dropped and the review prompt is still sent. Intermediate replies are discarded; only the last reply is `review.md`.
+When changed-file bodies plus the patch fit in `max_prompt_chars`, the worker (or local one-shot) still sends **one** paste. When they would not, the same Edge tab gets a short prime message, then at most 8 files one per turn (`ACK` only), then the review template and patch. Each file is pasted as soon as the previous ACK reply is complete. Markdown/RST bodies are skipped (their diffs are already in the patch). Merge requests with `patch_only_file_count` or more changed files (default 10) skip file bodies entirely and send the patch only. If a file turn gets no assistant reply, remaining file sends are dropped and the review prompt is still sent. Intermediate replies are discarded; only the last reply is `review.md`.
 
 ### `turn_pause_seconds`
 
 | | |
 | --- | --- |
 | Type | number ≥ 0 |
-| Default | `2` |
+| Default | `0` |
 
-Pause between **turns in the same job** when files are staged across chat turns. `0` sends the next paste immediately. This is not `min_interval_seconds` (that spaces **jobs**).
+Pause after an ACK before the next paste in the same job. `0` (default) sends the next file as soon as the model acknowledges. This is not `min_interval_seconds` (that spaces **jobs**).
 
 ---
 
@@ -399,6 +402,7 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
   "max_prompt_chars": 120000,
   "max_file_chars": 32000,
   "max_files": 80,
+  "patch_only_file_count": 10,
   "max_read_bytes": 16000000,
   "user_data_dir": "/opt/critique-bot/.edge-profile",
   "cdp_url": "",
@@ -406,7 +410,7 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
   "queue_dir": "/opt/critique-bot/.critique-queue",
   "min_interval_seconds": 30,
   "interval_jitter_seconds": 5,
-  "turn_pause_seconds": 2,
+  "turn_pause_seconds": 0,
   "max_parallel_tabs": 1,
   "gitlab": {
     "base_url": "https://gitlab.example.com"
@@ -422,6 +426,6 @@ Do not commit this file if it contains a private chat URL or a `storage_state` p
 - If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui`).
 - `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
 - If `storage_state` is set, that path is a file.
-- Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
+- Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` / `patch_only_file_count` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 
 A one-shot `--mode general` prompt (or **Send test prompt** in `critique-bot setup`) is the check the loader cannot do: Edge is installed, the profile holds a session, the selectors match the live page, and a real reply comes back.

@@ -376,6 +376,8 @@ class LoadConfigSuccessTests(EnvIsolated):
         self.assertEqual(config.cdp_url, "http://127.0.0.1:9222")
         self.assertEqual(config.backend, BACKEND_BROWSER)
         self.assertEqual(config.input_limits.max_files, 80)
+        self.assertEqual(config.patch_only_file_count, 10)
+        self.assertEqual(config.input_limits.patch_only_file_count, 10)
 
     def test_model_override_beats_env_and_file(self) -> None:
         path = self._write(self._browser({"model": "file-model"}))
@@ -407,6 +409,12 @@ class LoadConfigSuccessTests(EnvIsolated):
         path = self._write(self._browser({"max_prompt_chars": 9_999_999}))
         config = load_config(path)
         self.assertEqual(config.max_prompt_chars, 400_000)
+
+    def test_patch_only_file_count(self) -> None:
+        path = self._write(self._browser({"patch_only_file_count": 25}))
+        config = load_config(path)
+        self.assertEqual(config.patch_only_file_count, 25)
+        self.assertEqual(config.input_limits.patch_only_file_count, 25)
 
     def test_user_data_dir_env(self) -> None:
         path = self._write(self._browser())

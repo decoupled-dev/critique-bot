@@ -10,12 +10,14 @@ from critique_bot import log
 from critique_bot.patch import (
     ABSOLUTE_MAX_FILE_CHARS,
     ABSOLUTE_MAX_FILES,
+    ABSOLUTE_MAX_PATCH_ONLY_FILE_COUNT,
     ABSOLUTE_MAX_PROMPT_CHARS,
     ABSOLUTE_MAX_READ_BYTES,
     DEFAULT_MAX_FILE_CHARS,
     DEFAULT_MAX_FILES,
     DEFAULT_MAX_PROMPT_CHARS,
     DEFAULT_MAX_READ_BYTES,
+    DEFAULT_PATCH_ONLY_FILE_COUNT,
     InputLimits,
 )
 
@@ -37,7 +39,7 @@ DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
 DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
-DEFAULT_TURN_PAUSE_SECONDS = 2.0
+DEFAULT_TURN_PAUSE_SECONDS = 0.0
 DEFAULT_MAX_PARALLEL_TABS = 1
 ABSOLUTE_MAX_PARALLEL_TABS = 8
 DEFAULT_MAX_ATTEMPTS = 3
@@ -97,6 +99,7 @@ class BotConfig:
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
+    patch_only_file_count: int = DEFAULT_PATCH_ONLY_FILE_COUNT
     backend: str = BACKEND_BROWSER
     gitlab: GitLabConfig = GitLabConfig()
 
@@ -107,6 +110,7 @@ class BotConfig:
             max_file_chars=self.max_file_chars,
             max_files=self.max_files,
             max_read_bytes=self.max_read_bytes,
+            patch_only_file_count=self.patch_only_file_count,
         )
 
     @property
@@ -117,9 +121,19 @@ class BotConfig:
         generous for a healthy run but still unblocks a waiting CI job when the
         browser wedges below the Playwright timeout.
         """
+        return self.job_timeout_sec_for(0)
+
+    def job_timeout_sec_for(self, staged_files: int = 0) -> float:
+        """Ceiling for one job, scaled when files are sent as extra chat turns."""
         if self.job_timeout_seconds > 0:
             return self.job_timeout_seconds
-        return (self.timeout_ms / 1000.0) * 2 + 60.0
+        per_turn = self.timeout_ms / 1000.0
+        base = per_turn * 2 + 60.0
+        extra = max(int(staged_files), 0)
+        if extra <= 0:
+            return base
+        # prime + each file + the review paste
+        return max(base, (extra + 2) * per_turn + 60.0)
 
 
 def _clean(value: object) -> str:
@@ -331,6 +345,12 @@ def load_config(
             raw.get("max_read_bytes"),
             DEFAULT_MAX_READ_BYTES,
             ABSOLUTE_MAX_READ_BYTES,
+        ),
+        patch_only_file_count=_clamped_positive_int(
+            "patch_only_file_count",
+            raw.get("patch_only_file_count"),
+            DEFAULT_PATCH_ONLY_FILE_COUNT,
+            ABSOLUTE_MAX_PATCH_ONLY_FILE_COUNT,
         ),
         backend=BACKEND_BROWSER,
         gitlab=_load_gitlab(raw),

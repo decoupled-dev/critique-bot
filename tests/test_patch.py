@@ -31,6 +31,7 @@ from critique_bot.patch import (
     looks_like_diff,
     sanitize_attachments,
     sanitize_one,
+    skip_changed_file_bodies,
     skip_file_context,
     strip_unsafe_controls,
 )
@@ -127,6 +128,13 @@ class ChangedFilePathsTests(unittest.TestCase):
         self.assertTrue(skip_file_context("DEPLOY.md"))
         self.assertTrue(skip_file_context("docs/note.rst"))
         self.assertFalse(skip_file_context("src/cli.py"))
+
+    def test_skip_changed_file_bodies_uses_threshold(self) -> None:
+        self.assertFalse(skip_changed_file_bodies(9))
+        self.assertTrue(skip_changed_file_bodies(10))
+        self.assertTrue(skip_changed_file_bodies(12))
+        self.assertFalse(skip_changed_file_bodies(12, threshold=20))
+        self.assertFalse(skip_changed_file_bodies(50, threshold=0))
 
 
 class StripControlsTests(unittest.TestCase):

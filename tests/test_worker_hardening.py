@@ -74,9 +74,15 @@ class JobTimeoutTests(_Case):
     def test_default_limit_is_derived_from_the_call_timeout(self) -> None:
         self.assertEqual(_config(str(self.root), timeout_ms=180_000).job_timeout_sec, 420.0)
 
+    def test_staged_files_raise_the_auto_limit(self) -> None:
+        config = _config(str(self.root), timeout_ms=180_000)
+        self.assertEqual(config.job_timeout_sec_for(0), 420.0)
+        self.assertEqual(config.job_timeout_sec_for(8), 1860.0)
+
     def test_explicit_limit_wins(self) -> None:
         config = _config(str(self.root), job_timeout_seconds=42.0)
         self.assertEqual(config.job_timeout_sec, 42.0)
+        self.assertEqual(config.job_timeout_sec_for(8), 42.0)
 
     def test_watchdog_fails_an_overrunning_job(self) -> None:
         job = self.claim()

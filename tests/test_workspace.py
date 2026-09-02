@@ -165,3 +165,37 @@ class LoadChangedFilesTests(unittest.TestCase):
         )
         loaded = load_changed_files(self.folder, patch, self.limits)
         self.assertEqual([item.name for item in loaded], ["cli.py"])
+
+    def test_skips_bodies_when_the_mr_hits_the_threshold(self) -> None:
+        chunks = []
+        for i in range(10):
+            name = f"f{i}.py"
+            chunks.append(
+                f"diff --git a/{name} b/{name}\n"
+                f"--- a/{name}\n"
+                f"+++ b/{name}\n"
+                "@@ -1 +1,2 @@\n"
+                " x = 1\n"
+                "+y\n"
+            )
+        loaded = load_changed_files(self.folder, "".join(chunks), self.limits)
+        self.assertEqual(loaded, [])
+
+    def test_patch_only_threshold_comes_from_limits(self) -> None:
+        chunks = []
+        for i in range(10):
+            name = f"f{i}.py"
+            (self.folder / name).write_text("x = 1\n", encoding="utf-8")
+            chunks.append(
+                f"diff --git a/{name} b/{name}\n"
+                f"--- a/{name}\n"
+                f"+++ b/{name}\n"
+                "@@ -1 +1,2 @@\n"
+                " x = 1\n"
+                "+y\n"
+            )
+        limits = InputLimits(
+            max_file_chars=10_000, max_files=80, patch_only_file_count=20
+        )
+        loaded = load_changed_files(self.folder, "".join(chunks), limits)
+        self.assertEqual(len(loaded), 10)

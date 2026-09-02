@@ -23,6 +23,7 @@ from critique_bot.patch import (
     InputLimits,
     LoadedInput,
     cap_text,
+    changed_file_paths,
     finalize_prompt,
     load_path,
     load_stdin,
@@ -155,6 +156,7 @@ def _collect_attachments(
                 max_file_chars=limits.max_file_chars,
                 max_files=limits.max_files,
                 max_read_bytes=per_read,
+                patch_only_file_count=limits.patch_only_file_count,
             )
         return [_read_text_file(path, per_file_limits) for path in paths[:open_cap]]
     if not allow_stdin:
@@ -343,6 +345,7 @@ def _build_review_prompt(
         file_attachments,
         limits,
         patch_stats,
+        changed_path_count=len(changed_file_paths(patch_input.text)),
     )
     log.info(
         f"composed review prompt ({len(payload.prompt)} chars"
@@ -654,6 +657,7 @@ def _log_config(config) -> None:
             max_prompt_chars=config.max_prompt_chars,
             max_file_chars=config.max_file_chars,
             max_files=config.max_files,
+            patch_only_file_count=config.patch_only_file_count,
             max_read_bytes=config.max_read_bytes,
             user_data_dir=config.user_data_dir,
             cdp_url=config.cdp_url,

@@ -308,7 +308,7 @@ def _execute_job(
     detail: dict | None = None
     watchdog: _JobWatchdog | None = None
     try:
-        with _JobWatchdog(queue, job, config.job_timeout_sec) as watchdog:
+        with _JobWatchdog(queue, job, config.job_timeout_sec_for(len(job.files))) as watchdog:
             with provider.session(isolated=isolated, model=job.model) as session:
                 try:
                     if job.mode == "review":

@@ -48,7 +48,7 @@ class QueueDirConfigTests(unittest.TestCase):
         self.assertEqual(config.queue_dir, str((self.folder / ".critique-queue").resolve()))
         self.assertEqual(config.min_interval_seconds, 30.0)
         self.assertEqual(config.interval_jitter_seconds, 5.0)
-        self.assertEqual(config.turn_pause_seconds, 2.0)
+        self.assertEqual(config.turn_pause_seconds, 0.0)
         self.assertEqual(config.max_parallel_tabs, 1)
 
     def test_max_parallel_tabs(self) -> None:

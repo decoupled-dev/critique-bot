@@ -19,11 +19,17 @@ from critique_bot.patch import (
     finalize_prompt,
     format_sanitize_note,
     sanitize_one,
+    skip_changed_file_bodies,
 )
 
 FILES_ALREADY_SENT = (
     "Changed-file bodies were already sent earlier in this conversation "
     "(one file per turn). Use those HEAD line numbers for comments[].line "
+    'on side: "new".'
+)
+PATCH_ONLY_FILES = (
+    "This merge request changes too many files to paste HEAD bodies. "
+    "Review the unified diff below. Use patch line numbers for comments[].line "
     'on side: "new".'
 )
 REVIEW_NOW = "REVIEW NOW"
@@ -84,8 +90,20 @@ def split_review_payload(
     file_attachments: list[tuple[str, str]],
     limits: InputLimits,
     stats: SanitizeStats,
+    *,
+    changed_path_count: int = 0,
 ) -> PromptPayload:
     """Return prompt + files. ``files`` is empty when one-shot is enough."""
+    path_count = changed_path_count or len(file_attachments)
+    if skip_changed_file_bodies(path_count, limits.patch_only_file_count):
+        log.info(
+            f"{path_count} changed files "
+            f"(>= {limits.patch_only_file_count}); sending the patch only"
+        )
+        one_shot = compose_prompt(
+            template, patch_body, mr_context, files=PATCH_ONLY_FILES
+        )
+        return PromptPayload(prompt=finalize_prompt(one_shot, limits, stats))
     files_body = (
         format_attachments(file_attachments, named=True) if file_attachments else ""
     )
@@ -161,7 +179,11 @@ def run_review_session(
     turn_pause_seconds: float = 0.0,
     sleep=time.sleep,
 ) -> str:
-    """Send one review on an open ChatSession. Last assistant reply is the review."""
+    """Send one review on an open ChatSession. Last assistant reply is the review.
+
+    File turns are handshake-based: ``send()`` waits for the ACK, then the next
+    paste goes immediately unless ``turn_pause_seconds`` is set.
+    """
     file_map = dict(files or {})
     if not file_map:
         return session.send(prompt)
