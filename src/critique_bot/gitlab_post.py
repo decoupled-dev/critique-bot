@@ -78,15 +78,16 @@ def post_review(
 
     def lines_for(comment: InlineComment) -> DiffLine | None:
         nonlocal remote_lines
-        row = resolve_comment(comment, local_lines) if local_lines else None
-        if row is not None:
-            return row
         if remote_lines is None:
             remote_lines = parse_diff_lines(
                 _fetch_mr_patch(api_url, project_id, mr_iid, resolved_token)
             )
         if remote_lines:
-            return resolve_comment(comment, remote_lines)
+            row = resolve_comment(comment, remote_lines)
+            if row is not None:
+                return row
+        if local_lines:
+            return resolve_comment(comment, local_lines)
         return None
 
     for comment in comments:
@@ -158,14 +159,28 @@ def _post_diff_thread(
     refs: dict[str, str],
     row: DiffLine,
 ) -> bool:
-    """Try a Changes-tab diff discussion; False if GitLab rejects the position."""
-    for with_range in (True, False):
+    """POST .../discussions with the position payload GitLab accepts on the diff.
+
+    First try the fields a working PowerShell client uses: base_sha, start_sha,
+    head_sha, old_path, new_path, position_type, and new_line (or old_line).
+    Some GitLab versions also want line_range; retry with that if needed.
+    """
+    for with_range in (False, True):
         position = discussion_position(refs, row, with_line_range=with_range)
         try:
             _post_discussion(url, token, body, position=position)
             return True
         except GitLabPostError as exc:
-            log.warn(f"inline thread rejected: {exc}")
+            log.warn(
+                "inline thread rejected "
+                + log.kv(
+                    path=position.get("new_path"),
+                    new_line=position.get("new_line"),
+                    old_line=position.get("old_line"),
+                    line_range=bool(with_range),
+                )
+                + f" {exc}"
+            )
     return False
 
 

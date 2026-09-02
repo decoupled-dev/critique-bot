@@ -96,11 +96,7 @@ Inline comments (JSON after the summary):
 
   One-sentence problem.
 
-  **Action:** concrete fix.
-  Optional GitLab suggestion (1–5 lines) only when the fix is a small drop-in:
-  ```suggestion
-  the replacement
-  ```
+  **Action:** concrete fix (plain text; do not put ``` fences inside JSON).
 - No praise, no “consider later”, no style nits.
 
 JSON rules:

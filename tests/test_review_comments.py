@@ -253,20 +253,29 @@ class ReviewCommentTests(unittest.TestCase):
         )
 
         digest = hashlib.sha1(b"src/pay.py").hexdigest()
-        self.assertEqual(line_code_for("src/pay.py", None, 12), f"{digest}_0_12")
+        self.assertEqual(line_code_for("src/pay.py", None, 12), f"{digest}_12_12")
         row = DiffLine("src/pay.py", "src/pay.py", None, 12, "add")
         span = line_range_for(row)
-        self.assertEqual(span["start"]["line_code"], f"{digest}_0_12")
+        self.assertEqual(span["start"]["line_code"], f"{digest}_12_12")
         self.assertEqual(span["start"]["type"], "new")
         self.assertEqual(span["start"]["new_line"], 12)
-        self.assertNotIn("old_line", span["start"])
         refs = {"base_sha": "b", "start_sha": "s", "head_sha": "h"}
         pos = discussion_position(refs, row)
-        self.assertEqual(pos["new_line"], 12)
-        self.assertNotIn("old_line", pos)
-        self.assertIn("line_range", pos)
-        bare = discussion_position(refs, row, with_line_range=False)
-        self.assertNotIn("line_range", bare)
+        self.assertEqual(
+            pos,
+            {
+                "base_sha": "b",
+                "start_sha": "s",
+                "head_sha": "h",
+                "old_path": "src/pay.py",
+                "new_path": "src/pay.py",
+                "position_type": "text",
+                "new_line": 12,
+            },
+        )
+        self.assertNotIn("line_range", pos)
+        with_range = discussion_position(refs, row, with_line_range=True)
+        self.assertIn("line_range", with_range)
 
     def test_format_gitlab_comment_and_summary(self) -> None:
         from critique_bot.review_comments import (
@@ -330,6 +339,64 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertIn(":red_circle:", formatted)
         self.assertIn("1. Restore identity.", formatted)
         self.assertEqual(formatted.count("Risk: Risky"), 1)
+
+    def test_nested_suggestion_fence_does_not_break_json(self) -> None:
+        text = (
+            "**Risk: Risky**\n1. Fix it.\n\n"
+            "```json\n"
+            '{"risk":"risky","comments":[{"path":"src/pay.py","line":12,"body":'
+            '"**Must fix**\\n\\n```suggestion\\nfoo\\n```"}]}'
+            "\n```\n"
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        stripped = strip_json_block(text)
+        self.assertIn("**Risk: Risky**", stripped)
+        self.assertNotIn("```json", stripped)
+        self.assertNotIn('"comments"', stripped)
+        self.assertNotIn("suggestion", stripped)
+
+    def test_unfenced_json_is_stripped(self) -> None:
+        text = (
+            "**Risk: Risky**\n1. Restore identity.\n"
+            '{"risk":"risky","comments":[{"path":"a.py","line":1,"body":"x"}]}'
+        )
+        self.assertEqual(len(parse_inline_comments(text)), 1)
+        stripped = strip_json_block(text)
+        self.assertEqual(stripped, "**Risk: Risky**\n1. Restore identity.")
+
+    def test_comment_key_and_findings_alias(self) -> None:
+        comments = parse_inline_comments(
+            json.dumps(
+                {
+                    "findings": [
+                        {"path": "a.py", "old_line": 4, "side": "old", "comment": "gone"}
+                    ]
+                }
+            )
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].body, "gone")
+        self.assertEqual(comments[0].line, 4)
+        self.assertEqual(comments[0].side, "old")
+
+    def test_resolve_suffix_and_basename_path(self) -> None:
+        from critique_bot.review_comments import InlineComment
+
+        lines = parse_diff_lines(PATCH)
+        row = resolve_comment(
+            InlineComment(path="pay.py", line=12, side="new", body="x"),
+            lines,
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row.path, "src/pay.py")
+        nested = resolve_comment(
+            InlineComment(path="src/pay.py", line=12, side="new", body="x"),
+            lines,
+        )
+        self.assertEqual(nested.path, "src/pay.py")
 
 
 if __name__ == "__main__":

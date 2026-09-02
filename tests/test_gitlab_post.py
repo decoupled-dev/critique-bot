@@ -193,9 +193,21 @@ class PostReviewFlowTests(EnvIsolated):
             c for c in discussion_posts if c[2] and not c[2].get("position")
         )
         self.assertEqual(inline[2]["body"], "coupon is not defined")
-        self.assertEqual(inline[2]["position"]["new_line"], 12)
-        self.assertIn("line_range", inline[2]["position"])
+        self.assertEqual(
+            inline[2]["position"],
+            {
+                "base_sha": "aaa",
+                "start_sha": "bbb",
+                "head_sha": "ccc",
+                "old_path": "src/pay.py",
+                "new_path": "src/pay.py",
+                "position_type": "text",
+                "new_line": 12,
+            },
+        )
         self.assertIn("Looks risky.", summary[2]["body"])
+        self.assertNotIn("```json", summary[2]["body"])
+        self.assertNotIn('"comments"', summary[2]["body"])
         self.assertIn("### AAOS system-app review", summary[2]["body"])
         self.assertIn("**Risk:", summary[2]["body"])
         self.assertIn("Changes", summary[2]["body"])
