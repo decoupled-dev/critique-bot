@@ -31,6 +31,7 @@ from critique_bot.patch import (
     looks_like_diff,
     sanitize_attachments,
     sanitize_one,
+    skip_file_context,
     strip_unsafe_controls,
 )
 from critique_bot.patch import (
@@ -115,6 +116,17 @@ class ChangedFilePathsTests(unittest.TestCase):
             context_file_priority("a/Foo.java")[0],
             context_file_priority("res/values/strings.xml")[0],
         )
+
+    def test_python_before_markdown(self) -> None:
+        self.assertLess(
+            context_file_priority("src/cli.py")[0],
+            context_file_priority("README.md")[0],
+        )
+
+    def test_skip_file_context_markdown(self) -> None:
+        self.assertTrue(skip_file_context("DEPLOY.md"))
+        self.assertTrue(skip_file_context("docs/note.rst"))
+        self.assertFalse(skip_file_context("src/cli.py"))
 
 
 class StripControlsTests(unittest.TestCase):

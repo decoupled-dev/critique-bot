@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 from critique_bot import log
+from critique_bot.chat_client import ChatError
 from critique_bot.config import compose_prompt, format_attachments
 from critique_bot.patch import (
     InputLimits,
@@ -26,6 +27,8 @@ FILES_ALREADY_SENT = (
     'on side: "new".'
 )
 REVIEW_NOW = "REVIEW NOW"
+#: ChatGPT's web UI stops producing replies after too many large pastes.
+MAX_STAGED_FILES = 8
 
 
 @dataclass(frozen=True)
@@ -93,7 +96,13 @@ def split_review_payload(
         template, patch_body, mr_context, files=FILES_ALREADY_SENT
     )
     prompt = finalize_prompt(staged, limits, stats)
-    files = {name: body for name, body in file_attachments}
+    kept = file_attachments[:MAX_STAGED_FILES]
+    if len(file_attachments) > MAX_STAGED_FILES:
+        log.info(
+            f"staging {len(kept)} of {len(file_attachments)} file(s) "
+            f"(max {MAX_STAGED_FILES} chat turns)"
+        )
+    files = {name: body for name, body in kept}
     log.info(
         f"review overflow ({len(one_shot)} chars); "
         f"staging {len(files)} file(s) across chat turns"
@@ -175,7 +184,14 @@ def run_review_session(
             limits.max_prompt_chars,
             what=path,
         )
-        reply = session.send(payload)
+        try:
+            reply = session.send(payload)
+        except ChatError as exc:
+            log.warn(
+                f"file turn {i}/{total} ({path}) failed ({exc}); "
+                "sending the review with files already delivered"
+            )
+            break
         if not reply_is_ack(reply, path):
             log.warn(f"file turn {i}/{total} ({path}) did not ACK; continuing")
     pause()

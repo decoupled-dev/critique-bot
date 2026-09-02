@@ -18,6 +18,7 @@ from critique_bot.patch import (
     context_file_priority,
     load_path,
     looks_binary_path,
+    skip_file_context,
 )
 
 DEFAULT_PATCH_NAME = "diff.patch"
@@ -116,7 +117,7 @@ def load_changed_files(
     ordered = sorted(changed_file_paths(patch), key=context_file_priority)
     loaded: list[LoadedInput] = []
     for path in ordered:
-        if looks_binary_path(path):
+        if looks_binary_path(path) or skip_file_context(path):
             continue
         full = repo / path
         if not full.is_file():

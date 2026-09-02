@@ -5,6 +5,7 @@ import unittest
 from critique_bot.patch import InputLimits, SanitizeStats
 from critique_bot.review_session import (
     FILES_ALREADY_SENT,
+    MAX_STAGED_FILES,
     REVIEW_NOW,
     PromptPayload,
     format_file_turn,
@@ -70,6 +71,21 @@ class FitAndSplitTests(unittest.TestCase):
         self.assertIn(FILES_ALREADY_SENT, payload.prompt)
         self.assertNotIn("int x;", payload.prompt)
         self.assertIn("+hi", payload.prompt)
+
+    def test_overflow_caps_staged_file_turns(self) -> None:
+        limits = InputLimits(max_prompt_chars=200, max_file_chars=2_000)
+        files = [(f"f{i}.java", "class X {}\n" * 5) for i in range(12)]
+        payload = split_review_payload(
+            "FILES\n{files}\nPATCH\n{patch}\n",
+            "+hi\n",
+            "",
+            files,
+            limits,
+            SanitizeStats(),
+        )
+        self.assertEqual(len(payload.files), MAX_STAGED_FILES)
+        self.assertEqual(list(payload.files), [f"f{i}.java" for i in range(MAX_STAGED_FILES)])
+        self.assertNotIn("f8.java", payload.files)
 
 
 class SanitizeContextFilesTests(unittest.TestCase):
@@ -165,6 +181,41 @@ class RunReviewSessionTests(unittest.TestCase):
             sleep=lambda _: called.append(True),
         )
         self.assertEqual(called, [])
+
+    def test_file_turn_chat_error_still_sends_review(self) -> None:
+        from critique_bot.chat_client import ChatError
+
+        class BoomSession:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+                self.n = 0
+
+            def send(self, prompt: str) -> str:
+                self.prompts.append(prompt)
+                self.n += 1
+                if self.n == 3:
+                    raise ChatError(
+                        "no assistant message appeared "
+                        "(selector=\"[data-message-author-role='assistant']\", "
+                        "previous_count=3)"
+                    )
+                if REVIEW_NOW in prompt:
+                    return "FINAL REVIEW"
+                return "ACK ok"
+
+        session = BoomSession()
+        out = run_review_session(
+            session,
+            "REVIEW TEMPLATE\nPATCH",
+            {"a.java": "class A {}", "b.java": "class B {}", "c.java": "class C {}"},
+            InputLimits(max_prompt_chars=10_000),
+        )
+        self.assertEqual(out, "FINAL REVIEW")
+        self.assertEqual(len(session.prompts), 4)
+        self.assertIn("FILE 1 of 3", session.prompts[1])
+        self.assertIn("FILE 2 of 3", session.prompts[2])
+        self.assertNotIn("FILE 3 of 3", "".join(session.prompts))
+        self.assertTrue(session.prompts[-1].rstrip().endswith(REVIEW_NOW))
 
 
 class PromptPayloadTests(unittest.TestCase):

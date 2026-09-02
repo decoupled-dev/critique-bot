@@ -94,7 +94,7 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
 
 Script, in order:
 
-1. `critique-bot submit` (no `--patch-file` in CI). Submit uses the job checkout: `git fetch` of the target branch, `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job), writes `diff.patch`, and loads HEAD contents of changed text files. If those files plus the patch fit in one paste, the worker sends a single prompt; otherwise it sends the files one per chat turn on the same tab, then the review. Empty diff: submit exits 0 and nothing is posted.
+1. `critique-bot submit` (no `--patch-file` in CI). Submit uses the job checkout: `git fetch` of the target branch, `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job), writes `diff.patch`, and loads HEAD contents of changed text files (markdown/RST skipped). If those files plus the patch fit in one paste, the worker sends a single prompt; otherwise it sends at most 8 files one per chat turn on the same tab, then the review. Empty diff: submit exits 0 and nothing is posted.
 2. If `CI_MERGE_REQUEST_IID` is set and `out/review.md` exists: `critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch`
 
 Artifacts (always, 1 week): `out/`, `diff.patch`. Job timeout: 1 hour. Submit wait: 30 minutes.

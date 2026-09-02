@@ -434,9 +434,18 @@ def context_file_priority(path: str) -> tuple[int, str]:
         rank = 1
     elif suffix in {".xml", ".bp", ".mk"}:
         rank = 2
+    elif suffix in {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".c", ".cc", ".cpp", ".h"}:
+        rank = 3
+    elif suffix in {".md", ".rst", ".markdown"}:
+        rank = 9
     else:
         rank = 5
     return (rank, path)
+
+
+def skip_file_context(path: str) -> bool:
+    """Docs diffs are covered by the patch; do not paste full markdown bodies."""
+    return Path(path).suffix.lower() in {".md", ".rst", ".markdown"}
 
 
 def _section_is_binary(section: str, path: str) -> bool:

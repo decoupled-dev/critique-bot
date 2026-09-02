@@ -206,12 +206,12 @@ These protect the chat UI from huge patches. Values above the absolute max are c
 | --- | --- | --- | --- |
 | `max_prompt_chars` | `120000` | `400000` | Entire prompt sent in **one** paste (template + files + patch). If files would push past this, they are sent one per chat turn instead |
 | `max_file_chars` | `32000` | `200000` | Per attached file, after read |
-| `max_files` | `80` | `400` | How many files are included |
+| `max_files` | `80` | `400` | How many files are read from the checkout. At most 8 are pasted as separate chat turns |
 | `max_read_bytes` | `16000000` | `64000000` | Bytes read from each path before decode |
 
 Oversized / binary files are truncated or omitted and a short note is added to the prompt. Raise these only if the chat UI can actually accept that much paste.
 
-When changed-file bodies plus the patch fit in `max_prompt_chars`, the worker (or local one-shot) still sends **one** paste. When they would not, the same Edge tab gets a short prime message, then one file per turn (`ACK` only), then the review template and patch. Intermediate replies are discarded; only the last reply is `review.md`.
+When changed-file bodies plus the patch fit in `max_prompt_chars`, the worker (or local one-shot) still sends **one** paste. When they would not, the same Edge tab gets a short prime message, then at most 8 files one per turn (`ACK` only), then the review template and patch. Markdown/RST bodies are skipped (their diffs are already in the patch). If a file turn gets no assistant reply, remaining file sends are dropped and the review prompt is still sent. Intermediate replies are discarded; only the last reply is `review.md`.
 
 ### `turn_pause_seconds`
 

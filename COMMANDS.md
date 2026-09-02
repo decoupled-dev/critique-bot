@@ -42,7 +42,7 @@ Flags: `--config` (required; the file must already exist, copy an example first)
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
 
-Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected. In GitLab CI, omit `--patch-file` so submit builds `diff.patch` from the job checkout and loads changed files. Small reviews still go as one paste; if template + files + patch would exceed `max_prompt_chars`, the worker sends files one per chat turn on the same Edge tab, then the review prompt. `--include-changed-files` / `--repo-dir` do the same against a local clone.
+Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected. In GitLab CI, omit `--patch-file` so submit builds `diff.patch` from the job checkout and loads changed files. Small reviews still go as one paste; if template + files + patch would exceed `max_prompt_chars`, the worker sends at most 8 files one per chat turn on the same Edge tab (markdown/RST skipped), then the review prompt. `--include-changed-files` / `--repo-dir` do the same against a local clone.
 
 Each submit creates its own job id and **only waits for that id**. The worker does not match by MR: it claims the oldest inbox file (FIFO, one at a time). GitLab env (`CI_MERGE_REQUEST_IID`, `CI_PROJECT_PATH`, …) is stored on the job as `meta` and in the filename, e.g. `1735689600123-group-app-mr42-a1b2c3d4.json`.
 
@@ -72,7 +72,7 @@ Chat mode is headless unless you pass `--headed`.
 
 ### Placeholders
 
-In **review** templates, `{patch}` is required (the unified diff). `{files}` is the HEAD contents of changed files when they fit in one paste; otherwise the worker sends those files one per chat turn first. `{mr_context}` is GitLab MR metadata.
+In **review** templates, `{patch}` is required (the unified diff). `{files}` is the HEAD contents of changed files when they fit in one paste; otherwise the worker sends up to 8 of those files one per chat turn first. `{mr_context}` is GitLab MR metadata.
 
 In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, those are replaced with attached file contents. Otherwise files are appended after the prompt, labeled `--- file: <path> ---`.
 
@@ -89,7 +89,7 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--file PATH` | all | Attach a UTF-8 file (repeatable). Patch, source, or any text file. |
 | `FILE ...` | all | Trailing paths; same as `--file`. |
 | `--patch-file PATH` | all | Patch/diff to include. In review, omit in GitLab CI to build it from the checkout; locally, omit to read stdin. |
-| `--include-changed-files` | review | Load HEAD contents of paths in the patch from `--repo-dir`. Inlined when they fit one paste; otherwise sent one per chat turn. Implied when CI builds the workspace diff. |
+| `--include-changed-files` | review | Load HEAD contents of paths in the patch from `--repo-dir`. Inlined when they fit one paste; otherwise at most 8 files are sent one per chat turn. Markdown/RST skipped. Implied when CI builds the workspace diff. |
 | `--repo-dir DIR` | review | Checkout to read changed files from (default: current directory). |
 | `--write-patch PATH` | review | Where to write a generated git diff (default: `diff.patch`). |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |

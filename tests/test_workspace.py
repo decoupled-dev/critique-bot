@@ -145,3 +145,23 @@ class LoadChangedFilesTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].name, "Foo.java")
         self.assertIn("class Foo", loaded[0].text)
+
+    def test_skips_markdown_keeps_python(self) -> None:
+        (self.folder / "DEPLOY.md").write_text("# deploy\n" + ("x" * 100), encoding="utf-8")
+        (self.folder / "cli.py").write_text("print(1)\n", encoding="utf-8")
+        patch = (
+            "diff --git a/DEPLOY.md b/DEPLOY.md\n"
+            "--- a/DEPLOY.md\n"
+            "+++ b/DEPLOY.md\n"
+            "@@ -1 +1,2 @@\n"
+            " # deploy\n"
+            "+x\n"
+            "diff --git a/cli.py b/cli.py\n"
+            "--- a/cli.py\n"
+            "+++ b/cli.py\n"
+            "@@ -1 +1,2 @@\n"
+            " print(1)\n"
+            "+# y\n"
+        )
+        loaded = load_changed_files(self.folder, patch, self.limits)
+        self.assertEqual([item.name for item in loaded], ["cli.py"])
