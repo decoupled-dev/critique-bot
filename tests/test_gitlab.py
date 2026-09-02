@@ -83,9 +83,9 @@ class ParseMrUrlTests(unittest.TestCase):
 
 
 class ResolveTargetTests(EnvIsolated):
-    def test_cli_beats_config(self) -> None:
+    def test_cli_beats_config_host(self) -> None:
         target = resolve_target(
-            GitLabConfig(base_url="https://from-config.example", project_id="1", mr_iid="2"),
+            GitLabConfig(base_url="https://from-config.example"),
             api_url="https://from-cli.example/api/v4",
             project_id="9",
             mr_iid="4",
@@ -96,11 +96,19 @@ class ResolveTargetTests(EnvIsolated):
 
     def test_config_base_url_builds_api(self) -> None:
         target = resolve_target(
-            GitLabConfig(base_url="https://gitlab.example.com", project_id="8", mr_iid="3")
+            GitLabConfig(base_url="https://gitlab.example.com"),
+            project_id="8",
+            mr_iid="3",
         )
         self.assertEqual(target.api_url, "https://gitlab.example.com/api/v4")
         self.assertEqual(target.project_id, "8")
         self.assertEqual(target.mr_iid, "3")
+
+    def test_config_does_not_supply_project_or_mr(self) -> None:
+        target = resolve_target(GitLabConfig(base_url="https://gitlab.example.com"))
+        self.assertEqual(target.api_url, "https://gitlab.example.com/api/v4")
+        self.assertEqual(target.project_id, "")
+        self.assertEqual(target.mr_iid, "")
 
     def test_mr_url_fills_gaps(self) -> None:
         target = resolve_target(

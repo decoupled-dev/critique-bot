@@ -128,7 +128,7 @@ critique-bot worker --config /opt/critique-bot/config.json --logs
 critique-bot submit --config /opt/critique-bot/config.json \
   --patch-file diff.patch --output-dir out
 
-# post the result (strips the JSON block, adds inline diff comments)
+# post the result (project + MR come from CI_PROJECT_ID / CI_MERGE_REQUEST_IID)
 critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch
 ```
 

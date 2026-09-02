@@ -543,8 +543,6 @@ def _log_config(config) -> None:
                 config.selectors.model_dropdown_identifier or "(none)"
             ),
             gitlab_base_url=config.gitlab.base_url or "(none)",
-            gitlab_project_id=config.gitlab.project_id or "(none)",
-            gitlab_mr_iid=config.gitlab.mr_iid or "(none)",
         )
     )
 

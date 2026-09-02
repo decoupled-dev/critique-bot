@@ -52,17 +52,15 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class GitLabConfig:
-    """Host and optional MR targeting used to call GitLab's API v4.
+    """GitLab instance used to call API v4.
 
-    ``base_url`` is the GitLab origin (``https://gitlab.example.com``). The
-    review bot builds
+    ``base_url`` is the origin (``https://gitlab.example.com``). Project ID,
+    MR IID, and MR URL are never stored here; they come from CI or CLI for
+    the current merge request. The bot builds
     ``{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}``.
     """
 
     base_url: str = ""
-    project_id: str = ""
-    mr_iid: str = ""
-    mr_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -426,13 +424,6 @@ def _load_gitlab(raw: dict) -> GitLabConfig:
         log.debug(f"gitlab.base_url overridden by {ENV_GITLAB_URL}")
     return GitLabConfig(
         base_url=base_url,
-        project_id=_clean(nested.get("project_id") or raw.get("gitlab_project_id")),
-        mr_iid=_clean(
-            nested.get("mr_iid")
-            or nested.get("merge_request_iid")
-            or raw.get("gitlab_mr_iid")
-        ),
-        mr_url=_clean(nested.get("mr_url") or raw.get("gitlab_mr_url")),
     )
 
 

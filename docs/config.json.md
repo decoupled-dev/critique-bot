@@ -330,14 +330,13 @@ How many finished job folders to keep under `results/`. The oldest are removed a
 
 ## `gitlab` (object, optional)
 
-Used when reviewing a merge request: the bot loads title, ticket IDs, description, commit messages, and changed file/line ranges into the SYSTEM prompt, and `gitlab-post` uses the same targeting.
+Used when reviewing a merge request: the bot loads title, ticket IDs, description, commit messages, and changed file/line ranges into the SYSTEM prompt, and `gitlab-post` uses the same instance URL.
 
 | Key | Meaning |
 | --- | --- |
-| `base_url` | GitLab origin, e.g. `https://gitlab.example.com`. API root is `{base_url}/api/v4`. Env: `CRITIQUE_GITLAB_URL`. In CI, `CI_SERVER_URL` / `CI_API_V4_URL` also work |
-| `project_id` | Numeric ID or `group/project` path. Optional when `CI_PROJECT_ID` / `CI_PROJECT_PATH` or `mr_url` is set |
-| `mr_iid` | Merge request IID. Optional when `CI_MERGE_REQUEST_IID` or `mr_url` is set |
-| `mr_url` | Full MR web URL. Parsed for host, project path, and IID when those are missing |
+| `base_url` | GitLab origin only, e.g. `https://gitlab.example.com`. API root is `{base_url}/api/v4`. Env: `CRITIQUE_GITLAB_URL`. In CI, `CI_SERVER_URL` / `CI_API_V4_URL` also work |
+
+Do **not** put `project_id`, `mr_iid`, or `mr_url` here. Those change per pipeline and are read from GitLab CI (`CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID`, `CI_MERGE_REQUEST_URL`) or from `gitlab-post --project-id` / `--mr-iid` / `--mr-url`.
 
 The merge-request endpoint is:
 
@@ -398,10 +397,7 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
   "interval_jitter_seconds": 5,
   "max_parallel_tabs": 1,
   "gitlab": {
-    "base_url": "https://gitlab.example.com",
-    "project_id": "",
-    "mr_iid": "",
-    "mr_url": ""
+    "base_url": "https://gitlab.example.com"
   }
 }
 ```

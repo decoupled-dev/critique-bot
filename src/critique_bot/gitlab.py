@@ -116,26 +116,19 @@ def resolve_target(
     mr_url: str | None = None,
     token: str | None = None,
 ) -> GitLabTarget:
-    """Resolve API URL, project, and MR IID from CLI, CI, config, or an MR URL.
+    """Resolve API URL, project, and MR IID from CLI, CI, or an MR URL.
 
-    CLI arguments win, then GitLab CI variables, then ``config.json`` ``gitlab``.
-    An MR web URL fills any piece that is still empty.
+    ``gitlab.base_url`` in config (or ``CRITIQUE_GITLAB_URL``) is the instance.
+    Project ID and MR IID are always taken from the current job: CLI flags,
+    ``CI_PROJECT_ID`` / ``CI_MERGE_REQUEST_IID``, or ``--mr-url`` /
+    ``CI_MERGE_REQUEST_URL``.
     """
     cfg_base = ""
-    cfg_project = ""
-    cfg_iid = ""
-    cfg_mr_url = ""
     if gitlab_cfg is not None:
         cfg_base = _s(getattr(gitlab_cfg, "base_url", ""))
-        cfg_project = _s(getattr(gitlab_cfg, "project_id", ""))
-        cfg_iid = _s(getattr(gitlab_cfg, "mr_iid", ""))
-        cfg_mr_url = _s(getattr(gitlab_cfg, "mr_url", ""))
 
     parsed = parse_mr_url(
-        _s(mr_url)
-        or cfg_mr_url
-        or os.environ.get("CI_MERGE_REQUEST_URL")
-        or ""
+        _s(mr_url) or os.environ.get("CI_MERGE_REQUEST_URL") or ""
     )
     parsed_base = parsed[0] if parsed else ""
     parsed_project = parsed[1] if parsed else ""
@@ -155,13 +148,11 @@ def resolve_target(
         _s(project_id)
         or _s(os.environ.get("CI_PROJECT_ID"))
         or _s(os.environ.get("CI_PROJECT_PATH"))
-        or cfg_project
         or parsed_project
     )
     resolved_iid = (
         _s(mr_iid)
         or _s(os.environ.get("CI_MERGE_REQUEST_IID"))
-        or cfg_iid
         or parsed_iid
     )
     resolved_token = _s(token) or resolve_token()

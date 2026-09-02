@@ -51,9 +51,8 @@ def post_review(
         )
     if not target.project_id or not target.mr_iid:
         raise GitLabPostError(
-            "need project and merge request: set gitlab.project_id / "
-            "gitlab.mr_iid (or gitlab.mr_url) in config.json, --project-id / "
-            "--mr-iid, or CI_PROJECT_ID / CI_MERGE_REQUEST_IID"
+            "need project and merge request: pass --project-id and --mr-iid "
+            "(or --mr-url), or set CI_PROJECT_ID / CI_MERGE_REQUEST_IID"
         )
     resolved_token = target.token or _resolve_token()
     if not resolved_token:

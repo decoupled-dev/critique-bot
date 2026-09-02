@@ -224,11 +224,9 @@ class PostReviewFlowTests(EnvIsolated):
             with redirect_stdout(io.StringIO()):
                 code = post_review(
                     review_file=review,
-                    gitlab=GitLabConfig(
-                        base_url="https://gitlab.example.com",
-                        project_id="9",
-                        mr_iid="4",
-                    ),
+                    gitlab=GitLabConfig(base_url="https://gitlab.example.com"),
+                    project_id="9",
+                    mr_iid="4",
                     token="pat",
                 )
         self.assertEqual(code, 0)

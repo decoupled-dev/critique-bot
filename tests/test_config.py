@@ -406,17 +406,15 @@ class LoadConfigSuccessTests(EnvIsolated):
                 {
                     "gitlab": {
                         "base_url": "https://gitlab.example.com/",
-                        "project_id": "group/app",
-                        "mr_iid": "42",
-                        "mr_url": "https://gitlab.example.com/group/app/-/merge_requests/42",
+                        "project_id": "ignored",
+                        "mr_iid": "ignored",
                     }
                 }
             )
         )
         config = load_config(path)
         self.assertEqual(config.gitlab.base_url, "https://gitlab.example.com/")
-        self.assertEqual(config.gitlab.project_id, "group/app")
-        self.assertEqual(config.gitlab.mr_iid, "42")
+        self.assertFalse(hasattr(config.gitlab, "project_id"))
 
     def test_gitlab_base_url_env_and_flat_alias(self) -> None:
         path = self._write(self._browser({"gitlab_base_url": "https://from-file.example"}))

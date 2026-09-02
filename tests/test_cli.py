@@ -221,9 +221,7 @@ class BuildPromptTests(unittest.TestCase):
         config = BotConfig(
             url="https://example.invalid/chat",
             selectors=Selectors(prompt_input="textarea", assistant_messages=".a"),
-            gitlab=GitLabConfig(
-                base_url="https://gitlab.example.com", project_id="1", mr_iid="2"
-            ),
+            gitlab=GitLabConfig(base_url="https://gitlab.example.com"),
         )
         ctx = MrContext(
             title="AAOS-1 HVAC",

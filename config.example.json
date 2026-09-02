@@ -27,9 +27,6 @@
   "interval_jitter_seconds": 5,
   "max_parallel_tabs": 1,
   "gitlab": {
-    "base_url": "https://gitlab.example.com",
-    "project_id": "",
-    "mr_iid": "",
-    "mr_url": ""
+    "base_url": "https://gitlab.example.com"
   }
 }
