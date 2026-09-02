@@ -1,6 +1,6 @@
 # Deploy critique-bot (Windows and Linux)
 
-Ship a **zip per OS** (no Python on the target) or a **pip wheel**. The **browser** backend needs Microsoft Edge on the target (`microsoft-edge-stable` on Linux; Edge is usually already on Windows). Ollama and OpenAI backends do not.
+Ship a **zip per OS** (no Python on the target) or a **pip wheel**. The bot needs Microsoft Edge on the target (`microsoft-edge-stable` on Linux; Edge is usually already on Windows).
 
 Build **on the OS you want to ship**. A Linux binary will not run on Windows, and vice versa. PyInstaller cannot cross-compile this project.
 
@@ -14,9 +14,8 @@ The zip bundles Python, Playwright’s Node driver, `config.example.json`, and t
 ## Target requirements
 
 - 64-bit Windows or Linux
-- **browser** backend: Microsoft Edge installed
-- **ollama** backend: Ollama installed and `ollama serve` running
-- On Linux CI or headless servers using the browser backend you may also need Playwright OS libraries: `playwright install-deps` (only if you install via pip, not for the zip)
+- Microsoft Edge installed
+- On Linux CI or headless servers you may also need Playwright OS libraries: `playwright install-deps` (only if you install via pip, not for the zip)
 - Linux zips from GitHub Actions are built on Ubuntu 22.04. They need a glibc at least as new as that host (Ubuntu 22.04+, Debian 12+, RHEL 9+, or similar)
 
 On Windows, use **PowerShell** (not Command Prompt). If `python` is missing, use the [Python launcher](https://docs.python.org/3/using/windows.html#python-launcher-for-windows) `py -3` in place of `python`.
@@ -137,12 +136,19 @@ Later runs can omit `--headed`. The Edge profile defaults to `.edge-profile` in 
 
 ### Verify the install
 
+Send a one-shot prompt through the signed-in chat page. Use `--headed` on the first login.
+
 ```bash
-./critique-bot doctor --config config.json           # Linux
-.\critique-bot.exe doctor --config config.json       # Windows
+./critique-bot --config config.json --mode general \
+  --prompt "Reply with exactly one word: PONG." --headed
 ```
 
-`doctor` checks the runtime, that Edge or Chrome is present, that the profile is signed in, that each configured selector matches something visible, and that a real prompt round trips. It exits non-zero only on failures (warnings are advice), so it is safe to run at the end of a provisioning script. Add `--no-live` to skip anything needing the network, `--json` for machine-readable output.
+```powershell
+.\critique-bot.exe --config config.json --mode general `
+  --prompt "Reply with exactly one word: PONG." --headed
+```
+
+Or use **Send test prompt** in `critique-bot setup --config config.json`.
 
 ### Review a patch
 
@@ -186,12 +192,7 @@ Or one line:
 
 ## GitHub Actions (Linux + Windows)
 
-Two different workflows:
-
-| Workflow | What it is |
-| --- | --- |
-| [`.github/workflows/build.yml`](.github/workflows/build.yml) (**Build**) | Ships Linux/Windows zips and a pip wheel. Runs on GitHub-hosted runners. |
-| [`packaging/github-review.yml`](packaging/github-review.yml) | Copy into an **app** repo as `.github/workflows/review.yml`. Reviews PRs on your **self-hosted** runner next to the worker. |
+[`.github/workflows/build.yml`](.github/workflows/build.yml) ships Linux/Windows zips and a pip wheel on GitHub-hosted runners.
 
 **Build** trigger:
 
@@ -281,19 +282,17 @@ $env:CRITIQUE_MODEL = "GPT-5.1"
 
 Also: `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`, `CRITIQUE_QUEUE_DIR`.
 
-## CI runner (GitLab or GitHub)
+## CI runner (GitLab)
 
-Keep **one worker** running on the runner PC. CI jobs only call `submit`. The job and the worker must share `queue_dir` (GitLab **shell** executor, or a GitHub **self-hosted** runner without Docker isolation).
+Keep **one worker** running on the runner PC. CI jobs only call `submit`. The job and the worker must share `queue_dir` (GitLab **shell** executor).
 
 1. Install Edge, unpack the zip (or pip-install) onto the runner, copy `config.example.json` to `config.json`.
 2. Sign in once: `critique-bot worker --config config.json --headed --logs` (or one-shot `--headed`). Later runs reuse `.edge-profile`.
 3. Start the worker at boot:
    - **Linux:** copy [`packaging/critique-bot-worker.service`](packaging/critique-bot-worker.service) to `/etc/systemd/system/`, edit paths, then `systemctl enable --now critique-bot-worker`.
    - **Windows:** [`packaging/worker-start.ps1`](packaging/worker-start.ps1) at logon, or a scheduled task.
-4. Attach CI:
-   - **GitLab:** tag the runner `critique-bot`. Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux bash) or [`packaging/gitlab-ci.windows.yml`](packaging/gitlab-ci.windows.yml) (Windows PowerShell) into the project as `.gitlab-ci.yml`. Edit `CRITIQUE_BIN` / `CRITIQUE_CONFIG` in that YAML (`variables:`), not in GitLab CI/CD variables. Put `critique-bot` on the runner `PATH` (Windows: `worker-start.ps1` does this) so `CRITIQUE_BIN` can stay `critique-bot`. On Windows invoke with `& "$CRITIQUE_BIN" submit …`, not `$env:CRITIQUE_BIN submit`.
-   - **GitHub:** install a self-hosted Actions runner on that PC with labels `self-hosted` and `critique-bot`. Copy [`packaging/github-review.yml`](packaging/github-review.yml) to `.github/workflows/review.yml` in the app repo. Optional repo variable `CRITIQUE_CONFIG` (default `/opt/critique-bot/config.json`; on Windows set it to `C:\critique-bot\config.json`). The workflow posts the review with `critique-bot github-post` (`pull-requests: write`).
-5. Each MR/PR job writes `diff.patch`, runs `critique-bot submit … --output-dir out`, then posts it with `critique-bot gitlab-post` or `critique-bot github-post` (`--review-file out/review.md --patch-file diff.patch`). Those strip the machine-readable JSON block out of the comment and add inline comments on the changed lines. GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`); GitHub needs `GITHUB_TOKEN` with `pull-requests: write`.
+4. Attach GitLab: tag the runner `critique-bot`. Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux bash) or [`packaging/gitlab-ci.windows.yml`](packaging/gitlab-ci.windows.yml) (Windows PowerShell) into the project as `.gitlab-ci.yml`. Edit `CRITIQUE_BIN` / `CRITIQUE_CONFIG` in that YAML (`variables:`), not in GitLab CI/CD variables. Put `critique-bot` on the runner `PATH` (Windows: `worker-start.ps1` does this) so `CRITIQUE_BIN` can stay `critique-bot`. On Windows invoke with `& "$CRITIQUE_BIN" submit …`, not `$env:CRITIQUE_BIN submit`.
+5. Each MR job writes `diff.patch`, runs `critique-bot submit … --output-dir out`, then posts it with `critique-bot gitlab-post` (`--review-file out/review.md --patch-file diff.patch`). That strips the machine-readable JSON block out of the comment and adds inline comments on the changed lines. Needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`).
 
 Concurrent jobs enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default 1) and waits `min_interval_seconds` (default 30) plus jitter between starts.
 
@@ -307,7 +306,7 @@ critique-bot queue-status --config /opt/critique-bot/config.json
 
 It prints worker liveness, waiting and in-progress jobs, and how recent jobs ended, and exits non-zero when no worker heartbeat is fresh — useful as a monitoring probe next to the systemd unit.
 
-GitHub-hosted `ubuntu-latest` / `windows-latest` cannot run this: no signed-in Edge, no shared queue.
+GitLab.com shared / instance runners and Docker executors cannot run this: no signed-in Edge, no shared queue.
 
 Do not run two one-shot `critique-bot --patch-file` processes on the same profile; they will kill each other's Edge.
 

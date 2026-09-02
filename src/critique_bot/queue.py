@@ -501,7 +501,7 @@ class FileQueue:
 
 
 def job_label(meta: dict[str, Any] | None = None, *, explicit: str | None = None) -> str:
-    """Human-readable slug for a queue job: MR/PR id, CI job, or ``local``."""
+    """Human-readable slug for a queue job: GitLab MR id, CI job, or ``local``."""
     if explicit and str(explicit).strip():
         return _safe_slug(str(explicit).strip(), 48)
     meta = meta or {}
@@ -511,25 +511,10 @@ def job_label(meta: dict[str, Any] | None = None, *, explicit: str | None = None
             str(meta.get("CI_PROJECT_PATH") or "").replace("/", "-"), 32
         )
         return f"{project}-mr{mr}" if project else f"mr{mr}"
-    pr = str(meta.get("GITHUB_PR_NUMBER") or "").strip() or _pr_from_github_ref(
-        str(meta.get("GITHUB_REF") or "")
-    )
-    if pr:
-        repo = _safe_slug(
-            str(meta.get("GITHUB_REPOSITORY") or "").replace("/", "-"), 32
-        )
-        return f"{repo}-pr{pr}" if repo else f"pr{pr}"
-    run = str(meta.get("CI_JOB_ID") or meta.get("GITHUB_RUN_ID") or "").strip()
+    run = str(meta.get("CI_JOB_ID") or "").strip()
     if run:
         return f"ci{run}"
     return "local"
-
-
-def _pr_from_github_ref(ref: str) -> str:
-    parts = [part for part in ref.strip("/").split("/") if part]
-    if len(parts) >= 3 and parts[0] == "refs" and parts[1] == "pull" and parts[2].isdigit():
-        return parts[2]
-    return ""
 
 
 def _safe_slug(text: str, max_len: int) -> str:

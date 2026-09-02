@@ -53,28 +53,22 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
         "worker started "
         + log.kv(
             queue_dir=str(queue.root),
-            backend=config.backend,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
             max_parallel_tabs=config.max_parallel_tabs,
             requeued=requeued or None,
-            headed=headed if config.uses_browser else None,
+            headed=headed,
             url=config.url or None,
-            base_url=config.base_url or None,
             model=config.model or "(none)",
         )
     )
     print(
-        f"critique-bot worker ready ({config.backend}, queue {queue.root}, "
+        f"critique-bot worker ready (queue {queue.root}, "
         f"{config.max_parallel_tabs} job(s)). Ctrl-C to stop.",
         flush=True,
     )
     try:
-        if config.uses_browser:
-            _browser_provider_loop(config, queue, limiter, stop, headed=headed)
-        else:
-            with open_provider(config, headed=headed) as provider:
-                _session_loop(provider, config, queue, limiter, stop)
+        _browser_provider_loop(config, queue, limiter, stop, headed=headed)
     finally:
         log.info("worker stopping")
         # Nothing is executing by now (both loops drain before returning), so
@@ -126,11 +120,10 @@ def _session_loop(
 ) -> None:
     parallel = max(int(config.max_parallel_tabs), 1)
     if parallel > 1 and not provider.can_parallelize:
-        if config.uses_browser:
-            log.warn(
-                f"max_parallel_tabs={parallel} needs Edge remote debugging; "
-                "running one tab"
-            )
+        log.warn(
+            f"max_parallel_tabs={parallel} needs Edge remote debugging; "
+            "running one tab"
+        )
         parallel = 1
     if parallel <= 1:
         _sequential_loop(provider, config, queue, limiter, stop)
@@ -303,7 +296,6 @@ def _execute_job(
         + log.kv(
             label=job.label or None,
             mode=job.mode,
-            backend=config.backend,
             prompt_chars=len(job.prompt),
             model=model or "(none)",
             meta=job.meta or None,
@@ -373,7 +365,7 @@ def _execute_job(
         "mode": job.mode,
         "model": model,
         "backend": config.backend,
-        "url": config.url or config.base_url,
+        "url": config.url,
         "prompt_chars": len(job.prompt),
         "response": response,
         "started_at": isoformat(started),

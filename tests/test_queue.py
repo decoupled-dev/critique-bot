@@ -173,20 +173,6 @@ class JobLabelTests(unittest.TestCase):
             "decoupled-group-critique-bot-mr12",
         )
 
-    def test_github_pr_number(self) -> None:
-        self.assertEqual(
-            job_label(
-                {"GITHUB_REPOSITORY": "acme/app", "GITHUB_PR_NUMBER": "8"}
-            ),
-            "acme-app-pr8",
-        )
-
-    def test_github_ref_fallback(self) -> None:
-        self.assertEqual(
-            job_label({"GITHUB_REF": "refs/pull/99/merge"}),
-            "pr99",
-        )
-
     def test_explicit_and_local(self) -> None:
         self.assertEqual(job_label({}, explicit=" My Review "), "My-Review")
         self.assertEqual(job_label({}), "local")
@@ -313,27 +299,16 @@ class SlugAndLabelTests(unittest.TestCase):
     def test_ci_job_id(self) -> None:
         self.assertEqual(job_label({"CI_JOB_ID": "55"}), "ci55")
 
-    def test_github_run_id(self) -> None:
-        self.assertEqual(job_label({"GITHUB_RUN_ID": "77"}), "ci77")
-
-    def test_github_pr_with_repo(self) -> None:
-        self.assertEqual(
-            job_label({"GITHUB_REF": "refs/pull/3/head", "GITHUB_REPOSITORY": "acme/app"}),
-            "acme-app-pr3",
-        )
-
     def test_gitlab_mr_without_project(self) -> None:
         self.assertEqual(job_label({"CI_MERGE_REQUEST_IID": "8"}), "mr8")
 
     def test_safe_slug_special_chars(self) -> None:
-        from critique_bot.queue import _pr_from_github_ref, _safe_slug
+        from critique_bot.queue import _safe_slug
 
         self.assertEqual(_safe_slug("Hello World!!", 48), "Hello-World")
         self.assertEqual(_safe_slug("@@@", 8), "job")
         self.assertEqual(_safe_slug("", 8), "")
         self.assertEqual(_safe_slug("a" * 80, 5), "a" * 5)
-        self.assertEqual(_pr_from_github_ref("refs/heads/main"), "")
-        self.assertEqual(_pr_from_github_ref("refs/pull/x/merge"), "")
 
 
 if __name__ == "__main__":

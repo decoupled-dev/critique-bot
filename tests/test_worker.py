@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from critique_bot.browser import BrowserError
-from critique_bot.config import BACKEND_OLLAMA, BotConfig, Selectors
+from critique_bot.config import BotConfig, Selectors
 from critique_bot.llm import LLMError, LLMProvider, LLMSession
 from critique_bot.queue import FileQueue, Job, RateLimiter
 from critique_bot.worker import (
@@ -22,11 +22,9 @@ from critique_bot.worker import (
 
 def _config(queue_dir: str, **overrides: object) -> BotConfig:
     values: dict[str, object] = {
-        "url": "",
-        "selectors": Selectors(prompt_input="", assistant_messages=""),
-        "model": "llama3",
-        "backend": BACKEND_OLLAMA,
-        "base_url": "http://127.0.0.1:11434/v1",
+        "url": "https://chat.example/",
+        "selectors": Selectors(prompt_input="textarea", assistant_messages=".a"),
+        "model": "GPT-5.1",
         "queue_dir": queue_dir,
         "min_interval_seconds": 0,
         "interval_jitter_seconds": 0,

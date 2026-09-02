@@ -1,4 +1,4 @@
-"""Local setup UI: check the install, pick selectors by clicking, test live.
+"""Local setup UI: pick selectors by clicking, then test a live round trip.
 
 Serves a small page on 127.0.0.1 using only the standard library. The hard part
 of setting this bot up is discovering the CSS selectors for someone else's chat
@@ -16,12 +16,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from critique_bot import diagnostics, log
+from critique_bot import log
 from critique_bot.config import ConfigError, load_config
 
 BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _COMMAND_TIMEOUT = 300.0
+_PROBE_PROMPT = "Reply with exactly one word: PONG. Do not explain."
 
 #: Fields the click-to-pick flow knows how to fill in.
 PICK_FIELDS: dict[str, dict[str, str]] = {
@@ -310,7 +311,13 @@ class SetupState:
         self.lock = threading.RLock()
 
     def raw_config(self) -> dict[str, Any]:
-        return diagnostics.config_snapshot(self.config_path)
+        if not self.config_path.is_file():
+            return {}
+        try:
+            data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def load(self):
         return load_config(self.config_path)
@@ -413,9 +420,6 @@ def make_handler(state: SetupState) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/test":
                     self._json(_round_trip(state, str(body.get("prompt") or "")))
                     return
-                if self.path == "/api/doctor":
-                    self._json(_doctor(state))
-                    return
             except Exception as exc:  # noqa: BLE001 - surfaced in the UI
                 log.debug(f"setup request {self.path} failed: {exc}")
                 self._json({"error": str(exc)}, status=200)
@@ -429,32 +433,19 @@ def _state_payload(state: SetupState) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "config_path": str(state.config_path.resolve()),
         "config": state.raw_config(),
-        "env": diagnostics.env_snapshot(),
         "browser": state.bridge.running,
         "fields": PICK_FIELDS,
         "error": "",
     }
     try:
-        config = state.load()
+        state.load()
     except ConfigError as exc:
         payload["error"] = str(exc)
-        return payload
-    payload["checks"] = diagnostics.static_checks(
-        config, config_path=state.config_path
-    ).to_dict()
-    try:
-        from critique_bot.queue import FileQueue
-
-        payload["queue"] = FileQueue(Path(config.queue_dir)).snapshot(recent=5)
-    except Exception as exc:  # noqa: BLE001 - queue is optional here
-        payload["queue"] = {"error": str(exc)}
     return payload
 
 
 def _open_browser(state: SetupState) -> dict[str, Any]:
     config = state.load()
-    if not config.uses_browser:
-        return {"error": "the setup browser is only for the browser backend"}
     state.bridge.start(config)
     return {"browser": True, "url": config.url}
 
@@ -480,42 +471,116 @@ def _validate(state: SetupState) -> dict[str, Any]:
     if not state.bridge.running:
         return {"error": "open the browser first"}
     config = state.load()
-    checks = state.bridge.call(
-        lambda page: [
-            {"name": check.name, "status": check.status, "detail": check.detail,
-             "hint": check.hint}
-            for check in (
-                [diagnostics.probe_login(page)]
-                + diagnostics.probe_selectors(page, config.selectors)
+
+    def run(page: Any) -> list[dict[str, str]]:
+        from critique_bot.browser import page_block_hint
+
+        checks: list[dict[str, str]] = []
+        hint = page_block_hint(page)
+        if hint:
+            checks.append(
+                {
+                    "name": "login",
+                    "status": "fail",
+                    "detail": hint,
+                    "hint": "Sign in on the chat page, then retry.",
+                }
             )
-        ],
-        timeout=120,
-    )
-    return {"checks": checks}
+        else:
+            checks.append(
+                {
+                    "name": "login",
+                    "status": "ok",
+                    "detail": "no login or bot-challenge page detected",
+                    "hint": "",
+                }
+            )
+        wanted = (
+            ("prompt_input", config.selectors.prompt_input, True),
+            ("send_button", config.selectors.send_button, False),
+            ("assistant_messages", config.selectors.assistant_messages, False),
+            ("stop_button", config.selectors.stop_button, False),
+        )
+        for name, selector, required in wanted:
+            if not selector:
+                if required:
+                    checks.append(
+                        {
+                            "name": name,
+                            "status": "fail",
+                            "detail": "not set",
+                            "hint": "Pick this element, then save.",
+                        }
+                    )
+                continue
+            try:
+                count = page.locator(selector).count()
+            except Exception as exc:  # noqa: BLE001 - surfaced in the UI
+                checks.append(
+                    {
+                        "name": name,
+                        "status": "fail",
+                        "detail": f"{selector!r}: {exc}",
+                        "hint": "",
+                    }
+                )
+                continue
+            if count:
+                checks.append(
+                    {
+                        "name": name,
+                        "status": "ok",
+                        "detail": f"{selector!r} matches {count}",
+                        "hint": "",
+                    }
+                )
+            elif name == "assistant_messages":
+                checks.append(
+                    {
+                        "name": name,
+                        "status": "warn",
+                        "detail": f"{selector!r} matches nothing yet (no reply on screen)",
+                        "hint": "",
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "name": name,
+                        "status": "fail" if required else "warn",
+                        "detail": f"{selector!r} matches nothing on this page",
+                        "hint": "Pick this element, then save.",
+                    }
+                )
+        return checks
+
+    return {"checks": state.bridge.call(run, timeout=120)}
 
 
 def _round_trip(state: SetupState, prompt: str) -> dict[str, Any]:
     if not state.bridge.running:
         return {"error": "open the browser first"}
     config = state.load()
-    text = prompt.strip() or diagnostics.DEFAULT_PROBE_PROMPT
+    text = prompt.strip() or _PROBE_PROMPT
 
     def run(page: Any) -> dict[str, Any]:
-        from critique_bot.chat_client import ChatError, prepare_chat
+        from critique_bot.chat_client import ChatError, prepare_chat, send_turn
 
         try:
             prepare_chat(page, config)
+            reply = send_turn(page, config, text)
         except ChatError as exc:
-            return {"status": diagnostics.FAIL, "detail": str(exc)}
-        check = diagnostics.probe_round_trip(page, config, prompt=text)
-        return {"status": check.status, "detail": check.detail, "hint": check.hint}
+            return {"status": "fail", "detail": str(exc), "hint": ""}
+        if not str(reply).strip():
+            return {"status": "fail", "detail": "the assistant replied with nothing", "hint": ""}
+        preview = (reply.strip()[:60] + "…") if len(reply.strip()) > 60 else reply.strip()
+        return {
+            "status": "ok",
+            "detail": f"got {len(reply)} chars ({preview!r})",
+            "hint": "",
+        }
 
     return {"result": state.bridge.call(run, timeout=_COMMAND_TIMEOUT)}
-
-
-def _doctor(state: SetupState) -> dict[str, Any]:
-    config = state.load()
-    return diagnostics.static_checks(config, config_path=state.config_path).to_dict()
 
 
 def run_setup(
@@ -528,7 +593,7 @@ def run_setup(
     if not state.config_path.is_file():
         print(
             f"error: config file not found: {state.config_path}\n"
-            "Copy one of the config.*.example.json files first.",
+            "Copy config.example.json to config.json first.",
             flush=True,
         )
         return 1
@@ -641,17 +706,7 @@ PAGE_HTML = """<!doctype html>
 </header>
 <main>
   <section>
-    <h2>1. Environment</h2>
-    <p class="sub">Everything that can be checked without opening a browser.</p>
-    <div id="checks"></div>
-    <div class="row" style="margin-top:16px">
-      <button class="ghost" onclick="refresh()">Re-check</button>
-    </div>
-    <div id="configError" class="check-hint"></div>
-  </section>
-
-  <section>
-    <h2>2. Chat UI and selectors</h2>
+    <h2>1. Chat UI and selectors</h2>
     <p class="sub">
       Open Edge, sign in if asked, then click <b>Pick</b> and click the element on
       the page. Selectors are saved to your config file.
@@ -662,6 +717,7 @@ PAGE_HTML = """<!doctype html>
       <button class="ghost" onclick="validate()">Validate selectors</button>
       <span class="status" id="browserStatus"></span>
     </div>
+    <div id="configError" class="check-hint"></div>
     <div class="field">
       <label for="url">Chat URL</label>
       <input type="text" id="url" placeholder="https://chatgpt.com/" />
@@ -682,7 +738,7 @@ PAGE_HTML = """<!doctype html>
   </section>
 
   <section>
-    <h2>3. Live test</h2>
+    <h2>2. Live test</h2>
     <p class="sub">
       Sends a real prompt and waits for a real reply. This is the check that
       proves the selectors work end to end.
@@ -692,12 +748,6 @@ PAGE_HTML = """<!doctype html>
       <span class="status" id="testStatus"></span>
     </div>
     <div id="testResult" style="margin-top:14px"></div>
-  </section>
-
-  <section>
-    <h2>4. Queue and worker</h2>
-    <p class="sub">What CI sees when it submits a review.</p>
-    <pre id="queue">-</pre>
   </section>
 </main>
 <script>
@@ -751,12 +801,10 @@ async function refresh() {
   const state = await api("/api/state");
   el("configPath").textContent = state.config_path || "";
   el("configError").textContent = state.error || "";
-  renderChecks(el("checks"), (state.checks || {}).checks);
   const config = state.config || {};
   if (document.activeElement !== el("url")) el("url").value = config.url || "";
   if (document.activeElement !== el("model")) el("model").value = config.model || "";
   if (!document.querySelector("#selectorFields input")) renderSelectorFields(config);
-  el("queue").textContent = JSON.stringify(state.queue || {}, null, 2);
   setBrowser(state.browser);
 }
 

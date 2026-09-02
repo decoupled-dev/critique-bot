@@ -113,13 +113,13 @@ class ChatHelperTests(unittest.TestCase):
 
 class CiMetaAndCopyTests(unittest.TestCase):
     def test_ci_meta_filters_empty(self) -> None:
-        saved = {k: os.environ.pop(k, None) for k in ("CI_JOB_ID", "GITHUB_PR_NUMBER")}
+        saved = {k: os.environ.pop(k, None) for k in ("CI_JOB_ID", "CI_PIPELINE_ID")}
         try:
             os.environ["CI_JOB_ID"] = "99"
-            os.environ.pop("GITHUB_PR_NUMBER", None)
+            os.environ.pop("CI_PIPELINE_ID", None)
             meta = _ci_meta()
             self.assertEqual(meta["CI_JOB_ID"], "99")
-            self.assertNotIn("GITHUB_PR_NUMBER", meta)
+            self.assertNotIn("CI_PIPELINE_ID", meta)
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -286,8 +286,11 @@ class MainDispatchTests(unittest.TestCase):
         self.config.write_text(
             json.dumps(
                 {
-                    "backend": "ollama",
-                    "model": "llama3",
+                    "url": "https://example.invalid/chat",
+                    "selectors": {
+                        "prompt_input": "textarea",
+                        "assistant_messages": ".assistant",
+                    },
                     "queue_dir": str(self.folder / "queue"),
                 }
             ),

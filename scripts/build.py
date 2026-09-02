@@ -111,13 +111,9 @@ def _write_readme(dest: Path, binary_name: str) -> None:
             [
                 "critique-bot standalone bundle",
                 "",
-                "Set backend in config.json: browser (Edge chat UI), ollama,",
-                "openai, or openai-compatible. Starter files are included.",
-                "",
-                "Browser: copy config.example.json to config.json, fill in the",
+                "Copy config.example.json to config.json and fill in the",
                 "chat URL and CSS selectors. First login: run with --headed,",
                 "then reuse the .edge-profile directory on later runs.",
-                "Ollama: copy config.ollama.example.json and set model.",
                 "",
                 "Production on a GitLab runner (keep one worker running):",
                 f"  {invoke} worker --config config.json --logs",
@@ -150,19 +146,12 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     if internal.is_dir():
         shutil.copytree(internal, payload / "_internal", symlinks=True)
     shutil.copy2(ROOT / "config.example.json", payload / "config.example.json")
-    for extra_name in (
-        "config.chatgpt.example.json",
-        "config.ollama.example.json",
-        "config.openai.example.json",
-        "config.openai-compatible.example.json",
-    ):
-        extra_cfg = ROOT / extra_name
-        if extra_cfg.is_file():
-            shutil.copy2(extra_cfg, payload / extra_name)
+    extra_cfg = ROOT / "config.chatgpt.example.json"
+    if extra_cfg.is_file():
+        shutil.copy2(extra_cfg, payload / extra_cfg.name)
     for extra in (
         ROOT / "packaging" / "critique-bot-worker.service",
         ROOT / "packaging" / "worker-start.ps1",
-        ROOT / "packaging" / "github-review.yml",
     ):
         if extra.is_file():
             shutil.copy2(extra, payload / extra.name)

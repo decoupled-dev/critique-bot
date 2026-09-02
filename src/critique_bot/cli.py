@@ -351,25 +351,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="critique-bot",
         description=(
-            "General-purpose LLM bot. Default backend drives a web chat UI in "
-            "headless Microsoft Edge; set backend to ollama, openai, or "
-            "openai-compatible to call an HTTP API instead. "
-            "Default mode is a specialized code reviewer; "
+            "General-purpose LLM bot. Drives a web chat UI in headless "
+            "Microsoft Edge. Default mode is a specialized code reviewer; "
             "--mode general sends any prompt and optional files; "
             "--mode chat is an interactive terminal session."
         ),
         epilog=(
             "first run on a new machine:\n"
             "  critique-bot setup --config config.json\n"
-            "  critique-bot doctor --config config.json --headed\n"
             "\n"
             "production (runner PC):\n"
             "  critique-bot worker --config config.json --logs\n"
             "  critique-bot queue-status --config config.json\n"
             "  critique-bot submit --config config.json --patch-file diff.patch\n"
             "  critique-bot gitlab-post --review-file out/review.md "
-            "--patch-file diff.patch\n"
-            "  critique-bot github-post --review-file out/review.md "
             "--patch-file diff.patch\n"
             "\n"
             "one-shot (debug):\n"
@@ -429,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--headed",
         action="store_true",
-        help="show the browser window (browser backend: selector debugging / first login)",
+        help="show the browser window (selector debugging / first login)",
     )
     parser.add_argument(
         "--cdp-url",
@@ -437,7 +432,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        help="override config/env model name (dropdown label, Ollama tag, or API model id)",
+        help="override config/env model name (visible dropdown label)",
     )
     parser.add_argument(
         "--prompt-template",
@@ -453,7 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--label",
         help=(
             "short id for this job (shown in the queue filename). "
-            "Default: GitLab MR IID, GitHub PR number, CI job id, or 'local'"
+            "Default: GitLab MR IID, CI job id, or 'local'"
         ),
     )
     return parser
@@ -463,42 +458,27 @@ def _log_config(config) -> None:
     log.info(
         "config loaded "
         + log.kv(
-            backend=config.backend,
             url=config.url or None,
-            base_url=config.base_url or None,
             model=config.model or "(none)",
             timeout_ms=config.timeout_ms,
-            idle_ms=config.idle_ms if config.uses_browser else None,
+            idle_ms=config.idle_ms,
             max_prompt_chars=config.max_prompt_chars,
             max_file_chars=config.max_file_chars,
             max_files=config.max_files,
             max_read_bytes=config.max_read_bytes,
-            user_data_dir=config.user_data_dir if config.uses_browser else None,
-            cdp_url=config.cdp_url if config.uses_browser else None,
+            user_data_dir=config.user_data_dir,
+            cdp_url=config.cdp_url,
             queue_dir=config.queue_dir,
             min_interval_seconds=config.min_interval_seconds,
             interval_jitter_seconds=config.interval_jitter_seconds,
             max_parallel_tabs=config.max_parallel_tabs,
-            storage_state=config.storage_state if config.uses_browser else None,
-            has_api_key=bool(config.api_key) if not config.uses_browser else None,
-            prompt_input=config.selectors.prompt_input if config.uses_browser else None,
-            send_button=(
-                (config.selectors.send_button or "(Enter)")
-                if config.uses_browser
-                else None
-            ),
-            assistant_messages=(
-                config.selectors.assistant_messages if config.uses_browser else None
-            ),
-            model_dropdown=(
-                (config.selectors.model_dropdown or "(auto)")
-                if config.uses_browser
-                else None
-            ),
+            storage_state=config.storage_state,
+            prompt_input=config.selectors.prompt_input,
+            send_button=config.selectors.send_button or "(Enter)",
+            assistant_messages=config.selectors.assistant_messages,
+            model_dropdown=config.selectors.model_dropdown or "(auto)",
             model_dropdown_identifier=(
-                (config.selectors.model_dropdown_identifier or "(none)")
-                if config.uses_browser
-                else None
+                config.selectors.model_dropdown_identifier or "(none)"
             ),
         )
     )
@@ -515,15 +495,6 @@ def _ci_meta() -> dict[str, str]:
         "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
         "CI_COMMIT_SHA",
         "CI_COMMIT_REF_NAME",
-        "GITHUB_REPOSITORY",
-        "GITHUB_RUN_ID",
-        "GITHUB_JOB",
-        "GITHUB_SHA",
-        "GITHUB_REF",
-        "GITHUB_HEAD_REF",
-        "GITHUB_BASE_REF",
-        "GITHUB_EVENT_NAME",
-        "GITHUB_PR_NUMBER",
     )
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 
@@ -555,8 +526,7 @@ def build_worker_parser() -> argparse.ArgumentParser:
         prog="critique-bot worker",
         description=(
             "Keep one worker process open and process review jobs from the "
-            "on-disk queue. Browser backend: one signed-in Edge instance. "
-            "Ollama/OpenAI backends: HTTP calls, no browser. GitLab jobs "
+            "on-disk queue. One signed-in Edge instance. GitLab jobs "
             "should call `critique-bot submit`, not this command."
         ),
     )
@@ -593,11 +563,9 @@ def _add_submit_args(parser: argparse.ArgumentParser) -> None:
 SUBCOMMANDS = {
     "worker": "run the long-lived queue worker on the runner PC",
     "submit": "enqueue a review and wait for the worker to finish it",
-    "doctor": "check this machine: browser, login, selectors, live round trip",
     "setup": "open a local web UI to configure selectors by clicking them",
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
-    "github-post": "post the review on a GitHub pull request",
 }
 
 
@@ -609,11 +577,9 @@ def main(argv: list[str] | None = None) -> int:
         handlers = {
             "worker": _main_worker,
             "submit": _main_submit,
-            "doctor": _main_doctor,
             "setup": _main_setup,
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
-            "github-post": _main_github_post,
         }
         return handlers[command](rest)
     return _main_run(argv)
@@ -644,8 +610,7 @@ def _main_submit(argv: list[str]) -> int:
     parser.prog = "critique-bot submit"
     parser.description = (
         "Enqueue a review on the runner worker and wait for review.md. "
-        "The worker owns the LLM backend; this command does not launch a browser "
-        "or call the model."
+        "The worker owns the signed-in Edge; this command does not launch a browser."
     )
     _add_submit_args(parser)
     args = parser.parse_args(argv)
@@ -734,94 +699,15 @@ def _main_submit(argv: list[str]) -> int:
     return 0
 
 
-def _main_doctor(argv: list[str]) -> int:
-    from critique_bot import diagnostics
-
-    parser = argparse.ArgumentParser(
-        prog="critique-bot doctor",
-        description=(
-            "Check that this machine can actually run reviews: browser present, "
-            "config valid, chat UI reachable and signed in, selectors matching, "
-            "and a real prompt answered. Exits non-zero if any check fails."
-        ),
-    )
-    parser.add_argument("--config", required=True, help="path to JSON config")
-    parser.add_argument(
-        "--live",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="open the backend and test it for real (default: on)",
-    )
-    parser.add_argument(
-        "--headed",
-        action="store_true",
-        help="show the browser window (needed for the first login)",
-    )
-    parser.add_argument(
-        "--round-trip",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="send a real prompt during live checks (default: on)",
-    )
-    parser.add_argument("--json", action="store_true", help="print JSON instead of text")
-    parser.add_argument(
-        "--logs",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="write diagnostic logs to stderr (default: off)",
-    )
-    args = parser.parse_args(argv)
-    log.configure(enabled=bool(args.logs))
-
-    try:
-        config = load_config(args.config)
-    except ConfigError as exc:
-        if args.json:
-            print(
-                json.dumps({"ok": False, "checks": [], "error": str(exc)}, indent=2),
-                flush=True,
-            )
-        else:
-            print(f"[FAIL] config  {exc}", file=sys.stderr)
-        return 1
-
-    report = diagnostics.static_checks(config, config_path=Path(args.config))
-    if args.live:
-        live = diagnostics.run_live_checks(
-            config, headed=bool(args.headed), round_trip=bool(args.round_trip)
-        )
-        report.checks.extend(live.checks)
-
-    if args.json:
-        print(diagnostics.render_json(report), end="", flush=True)
-    else:
-        print(diagnostics.render_text(report), flush=True)
-        warnings = len(report.warnings)
-        if report.ok:
-            summary = "All checks passed."
-            if warnings:
-                summary += f" {warnings} warning(s) worth a look."
-            print(f"\n{summary}", flush=True)
-        else:
-            names = ", ".join(check.name for check in report.failures)
-            print(f"\n{len(report.failures)} check(s) failed: {names}", flush=True)
-            print(
-                "Run `critique-bot setup --config "
-                f"{args.config}` to fix selectors by clicking them.",
-                flush=True,
-            )
-    return 0 if report.ok else 1
-
-
 def _main_setup(argv: list[str]) -> int:
     from critique_bot.setup_ui import DEFAULT_PORT, run_setup
 
     parser = argparse.ArgumentParser(
         prog="critique-bot setup",
         description=(
-            "Open a small web UI on 127.0.0.1 to check the install, pick the "
-            "chat UI selectors by clicking them in a real browser window, and "
-            "run a live test. Writes the result to your config file."
+            "Open a small web UI on 127.0.0.1 to pick the chat UI selectors "
+            "by clicking them in a real browser window, and run a live test. "
+            "Writes the result to your config file."
         ),
     )
     parser.add_argument("--config", required=True, help="path to JSON config")
@@ -917,51 +803,6 @@ def _main_queue_status(argv: list[str]) -> int:
         )
         return 1
     return 0
-
-
-def _main_github_post(argv: list[str]) -> int:
-    from critique_bot.github_post import GitHubPostError, post_review
-
-    parser = argparse.ArgumentParser(
-        prog="critique-bot github-post",
-        description=(
-            "Post the review as a GitHub pull request comment plus inline diff "
-            "comments. Needs GITHUB_TOKEN with pull-requests: write (or "
-            "CRITIQUE_GITHUB_TOKEN)."
-        ),
-    )
-    parser.add_argument(
-        "--review-file", required=True, help="path to review.md from submit"
-    )
-    parser.add_argument(
-        "--patch-file",
-        help="unified diff used to map comments onto changed lines",
-    )
-    parser.add_argument("--repo", help="owner/name (or GITHUB_REPOSITORY)")
-    parser.add_argument("--pr", dest="pr_number", help="pull request number")
-    parser.add_argument(
-        "--api-url", help="GitHub API base URL (default: https://api.github.com)"
-    )
-    parser.add_argument(
-        "--logs",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="write diagnostic logs to stderr (default: on)",
-    )
-    args = parser.parse_args(argv)
-    log.configure(enabled=bool(args.logs))
-    try:
-        return post_review(
-            review_file=Path(args.review_file),
-            patch_file=Path(args.patch_file) if args.patch_file else None,
-            repo=args.repo,
-            pr_number=args.pr_number,
-            api_url=args.api_url,
-        )
-    except GitHubPostError as exc:
-        log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
 
 
 def _main_gitlab_post(argv: list[str]) -> int:
@@ -1060,9 +901,7 @@ def _main_run(argv: list[str]) -> int:
     response = ""
     completion: dict | None = None
     try:
-        setup_msg = (
-            "Starting browser..." if config.uses_browser else "Connecting to LLM..."
-        )
+        setup_msg = "Starting browser..."
         provider = open_provider(config, headed=headed)
         with ExitStack() as stack:
             with log.loading(setup_msg):
@@ -1116,7 +955,7 @@ def _main_run(argv: list[str]) -> int:
         "mode": mode,
         "model": config.model,
         "backend": config.backend,
-        "url": config.url or config.base_url,
+        "url": config.url,
         "prompt_chars": len(prompt),
         "response": response,
         "started_at": isoformat(started),

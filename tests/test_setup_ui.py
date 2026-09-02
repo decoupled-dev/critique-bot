@@ -115,14 +115,14 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"critique-bot setup", body)
 
-    def test_state_reports_checks_and_queue(self) -> None:
+    def test_state_reports_config_and_browser(self) -> None:
         status, body = self.server.get("/api/state")
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertEqual(payload["config"]["url"], "https://chat.example/")
-        self.assertTrue(payload["checks"]["checks"])
-        self.assertIn("queue", payload)
         self.assertFalse(payload["browser"])
+        self.assertNotIn("checks", payload)
+        self.assertNotIn("queue", payload)
 
     def test_state_reports_a_broken_config_without_crashing(self) -> None:
         self.path.write_text(json.dumps({"backend": "browser"}), encoding="utf-8")
@@ -157,29 +157,18 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNone(payload["pick"])
         self.assertFalse(payload["browser"])
 
-    def test_doctor_endpoint_returns_a_report(self) -> None:
-        payload = self.server.post("/api/doctor", {})
-        self.assertIn("checks", payload)
-        self.assertIn("ok", payload)
-
     def test_unknown_path_is_404(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.server.get("/nope")
         self.assertEqual(ctx.exception.code, 404)
 
-    def test_open_browser_is_refused_for_http_backends(self) -> None:
+    def test_open_browser_needs_a_valid_config(self) -> None:
         self.path.write_text(
-            json.dumps(
-                {
-                    "backend": "ollama",
-                    "model": "llama3",
-                    "base_url": "http://127.0.0.1:11434/v1",
-                }
-            ),
+            json.dumps({"url": "https://example.invalid/chat"}),
             encoding="utf-8",
         )
         result = self.server.post("/api/browser/open", {})
-        self.assertIn("browser backend", result["error"])
+        self.assertTrue(result.get("error"))
 
 
 class BrowserBridgeTests(unittest.TestCase):

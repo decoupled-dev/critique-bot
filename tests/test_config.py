@@ -10,9 +10,6 @@ from unittest.mock import patch
 from critique_bot.config import (
     ABSOLUTE_MAX_PARALLEL_TABS,
     BACKEND_BROWSER,
-    BACKEND_OLLAMA,
-    BACKEND_OPENAI,
-    BACKEND_OPENAI_COMPAT,
     ConfigError,
     compose_prompt,
     compose_prompt_from_args,
@@ -27,10 +24,8 @@ from critique_bot.config import (
     _clamped_positive_int,
     _frozen_root,
     _non_negative_float,
-    _normalize_base_url,
-    _parse_backend,
     _positive_int,
-    _resolve_api_key,
+    _reject_http_backend,
     _resolve_queue_dir,
     _resolve_user_data_dir,
 )
@@ -44,10 +39,6 @@ _ENV = (
     "CRITIQUE_CDP_URL",
     "CRITIQUE_QUEUE_DIR",
     "CRITIQUE_MAX_PARALLEL_TABS",
-    "CRITIQUE_BACKEND",
-    "CRITIQUE_BASE_URL",
-    "CRITIQUE_API_KEY",
-    "OPENAI_API_KEY",
 )
 
 
@@ -191,63 +182,16 @@ class ParseHelpersTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             _non_negative_float("n", -0.1, 1.0)
 
-    def test_parse_backend_aliases(self) -> None:
-        self.assertEqual(_parse_backend(""), BACKEND_BROWSER)
-        self.assertEqual(_parse_backend("WEB"), BACKEND_BROWSER)
-        self.assertEqual(_parse_backend("playwright"), BACKEND_BROWSER)
-        self.assertEqual(_parse_backend("local"), BACKEND_OLLAMA)
-        self.assertEqual(_parse_backend("openai_compatible"), BACKEND_OPENAI_COMPAT)
-        self.assertEqual(_parse_backend("compatible"), BACKEND_OPENAI_COMPAT)
-        with self.assertRaises(ConfigError) as ctx:
-            _parse_backend("palm")
-        self.assertIn("unknown backend", str(ctx.exception))
-
-    def test_normalize_base_url(self) -> None:
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OLLAMA, ""),
-            "http://127.0.0.1:11434/v1",
-        )
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OPENAI, ""),
-            "https://api.openai.com/v1",
-        )
-        self.assertEqual(_normalize_base_url(BACKEND_OPENAI_COMPAT, ""), "")
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OLLAMA, "http://h:11434/v1/"),
-            "http://h:11434/v1",
-        )
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OLLAMA, "http://h:11434/api"),
-            "http://h:11434/v1",
-        )
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OLLAMA, "http://h:11434"),
-            "http://h:11434/v1",
-        )
-        self.assertEqual(
-            _normalize_base_url(BACKEND_OPENAI, "https://proxy.example/v1/"),
-            "https://proxy.example/v1",
-        )
-
-    def test_resolve_api_key_order(self) -> None:
-        os.environ.pop("CRITIQUE_API_KEY", None)
-        os.environ.pop("OPENAI_API_KEY", None)
-        try:
-            self.assertEqual(_resolve_api_key({"api_key": " from-json "}, BACKEND_OLLAMA), "from-json")
-            os.environ["CUSTOM_KEY"] = "from-named"
-            self.assertEqual(
-                _resolve_api_key({"api_key_env": "CUSTOM_KEY", "api_key": "json"}, BACKEND_OLLAMA),
-                "from-named",
-            )
-            os.environ["CRITIQUE_API_KEY"] = "from-critique"
-            self.assertEqual(
-                _resolve_api_key({"api_key_env": "CUSTOM_KEY"}, BACKEND_OLLAMA),
-                "from-critique",
-            )
-        finally:
-            os.environ.pop("CUSTOM_KEY", None)
-            os.environ.pop("CRITIQUE_API_KEY", None)
-            os.environ.pop("OPENAI_API_KEY", None)
+    def test_reject_http_backends(self) -> None:
+        _reject_http_backend("")
+        _reject_http_backend(None)
+        _reject_http_backend("browser")
+        _reject_http_backend("WEB")
+        _reject_http_backend("playwright")
+        for value in ("ollama", "openai", "openai-compatible", "palm"):
+            with self.assertRaises(ConfigError) as ctx:
+                _reject_http_backend(value)
+            self.assertIn("not supported", str(ctx.exception))
 
     def test_resolve_queue_dir(self) -> None:
         config_path = Path("/tmp/fake-config.json")
@@ -360,6 +304,12 @@ class LoadConfigErrorTests(EnvIsolated):
             load_config(path)
         self.assertIn("storage_state", str(ctx.exception))
 
+    def test_http_backend_rejected(self) -> None:
+        path = self._write({"backend": "ollama", "model": "llama3"})
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(path)
+        self.assertIn("not supported", str(ctx.exception))
+
 
 class LoadConfigSuccessTests(EnvIsolated):
     def test_selectors_and_top_level_identifier(self) -> None:
@@ -391,7 +341,7 @@ class LoadConfigSuccessTests(EnvIsolated):
         self.assertEqual(config.idle_ms, 2_000)
         self.assertEqual(config.model, "GPT-4")
         self.assertEqual(config.cdp_url, "http://127.0.0.1:9222")
-        self.assertTrue(config.uses_browser)
+        self.assertEqual(config.backend, BACKEND_BROWSER)
         self.assertEqual(config.input_limits.max_files, 80)
 
     def test_model_override_beats_env_and_file(self) -> None:
@@ -424,32 +374,6 @@ class LoadConfigSuccessTests(EnvIsolated):
         path = self._write(self._browser({"max_prompt_chars": 9_999_999}))
         config = load_config(path)
         self.assertEqual(config.max_prompt_chars, 400_000)
-
-    def test_openai_compatible(self) -> None:
-        path = self._write(
-            {
-                "backend": "openai-compatible",
-                "model": "local",
-                "base_url": "http://127.0.0.1:8000/v1",
-            }
-        )
-        config = load_config(path)
-        self.assertEqual(config.backend, BACKEND_OPENAI_COMPAT)
-        self.assertEqual(config.base_url, "http://127.0.0.1:8000/v1")
-        self.assertFalse(config.uses_browser)
-
-    def test_api_key_in_json(self) -> None:
-        path = self._write(
-            {"backend": "openai", "model": "gpt-4o", "api_key": "sk-json"}
-        )
-        config = load_config(path)
-        self.assertEqual(config.api_key, "sk-json")
-
-    def test_critique_api_key_env(self) -> None:
-        path = self._write({"backend": "openai", "model": "gpt-4o"})
-        os.environ["CRITIQUE_API_KEY"] = "sk-env"
-        config = load_config(path)
-        self.assertEqual(config.api_key, "sk-env")
 
     def test_user_data_dir_env(self) -> None:
         path = self._write(self._browser())

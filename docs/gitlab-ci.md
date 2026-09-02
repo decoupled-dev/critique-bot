@@ -2,7 +2,7 @@
 
 This is the runner-side setup. Field-by-field `config.json` is in [`config.json.md`](config.json.md).
 
-Jobs **do not launch the model**. One long-running **worker** on the runner PC owns the backend (signed-in Edge, or HTTP to Ollama/OpenAI). Each CI job only **submits** a patch to a shared on-disk queue and waits for `out/review.md`.
+Jobs **do not launch Edge**. One long-running **worker** on the runner PC owns the signed-in browser. Each CI job only **submits** a patch to a shared on-disk queue and waits for `out/review.md`.
 
 ```text
 MR pipeline  →  critique-bot submit  →  .critique-queue  →  worker + Edge  →  review.md
@@ -22,13 +22,13 @@ Copy the job definition into the **application** repo (the project whose MRs sho
 | Piece | Requirement |
 | --- | --- |
 | Runner | Self-hosted, **shell** executor (not Docker, not Kubernetes), tag `critique-bot` |
-| Machine | 64-bit Linux or Windows. **browser:** Microsoft Edge (Chrome is a fallback). **ollama / openai:** no Edge |
+| Machine | 64-bit Linux or Windows with Microsoft Edge (Chrome is a fallback) |
 | Shared disk | Job and worker must see the **same** `config.json` and `queue_dir` |
 | Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install: `/opt/critique-bot` (Linux) or `C:\critique-bot` (Windows) |
-| Session | **browser:** Edge signed in once (`--headed`). Later runs reuse `.edge-profile`. **HTTP:** `ollama serve` or API credentials |
+| Session | Edge signed in once (`--headed`). Later runs reuse `.edge-profile` |
 | Token | Project (or group) access token, scope `api`, role Developer+, in `CRITIQUE_GITLAB_TOKEN` |
 
-Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs cannot run the **browser** backend: they have no signed-in Edge and no shared queue. HTTP backends still need a self-hosted runner that shares `queue_dir` with the worker.
+Shared GitLab.com / instance runners and Docker executors cannot run this bot: they have no signed-in Edge and no shared queue.
 
 ## One-time: runner PC
 
@@ -41,10 +41,11 @@ Shared GitLab.com / instance runners, Docker executors, and GitHub-hosted VMs ca
    /opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --headed --logs
    ```
 
-   Log in to the chat UI, confirm a prompt works, then Ctrl-C. Then confirm the whole setup at once:
+   Log in to the chat UI, confirm a prompt works, then Ctrl-C. Then confirm the whole setup with a one-shot prompt:
 
    ```bash
-   /opt/critique-bot/critique-bot doctor --config /opt/critique-bot/config.json
+   /opt/critique-bot/critique-bot --config /opt/critique-bot/config.json \
+     --mode general --prompt "Reply with exactly one word: PONG."
    ```
 5. Start the worker at boot, **as the same OS user as the GitLab runner** (so the job can read/write the queue):
 
@@ -113,7 +114,7 @@ Each `submit` gets a unique job id and waits only for **that** id. It does not s
 
 ## Quick checks
 
-Start with `critique-bot doctor --config "$CRITIQUE_CONFIG"` (machine, login, selectors, real round trip) and `critique-bot queue-status --config "$CRITIQUE_CONFIG"` (worker, backlog, recent failures). Between them they explain most of the table below.
+Start with a one-shot `--mode general` prompt (login, selectors, real round trip) and `critique-bot queue-status --config "$CRITIQUE_CONFIG"` (worker, backlog, recent failures). Between them they explain most of the table below.
 
 | Symptom | Check |
 | --- | --- |
@@ -123,6 +124,6 @@ Start with `critique-bot doctor --config "$CRITIQUE_CONFIG"` (machine, login, se
 | Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup` |
 | Same job retried and then failed | It hit `max_attempts` (default 3). The real error is in `status.json` and the worker log |
 | Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present, un-protected, scope `api`. `gitlab-post` exits non-zero when the summary fails to post |
-| `No Chromium browser was found` | Edge installed for the runner user (`doctor` reports this) |
+| `No Chromium browser was found` | Edge installed for the runner user |
 | Permission denied on queue | Worker user ≠ GitLab runner user |
 | Cloudflare / login page | Headless is blocked; re-login with `--headed` |
