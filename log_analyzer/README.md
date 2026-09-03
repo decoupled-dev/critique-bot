@@ -4,48 +4,27 @@ Offline Python tool that scans an Android Java/Kotlin tree for chatty logging ca
 
 The package name is **`log_analyzer`** (not `log_nalayzer` or `log_analzyer`).
 
-It is meant for large codebases: thousand-line files and deep source trees. Parsing uses tree-sitter (Java + Kotlin), javalang as a Java second pass, and regex as a fallback when a file does not parse cleanly.
+## Run it (no editable install)
 
-## Install
+`pip install -e .` from this repository root installs **critique-bot**, not the analyzer. That is why dependency building takes a long time and then fails. You do not need that.
 
-Python 3.10+ is required. From the repository root:
-
-```bash
-pip install -e ./log_analyzer
-```
-
-That installs the `log-analyzer` command and the `log_analyzer` module so you can run it from any directory. All packages run locally. No network calls are made while scanning.
-
-If you only want the parser libraries and will launch the script yourself:
+From the repository root:
 
 ```bash
-pip install -r log_analyzer/requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python3 -m pip install -r log_analyzer/requirements.txt
+python3 run_log_analyzer.py /path/to/android-project -o log-report.html
 ```
 
-## Usage
-
-After `pip install -e ./log_analyzer` (works from any directory):
+These also work after the same `requirements.txt` install:
 
 ```bash
-python3 -m log_analyzer /path/to/android-project --output log-report.html
-# or, if ~/.local/bin is on PATH:
-log-analyzer /path/to/android-project --output log-report.html
+python3 log_analyzer/analyze.py /path/to/android-project -o log-report.html
+python3 log_analyzer/run.py /path/to/android-project -o log-report.html
 ```
 
-Without installing the package, run the launcher (works from any directory):
-
-```bash
-python /path/to/critique-bot/log_analyzer/run.py /path/to/android-project --output log-report.html
-```
-
-`python -m log_analyzer` only works when the **repository root** (the folder that contains `log_analyzer/`) is the current directory, or when the package is installed:
-
-```bash
-cd /path/to/critique-bot
-python -m log_analyzer /path/to/android-project --output log-report.html
-```
-
-Do not `cd` into `log_analyzer/` and then run `python -m log_analyzer`. Python will look for a nested `log_analyzer` package and raise `No module named log_analyzer`.
+Open `log-report.html` in a browser.
 
 Useful flags:
 
@@ -87,5 +66,5 @@ Keyboard: `/` focuses search, `Esc` closes a detail row.
 ## Tests
 
 ```bash
-python -m unittest log_analyzer.tests.test_detect
+python3 -m unittest log_analyzer.tests.test_detect
 ```

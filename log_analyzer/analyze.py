@@ -6,10 +6,21 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from .detect import detect_source
-from .models import FileError, Finding, ScanStats
-from .report import render_html
-from .scan import DEFAULT_EXTENSIONS, iter_source_files, relative_posix
+# Allow `python log_analyzer/analyze.py` without installing the package.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ROOT_STR = str(_REPO_ROOT)
+if _ROOT_STR not in sys.path:
+    sys.path.insert(0, _ROOT_STR)
+_pythonpath = os.environ.get("PYTHONPATH", "")
+if _ROOT_STR not in _pythonpath.split(os.pathsep):
+    os.environ["PYTHONPATH"] = (
+        _ROOT_STR + (os.pathsep + _pythonpath if _pythonpath else "")
+    )
+
+from log_analyzer.detect import detect_source
+from log_analyzer.models import FileError, Finding, ScanStats
+from log_analyzer.report import render_html
+from log_analyzer.scan import DEFAULT_EXTENSIONS, iter_source_files, relative_posix
 
 
 def _analyze_one(payload: tuple[str, str]) -> tuple[str, list[dict], str | None, int]:
@@ -141,10 +152,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if __package__ is None or __package__ == "":
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        __package__ = "log_analyzer"
-        from log_analyzer.analyze import main as _main
-
-        raise SystemExit(_main())
     raise SystemExit(main())

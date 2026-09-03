@@ -1,18 +1,15 @@
-"""Allow `python -m log_analyzer` when the repo root is on sys.path."""
+"""Allow `python -m log_analyzer` or `python log_analyzer/__main__.py`."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-_PARENT = str(Path(__file__).resolve().parent.parent)
-if _PARENT not in sys.path:
-    sys.path.insert(0, _PARENT)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-if __package__ is None or __package__ == "":
-    __package__ = "log_analyzer"
-
-from .analyze import main
+from log_analyzer.analyze import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

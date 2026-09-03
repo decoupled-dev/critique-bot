@@ -131,6 +131,31 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Android Java/Kotlin", result.stdout)
 
+    def test_analyze_py_runs_as_a_script(self) -> None:
+        script = REPO_ROOT / "log_analyzer" / "analyze.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd="/tmp",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("relative", result.stderr.lower())
+        self.assertIn("usage:", result.stdout.lower())
+
+    def test_root_launcher_runs_as_a_script(self) -> None:
+        script = REPO_ROOT / "run_log_analyzer.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd="/tmp",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout.lower())
+
     def test_typo_module_log_nalayzer(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "log_nalayzer", "--help"],
