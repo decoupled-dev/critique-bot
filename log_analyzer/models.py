@@ -20,6 +20,12 @@ class Finding:
     contexts: list[str] = field(default_factory=list)
     chatty_score: int = 0
     why: str = ""
+    context_reasons: list[str] = field(default_factory=list)
+    ancestors: list[str] = field(default_factory=list)
+    source_before: str = ""
+    source_line: str = ""
+    source_after: str = ""
+    source_window: str = ""
 
     def merge_key(self) -> tuple[str, int, str, str]:
         return (self.file, self.line, self.level, self.method)

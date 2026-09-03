@@ -46,7 +46,7 @@ def _emit(
     if classified is None:
         return None
     level, api = classified
-    class_name, func_name, contexts = contexts_from_javalang_path(path)
+    info = contexts_from_javalang_path(path)
     finding = Finding(
         file=relpath,
         line=line,
@@ -57,9 +57,11 @@ def _emit(
         receiver=receiver,
         snippet=_source_snippet(source, line, column),
         parse_sources=["javalang"],
-        enclosing_class=class_name,
-        enclosing_function=func_name,
-        contexts=contexts,
+        enclosing_class=info.enclosing_class,
+        enclosing_function=info.enclosing_function,
+        contexts=info.contexts,
+        context_reasons=info.reasons,
+        ancestors=info.ancestors,
     )
     return annotate_finding(finding)
 

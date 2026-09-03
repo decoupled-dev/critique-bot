@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from .models import Finding
+
+
+@dataclass
+class ContextInfo:
+    enclosing_class: str = ""
+    enclosing_function: str = ""
+    contexts: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    ancestors: list[str] = field(default_factory=list)
 
 LOOP_NODE_TYPES = {
     "for_statement",
@@ -33,10 +43,9 @@ CALL_NODE_TYPES = {"method_invocation", "call_expression"}
 
 LOOP_CALL_NAMES = {
     "foreach",
+    "foreachindexed",
     "oneach",
     "repeat",
-    "map",
-    "flatmap",
 }
 
 OBSERVER_CALL_NAMES = {
@@ -184,120 +193,136 @@ def _is_listener_call(name: str) -> bool:
     return lowered.startswith(LISTENER_CALL_PREFIXES)
 
 
-def contexts_from_ts_node(node, flavor: str) -> tuple[str, str, list[str]]:
-    enclosing_class = ""
-    enclosing_function = ""
-    contexts: list[str] = []
+def contexts_from_ts_node(node, flavor: str) -> ContextInfo:
+    info = ContextInfo()
     seen: set[str] = set()
 
-    def add(tag: str) -> None:
+    def add(tag: str, reason: str) -> None:
         if tag not in seen:
             seen.add(tag)
-            contexts.append(tag)
+            info.contexts.append(tag)
+        info.reasons.append(reason)
 
     current = node.parent
     while current is not None:
         ntype = current.type
         if ntype in LOOP_NODE_TYPES:
-            add("loop")
-        if ntype in CLASS_NODE_TYPES and not enclosing_class:
-            enclosing_class = node_name(current)
-        if ntype in FUNCTION_NODE_TYPES and not enclosing_function:
-            enclosing_function = node_name(current)
+            add("loop", f"loop ← AST ancestor `{ntype}`")
+        if ntype in CLASS_NODE_TYPES and not info.enclosing_class:
+            info.enclosing_class = node_name(current)
+        if ntype in FUNCTION_NODE_TYPES and not info.enclosing_function:
+            info.enclosing_function = node_name(current)
         if ntype in CALL_NODE_TYPES:
             call = _call_name(current, flavor).lower()
+            info.ancestors.append(f"{ntype}:{call or '?'}")
             if call in LOOP_CALL_NAMES:
-                add("loop")
+                add("loop", f"loop ← AST call `{call}()`")
             if call in OBSERVER_CALL_NAMES:
-                add("observer")
+                add("observer", f"observer ← AST call `{call}()`")
             if _is_listener_call(call):
-                add("listener")
+                add("listener", f"listener ← AST call `{call}()`")
+        elif ntype in FUNCTION_NODE_TYPES or ntype in CLASS_NODE_TYPES:
+            info.ancestors.append(f"{ntype}:{node_name(current) or '?'}")
         current = current.parent
 
-    func_key = enclosing_function.lower()
-    class_key = enclosing_class.lower()
+    func_key = info.enclosing_function.lower()
+    class_key = info.enclosing_class.lower()
     if func_key in HOT_METHODS or (
         func_key == "bind" and any(part in class_key for part in ("adapter", "holder", "viewholder"))
     ):
-        add("hot_path")
+        add("hot_path", f"hot_path ← enclosing method `{info.enclosing_function}`")
     if func_key in LISTENER_METHODS or class_key.endswith("listener"):
-        add("listener")
-    return enclosing_class, enclosing_function, contexts
+        add("listener", f"listener ← enclosing `{info.enclosing_class}.{info.enclosing_function}`")
+    return info
 
 
-def contexts_from_javalang_path(path: Iterable[object]) -> tuple[str, str, list[str]]:
-    enclosing_class = ""
-    enclosing_function = ""
-    contexts: list[str] = []
+def contexts_from_javalang_path(path: Iterable[object]) -> ContextInfo:
+    info = ContextInfo()
     seen: set[str] = set()
 
-    def add(tag: str) -> None:
+    def add(tag: str, reason: str) -> None:
         if tag not in seen:
             seen.add(tag)
-            contexts.append(tag)
+            info.contexts.append(tag)
+        info.reasons.append(reason)
 
     for item in path:
         name = type(item).__name__
         if name in {"ForStatement", "WhileStatement", "DoStatement"}:
-            add("loop")
+            add("loop", f"loop ← javalang ancestor `{name}`")
         if name == "ClassDeclaration":
-            enclosing_class = getattr(item, "name", "") or enclosing_class
+            info.enclosing_class = getattr(item, "name", "") or info.enclosing_class
+            info.ancestors.append(f"{name}:{info.enclosing_class}")
         if name == "MethodDeclaration":
-            enclosing_function = getattr(item, "name", "") or enclosing_function
+            info.enclosing_function = getattr(item, "name", "") or info.enclosing_function
+            info.ancestors.append(f"{name}:{info.enclosing_function}")
         if name == "MethodInvocation":
             member = (getattr(item, "member", "") or "").lower()
+            info.ancestors.append(f"{name}:{member or '?'}")
             if member in LOOP_CALL_NAMES:
-                add("loop")
+                add("loop", f"loop ← javalang call `{member}()`")
             if member in OBSERVER_CALL_NAMES:
-                add("observer")
+                add("observer", f"observer ← javalang call `{member}()`")
             if _is_listener_call(member):
-                add("listener")
+                add("listener", f"listener ← javalang call `{member}()`")
 
-    func_key = enclosing_function.lower()
-    class_key = enclosing_class.lower()
+    func_key = info.enclosing_function.lower()
+    class_key = info.enclosing_class.lower()
     if func_key in HOT_METHODS or (
         func_key == "bind" and any(part in class_key for part in ("adapter", "holder", "viewholder"))
     ):
-        add("hot_path")
+        add("hot_path", f"hot_path ← enclosing method `{info.enclosing_function}`")
     if func_key in LISTENER_METHODS or class_key.endswith("listener"):
-        add("listener")
-    return enclosing_class, enclosing_function, contexts
+        add("listener", f"listener ← enclosing `{info.enclosing_class}.{info.enclosing_function}`")
+    return info
 
 
-def contexts_from_source_text(source: str, line: int) -> tuple[str, str, list[str]]:
-    """Best-effort context for regex-only hits using nearby source lines."""
+def contexts_from_source_text(source: str, line: int) -> ContextInfo:
+    """Name/hot-path only. Do not guess loop/observer/listener from nearby text."""
+    info = ContextInfo()
     lines = source.splitlines()
     idx = max(0, min(line - 1, len(lines) - 1))
     window = lines[max(0, idx - 40) : idx + 1]
-    enclosing_function = ""
-    enclosing_class = ""
     for raw in reversed(window):
         stripped = raw.strip()
-        if not enclosing_class:
+        if not info.enclosing_class:
             class_match = re.search(r"\b(class|object|interface|enum)\s+(\w+)", stripped)
             if class_match:
-                enclosing_class = class_match.group(2)
-        if not enclosing_function:
+                info.enclosing_class = class_match.group(2)
+        if not info.enclosing_function:
             sig = _METHOD_SIG_RE.search(stripped)
             if sig and not stripped.startswith("//"):
-                enclosing_function = sig.group(1)
-        if enclosing_class and enclosing_function:
+                info.enclosing_function = sig.group(1)
+        if info.enclosing_class and info.enclosing_function:
             break
 
-    nearby = "\n".join(window[-12:])
-    contexts: list[str] = []
-    if re.search(r"\b(for|while|do)\b", nearby) or re.search(
-        r"\b(forEach|onEach|repeat)\s*[({]", nearby
-    ):
-        contexts.append("loop")
-    if re.search(r"\b(observe|observeForever|collect|collectLatest|subscribe)\s*\(", nearby):
-        contexts.append("observer")
-    if re.search(r"(Listener|Watcher|setOn\w+|addOn\w+|addTextChangedListener)", nearby):
-        contexts.append("listener")
-    func_key = enclosing_function.lower()
+    func_key = info.enclosing_function.lower()
     if func_key in HOT_METHODS:
-        contexts.append("hot_path")
-    return enclosing_class, enclosing_function, contexts
+        info.contexts.append("hot_path")
+        info.reasons.append(f"hot_path ← enclosing method `{info.enclosing_function}` (regex)")
+    info.reasons.append("loop/observer/listener not inferred from nearby text")
+    return info
+
+
+def attach_source_window(finding: Finding, source: str, radius: int = 10) -> Finding:
+    lines = source.splitlines()
+    idx = finding.line - 1
+    if idx < 0 or idx >= len(lines):
+        return finding
+    start = max(0, idx - radius)
+    end = min(len(lines), idx + radius + 1)
+
+    def numbered(i: int) -> str:
+        mark = ">" if i == idx else " "
+        return f"{mark}{i + 1:>5}|{lines[i]}"
+
+    finding.source_before = "\n".join(numbered(i) for i in range(start, idx))
+    finding.source_line = numbered(idx)
+    finding.source_after = "\n".join(numbered(i) for i in range(idx + 1, end))
+    finding.source_window = "\n".join(
+        numbered(i) for i in range(start, end)
+    )
+    return finding
 
 
 def chatty_score(level: str, contexts: list[str], enclosing_function: str) -> int:

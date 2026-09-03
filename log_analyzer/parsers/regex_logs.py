@@ -116,7 +116,7 @@ def _add(
     line = source[: match.start()].count("\n") + 1
     last_nl = source.rfind("\n", 0, match.start())
     column = match.start() - last_nl
-    class_name, func_name, contexts = contexts_from_source_text(original, line)
+    info = contexts_from_source_text(original, line)
     line_end = original.find("\n", match.start())
     if line_end < 0:
         line_end = len(original)
@@ -131,9 +131,11 @@ def _add(
         receiver=receiver.replace(" ", ""),
         snippet=snippet,
         parse_sources=["regex"],
-        enclosing_class=class_name,
-        enclosing_function=func_name,
-        contexts=contexts,
+        enclosing_class=info.enclosing_class,
+        enclosing_function=info.enclosing_function,
+        contexts=info.contexts,
+        context_reasons=info.reasons,
+        ancestors=info.ancestors,
     )
     findings.append(annotate_finding(finding))
 

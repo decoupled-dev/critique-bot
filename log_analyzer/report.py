@@ -8,6 +8,56 @@ from .models import FileError, Finding, ScanStats
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "report.html"
 
+_AI_GUIDE = {
+    "purpose": (
+        "Investigation pack for an Android Java/Kotlin logging audit. "
+        "Use this JSON (also embedded in the HTML) to decide which log calls "
+        "are actually chatty and which context tags are trustworthy."
+    ),
+    "how_to_read": [
+        "files[] is sorted most log calls → least.",
+        "findings[] includes source_window (numbered lines, `>` marks the call).",
+        "context_reasons[] explains every loop/observer/listener/hot_path tag.",
+        "ancestors[] is the AST parent chain used for those tags.",
+        "loop is applied only when the call is an AST descendant of for/while/do "
+        "or of forEach/forEachIndexed/onEach/repeat. Nearby loops in the same "
+        "method do NOT count.",
+        "parse_sources lists which parsers found the call (tree-sitter, javalang, regex).",
+        "chatty_score is ranking only; it is not a proof the call is wrong.",
+    ],
+    "schema": {
+        "finding": [
+            "file",
+            "line",
+            "column",
+            "level",
+            "api",
+            "method",
+            "receiver",
+            "snippet",
+            "parse_sources",
+            "enclosing_class",
+            "enclosing_function",
+            "contexts",
+            "context_reasons",
+            "ancestors",
+            "source_window",
+            "chatty_score",
+            "why",
+        ]
+    },
+    "scoring": {
+        "base": {"v": 3, "d": 3, "i": 2, "w": 1, "e": 1, "wtf": 1, "println": 3, "print": 3},
+        "multipliers": {
+            "loop": 5,
+            "bind_draw_scroll": 8,
+            "other_hot_path": 4,
+            "observer": 4,
+            "listener": 3,
+        },
+    },
+}
+
 
 def _payload(
     findings: list[Finding],
@@ -34,6 +84,7 @@ def _payload(
                 "high_freq": 0,
                 "max_score": 0,
                 "levels": {},
+                "functions": {},
             },
         )
         bucket["count"] += 1
@@ -41,10 +92,13 @@ def _payload(
             bucket["high_freq"] += 1
         bucket["max_score"] = max(bucket["max_score"], finding.chatty_score)
         bucket["levels"][finding.level] = bucket["levels"].get(finding.level, 0) + 1
+        func = finding.enclosing_function or "(unknown)"
+        bucket["functions"][func] = bucket["functions"].get(func, 0) + 1
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "root": stats.root,
+        "ai_guide": _AI_GUIDE,
         "stats": {
             "files_scanned": stats.files_scanned,
             "files_with_findings": stats.files_with_findings,
@@ -71,13 +125,13 @@ def render_html(
     output: Path,
 ) -> Path:
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
-    data = json.dumps(
-        _payload(findings, errors, stats),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    payload = _payload(findings, errors, stats)
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    pretty = json.dumps(payload, ensure_ascii=False, indent=2)
     data = data.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     html = template.replace("<<<LOG_ANALYZER_JSON>>>", data)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html, encoding="utf-8")
+    sidecar = output.with_suffix(".investigation.json")
+    sidecar.write_text(pretty + "\n", encoding="utf-8")
     return output

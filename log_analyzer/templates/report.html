@@ -39,7 +39,9 @@
       color: #fff;
       padding: 20px 28px 18px;
     }
+    header.app .title-row { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
     header.app h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+    .copy-ai { background: #fff; color: var(--brand); border: 0; border-radius: 8px; padding: 8px 12px; font-weight: 700; }
     header.app .sub { margin: 6px 0 16px; color: #c9d6e6; font-size: 13px; }
     .summary { display: flex; flex-wrap: wrap; gap: 10px; }
     .stat {
@@ -179,8 +181,13 @@
 </head>
 <body>
   <header class="app">
-    <h1>Android Log Analyzer</h1>
-    <p class="sub" id="subtitle">Offline scan of Java and Kotlin sources</p>
+    <div class="title-row">
+      <div>
+        <h1>Android Log Analyzer</h1>
+        <p class="sub" id="subtitle">Offline scan of Java and Kotlin sources</p>
+      </div>
+      <button type="button" class="copy-ai" id="copyAi">Copy investigation JSON for AI</button>
+    </div>
     <div class="summary" id="kpis"></div>
   </header>
   <div class="layout">
@@ -404,10 +411,14 @@
         `Location: ${f.file}:${f.line}:${f.column}`,
         `Function: ${f.enclosing_class || "?"}.${f.enclosing_function || "?"}`,
         `Contexts: ${(f.contexts || []).join(", ") || "none"}`,
+        `Context evidence:`,
+        ...((f.context_reasons || []).length ? f.context_reasons.map((r) => `  - ${r}`) : ["  (none — not inside a loop/observer/listener)"]),
+        `AST ancestors: ${(f.ancestors || []).join(" → ") || "n/a"}`,
         `Parsers: ${(f.parse_sources || []).join(", ")}`,
         `Why noisy: ${f.why}`,
         "",
-        f.snippet,
+        "Source window (`>` is the log call):",
+        f.source_window || f.snippet,
       ].join("\n");
     }
 
@@ -472,6 +483,23 @@
         state.open = null;
         renderRows();
       }
+    });
+
+    $("copyAi").addEventListener("click", async () => {
+      const text = JSON.stringify(DATA, null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        $("copyAi").textContent = "Copied — paste into an AI chat";
+      } catch (err) {
+        const area = document.createElement("textarea");
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+        $("copyAi").textContent = "Copied — paste into an AI chat";
+      }
+      setTimeout(() => { $("copyAi").textContent = "Copy investigation JSON for AI"; }, 2000);
     });
 
     renderKpis();

@@ -69,7 +69,7 @@ def analyze_kotlin_ts(relpath: str, source: bytes) -> list[Finding]:
         if classified is None:
             continue
         level, api = classified
-        class_name, func_name, contexts = contexts_from_ts_node(call, "kotlin")
+        info = contexts_from_ts_node(call, "kotlin")
         finding = Finding(
             file=relpath,
             line=call.start_point[0] + 1,
@@ -80,9 +80,11 @@ def analyze_kotlin_ts(relpath: str, source: bytes) -> list[Finding]:
             receiver=receiver,
             snippet=snippet_from_text(_text(call)),
             parse_sources=["tree-sitter"],
-            enclosing_class=class_name,
-            enclosing_function=func_name,
-            contexts=contexts,
+            enclosing_class=info.enclosing_class,
+            enclosing_function=info.enclosing_function,
+            contexts=info.contexts,
+            context_reasons=info.reasons,
+            ancestors=info.ancestors,
         )
         findings.append(annotate_finding(finding))
     return findings

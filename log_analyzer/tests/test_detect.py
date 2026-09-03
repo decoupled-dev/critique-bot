@@ -38,6 +38,28 @@ class DetectTests(unittest.TestCase):
         self.assertTrue(warns)
         self.assertNotIn("x));", warns[0].snippet)
 
+    def test_logs_after_loops_are_not_loops(self) -> None:
+        rel, source = load("NotInLoop.java")
+        findings = detect_source(rel, source)
+        after = [f for f in findings if "after" in f.snippet or f.snippet.startswith("Log.i(\"T\", \"before\")")]
+        self.assertTrue(after, findings)
+        for finding in after:
+            self.assertNotIn("loop", finding.contexts, finding)
+        inside = [f for f in findings if "inside for" in f.snippet]
+        self.assertTrue(inside)
+        self.assertIn("loop", inside[0].contexts)
+        self.assertTrue(inside[0].source_window)
+        self.assertTrue(any("for_statement" in r or "enhanced_for" in r for r in inside[0].context_reasons))
+
+    def test_kotlin_logs_after_loops_are_not_loops(self) -> None:
+        rel, source = load("NotInLoop.kt")
+        findings = detect_source(rel, source)
+        for finding in findings:
+            if "inside for" in finding.snippet:
+                self.assertIn("loop", finding.contexts, finding)
+            else:
+                self.assertNotIn("loop", finding.contexts, finding.snippet)
+
     def test_foreach_and_while_logs(self) -> None:
         rel, source = load("LoopLogs.java")
         findings = detect_source(rel, source)
@@ -112,6 +134,7 @@ class DetectTests(unittest.TestCase):
             self.assertIn("LoopLogs.java", html)
             self.assertIn("Files by log count", html)
             self.assertIn("Filters", html)
+            self.assertIn("Copy investigation JSON for AI", html)
             self.assertNotIn("<<<LOG_ANALYZER_JSON>>>", html)
             start = html.find(">", html.find("log-analyzer-data")) + 1
             end = html.find("</script>", start)
@@ -119,6 +142,11 @@ class DetectTests(unittest.TestCase):
             counts = [item["count"] for item in payload["files"]]
             self.assertEqual(counts, sorted(counts, reverse=True))
             self.assertGreaterEqual(counts[0], counts[-1])
+            self.assertIn("ai_guide", payload)
+            self.assertTrue(payload["findings"][0]["source_window"])
+            sidecar = out.with_suffix(".investigation.json")
+            self.assertTrue(sidecar.is_file())
+            self.assertIn("source_window", sidecar.read_text(encoding="utf-8"))
 
     def test_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

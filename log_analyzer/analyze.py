@@ -148,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     if stats.parse_failures:
         print(f"parse/read issues: {stats.parse_failures}")
     print(f"wrote {output.resolve()}")
+    sidecar = output.with_suffix(".investigation.json")
+    if sidecar.is_file():
+        print(f"wrote {sidecar.resolve()}  (give this JSON to an AI for follow-up)")
     return 0
 
 
