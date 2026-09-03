@@ -15,6 +15,7 @@ from critique_bot.review_comments import (
     discussion_position,
     format_gitlab_comment,
     format_gitlab_summary,
+    orphan_summary_actions,
     parse_diff_lines,
     parse_inline_comments,
     parse_review_risk,
@@ -91,8 +92,7 @@ def post_review(
         )
     )
     inline = 0
-    overview = 0
-    skipped = 0
+    unmapped: list[InlineComment] = []
 
     def ensure_diff_lines() -> list[DiffLine]:
         nonlocal remote_lines
@@ -146,51 +146,38 @@ def post_review(
                 )
         if posted:
             continue
-        fallback = format_gitlab_comment(comment, include_location=True)
-        try:
-            _post_discussion(discussions, resolved_token, fallback)
-        except GitLabPostError as exc:
-            skipped += 1
-            log.warn(
-                "skipping comment; could not post thread "
-                + log.kv(endpoint=discussions, path=comment.path, line=comment.line)
-                + f" {exc}"
-            )
-            continue
-        overview += 1
+        unmapped.append(comment)
         log.info(
-            "posted overview thread "
+            "could not pin comment; including in summary "
             + log.kv(endpoint=discussions, path=comment.path, line=comment.line)
         )
 
     summary = strip_json_block(review_md)
+    orphans = orphan_summary_actions(review_md, comments)
     summary_ok = True
-    if summary:
-        try:
-            _post_discussion(
-                discussions,
-                resolved_token,
-                format_gitlab_summary(
-                    summary,
-                    inline_count=inline,
-                    overview_count=overview,
-                    risk=parse_review_risk(review_md),
-                ),
-            )
-            log.info(
-                "posted merge request summary thread "
-                + log.kv(endpoint=discussions)
-            )
-        except GitLabPostError as exc:
-            summary_ok = False
-            log.error(
-                "could not post summary thread "
-                + log.kv(endpoint=discussions)
-                + f" {exc}"
-            )
+    summary_body = format_gitlab_summary(
+        summary,
+        inline_count=inline,
+        unmapped=unmapped,
+        orphan_actions=orphans,
+        risk=parse_review_risk(review_md),
+    )
+    try:
+        _post_discussion(discussions, resolved_token, summary_body)
+        log.info(
+            "posted merge request summary thread "
+            + log.kv(endpoint=discussions)
+        )
+    except GitLabPostError as exc:
+        summary_ok = False
+        log.error(
+            "could not post summary thread "
+            + log.kv(endpoint=discussions)
+            + f" {exc}"
+        )
     print(
-        f"gitlab-post: {inline} inline thread(s), {overview} overview thread(s), "
-        f"{skipped} skipped, summary={'yes' if summary and summary_ok else 'no'}",
+        f"gitlab-post: {inline} inline thread(s), {len(unmapped)} unmapped, "
+        f"summary={'yes' if summary_ok else 'no'}",
         flush=True,
     )
     return 0 if summary_ok else 1

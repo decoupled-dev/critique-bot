@@ -1005,8 +1005,9 @@ def _main_gitlab_post(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="critique-bot gitlab-post",
         description=(
-            "Post the review as GitLab MR discussion threads: a summary "
-            "thread plus inline diff threads (replyable). Needs "
+            "Post the review as GitLab MR discussion threads: a short risk "
+            "summary plus inline diff threads. Findings that cannot be pinned "
+            "to the diff stay on the summary. Needs "
             "CRITIQUE_GITLAB_TOKEN (project access token, scope api). "
             "CI_JOB_TOKEN cannot create discussions."
         ),

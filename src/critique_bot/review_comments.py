@@ -53,6 +53,7 @@ _LINE_NUMBER_RE = re.compile(r"(\d+)")
 MAX_INLINE_COMMENTS = 12
 MAX_INLINE_BODY_CHARS = 700
 MAX_SUMMARY_CHARS = 2000
+MAX_SUMMARY_BLURB_CHARS = 280
 _RISK_LINE_RE = re.compile(
     r"^\s*\*?\*?Risk:\s*([^*\n]+)\*?\*?\s*$",
     re.I | re.M,
@@ -167,6 +168,11 @@ def parse_review_risk(review_md: str) -> str:
         if canonical:
             return canonical
     match = _RISK_LINE_RE.search(review_md)
+    if match is None:
+        prose = strip_json_block(review_md)
+        inline = re.search(r"\*{0,2}Risk:\s*([^*\n]+)\*{0,2}", prose, re.I)
+        if inline is not None and inline.start() < 40:
+            match = inline
     if match:
         canonical = _canonical_risk(match.group(1))
         if canonical:
@@ -205,16 +211,10 @@ def comments_from_summary(
     diff_lines: list[DiffLine] | None = None,
 ) -> list[InlineComment]:
     """Build inline comments from numbered summary actions when JSON is empty."""
-    summary = strip_json_block(review_md)
-    normalized = normalize_summary_markdown(summary)
-    source = normalized or summary
-    if _NO_FINDINGS_RE.search(source):
+    source = _summary_source(review_md)
+    if not source or _NO_FINDINGS_RE.search(source):
         return []
-    _, items = _extract_numbered_items(source)
-    if not items:
-        _, items = _extract_bullet_items(source)
-    if not items:
-        items = _items_from_file_mentions(source)
+    items = _summary_action_items(source)
     if not items:
         return []
     rows = diff_lines or []
@@ -368,7 +368,7 @@ def format_gitlab_comment(
     *,
     include_location: bool = False,
 ) -> str:
-    """GitLab-flavored markdown for an inline or overview discussion thread."""
+    """GitLab-flavored markdown for an inline discussion thread."""
     body = truncate_markdown(comment.body.strip(), MAX_INLINE_BODY_CHARS)
     title = SEVERITY_TITLES.get(comment.severity, "")
     lines: list[str] = []
@@ -384,17 +384,81 @@ def format_gitlab_comment(
     return "\n".join(lines).strip()
 
 
+def summary_blurb(summary: str) -> str:
+    """One- or two-line overview with risk and action lists removed."""
+    working = _strip_risk_and_actions_header(summary)
+    if not working:
+        return ""
+    if _NO_FINDINGS_RE.search(working):
+        _, items = _extract_numbered_items(working)
+        if not items:
+            _, items = _extract_bullet_items(working)
+        if not items:
+            return "No actionable findings."
+    preamble, items = _extract_numbered_items(working)
+    if not items:
+        preamble, items = _extract_bullet_items(working)
+    if items:
+        return _truncate_blurb(preamble)
+    mention_items = _items_from_file_mentions(working)
+    if mention_items:
+        others = [
+            part.strip().rstrip(";").strip()
+            for part in re.split(r"(?<=[.!?])\s+", working)
+            if part.strip() and not _iter_file_mentions(part)
+        ]
+        return _truncate_blurb(" ".join(others))
+    return _truncate_blurb(working)
+
+
+def orphan_summary_actions(
+    review_md: str,
+    comments: list[InlineComment],
+) -> list[str]:
+    """Summary actions that never became comments (no file/line to pin).
+
+    When JSON comments exist they are the source of truth, so the numbered
+    summary list is treated as a duplicate and dropped.
+    """
+    if parse_inline_comments(review_md):
+        return []
+    source = _summary_source(review_md)
+    if not source or _NO_FINDINGS_RE.search(source):
+        return []
+    items = _summary_action_items(source, file_mentions=False)
+    if not items:
+        return []
+    taken = {_folded(comment.body) for comment in comments}
+    orphans: list[str] = []
+    for item in items:
+        key = _folded(item)
+        if key in taken:
+            continue
+        if any(key in taken_body or taken_body in key for taken_body in taken if taken_body):
+            continue
+        orphans.append(item)
+    return orphans
+
+
 def format_gitlab_summary(
     summary: str,
     *,
     inline_count: int = 0,
-    overview_count: int = 0,
+    unmapped: list[InlineComment] | None = None,
+    orphan_actions: list[str] | None = None,
     risk: str = "",
 ) -> str:
-    text = truncate_markdown(summary.strip(), MAX_SUMMARY_CHARS)
-    text = normalize_summary_markdown(text)
-    if risk:
-        text = _RISK_LINE_RE.sub("", text, count=1).strip()
+    """Short MR overview: risk, optional blurb, then only unpinned findings."""
+    blurb = summary_blurb(summary)
+    pinned: list[str] = []
+    for comment in unmapped or []:
+        item = format_gitlab_comment(comment, include_location=True)
+        if item:
+            pinned.append(item)
+    for action in orphan_actions or []:
+        text = action.strip()
+        if text:
+            pinned.append(text)
     parts = ["### AAOS system-app review", ""]
     canonical = _canonical_risk(risk) or risk
     if canonical:
@@ -404,15 +468,17 @@ def format_gitlab_summary(
         if emoji:
             heading = f"{emoji} {heading}"
         parts.extend([heading, ""])
-    if text:
-        parts.append(text)
+    if blurb:
+        parts.append(blurb)
+    if pinned:
+        if blurb:
+            parts.append("")
+        parts.append("Could not pin these to the diff:")
+        parts.append("")
+        parts.append("\n\n".join(pinned))
     bits: list[str] = []
     if inline_count:
         bits.append(f"{inline_count} inline thread(s) on the **Changes** tab")
-    if overview_count:
-        bits.append(
-            f"{overview_count} overview thread(s) (diff line could not be mapped)"
-        )
     if bits:
         parts.extend(
             [
@@ -421,7 +487,9 @@ def format_gitlab_summary(
                 "_" + "; ".join(bits) + ". Reply on a thread to discuss._",
             ]
         )
-    return apply_gitlab_line_breaks("\n".join(parts))
+    return apply_gitlab_line_breaks(
+        truncate_markdown("\n".join(parts).strip(), MAX_SUMMARY_CHARS)
+    )
 
 
 def apply_gitlab_line_breaks(text: str) -> str:
@@ -429,8 +497,7 @@ def apply_gitlab_line_breaks(text: str) -> str:
 
     GitLab Flavored Markdown treats a single newline as a space unless the
     line ends with two spaces (a hard break) or a blank line starts a new
-    block. Numbered actions must survive that, or the MR note looks like
-    one paragraph and inline mapping has nothing to hang on.
+    block. Unmapped findings listed on the summary must survive that.
     """
     lines = (text or "").split("\n")
     out: list[str] = []
@@ -495,6 +562,50 @@ def truncate_markdown(text: str, limit: int) -> str:
     if len(cut) < limit // 2:
         cut = text[:limit].rsplit(" ", 1)[0]
     return cut.rstrip() + "\n…"
+
+
+def _summary_source(review_md: str) -> str:
+    summary = strip_json_block(review_md)
+    return normalize_summary_markdown(summary) or summary
+
+
+def _summary_action_items(source: str, *, file_mentions: bool = True) -> list[str]:
+    _, items = _extract_numbered_items(source)
+    if not items:
+        _, items = _extract_bullet_items(source)
+    if not items and file_mentions:
+        items = _items_from_file_mentions(source)
+    return items
+
+
+def _strip_risk_and_actions_header(text: str) -> str:
+    working = (text or "").strip()
+    if not working:
+        return ""
+    risk_match = _RISK_LINE_RE.search(working)
+    if risk_match is None:
+        inline = re.search(r"\*{0,2}Risk:\s*([^*\n]+)\*{0,2}", working, re.I)
+        if inline is not None and inline.start() < 40:
+            risk_match = inline
+    if risk_match:
+        working = (working[: risk_match.start()] + working[risk_match.end() :]).strip()
+    header_match = _ACTIONS_HEADER_RE.search(working)
+    if header_match and header_match.start() <= 24:
+        working = (
+            working[: header_match.start()] + working[header_match.end() :]
+        ).strip()
+    return working
+
+
+def _truncate_blurb(text: str) -> str:
+    blurb = re.sub(r"\s+", " ", (text or "").strip())
+    if not blurb:
+        return ""
+    return truncate_markdown(blurb, MAX_SUMMARY_BLURB_CHARS)
+
+
+def _folded(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 def _nearest(

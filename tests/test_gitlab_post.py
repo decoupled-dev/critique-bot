@@ -210,6 +210,7 @@ class PostReviewFlowTests(EnvIsolated):
         self.assertIn("Looks risky.", summary[2]["body"])
         self.assertNotIn("```json", summary[2]["body"])
         self.assertNotIn('"comments"', summary[2]["body"])
+        self.assertNotIn("coupon is not defined", summary[2]["body"])
         self.assertIn("### AAOS system-app review", summary[2]["body"])
         self.assertIn("**Risk:", summary[2]["body"])
         self.assertIn("Changes", summary[2]["body"])
@@ -260,8 +261,10 @@ class PostReviewFlowTests(EnvIsolated):
         )
         patch_path = self.folder / "diff.patch"
         patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
 
         def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
             if method == "GET":
                 return {"diff_refs": {"base_sha": "a", "start_sha": "a", "head_sha": "b"}}
             return {}
@@ -277,8 +280,67 @@ class PostReviewFlowTests(EnvIsolated):
                     api_url="https://gitlab.example/api/v4",
                     token="t",
                 )
-        self.assertIn("1 overview thread", buf.getvalue())
-        self.assertIn("0 skipped", buf.getvalue())
+        self.assertIn("0 inline thread", buf.getvalue())
+        self.assertIn("1 unmapped", buf.getvalue())
+        discussion_posts = [
+            c for c in calls if c[0] == "POST" and "discussions" in c[1]
+        ]
+        self.assertEqual(len(discussion_posts), 1)
+        body = discussion_posts[0][2]["body"]
+        self.assertIsNone(discussion_posts[0][2].get("position"))
+        self.assertIn("Could not pin these to the diff", body)
+        self.assertIn("`nope.c:1`", body)
+        self.assertIn("hello", body)
+
+    def test_unmapped_stays_in_summary_when_other_comments_inline(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(
+            "Binder identity is not restored.\n"
+            "```json\n"
+            '{"risk":"risky","comments":['
+            '{"path":"src/pay.py","line":12,"side":"new","severity":"security",'
+            '"body":"coupon is not defined"},'
+            '{"path":"privapp-permissions.xml","line":1,"side":"new",'
+            '"severity":"security","body":"allowlist the new permission"}'
+            "]}\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        patch_path = self.folder / "diff.patch"
+        patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {"diff_refs": {"base_sha": "a", "start_sha": "a", "head_sha": "b"}}
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                post_review(
+                    review_file=review,
+                    patch_file=patch_path,
+                    project_id="1",
+                    mr_iid="2",
+                    api_url="https://gitlab.example/api/v4",
+                    token="t",
+                )
+        self.assertIn("1 inline thread", buf.getvalue())
+        self.assertIn("1 unmapped", buf.getvalue())
+        discussion_posts = [
+            c for c in calls if c[0] == "POST" and "discussions" in c[1]
+        ]
+        self.assertEqual(len(discussion_posts), 2)
+        inline = next(c for c in discussion_posts if c[2].get("position"))
+        summary = next(c for c in discussion_posts if not c[2].get("position"))
+        self.assertEqual(inline[2]["body"], "**Security**\n\ncoupon is not defined")
+        self.assertNotIn("coupon is not defined", summary[2]["body"])
+        self.assertIn("Could not pin these to the diff", summary[2]["body"])
+        self.assertIn("`privapp-permissions.xml:1`", summary[2]["body"])
+        self.assertIn("allowlist the new permission", summary[2]["body"])
+        self.assertIn("Binder identity is not restored.", summary[2]["body"])
 
     def test_inline_rejection_is_skipped(self) -> None:
         review = self.folder / "review.md"
@@ -304,7 +366,7 @@ class PostReviewFlowTests(EnvIsolated):
                     api_url="https://gitlab.example/api/v4",
                     token="t",
                 )
-        self.assertIn("1 overview thread", buf.getvalue())
+        self.assertIn("1 unmapped", buf.getvalue())
         self.assertIn("0 inline thread", buf.getvalue())
 
     def test_maps_from_gitlab_diffs_when_patch_missing(self) -> None:
@@ -481,6 +543,9 @@ class PostReviewFlowTests(EnvIsolated):
             if c[0] == "POST" and isinstance(c[2], dict) and not c[2].get("position")
         )
         self.assertNotIn('"comments"', summary[2]["body"])
+        self.assertNotIn("coupon is not defined", summary[2]["body"])
+        self.assertIn("**Risk: Risky**", summary[2]["body"])
+        self.assertIn("Changes", summary[2]["body"])
 
     def test_paragraph_summary_posts_inline(self) -> None:
         review = self.folder / "review.md"
@@ -523,7 +588,9 @@ class PostReviewFlowTests(EnvIsolated):
             for c in calls
             if c[0] == "POST" and isinstance(c[2], dict) and not c[2].get("position")
         )
-        self.assertRegex(summary[2]["body"], r"1\. Restore Binder identity.*  \n")
+        self.assertNotIn("Restore Binder identity", summary[2]["body"])
+        self.assertIn("**Risk: Risky**", summary[2]["body"])
+        self.assertIn("Changes", summary[2]["body"])
 
 
 class DiffRefsTests(EnvIsolated):

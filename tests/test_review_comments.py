@@ -303,11 +303,23 @@ class ReviewCommentTests(unittest.TestCase):
         located = format_gitlab_comment(untitled, include_location=True)
         self.assertIn("`Foo.java:8`", located)
         summary = format_gitlab_summary(
-            "1. Restore Binder identity.", inline_count=1, overview_count=1
+            "Binder identity is not restored.",
+            inline_count=1,
+            unmapped=[
+                InlineComment(
+                    path="Foo.java",
+                    line=8,
+                    side="new",
+                    body="Restore identity.",
+                    severity="test",
+                )
+            ],
         )
         self.assertIn("### AAOS system-app review", summary)
         self.assertIn("Changes", summary)
-        self.assertIn("overview thread", summary)
+        self.assertIn("Could not pin these to the diff", summary)
+        self.assertIn("`Foo.java:8`", summary)
+        self.assertNotIn("overview thread", summary)
         self.assertTrue(truncate_markdown("short", 10) == "short")
         self.assertTrue(truncate_markdown("a" * 50, 10).endswith("…"))
 
@@ -326,6 +338,12 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertEqual(parse_review_risk(text), "risky")
         self.assertEqual(parse_review_risk('{"risk":"Blocker","comments":[]}'), "blocker")
         self.assertEqual(parse_review_risk("**Risk: Moderate risk**\nNo JSON"), "moderate")
+        self.assertEqual(
+            parse_review_risk(
+                "**Risk: Risky** Restore Binder identity in `src/pay.py:12`."
+            ),
+            "risky",
+        )
         self.assertEqual(parse_review_risk("just prose"), "safe")
         self.assertEqual(
             infer_risk_from_comments(parse_inline_comments(
@@ -338,7 +356,7 @@ class ReviewCommentTests(unittest.TestCase):
         )
         self.assertIn("**Risk: Risky**", formatted)
         self.assertIn(":red_circle:", formatted)
-        self.assertIn("1. Restore identity.", formatted)
+        self.assertNotIn("1. Restore identity.", formatted)
         self.assertEqual(formatted.count("Risk: Risky"), 1)
 
     def test_nested_suggestion_fence_does_not_break_json(self) -> None:
@@ -463,20 +481,98 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertIn("\n\n1. ", "\n\n" + body)
         self.assertRegex(body, r"1\. Restore Binder identity.*\n2\. Add a test")
         formatted = format_gitlab_summary(paragraph, risk="risky")
-        self.assertRegex(
-            formatted, r"1\. Restore Binder identity in Foo\.java\.\s*\n2\. "
-        )
+        self.assertNotIn("1. Restore Binder identity.", formatted)
         self.assertIn("### AAOS system-app review", formatted)
 
-    def test_normalize_summary_adds_blank_line_before_list(self) -> None:
+    def test_format_gitlab_summary_omits_action_list(self) -> None:
         from critique_bot.review_comments import format_gitlab_summary
 
         formatted = format_gitlab_summary(
             "**2 actions**\n1. Restore identity.\n2. Add a test.",
             risk="risky",
+            inline_count=2,
+        )
+        self.assertIn("**Risk: Risky**", formatted)
+        self.assertNotIn("1. Restore identity.", formatted)
+        self.assertNotIn("2. Add a test.", formatted)
+        self.assertIn("2 inline thread", formatted)
+
+    def test_format_gitlab_summary_lists_unmapped(self) -> None:
+        from critique_bot.review_comments import (
+            InlineComment,
+            format_gitlab_summary,
+        )
+
+        formatted = format_gitlab_summary(
+            "Binder identity is not restored.",
+            risk="risky",
+            inline_count=1,
+            unmapped=[
+                InlineComment(
+                    path="Missing.xml",
+                    line=1,
+                    side="new",
+                    body="Allowlist the new privileged permission.",
+                    severity="security",
+                )
+            ],
+        )
+        self.assertIn("Could not pin these to the diff", formatted)
+        self.assertIn("`Missing.xml:1`", formatted)
+        self.assertIn("Allowlist the new privileged permission.", formatted)
+        self.assertIn("Binder identity is not restored.", formatted)
+
+    def test_summary_blurb_keeps_preamble_drops_actions(self) -> None:
+        from critique_bot.review_comments import summary_blurb
+
+        self.assertEqual(
+            summary_blurb(
+                "**Risk: Moderate risk** This still has to run on Android 12. "
+                "1. Guard the Android 15 API in `DisplayHelper.java:31`."
+            ),
+            "This still has to run on Android 12.",
+        )
+        self.assertEqual(
+            summary_blurb("**Risk: Safe**\n\nNo actionable findings."),
+            "No actionable findings.",
+        )
+        self.assertEqual(
+            summary_blurb("1. Restore identity in Foo.java."),
+            "",
+        )
+
+    def test_orphan_summary_actions_keeps_unpinnable_items(self) -> None:
+        from critique_bot.review_comments import (
+            comments_from_summary,
+            orphan_summary_actions,
+        )
+
+        text = (
+            "**Risk: Risky**\n"
+            "1. Restore Binder identity in `src/pay.py:12`.\n"
+            "2. Document the new permission in the design doc.\n"
+        )
+        comments = comments_from_summary(text, parse_diff_lines(PATCH))
+        self.assertEqual(len(comments), 1)
+        orphans = orphan_summary_actions(text, comments)
+        self.assertEqual(orphans, ["Document the new permission in the design doc."])
+        self.assertEqual(
+            orphan_summary_actions(
+                text
+                + '\n```json\n{"comments":[{"path":"src/pay.py","line":12,"body":"x"}]}\n```\n',
+                comments,
+            ),
+            [],
+        )
+
+    def test_normalize_summary_adds_blank_line_before_list(self) -> None:
+        from critique_bot.review_comments import normalize_summary_markdown
+
+        body = normalize_summary_markdown(
+            "**2 actions**\n1. Restore identity.\n2. Add a test."
         )
         self.assertRegex(
-            formatted,
+            body,
             r"\*\*2 actions\*\*\s*\n\n1\. Restore identity\.\s*\n2\. Add a test",
         )
 
@@ -634,21 +730,31 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertEqual(comments[0].path, "src/pay.py")
         self.assertEqual(comments[0].line, 12)
         formatted = format_gitlab_summary(paragraph, risk="risky")
-        self.assertRegex(
-            formatted,
-            r"1\. Restore Binder identity in `src/pay\.py:12`.*  \n2\. ",
-        )
+        self.assertNotIn("1. Restore Binder identity", formatted)
+        self.assertIn("**Risk: Risky**", formatted)
 
     def test_gitlab_summary_uses_two_space_hard_breaks(self) -> None:
-        from critique_bot.review_comments import format_gitlab_summary
+        from critique_bot.review_comments import (
+            InlineComment,
+            format_gitlab_summary,
+        )
 
         formatted = format_gitlab_summary(
-            "**2 actions**\n1. Restore identity.\n2. Add a test.",
+            "Binder identity is not restored.",
             risk="risky",
+            unmapped=[
+                InlineComment(
+                    path="Foo.java",
+                    line=8,
+                    side="new",
+                    body="Restore identity.",
+                    severity="must-fix",
+                )
+            ],
         )
         lines = formatted.split("\n")
-        action_one = next(line for line in lines if line.startswith("1. "))
-        self.assertTrue(action_one.endswith("  "), action_one)
+        pinned = next(line for line in lines if "Foo.java:8" in line)
+        self.assertTrue(pinned.endswith("  "), pinned)
 
     def test_json_comment_without_line_still_parses(self) -> None:
         comments = parse_inline_comments(
