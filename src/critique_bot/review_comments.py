@@ -8,9 +8,20 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_JSON_FENCE_RE = re.compile(r"```(?:json|javascript|js)?[^\n]*\r?\n?(.*?)```", re.S | re.I)
-_FENCE_PREFIX_RE = re.compile(r"```(?:json|javascript|js)?[^\n]*\n?\s*$", re.I)
+_JSON_LANG_FENCE_RE = re.compile(
+    r"```(?:json|javascript|js)\b[^\n]*\r?\n?(.*?)```", re.S | re.I
+)
+_UNLABELED_FENCE_RE = re.compile(r"```[ \t]*\r?\n(.*?)```", re.S)
+_FENCE_PREFIX_RE = re.compile(
+    r"```(?:json|javascript|js)\b[^\n]*\n?\s*$|```[ \t]*\n?\s*$", re.I
+)
 _FENCE_SUFFIX_RE = re.compile(r"\s*```[ \t]*")
+_NO_FINDINGS_RE = re.compile(r"no actionable findings", re.I)
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+_BARE_FILE_RE = re.compile(
+    r"(?<![`\w/])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]*)(?::(?:L)?(\d+))?"
+)
+_PATH_LINE_SUFFIX_RE = re.compile(r"^(?P<path>.*?)(?::(?:L)?(?P<line>\d+))$")
 _COMMENT_LIST_KEYS = (
     "comments",
     "inline_comments",
@@ -123,13 +134,16 @@ def strip_json_block(review_md: str) -> str:
     text = review_md
     spans = [
         (start, end)
-        for start, end, obj in _iter_json_objects(text)
+        for start, end, obj in _iter_repaired_json_objects(text)
         if _is_review_payload(obj)
     ]
     for start, end in reversed(spans):
         lo, hi = _expand_fence(text, start, end)
         text = text[:lo] + text[hi:]
-    text = _JSON_FENCE_RE.sub("", text)
+    text = _JSON_LANG_FENCE_RE.sub("", text)
+    text = _UNLABELED_FENCE_RE.sub(_drop_json_unlabeled_fence, text)
+    if _still_has_review_json(text):
+        text = _strip_broken_review_json(text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -174,40 +188,33 @@ def _canonical_risk(raw: str) -> str:
 
 def parse_inline_comments(review_md: str) -> list[InlineComment]:
     payload = _extract_json(review_md)
-    if payload is None:
-        return []
-    raw = _comment_list(payload)
+    raw = _comment_list(payload) if payload is not None else None
     if not isinstance(raw, list):
+        raw = _recover_comment_objects(review_md)
+    return _comments_from_items(raw)
+
+
+def comments_from_summary(
+    review_md: str,
+    diff_lines: list[DiffLine] | None = None,
+) -> list[InlineComment]:
+    """Build inline comments from numbered summary actions when JSON is empty."""
+    summary = strip_json_block(review_md)
+    normalized = normalize_summary_markdown(summary)
+    source = normalized or summary
+    if _NO_FINDINGS_RE.search(source):
         return []
+    _, items = _extract_numbered_items(source)
+    if not items:
+        return []
+    rows = diff_lines or []
     comments: list[InlineComment] = []
-    for item in raw:
-        if not isinstance(item, dict):
+    used_lines: dict[str, set[int]] = {}
+    for item in items:
+        comment = _comment_from_action(item, rows, used_lines)
+        if comment is None:
             continue
-        path = _comment_path(item)
-        body = ""
-        for key in _BODY_KEYS:
-            value = item.get(key)
-            if value:
-                body = str(value).strip()
-                break
-        severity = str(item.get("severity") or item.get("sev") or "").strip().lower()
-        if severity in SKIP_SEVERITIES:
-            continue
-        side = str(item.get("side") or "new").strip().lower()
-        if side in {"right", "added", "+"}:
-            side = "new"
-        elif side in {"left", "deleted", "-"}:
-            side = "old"
-        if side not in {"new", "old"}:
-            side = "new"
-        line = _comment_line(item, side)
-        if not path or not body or line < 1:
-            continue
-        comments.append(
-            InlineComment(
-                path=path, line=line, side=side, body=body, severity=severity
-            )
-        )
+        comments.append(comment)
         if len(comments) >= MAX_INLINE_COMMENTS:
             break
     return comments
@@ -507,15 +514,204 @@ def _path_matches(wanted: str, row: DiffLine) -> bool:
     return False
 
 
+def _comments_from_items(raw: list | None) -> list[InlineComment]:
+    comments: list[InlineComment] = []
+    if not isinstance(raw, list):
+        return comments
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = _comment_path(item)
+        path, path_line = _split_path_line(path)
+        body = _comment_body(item)
+        severity = str(item.get("severity") or item.get("sev") or "").strip().lower()
+        if severity in SKIP_SEVERITIES:
+            continue
+        side = str(item.get("side") or "new").strip().lower()
+        if side in {"right", "added", "+"}:
+            side = "new"
+        elif side in {"left", "deleted", "-"}:
+            side = "old"
+        if side not in {"new", "old"}:
+            side = "new"
+        line = _comment_line(item, side)
+        if line < 1:
+            line = path_line
+        if not path or not body or line < 1:
+            continue
+        comments.append(
+            InlineComment(
+                path=path, line=line, side=side, body=body, severity=severity
+            )
+        )
+        if len(comments) >= MAX_INLINE_COMMENTS:
+            break
+    return comments
+
+
+def _comment_body(item: dict) -> str:
+    for key in _BODY_KEYS:
+        value = item.get(key)
+        if isinstance(value, dict):
+            nested = _comment_body(value)
+            if nested:
+                return nested
+            continue
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _comment_from_action(
+    item: str,
+    diff_lines: list[DiffLine],
+    used_lines: dict[str, set[int]],
+) -> InlineComment | None:
+    mentions = _iter_file_mentions(item)
+    if not mentions:
+        return None
+    severity = _severity_from_text(item)
+    for path, line in mentions:
+        probe = InlineComment(path=path, line=line or 1, side="new", body=item)
+        rows = _file_rows(probe, diff_lines) if diff_lines else []
+        if rows:
+            resolved = rows[0].path
+            if line < 1:
+                line = _pick_diff_line(rows, used_lines.get(resolved, set()))
+            if line < 1:
+                continue
+            used_lines.setdefault(resolved, set()).add(line)
+            return InlineComment(
+                path=resolved, line=line, side="new", body=item, severity=severity
+            )
+        if line >= 1:
+            used_lines.setdefault(path, set()).add(line)
+            return InlineComment(
+                path=path, line=line, side="new", body=item, severity=severity
+            )
+    return None
+
+
+def _iter_file_mentions(text: str) -> list[tuple[str, int]]:
+    found: list[tuple[str, int]] = []
+    covered: list[tuple[int, int]] = []
+    for match in _BACKTICK_RE.finditer(text):
+        path, line = _split_path_line(match.group(1).strip())
+        if path and _looks_like_path(path):
+            found.append((path, line))
+            covered.append(match.span())
+    for match in _BARE_FILE_RE.finditer(text):
+        if any(start <= match.start() and match.end() <= end for start, end in covered):
+            continue
+        path = match.group(1)
+        line = int(match.group(2)) if match.group(2) else 0
+        if _looks_like_path(path):
+            found.append((path, line))
+    return found
+
+
+def _split_path_line(value: str) -> tuple[str, int]:
+    path = _clean_path(value)
+    match = _PATH_LINE_SUFFIX_RE.match(path)
+    if not match:
+        return path, 0
+    return match.group("path"), int(match.group("line"))
+
+
+def _looks_like_path(value: str) -> bool:
+    text = value.replace("\\", "/").strip().strip("`")
+    if not text or text in {".", ".."}:
+        return False
+    lowered = text.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return False
+    name = text.rsplit("/", 1)[-1]
+    if "/" in text:
+        return True
+    if "." not in name or name.startswith("."):
+        return False
+    ext = name.rsplit(".", 1)[-1]
+    return bool(ext) and ext.isalnum() and len(ext) <= 10
+
+
+def _pick_diff_line(rows: list[DiffLine], used: set[int]) -> int:
+    added = [row.new_line for row in rows if row.kind == "add" and row.new_line]
+    for value in added:
+        if value not in used:
+            return value
+    if added:
+        return added[0]
+    for row in rows:
+        value = row.new_line or row.old_line
+        if value and value not in used:
+            return value
+    return (rows[0].new_line or rows[0].old_line or 0) if rows else 0
+
+
+def _severity_from_text(text: str) -> str:
+    lower = (text or "").lower()
+    if any(
+        word in lower
+        for word in ("blocker", "privilege escalation", "uxr", "distraction")
+    ):
+        return "blocker"
+    if any(
+        word in lower
+        for word in ("security", "binder", "exported", "permission", "privapp")
+    ):
+        return "security"
+    if "test" in lower:
+        return "test"
+    if any(word in lower for word in ("compat", "sdk_int", "api 3", "android 1")):
+        return "compat"
+    return "must-fix"
+
+
 def _comment_list(payload: dict) -> list | None:
     for key in _COMMENT_LIST_KEYS:
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-        if isinstance(value, dict) and _comment_path(value):
-            return [value]
+        items = _coerce_comment_list(payload.get(key))
+        if items is not None:
+            return items
     if _comment_path(payload) and any(payload.get(key) for key in _BODY_KEYS):
         return [payload]
+    return None
+
+
+def _coerce_comment_list(value: object, default_path: str = "") -> list | None:
+    if isinstance(value, str) and value.strip():
+        parsed = _loads_loose(value)
+        if parsed is None:
+            return None
+        return _coerce_comment_list(parsed, default_path)
+    if isinstance(value, list):
+        items: list = []
+        for item in value:
+            if isinstance(item, dict):
+                if default_path and not _comment_path(item):
+                    item = {**item, "path": default_path}
+                items.append(item)
+            elif isinstance(item, str) and default_path:
+                items.append({"path": default_path, "body": item})
+        return items
+    if isinstance(value, dict):
+        looks_like_comment = _comment_path(value) or any(
+            value.get(key) for key in (*_BODY_KEYS, *_LINE_KEYS)
+        )
+        if looks_like_comment and not any(key in value for key in _COMMENT_LIST_KEYS):
+            if default_path and not _comment_path(value):
+                value = {**value, "path": default_path}
+            return [value]
+        items = []
+        for key, nested in value.items():
+            path = default_path
+            if _looks_like_path(str(key)):
+                path, _line = _split_path_line(_clean_path(str(key)))
+            coerced = _coerce_comment_list(nested, path)
+            if coerced:
+                items.extend(coerced)
+            elif isinstance(nested, str) and path:
+                items.append({"path": path, "body": nested})
+        return items or None
     return None
 
 
@@ -535,6 +731,12 @@ def _comment_line(item: dict, side: str) -> int:
         parsed = _parse_line_value(item.get(key))
         if parsed >= 1:
             return parsed
+    for nested_key in ("position", "start", "end"):
+        nested = item.get(nested_key)
+        if isinstance(nested, dict):
+            parsed = _comment_line(nested, side)
+            if parsed >= 1:
+                return parsed
     return 0
 
 
@@ -597,21 +799,144 @@ def _next_json_start(text: str, start: int) -> int:
 
 
 def _iter_json_objects(text: str):
-    decoder = json.JSONDecoder()
+    yield from _iter_repaired_json_objects(text)
+
+
+def _looks_like_json_slice(blob: str) -> bool:
+    return any(
+        f'"{key}"' in blob
+        for key in (
+            "comments",
+            "inline_comments",
+            "findings",
+            "path",
+            "file",
+            "risk",
+            "body",
+            "line",
+        )
+    )
+
+
+def _slice_json_value(text: str, start: int) -> tuple[str, int] | None:
+    if start >= len(text) or text[start] not in "{[":
+        return None
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+                if not stack:
+                    return text[start : i + 1], i + 1
+    return text[start:], len(text)
+
+
+def _iter_repaired_json_objects(text: str):
     i = 0
     n = len(text)
     while i < n:
         brace = _next_json_start(text, i)
         if brace < 0:
             return
-        try:
-            obj, end = decoder.raw_decode(text, brace)
-        except json.JSONDecodeError:
+        sliced = _slice_json_value(text, brace)
+        if sliced is None:
             i = brace + 1
             continue
+        blob, end = sliced
+        if not _looks_like_json_slice(blob):
+            i = brace + 1
+            continue
+        obj = _loads_loose(blob)
         if isinstance(obj, (dict, list)):
             yield brace, end, obj
-        i = max(end, brace + 1)
+            i = max(end, brace + 1)
+            continue
+        i = brace + 1
+
+
+def _recover_comment_objects(text: str) -> list[dict]:
+    items: list[dict] = []
+    i = 0
+    while i < len(text):
+        brace = text.find("{", i)
+        if brace < 0:
+            break
+        sliced = _slice_json_value(text, brace)
+        if sliced is None:
+            i = brace + 1
+            continue
+        blob, end = sliced
+        obj = _loads_loose(blob)
+        if (
+            isinstance(obj, dict)
+            and _comment_path(obj)
+            and _comment_body(obj)
+            and not any(key in obj for key in _COMMENT_LIST_KEYS)
+        ):
+            items.append(obj)
+            i = end
+            continue
+        i = brace + 1 if obj is None else max(end, brace + 1)
+    return items
+
+
+def _drop_json_unlabeled_fence(match: re.Match[str]) -> str:
+    blob = match.group(1).strip()
+    if blob.startswith("{") or blob.startswith("["):
+        obj = _loads_loose(match.group(1))
+        if _is_review_payload(obj):
+            return ""
+    return match.group(0)
+
+
+def _still_has_review_json(text: str) -> bool:
+    lower = (text or "").lower()
+    if "```json" in lower:
+        return True
+    return any(
+        f'"{key}"' in text
+        for key in ("comments", "inline_comments", "findings", "review_comments")
+    )
+
+
+def _strip_broken_review_json(text: str) -> str:
+    markers = ('"comments"', '"inline_comments"', '"findings"', '"review_comments"', '"risk"')
+    best = -1
+    for marker in markers:
+        idx = text.rfind(marker)
+        if idx > best:
+            best = idx
+    if best < 0:
+        return text
+    brace = text.rfind("{", 0, best)
+    if brace < 0:
+        brace = text.rfind("[", 0, best)
+    if brace < 0:
+        return text
+    sliced = _slice_json_value(text, brace)
+    if sliced is None:
+        return text[:brace].rstrip()
+    _blob, end = sliced
+    lo, hi = _expand_fence(text, brace, end)
+    return text[:lo] + text[hi:]
 
 
 def _expand_fence(text: str, start: int, end: int) -> tuple[int, int]:
@@ -634,7 +959,7 @@ def _as_payload(obj: object) -> dict | None:
 
 
 def _loads_loose(text: str) -> object | None:
-    blob = (text or "").strip().lstrip("\ufeff")
+    blob = (text or "").strip().lstrip("\ufeff").replace("\u200b", "")
     if not blob:
         return None
     decoder = json.JSONDecoder()
@@ -735,7 +1060,11 @@ def _close_truncated_json(text: str) -> str:
 
 
 def _json_candidate_blobs(text: str) -> list[str]:
-    blobs = [match.group(1) for match in _JSON_FENCE_RE.finditer(text)]
+    blobs = [match.group(1) for match in _JSON_LANG_FENCE_RE.finditer(text)]
+    for match in _UNLABELED_FENCE_RE.finditer(text):
+        blob = match.group(1).strip()
+        if blob.startswith("{") or blob.startswith("["):
+            blobs.append(match.group(1))
     stripped = text.strip()
     if stripped.startswith("{") or stripped.startswith("["):
         blobs.append(stripped)
@@ -750,15 +1079,19 @@ def _extract_json(text: str) -> dict | None:
         payload = _as_payload(_loads_loose(blob))
         if payload is not None:
             seen.append(payload)
-    for _, _, obj in _iter_json_objects(text):
+    for _, _, obj in _iter_repaired_json_objects(text):
         payload = _as_payload(obj)
         if payload is not None:
             seen.append(payload)
     for payload in seen:
         last = payload
-        if any(
-            isinstance(payload.get(key), list) or isinstance(payload.get(key), dict)
-            for key in _COMMENT_LIST_KEYS
-        ) or _comment_path(payload):
+        if _is_review_payload(payload) or _comment_path(payload):
             review = payload
+    if review is not None and any(
+        isinstance(review.get(key), list) for key in _COMMENT_LIST_KEYS
+    ):
+        return review
+    recovered = _recover_comment_objects(text)
+    if recovered:
+        return {"comments": recovered}
     return review or last

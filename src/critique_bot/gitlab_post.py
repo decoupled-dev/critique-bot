@@ -11,6 +11,7 @@ from critique_bot.config import GitLabConfig
 from critique_bot.review_comments import (
     DiffLine,
     InlineComment,
+    comments_from_summary,
     discussion_position,
     format_gitlab_comment,
     format_gitlab_summary,
@@ -68,11 +69,6 @@ def post_review(
         raise GitLabPostError(f"review file is empty: {review_file}")
     patch = patch_file.read_text(encoding="utf-8") if patch_file and patch_file.is_file() else ""
     comments = parse_inline_comments(review_md)
-    if not comments and _looks_like_review_json(review_md):
-        log.warn(
-            "review contains JSON but no inline comments could be parsed; "
-            "posting the summary only"
-        )
     local_lines = parse_diff_lines(patch) if patch else []
     remote_lines: list[DiffLine] | None = None
     refs = _diff_refs(api_url, project_id, mr_iid, resolved_token)
@@ -81,19 +77,37 @@ def post_review(
     overview = 0
     skipped = 0
 
-    def lines_for(comment: InlineComment) -> DiffLine | None:
+    def ensure_diff_lines() -> list[DiffLine]:
         nonlocal remote_lines
         if remote_lines is None:
             remote_lines = parse_diff_lines(
                 _fetch_mr_patch(api_url, project_id, mr_iid, resolved_token)
             )
+        return remote_lines or local_lines
+
+    def lines_for(comment: InlineComment) -> DiffLine | None:
+        rows = ensure_diff_lines()
         if remote_lines:
             row = resolve_comment(comment, remote_lines)
             if row is not None:
                 return row
         if local_lines:
             return resolve_comment(comment, local_lines)
+        if rows:
+            return resolve_comment(comment, rows)
         return None
+
+    if comments:
+        log.info(f"parsed {len(comments)} inline comment(s) from JSON")
+    else:
+        comments = comments_from_summary(review_md, ensure_diff_lines())
+        if comments:
+            log.info(f"derived {len(comments)} inline comment(s) from summary")
+        elif _looks_like_review_json(review_md):
+            log.warn(
+                "review contains JSON but no inline comments could be parsed; "
+                "posting the summary only"
+            )
 
     for comment in comments:
         row = lines_for(comment)

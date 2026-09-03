@@ -376,6 +376,110 @@ class PostReviewFlowTests(EnvIsolated):
                     code = post_review(review_file=review)
         self.assertEqual(code, 0)
 
+    def test_unfenced_json_posts_inline_without_json_in_summary(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(
+            "**Risk: Risky**\n\n1. coupon is not defined.\n\n"
+            "{\n"
+            '  "risk": "risky",\n'
+            '  "comments": [\n'
+            '    {"path": "src/pay.py", "line": 12, "body": "coupon is not defined"}\n'
+            "  ]\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        patch_path = self.folder / "diff.patch"
+        patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                code = post_review(
+                    review_file=review,
+                    patch_file=patch_path,
+                    project_id="9",
+                    mr_iid="4",
+                    api_url="https://gitlab.example/api/v4",
+                    token="pat",
+                )
+        self.assertEqual(code, 0)
+        self.assertIn("1 inline thread", buf.getvalue())
+        discussion_posts = [
+            c for c in calls if c[0] == "POST" and "discussions" in c[1]
+        ]
+        inline = next(c for c in discussion_posts if c[2] and c[2].get("position"))
+        summary = next(
+            c for c in discussion_posts if c[2] and not c[2].get("position")
+        )
+        self.assertEqual(inline[2]["position"]["new_line"], 12)
+        self.assertIn("coupon is not defined", inline[2]["body"])
+        self.assertNotIn("```json", summary[2]["body"])
+        self.assertNotIn('"comments"', summary[2]["body"])
+        self.assertIn("**Risk:", summary[2]["body"])
+
+    def test_summary_actions_become_inline_when_json_missing(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(
+            "**Risk: Risky**\n\n"
+            "**1 action**\n\n"
+            "1. coupon is not defined in `src/pay.py:12`.\n",
+            encoding="utf-8",
+        )
+        patch_path = self.folder / "diff.patch"
+        patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                code = post_review(
+                    review_file=review,
+                    patch_file=patch_path,
+                    project_id="9",
+                    mr_iid="4",
+                    api_url="https://gitlab.example/api/v4",
+                    token="pat",
+                )
+        self.assertEqual(code, 0)
+        self.assertIn("1 inline thread", buf.getvalue())
+        inline = next(
+            c
+            for c in calls
+            if c[0] == "POST" and isinstance(c[2], dict) and c[2].get("position")
+        )
+        self.assertEqual(inline[2]["position"]["new_line"], 12)
+        summary = next(
+            c
+            for c in calls
+            if c[0] == "POST" and isinstance(c[2], dict) and not c[2].get("position")
+        )
+        self.assertNotIn('"comments"', summary[2]["body"])
+
 
 class DiffRefsTests(EnvIsolated):
     def test_from_versions_endpoint(self) -> None:

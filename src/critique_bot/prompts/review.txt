@@ -84,6 +84,7 @@ Pick exactly one, matching the worst finding:
 Summary (markdown before the JSON fence):
 - Line 1: `**Risk: Safe**` or `**Risk: Moderate risk**` or `**Risk: Risky**` or `**Risk: Blocker**`
 - Blank line, then at most 8 numbered actions, each on its own line (`1. …`).
+- Each action MUST name the file and line in backticks: `` `HvacController.java:88` `` (or `` `src/foo.py:12` ``). That is how inline comments are mapped if JSON is missing.
 - Put a blank line after the Risk line so GitLab renders a list, not one paragraph.
 - Zero actions → Risk line, blank line, then `No actionable findings.`
 - No preamble, no “Overview”, no LGTM. Do not repeat inline comment text in full.
@@ -118,8 +119,8 @@ Example A — privileged identity leak + missing test (good)
 
 **2 actions**
 
-1. Restore Binder identity in `HvacController.java` after `clearCallingIdentity`.
-2. Add a test that a non-privileged caller cannot set `HVAC_POWER_ON`.
+1. Restore Binder identity in `HvacController.java:88` after `clearCallingIdentity`.
+2. Add a test that a non-privileged caller cannot set `HVAC_POWER_ON` in `HvacController.java:88`.
 
 ```json
 {"risk":"risky","comments":[{"path":"src/com/android/car/hvac/HvacController.java","line":88,"side":"new","severity":"security","body":"**Security**\n\n`Binder.clearCallingIdentity()` is not restored. A caller can keep the system identity.\n\n**Action:** restore in `finally`. Add a test that a 3p UID cannot set this property."},{"path":"src/com/android/car/hvac/HvacController.java","line":88,"side":"new","severity":"test","body":"**Missing test**\n\nNo coverage for the new setter or the Binder identity restore.\n\n**Action:** add a unit/instrumentation test: non-privileged caller is rejected; identity is restored after success and after exception."}]}
@@ -131,7 +132,7 @@ Example B — exported component on a priv-app (good)
 
 **1 action**
 
-1. Stop exporting `DebugDumpReceiver` or require a signature permission; it runs as privileged.
+1. Stop exporting `DebugDumpReceiver` in `AndroidManifest.xml:42` or require a signature permission; it runs as privileged.
 
 ```json
 {"risk":"risky","comments":[{"path":"AndroidManifest.xml","line":42,"side":"new","severity":"security","body":"**Security**\n\n`DebugDumpReceiver` is `android:exported=\"true\"` with no permission on a privileged app.\n\n**Action:** set `exported=\"false\"`, or enforce a `signature|privileged` permission declared in privapp-permissions."}]}
@@ -143,7 +144,7 @@ Example C — API 35 used without a 12/14 guard (good)
 
 **1 action**
 
-1. Guard the Android 15 API so the same class still runs on API 31 / 34.
+1. Guard the Android 15 API in `DisplayHelper.java:31` so the same class still runs on API 31 / 34.
 
 ```json
 {"risk":"moderate","comments":[{"path":"src/com/android/car/settings/DisplayHelper.java","line":31,"side":"new","severity":"compat","body":"**Compat**\n\nThis Android 15 API is called with no `SDK_INT` guard. The app still ships on Android 12/14.\n\n**Action:** branch on `Build.VERSION.SDK_INT >= 35` (and a 12/14 path). Add an API-level test."}]}
@@ -155,7 +156,7 @@ Example D — UXR / driver distraction (good)
 
 **1 action**
 
-1. Do not show this blocking dialog while UXR is active.
+1. Do not show this blocking dialog while UXR is active in `NowPlayingActivity.java:120`.
 
 ```json
 {"risk":"blocker","comments":[{"path":"src/com/android/car/media/NowPlayingActivity.java","line":120,"side":"new","severity":"must-fix","body":"**Must fix**\n\nA blocking `AlertDialog` is shown with no `CarUxRestrictions` check. That is illegal while driving.\n\n**Action:** skip or defer the dialog when `requiresDistractionOptimization()` is true. Test parked vs moving."}]}

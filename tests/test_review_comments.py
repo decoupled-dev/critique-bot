@@ -474,6 +474,125 @@ class ReviewCommentTests(unittest.TestCase):
         )
         self.assertIn("**2 actions**\n\n1. Restore identity.\n2. Add a test.", formatted)
 
+    def test_unfenced_pretty_json_after_markdown(self) -> None:
+        text = (
+            "**Risk: Risky**\n\n"
+            "1. Restore Binder identity in Foo.java.\n\n"
+            "{\n"
+            '  "risk": "risky",\n'
+            '  "comments": [\n'
+            "    {\n"
+            '      "path": "src/pay.py",\n'
+            '      "line": 12,\n'
+            '      "body": "**Security**\n\nrestore in finally."\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+        self.assertIn("restore in finally", comments[0].body)
+        stripped = strip_json_block(text)
+        self.assertIn("**Risk: Risky**", stripped)
+        self.assertNotIn('"comments"', stripped)
+        self.assertNotIn('"path"', stripped)
+
+    def test_diff_fence_is_not_treated_as_json(self) -> None:
+        text = (
+            "**Risk: Risky**\n\n"
+            "1. Fix coupon in `src/pay.py:12`.\n\n"
+            "```diff\n"
+            "+ return qty * price * coupon\n"
+            "```\n"
+        )
+        self.assertEqual(parse_inline_comments(text), [])
+        stripped = strip_json_block(text)
+        self.assertIn("```diff", stripped)
+        self.assertIn("coupon", stripped)
+
+    def test_comments_as_json_string_and_index_map(self) -> None:
+        as_string = parse_inline_comments(
+            '{"comments": "[{\\"path\\": \\"src/pay.py\\", \\"line\\": 12, \\"body\\": \\"x\\"}]"}'
+        )
+        self.assertEqual(len(as_string), 1)
+        self.assertEqual(as_string[0].path, "src/pay.py")
+        as_map = parse_inline_comments(
+            json.dumps(
+                {
+                    "comments": {
+                        "0": {"path": "src/pay.py", "line": 12, "body": "first"},
+                        "1": {"path": "src/pay.py", "line": 11, "body": "second"},
+                    }
+                }
+            )
+        )
+        self.assertEqual([c.body for c in as_map], ["first", "second"])
+
+    def test_path_keyed_comment_map(self) -> None:
+        comments = parse_inline_comments(
+            json.dumps(
+                {
+                    "comments": {
+                        "src/pay.py": {"line": 12, "body": "coupon is not defined"}
+                    }
+                }
+            )
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+
+    def test_broken_wrapper_recovers_comment_objects(self) -> None:
+        text = (
+            "**Risk: Risky**\n"
+            'not json {"path":"src/pay.py","line":12,"body":"coupon is not defined"} '
+            '{"path":"src/pay.py","line":11,"body":"trusted caller"}\n'
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 2)
+        self.assertEqual(comments[0].line, 12)
+        self.assertEqual(comments[1].line, 11)
+        stripped = strip_json_block(text)
+        self.assertNotIn('"path"', stripped)
+        self.assertIn("**Risk: Risky**", stripped)
+
+    def test_comments_from_summary_maps_path_line(self) -> None:
+        from critique_bot.review_comments import comments_from_summary
+
+        text = (
+            "**Risk: Risky**\n\n"
+            "**1 action**\n\n"
+            "1. coupon is not defined in `src/pay.py:12`.\n"
+        )
+        comments = comments_from_summary(text, parse_diff_lines(PATCH))
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+        self.assertIn("coupon is not defined", comments[0].body)
+
+    def test_comments_from_summary_skips_safe_empty_review(self) -> None:
+        from critique_bot.review_comments import comments_from_summary
+
+        text = "**Risk: Safe**\n\nNo actionable findings.\n"
+        self.assertEqual(comments_from_summary(text, parse_diff_lines(PATCH)), [])
+        self.assertEqual(
+            comments_from_summary(
+                '**Risk: Safe**\n\nNo actionable findings.\n```json\n{"risk":"safe","comments":[]}\n```\n',
+                parse_diff_lines(PATCH),
+            ),
+            [],
+        )
+
+    def test_path_line_suffix_on_json_path(self) -> None:
+        comments = parse_inline_comments(
+            '{"comments":[{"path":"src/pay.py:12","body":"x"}]}'
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+
 
 if __name__ == "__main__":
     unittest.main()
