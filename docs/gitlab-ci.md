@@ -94,10 +94,44 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
 
 Script, in order:
 
-1. `critique-bot submit` (no `--patch-file` in CI). Submit uses the job checkout: `git fetch` of the target branch, `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job), writes `diff.patch`, and always loads HEAD contents of changed text files (markdown/RST skipped). If those files plus the patch fit in one paste, the worker sends a single prompt; otherwise it sends the files one per chat turn on the same tab (next file as soon as the model ACKs), then the review. Empty diff: submit exits 0 and nothing is posted.
+1. `critique-bot submit` (no `--patch-file` in CI). See **Original files (file-by-file)** below. Empty diff: submit exits 0 and nothing is posted.
 2. If `CI_MERGE_REQUEST_IID` is set and `out/review.md` exists: `critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch`
 
 Artifacts (always, 1 week): `out/`, `diff.patch`. Job timeout: 1 hour. Submit wait: 30 minutes.
+
+### Original files (file-by-file)
+
+The YAML job never pastes into the chat UI. `submit` builds the prompt on the runner; the **worker** sends it.
+
+Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, submit uses the job checkout:
+
+1. `git fetch` of the MR target branch (depth 50).
+2. `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job).
+3. Writes `diff.patch`.
+4. Reads **HEAD contents** of every changed text file from the checkout (the original files, not only the hunks). Markdown/RST and binaries are skipped; deleted paths are skipped because they are not on disk.
+
+The worker then sends those original files:
+
+| Size | What the worker does |
+| --- | --- |
+| Template + files + patch fit in `max_prompt_chars` (default `120000`) | **One paste** (files inlined in `{files}`, then the patch) |
+| Would overflow that budget | **One file per chat turn** on the same Edge tab |
+
+File-by-file sequence on that tab:
+
+1. Prime: “I will send N changed file(s) one at a time”. The model must reply `ACK` only, not a review.
+2. `FILE i of N` with that file’s HEAD body. As soon as the reply starts with `ACK <path>`, the next file is pasted (`turn_pause_seconds` default `0`).
+3. After the last ACK: the review template + patch + `REVIEW NOW`. Only this last reply is `review.md`.
+
+Caps and skips:
+
+- At most `max_files` bodies (default `80`); each body truncated at `max_file_chars` (default `32000`).
+- Markdown/RST, binaries, and missing/deleted paths are not pasted (their diffs stay in `diff.patch`).
+- If a file turn gets no assistant reply, remaining file sends are dropped and the review prompt is still sent.
+
+File-by-file reviews take longer than a one-shot paste. Keep `--wait-timeout 1800` and the job `timeout: 1h`. Worker logs show `inlining N changed file(s)` or `staging N file(s) across chat turns`.
+
+Windows: this behavior is already in [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml). The `& "$CRITIQUE_BIN" submit …` line is enough; there is no extra flag for file-by-file.
 
 Concurrent MRs all enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default **1**, same Edge, separate tabs). Starts are staggered by `min_interval_seconds` (default 30) plus jitter.
 

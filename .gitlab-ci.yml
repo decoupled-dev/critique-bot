@@ -28,7 +28,9 @@
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the
 # worker serializes Edge and applies min_interval_seconds from config.
-# submit builds diff.patch from the job checkout and attaches changed files.
+# submit builds diff.patch from the job checkout and always attaches original
+# changed-file bodies. Small MRs: one paste. Overflow: worker sends one file
+# per chat turn (ACK handshake), then the review. See docs/gitlab-ci.md.
 
 workflow:
   rules:
