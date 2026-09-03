@@ -42,6 +42,14 @@ class FileQueueTests(unittest.TestCase):
         self.assertEqual(claimed.id, second)
         self.assertIsNone(self.queue.claim())
 
+    def test_has_waiting_tracks_inbox(self) -> None:
+        self.assertFalse(self.queue.has_waiting())
+        job_id = self.queue.enqueue(mode="review", stem="review", prompt="patch")
+        self.assertTrue(self.queue.has_waiting())
+        self.assertIsNotNone(self.queue.claim())
+        self.assertFalse(self.queue.has_waiting())
+        self.assertTrue((self.queue.processing / f"{job_id}.json").is_file())
+
     def test_finish_and_wait(self) -> None:
         job_id = self.queue.enqueue(mode="review", stem="review", prompt="patch")
         claimed = self.queue.claim()

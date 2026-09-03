@@ -12,6 +12,7 @@ from critique_bot.config import BotConfig, Selectors
 from critique_bot.provider import ChatProvider, ChatSession
 from critique_bot.queue import FileQueue, Job, RateLimiter
 from critique_bot.worker import (
+    _browser_provider_loop,
     _execute_job,
     _run_job,
     _save_job_failure,
@@ -319,6 +320,148 @@ class SessionLoopTests(unittest.TestCase):
             )
         status_files = list((self.root / "results").glob("*/status.json"))
         self.assertEqual(len(status_files), 1)
+
+    def test_sequential_returns_when_queue_is_empty(self) -> None:
+        _sequential_loop(
+            FakeProvider("ok"),
+            _config(str(self.root)),
+            self.queue,
+            RateLimiter(0, 0),
+            lambda: False,
+        )
+
+    def test_sequential_drains_then_returns(self) -> None:
+        self.queue.enqueue(mode="review", stem="review", prompt="p")
+        provider = FakeProvider("ok")
+        _sequential_loop(
+            provider,
+            _config(str(self.root)),
+            self.queue,
+            RateLimiter(0, 0),
+            lambda: False,
+        )
+        status_files = list((self.root / "results").glob("*/status.json"))
+        self.assertEqual(len(status_files), 1)
+        self.assertFalse(self.queue.has_waiting())
+
+
+class BrowserProviderLoopTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue = FileQueue(self.root)
+        self.config = _config(str(self.root))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_idle_queue_does_not_open_browser(self) -> None:
+        opened = {"n": 0}
+
+        def fake_open(*args: object, **kwargs: object) -> FakeProvider:
+            opened["n"] += 1
+            raise AssertionError("browser should stay closed while the queue is empty")
+
+        slept = {"n": 0}
+
+        def stop() -> bool:
+            return slept["n"] >= 1
+
+        def fake_sleep(_seconds: float, _stop: object) -> None:
+            slept["n"] += 1
+
+        with patch("critique_bot.worker.open_provider", fake_open):
+            with patch("critique_bot.worker._interruptible_sleep", fake_sleep):
+                _browser_provider_loop(
+                    self.config,
+                    self.queue,
+                    RateLimiter(0, 0),
+                    stop,
+                    headed=True,
+                )
+        self.assertEqual(opened["n"], 0)
+
+    def test_opens_browser_for_work_then_stays_closed(self) -> None:
+        self.queue.enqueue(mode="review", stem="review", prompt="p")
+        provider = FakeProvider("ok")
+        opened: list[FakeProvider] = []
+
+        def fake_open(*args: object, **kwargs: object) -> FakeProvider:
+            opened.append(provider)
+            return provider
+
+        def stop() -> bool:
+            return bool(opened) and not self.queue.has_waiting()
+
+        with patch("critique_bot.worker.open_provider", fake_open):
+            _browser_provider_loop(
+                self.config,
+                self.queue,
+                RateLimiter(0, 0),
+                stop,
+                headed=True,
+            )
+        self.assertEqual(len(opened), 1)
+        status_files = list((self.root / "results").glob("*/status.json"))
+        self.assertEqual(len(status_files), 1)
+
+    def test_browser_error_does_not_relaunch_when_queue_is_empty(self) -> None:
+        self.queue.enqueue(mode="review", stem="review", prompt="p")
+
+        class ClosingBoom(FakeProvider):
+            def close(self) -> None:
+                raise BrowserError("chrome killed")
+
+        provider = ClosingBoom("ok")
+        opened: list[FakeProvider] = []
+
+        def fake_open(*args: object, **kwargs: object) -> FakeProvider:
+            opened.append(provider)
+            return provider
+
+        def stop() -> bool:
+            return len(opened) >= 1 and not self.queue.has_waiting()
+
+        with patch("critique_bot.worker.open_provider", fake_open):
+            with patch("critique_bot.worker._interruptible_sleep", lambda *_: None):
+                _browser_provider_loop(
+                    self.config,
+                    self.queue,
+                    RateLimiter(0, 0),
+                    stop,
+                    headed=True,
+                )
+        self.assertEqual(len(opened), 1)
+
+    def test_browser_error_relaunches_when_work_remains(self) -> None:
+        self.queue.enqueue(mode="review", stem="review", prompt="p")
+        opened: list[int] = []
+
+        class LaunchBoom:
+            def __enter__(self) -> FakeProvider:
+                raise BrowserError("launch failed")
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        def fake_open(*args: object, **kwargs: object) -> LaunchBoom:
+            opened.append(1)
+            return LaunchBoom()
+
+        def stop() -> bool:
+            return len(opened) >= 2
+
+        with patch("critique_bot.worker.open_provider", fake_open):
+            with patch("critique_bot.worker._interruptible_sleep", lambda *_: None):
+                _browser_provider_loop(
+                    self.config,
+                    self.queue,
+                    RateLimiter(0, 0),
+                    stop,
+                    headed=True,
+                )
+        self.assertEqual(len(opened), 2)
+        self.assertTrue(self.queue.has_waiting())
 
 
 class HeartbeatLoopSmokeTests(unittest.TestCase):

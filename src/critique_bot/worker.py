@@ -93,6 +93,27 @@ def _heartbeat_loop(queue: FileQueue, stop: Callable[[], bool]) -> None:
             time.sleep(0.25)
 
 
+def _interruptible_sleep(seconds: float, stop: Callable[[], bool]) -> None:
+    remaining = max(float(seconds), 0.0)
+    while remaining > 0 and not stop():
+        step = min(0.25, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
+def _wait_for_jobs(queue: FileQueue, stop: Callable[[], bool]) -> bool:
+    """Sleep until a job is waiting. Returns False when stop is set first."""
+    logged = False
+    while not stop():
+        if queue.has_waiting():
+            return True
+        if not logged:
+            log.info("queue empty; leaving the browser closed until a job arrives")
+            logged = True
+        _interruptible_sleep(POLL_SEC, stop)
+    return False
+
+
 def _browser_provider_loop(
     config: BotConfig,
     queue: FileQueue,
@@ -102,15 +123,23 @@ def _browser_provider_loop(
     headed: bool,
 ) -> None:
     while not stop():
+        if not _wait_for_jobs(queue, stop):
+            return
         try:
+            log.info("opening browser for queued work")
             with open_provider(config, headed=headed) as provider:
                 _session_loop(provider, config, queue, limiter, stop)
+            if not stop() and not queue.has_waiting():
+                log.info("queue drained; closing browser")
         except BrowserError as exc:
             log.error(f"browser error: {exc}")
             if stop():
                 break
+            if not queue.has_waiting():
+                log.info("queue empty after browser error; not relaunching")
+                continue
             log.info(f"restarting Edge in {BROWSER_RESTART_SEC:.0f}s")
-            time.sleep(BROWSER_RESTART_SEC)
+            _interruptible_sleep(BROWSER_RESTART_SEC, stop)
 
 
 def _session_loop(
@@ -143,8 +172,7 @@ def _sequential_loop(
     while not stop():
         job = queue.claim()
         if job is None:
-            time.sleep(POLL_SEC)
-            continue
+            return
         limiter.wait()
         _run_job(provider, config, queue, job, isolated=False)
 
@@ -194,7 +222,7 @@ def _parallel_loop(
                     if inflight:
                         wait(inflight, timeout=POLL_SEC, return_when=FIRST_COMPLETED)
                     else:
-                        time.sleep(POLL_SEC)
+                        return
                     continue
                 limiter.wait()
                 future = pool.submit(

@@ -286,6 +286,13 @@ class FileQueue:
         )
         return job_id
 
+    def has_waiting(self) -> bool:
+        """True when the inbox has at least one job file."""
+        try:
+            return next(self.inbox.glob("*.json"), None) is not None
+        except OSError:
+            return False
+
     def claim(self) -> Job | None:
         for path in sorted(self.inbox.glob("*.json")):
             dest = self.processing / path.name
