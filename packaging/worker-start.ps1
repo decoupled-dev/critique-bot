@@ -32,6 +32,8 @@ if ($parts -notcontains $binDir) {
     [Environment]::SetEnvironmentVariable("Path", ($binDir + ";" + $userPath).TrimEnd(";"), "User")
 }
 $env:Path = $binDir + ";" + $env:Path
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 Set-Location $InstallDir
 & $Exe worker --config $Config --logs

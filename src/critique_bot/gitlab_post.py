@@ -71,8 +71,25 @@ def post_review(
     comments = parse_inline_comments(review_md)
     local_lines = parse_diff_lines(patch) if patch else []
     remote_lines: list[DiffLine] | None = None
-    refs = _diff_refs(api_url, project_id, mr_iid, resolved_token)
     discussions = f"{gl.mr_api_url(api_url, project_id, mr_iid)}/discussions"
+    log.info(
+        "GitLab target "
+        + log.kv(
+            api=api_url,
+            project=project_id,
+            mr=mr_iid,
+            discussions=discussions,
+        )
+    )
+    refs = _diff_refs(api_url, project_id, mr_iid, resolved_token)
+    log.info(
+        "GitLab diff refs "
+        + log.kv(
+            base_sha=refs.get("base_sha"),
+            start_sha=refs.get("start_sha"),
+            head_sha=refs.get("head_sha"),
+        )
+    )
     inline = 0
     overview = 0
     skipped = 0
@@ -122,6 +139,7 @@ def post_review(
                 log.info(
                     "posted inline thread "
                     + log.kv(
+                        endpoint=discussions,
                         path=row.path,
                         line=row.new_line or row.old_line,
                     )
@@ -135,14 +153,14 @@ def post_review(
             skipped += 1
             log.warn(
                 "skipping comment; could not post thread "
-                + log.kv(path=comment.path, line=comment.line)
+                + log.kv(endpoint=discussions, path=comment.path, line=comment.line)
                 + f" {exc}"
             )
             continue
         overview += 1
         log.info(
             "posted overview thread "
-            + log.kv(path=comment.path, line=comment.line)
+            + log.kv(endpoint=discussions, path=comment.path, line=comment.line)
         )
 
     summary = strip_json_block(review_md)
@@ -159,10 +177,17 @@ def post_review(
                     risk=parse_review_risk(review_md),
                 ),
             )
-            log.info("posted merge request summary thread")
+            log.info(
+                "posted merge request summary thread "
+                + log.kv(endpoint=discussions)
+            )
         except GitLabPostError as exc:
             summary_ok = False
-            log.error(f"could not post summary thread: {exc}")
+            log.error(
+                "could not post summary thread "
+                + log.kv(endpoint=discussions)
+                + f" {exc}"
+            )
     print(
         f"gitlab-post: {inline} inline thread(s), {overview} overview thread(s), "
         f"{skipped} skipped, summary={'yes' if summary and summary_ok else 'no'}",
@@ -192,6 +217,7 @@ def _post_diff_thread(
             log.warn(
                 "inline thread rejected "
                 + log.kv(
+                    endpoint=url,
                     path=position.get("new_path"),
                     new_line=position.get("new_line"),
                     old_line=position.get("old_line"),

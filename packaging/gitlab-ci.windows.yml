@@ -75,6 +75,10 @@ variables:
   # not C:\critique-bot (pip/venv: ...\critique-bot\config.json).
   CRITIQUE_BIN: critique-bot
   CRITIQUE_CONFIG: 'C:\critique-bot\config.json'
+  # Belt and suspenders: the CLI also forces UTF-8 on stdout/stderr.
+  # Without this, a Windows charmap codec can crash print() on U+2011.
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
 
 review:
   stage: review

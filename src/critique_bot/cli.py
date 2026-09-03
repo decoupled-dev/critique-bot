@@ -409,8 +409,8 @@ _CHAT_HELP = (
 
 
 def _print_assistant(reply: str) -> None:
-    print(reply, flush=True)
-    print(flush=True)
+    log.print_safe(reply, flush=True)
+    log.print_safe(flush=True)
 
 
 def _read_chat_message() -> str | None:
@@ -759,6 +759,7 @@ SUBCOMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.configure_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in SUBCOMMANDS:
         command = argv[0]
@@ -883,7 +884,7 @@ def _main_submit(argv: list[str]) -> int:
         print(f"error: {message}", file=sys.stderr)
         return 1
     if body_path.is_file():
-        print(body_path.read_text(encoding="utf-8"), flush=True)
+        log.print_safe(body_path.read_text(encoding="utf-8"), flush=True)
     log.info(
         f"job {job_id} copied to {output_dir} "
         f"({status.stem}.md)"

@@ -5,10 +5,12 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+
+from critique_bot import log
 
 from critique_bot.gitlab_post import (
     GitLabPostError,
@@ -480,6 +482,49 @@ class PostReviewFlowTests(EnvIsolated):
         )
         self.assertNotIn('"comments"', summary[2]["body"])
 
+    def test_paragraph_summary_posts_inline(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(
+            "**Risk: Risky** Restore Binder identity in `src/pay.py:12` "
+            "after clearCallingIdentity.\n",
+            encoding="utf-8",
+        )
+        patch_path = self.folder / "diff.patch"
+        patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                code = post_review(
+                    review_file=review,
+                    patch_file=patch_path,
+                    project_id="9",
+                    mr_iid="4",
+                    api_url="https://gitlab.example/api/v4",
+                    token="pat",
+                )
+        self.assertEqual(code, 0)
+        self.assertIn("1 inline thread", buf.getvalue())
+        summary = next(
+            c
+            for c in calls
+            if c[0] == "POST" and isinstance(c[2], dict) and not c[2].get("position")
+        )
+        self.assertRegex(summary[2]["body"], r"1\. Restore Binder identity.*  \n")
+
 
 class DiffRefsTests(EnvIsolated):
     def test_from_versions_endpoint(self) -> None:
@@ -596,6 +641,135 @@ class RequestTests(EnvIsolated):
         self.assertEqual(data, {"ok": True})
         headers = opener.call_args[0][0].headers
         self.assertEqual(headers.get("Job-token") or headers.get("JOB-TOKEN"), "jobtok")
+
+    def test_http_error_includes_gitlab_message_and_logs_endpoint(self) -> None:
+        payload = json.dumps(
+            {"message": {"position": ["must be a valid line code"]}}
+        ).encode()
+        error = HTTPError(
+            "https://g/api/v4/projects/1/merge_requests/2/discussions",
+            400,
+            "Bad Request",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(payload),
+        )
+        log.configure(enabled=True)
+        err = io.StringIO()
+        try:
+            with patch("urllib.request.urlopen", side_effect=error):
+                with redirect_stderr(err):
+                    with self.assertRaises(GitLabPostError) as ctx:
+                        _request(
+                            "POST",
+                            "https://g/api/v4/projects/1/merge_requests/2/discussions",
+                            "tok",
+                            {
+                                "body": "coupon is not defined",
+                                "position": {
+                                    "new_path": "src/pay.py",
+                                    "new_line": 12,
+                                },
+                            },
+                        )
+        finally:
+            log.configure(enabled=False)
+        text = str(ctx.exception)
+        logs = err.getvalue()
+        self.assertIn("HTTP 400", text)
+        self.assertIn("must be a valid line code", text)
+        self.assertIn("POST", logs)
+        self.assertIn("/discussions", logs)
+        self.assertIn("400", logs)
+        self.assertIn("src/pay.py", logs)
+
+    def test_url_error_is_wrapped(self) -> None:
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=URLError("connection refused"),
+        ):
+            with self.assertRaises(GitLabPostError) as ctx:
+                _request("GET", "https://g/api/v4/x", "tok")
+        self.assertIn("failed", str(ctx.exception).lower())
+        self.assertIn("connection refused", str(ctx.exception))
+
+    def test_success_logs_status_and_note_url(self) -> None:
+        class Resp:
+            status = 201
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "id": "abc",
+                        "notes": [
+                            {
+                                "id": 44,
+                                "web_url": "https://g/x/-/merge_requests/2#note_44",
+                            }
+                        ],
+                    }
+                ).encode()
+
+            def __enter__(self) -> Resp:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        log.configure(enabled=True)
+        err = io.StringIO()
+        try:
+            with patch("urllib.request.urlopen", return_value=Resp()):
+                with redirect_stderr(err):
+                    data = _request(
+                        "POST",
+                        "https://g/api/v4/projects/1/merge_requests/2/discussions",
+                        "tok",
+                        {"body": "summary"},
+                    )
+        finally:
+            log.configure(enabled=False)
+        self.assertEqual(data["id"], "abc")
+        logs = err.getvalue()
+        self.assertIn("201", logs)
+        self.assertIn("/discussions", logs)
+        self.assertIn("note=44", logs)
+        self.assertIn("https://g/x/-/merge_requests/2#note_44", logs)
+
+
+class PostReviewLogTests(EnvIsolated):
+    def test_logs_discussions_endpoint(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text("summary only", encoding="utf-8")
+        log.configure(enabled=True)
+        err = io.StringIO()
+
+        def fake_request(method, url, token, payload=None):
+            if method == "GET":
+                return {
+                    "diff_refs": {
+                        "base_sha": "aaa",
+                        "start_sha": "bbb",
+                        "head_sha": "ccc",
+                    }
+                }
+            return {"id": "sum", "notes": [{"id": 9}]}
+
+        try:
+            with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    code = post_review(
+                        review_file=review,
+                        project_id="9",
+                        mr_iid="4",
+                        api_url="https://gitlab.example/api/v4",
+                        token="pat",
+                    )
+        finally:
+            log.configure(enabled=False)
+        self.assertEqual(code, 0)
+        logs = err.getvalue()
+        self.assertIn("/projects/9/merge_requests/4/discussions", logs)
+        self.assertIn("mr='4'", logs)
 
 
 if __name__ == "__main__":

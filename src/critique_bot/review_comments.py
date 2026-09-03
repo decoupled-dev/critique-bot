@@ -25,8 +25,10 @@ _PATH_LINE_SUFFIX_RE = re.compile(r"^(?P<path>.*?)(?::(?:L)?(?P<line>\d+))$")
 _COMMENT_LIST_KEYS = (
     "comments",
     "inline_comments",
+    "inlineComments",
     "findings",
     "review_comments",
+    "reviewComments",
     "issues",
     "inline",
 )
@@ -38,7 +40,11 @@ _TITLED_BODY_RE = re.compile(
     r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action)\*\*",
     re.I,
 )
-_INLINE_ITEM_RE = re.compile(r"(?:(?<=^)|(?<=\s))(\d{1,2})[.)]\s+")
+_INLINE_ITEM_RE = re.compile(
+    r"(?:(?<=^)|(?<=\s))(?:\*{1,2})?(\d{1,2})(?:\*{1,2})?[.)]\s+"
+)
+_BULLET_ITEM_RE = re.compile(r"(?:(?<=^)|(?<=\s))[-*•]\s+")
+_NUMBERED_ITEM_WINDOW = 600
 _ACTIONS_HEADER_RE = re.compile(
     r"\*{0,2}\s*\d+\s+actions?\s*\*{0,2}",
     re.I,
@@ -205,6 +211,10 @@ def comments_from_summary(
     if _NO_FINDINGS_RE.search(source):
         return []
     _, items = _extract_numbered_items(source)
+    if not items:
+        _, items = _extract_bullet_items(source)
+    if not items:
+        items = _items_from_file_mentions(source)
     if not items:
         return []
     rows = diff_lines or []
@@ -411,7 +421,29 @@ def format_gitlab_summary(
                 "_" + "; ".join(bits) + ". Reply on a thread to discuss._",
             ]
         )
-    return "\n".join(parts)
+    return apply_gitlab_line_breaks("\n".join(parts))
+
+
+def apply_gitlab_line_breaks(text: str) -> str:
+    """Keep GitLab from collapsing consecutive lines into one paragraph.
+
+    GitLab Flavored Markdown treats a single newline as a space unless the
+    line ends with two spaces (a hard break) or a blank line starts a new
+    block. Numbered actions must survive that, or the MR note looks like
+    one paragraph and inline mapping has nothing to hang on.
+    """
+    lines = (text or "").split("\n")
+    out: list[str] = []
+    for line in lines:
+        core = line.rstrip()
+        if not core:
+            out.append("")
+            continue
+        if core.endswith("  "):
+            out.append(core)
+            continue
+        out.append(core + "  ")
+    return "\n".join(out)
 
 
 def normalize_summary_markdown(text: str) -> str:
@@ -440,10 +472,19 @@ def normalize_summary_markdown(text: str) -> str:
             working[: header_match.start()] + working[header_match.end() :]
         ).strip()
     preamble, items = _extract_numbered_items(working)
+    if not items:
+        preamble, items = _extract_bullet_items(working)
+    if not items:
+        mention_items = _items_from_file_mentions(working)
+        if mention_items:
+            preamble = ""
+            items = mention_items
     if preamble:
         parts.append(preamble)
     if items:
-        parts.append("\n".join(f"{i}. {item}" for i, item in enumerate(items, start=1)))
+        parts.append(
+            "\n".join(f"{i}. {item}" for i, item in enumerate(items, start=1))
+        )
     return "\n\n".join(part for part in parts if part).strip()
 
 
@@ -537,8 +578,10 @@ def _comments_from_items(raw: list | None) -> list[InlineComment]:
         line = _comment_line(item, side)
         if line < 1:
             line = path_line
-        if not path or not body or line < 1:
+        if not path or not body:
             continue
+        if line < 1:
+            line = 1
         comments.append(
             InlineComment(
                 path=path, line=line, side=side, body=body, severity=severity
@@ -763,18 +806,61 @@ def _extract_numbered_items(text: str) -> tuple[str, list[str]]:
     if not text:
         return "", []
     found = list(_INLINE_ITEM_RE.finditer(text))
-    if found and found[0].group(1) == "1" and found[0].start() < 80:
-        preamble_text = text[: found[0].start()].strip()
-        items: list[str] = []
-        for i, match in enumerate(found):
-            start = match.end()
-            end = found[i + 1].start() if i + 1 < len(found) else len(text)
-            item = text[start:end].strip().rstrip(";").strip()
-            item = re.sub(r"[ \t]*\n[ \t]*", " ", item).strip()
-            if item:
-                items.append(item)
-        return preamble_text, items
-    return text, []
+    start = next((match for match in found if match.group(1) == "1"), None)
+    if start is None or start.start() > _NUMBERED_ITEM_WINDOW:
+        return text, []
+    chosen: list[re.Match[str]] = []
+    wanted = 1
+    for match in found:
+        if match.start() < start.start():
+            continue
+        number = int(match.group(1))
+        if number == wanted:
+            chosen.append(match)
+            wanted += 1
+    if not chosen:
+        return text, []
+    return text[: chosen[0].start()].strip(), _slice_items(text, chosen)
+
+
+def _extract_bullet_items(text: str) -> tuple[str, list[str]]:
+    text = text.strip()
+    if not text:
+        return "", []
+    found = list(_BULLET_ITEM_RE.finditer(text))
+    if not found:
+        return text, []
+    if found[0].start() > 80 and "\n" not in text[: found[0].start()]:
+        return text, []
+    items = _slice_items(text, found)
+    if not items:
+        return text, []
+    return text[: found[0].start()].strip(), items
+
+
+def _items_from_file_mentions(text: str) -> list[str]:
+    text = text.strip()
+    if not text or not _iter_file_mentions(text):
+        return []
+    sentences = [
+        part.strip().rstrip(";").strip()
+        for part in re.split(r"(?<=[.!?])\s+", text)
+        if part.strip()
+    ]
+    items = [sent for sent in sentences if _iter_file_mentions(sent)]
+    return items or [text]
+
+
+def _slice_items(text: str, matches: list[re.Match[str]]) -> list[str]:
+    items: list[str] = []
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        item = text[start:end].strip().rstrip(";").strip()
+        item = re.sub(r"[ \t]*\n[ \t]*", " ", item).strip()
+        if item:
+            items.append(item)
+    return items
 
 
 def _is_review_payload(obj: object) -> bool:

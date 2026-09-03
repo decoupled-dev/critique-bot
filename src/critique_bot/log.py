@@ -7,11 +7,54 @@ import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, TextIO
 
 _enabled = False
 _spinner_lock = threading.Lock()
 _active_spinner: _Spinner | None = None
+
+
+def configure_stdio() -> None:
+    """Force UTF-8 on stdout/stderr so Windows cp1252/charmap cannot crash the CLI.
+
+    GitLab Windows runners default to a charmap codec. Printing a review that
+    contains U+2011 (non-breaking hyphen) or other Unicode then raises
+    UnicodeEncodeError and fails the job before gitlab-post runs.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
+
+def print_safe(*args: Any, file: TextIO | None = None, **kwargs: Any) -> None:
+    """print() that never raises UnicodeEncodeError on a narrow console codec."""
+    target = sys.stdout if file is None else file
+    try:
+        print(*args, file=target, **kwargs)
+        return
+    except UnicodeEncodeError:
+        pass
+    encoding = getattr(target, "encoding", None) or "utf-8"
+    sep = str(kwargs.get("sep", " "))
+    end = str(kwargs.get("end", "\n"))
+    text = sep.join(str(arg) for arg in args) + end
+    raw = text.encode(encoding, errors="replace")
+    buffer = getattr(target, "buffer", None)
+    if buffer is not None:
+        buffer.write(raw)
+        if kwargs.get("flush"):
+            buffer.flush()
+        return
+    target.write(raw.decode(encoding, errors="replace"))
+    if kwargs.get("flush"):
+        target.flush()
 
 
 def configure(*, enabled: bool) -> None:
@@ -35,7 +78,7 @@ def _write(level: str, message: str) -> None:
         spinner = _active_spinner
         if spinner is not None:
             spinner.clear()
-        print(line, file=sys.stderr, flush=True)
+        print_safe(line, file=sys.stderr, flush=True)
         if spinner is not None:
             spinner.render()
 

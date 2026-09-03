@@ -103,8 +103,9 @@ class ReviewCommentTests(unittest.TestCase):
                 }
             )
         )
-        self.assertEqual(len(comments), 1)
-        self.assertEqual(comments[0].body, "ok")
+        self.assertEqual(len(comments), 3)
+        self.assertEqual([c.body for c in comments], ["z", "z", "ok"])
+        self.assertEqual([c.line for c in comments], [1, 1, 2])
 
     def test_max_inline_comments(self) -> None:
         from critique_bot.review_comments import MAX_INLINE_COMMENTS
@@ -462,7 +463,9 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertIn("\n\n1. ", "\n\n" + body)
         self.assertRegex(body, r"1\. Restore Binder identity.*\n2\. Add a test")
         formatted = format_gitlab_summary(paragraph, risk="risky")
-        self.assertIn("\n1. Restore Binder identity in Foo.java.\n2. ", formatted)
+        self.assertRegex(
+            formatted, r"1\. Restore Binder identity in Foo\.java\.\s*\n2\. "
+        )
         self.assertIn("### AAOS system-app review", formatted)
 
     def test_normalize_summary_adds_blank_line_before_list(self) -> None:
@@ -472,7 +475,10 @@ class ReviewCommentTests(unittest.TestCase):
             "**2 actions**\n1. Restore identity.\n2. Add a test.",
             risk="risky",
         )
-        self.assertIn("**2 actions**\n\n1. Restore identity.\n2. Add a test.", formatted)
+        self.assertRegex(
+            formatted,
+            r"\*\*2 actions\*\*\s*\n\n1\. Restore identity\.\s*\n2\. Add a test",
+        )
 
     def test_unfenced_pretty_json_after_markdown(self) -> None:
         text = (
@@ -592,6 +598,65 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertEqual(len(comments), 1)
         self.assertEqual(comments[0].path, "src/pay.py")
         self.assertEqual(comments[0].line, 12)
+
+    def test_normalize_long_preamble_and_api_version_dot(self) -> None:
+        from critique_bot.review_comments import normalize_summary_markdown
+
+        paragraph = (
+            "**Risk: Moderate risk** This still has to run on Android 12. "
+            "1. Guard the Android 15 API in `DisplayHelper.java:31`. "
+            "2. Add an API-level test in `DisplayHelperTest.java:10`."
+        )
+        body = normalize_summary_markdown(paragraph)
+        self.assertRegex(
+            body,
+            r"1\. Guard the Android 15 API in `DisplayHelper\.java:31`\.\s*\n"
+            r"2\. Add an API-level test",
+        )
+
+    def test_normalize_file_mention_paragraph_becomes_list(self) -> None:
+        from critique_bot.review_comments import (
+            comments_from_summary,
+            format_gitlab_summary,
+            normalize_summary_markdown,
+        )
+
+        paragraph = (
+            "**Risk: Risky** Restore Binder identity in `src/pay.py:12` after "
+            "clearCallingIdentity. Add a test in `src/pay.py:11` that a 3p "
+            "caller is rejected."
+        )
+        body = normalize_summary_markdown(paragraph)
+        self.assertIn("1. Restore Binder identity in `src/pay.py:12`", body)
+        self.assertIn("2. Add a test in `src/pay.py:11`", body)
+        comments = comments_from_summary(paragraph, parse_diff_lines(PATCH))
+        self.assertEqual(len(comments), 2)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+        formatted = format_gitlab_summary(paragraph, risk="risky")
+        self.assertRegex(
+            formatted,
+            r"1\. Restore Binder identity in `src/pay\.py:12`.*  \n2\. ",
+        )
+
+    def test_gitlab_summary_uses_two_space_hard_breaks(self) -> None:
+        from critique_bot.review_comments import format_gitlab_summary
+
+        formatted = format_gitlab_summary(
+            "**2 actions**\n1. Restore identity.\n2. Add a test.",
+            risk="risky",
+        )
+        lines = formatted.split("\n")
+        action_one = next(line for line in lines if line.startswith("1. "))
+        self.assertTrue(action_one.endswith("  "), action_one)
+
+    def test_json_comment_without_line_still_parses(self) -> None:
+        comments = parse_inline_comments(
+            '{"comments":[{"path":"src/pay.py","body":"coupon is not defined"}]}'
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 1)
 
 
 if __name__ == "__main__":

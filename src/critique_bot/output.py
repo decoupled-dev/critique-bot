@@ -36,7 +36,7 @@ def write_output(
         )
     )
     if print_body:
-        print(body, flush=True)
+        log.print_safe(body, flush=True)
 
 
 def write_review(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import patch
@@ -76,6 +77,46 @@ class LogHelperTests(unittest.TestCase):
             err.isatty.return_value = False
             with log.loading("wait"):
                 pass
+
+    def test_print_safe_survives_charmap_codec(self) -> None:
+        class CharmapStream:
+            encoding = "cp1252"
+
+            def __init__(self) -> None:
+                self.chunks: list[str] = []
+
+            def write(self, text: str) -> int:
+                text.encode("cp1252")
+                self.chunks.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                return None
+
+        stream = CharmapStream()
+        hyphen = "risk: non\u2011blocking path"
+        with self.assertRaises(UnicodeEncodeError):
+            stream.write(hyphen)
+        log.print_safe(hyphen, file=stream, flush=True)
+        self.assertTrue(stream.chunks)
+        self.assertNotIn("\u2011", "".join(stream.chunks))
+
+    def test_configure_stdio_utf8_replace(self) -> None:
+        buf = io.BytesIO()
+        wrapper = io.TextIOWrapper(buf, encoding="cp1252", errors="strict")
+        original_out = sys.stdout
+        original_err = sys.stderr
+        sys.stdout = wrapper
+        try:
+            log.configure_stdio()
+            wrapper.write("non\u2011breaking")
+            wrapper.flush()
+            data = buf.getvalue()
+        finally:
+            sys.stdout = original_out
+            sys.stderr = original_err
+            wrapper.close()
+        self.assertIn(b"non", data)
 
 
 if __name__ == "__main__":

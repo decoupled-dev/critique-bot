@@ -181,21 +181,164 @@ def request(
         headers = {"JOB-TOKEN": token}
     body = None
     if payload is not None:
-        headers["Content-Type"] = "application/json"
-        body = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    extra = _payload_log(payload)
+    log.info(f"GitLab {method} {_endpoint_label(url)} {url}" + extra)
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req) as resp:
+            status = _http_status(resp)
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:500]
+        detail = _http_error_detail(exc)
+        log.error(
+            f"GitLab {exc.code} {method} {_endpoint_label(url)} {url}: {detail}"
+        )
         raise GitLabError(f"HTTP {exc.code} {method} {url}: {detail}") from exc
-    if not raw:
-        return None
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        log.error(f"GitLab {method} {_endpoint_label(url)} {url} failed: {reason}")
+        raise GitLabError(f"{method} {url} failed: {reason}") from exc
+    result = None
+    if raw:
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            result = None
+    summary = _response_log(result)
+    log.info(
+        f"GitLab {status} {method} {_endpoint_label(url)} {url}"
+        + (f" {summary}" if summary else "")
+    )
+    return result
+
+
+def _endpoint_label(url: str) -> str:
+    path = urllib.parse.urlparse(url).path.rstrip("/")
+    if path.endswith("/discussions"):
+        return "discussions"
+    if path.endswith("/versions"):
+        return "versions"
+    if "/diffs" in path:
+        return "diffs"
+    if path.endswith("/changes"):
+        return "changes"
+    if "/merge_requests/" in path:
+        return "merge_request"
+    return "api"
+
+
+def _payload_log(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    parts: list[str] = []
+    position = payload.get("position")
+    body = payload.get("body")
+    if isinstance(position, dict):
+        parts.append("inline")
+        parts.append(
+            log.kv(
+                path=position.get("new_path") or position.get("old_path"),
+                new_line=position.get("new_line"),
+                old_line=position.get("old_line"),
+            )
+        )
+    elif isinstance(body, str):
+        parts.append("overview")
+    if isinstance(body, str):
+        parts.append(f"chars={len(body)}")
+        preview = log.preview(body, 80)
+        if preview:
+            parts.append(f"body={preview!r}")
+    packed = " ".join(part for part in parts if part)
+    return f" {packed}" if packed else ""
+
+
+def _response_log(data: Any) -> str:
+    if isinstance(data, list):
+        return f"items={len(data)}"
+    if not isinstance(data, dict):
+        return ""
+    parts: list[str] = []
+    if data.get("id") is not None:
+        parts.append(f"id={data['id']}")
+    if data.get("iid") is not None:
+        parts.append(f"iid={data['iid']}")
+    if data.get("web_url"):
+        parts.append(f"url={data['web_url']}")
+    notes = data.get("notes")
+    if isinstance(notes, list) and notes and isinstance(notes[0], dict):
+        note = notes[0]
+        if note.get("id") is not None:
+            parts.append(f"note={note['id']}")
+        if note.get("web_url"):
+            parts.append(f"note_url={note['web_url']}")
+    return " ".join(parts)
+
+
+def _http_status(resp: Any) -> str:
+    status = getattr(resp, "status", None)
+    if status is None:
+        status = getattr(resp, "code", None)
+    if status is None and hasattr(resp, "getcode"):
+        try:
+            status = resp.getcode()
+        except Exception:
+            status = None
+    return str(status) if status is not None else "ok"
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    reason = str(getattr(exc, "reason", "") or "").strip()
     try:
-        return json.loads(raw)
+        raw = exc.read().decode("utf-8", "replace")[:1500]
+    except Exception:
+        raw = ""
+    parsed = _gitlab_error_message(raw)
+    bits = [reason] if reason else []
+    retry = ""
+    headers = getattr(exc, "headers", None)
+    if exc.code == 429 and headers is not None:
+        retry = str(headers.get("Retry-After") or headers.get("retry-after") or "")
+        if retry:
+            bits.append(f"Retry-After={retry}")
+    if parsed:
+        bits.append(parsed)
+    elif raw.strip():
+        bits.append(raw.strip())
+    return " | ".join(bit for bit in bits if bit) or f"HTTP {exc.code}"
+
+
+def _gitlab_error_message(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        obj = json.loads(text)
     except json.JSONDecodeError:
-        return None
+        return text[:500]
+    if not isinstance(obj, dict):
+        return text[:500]
+    parts: list[str] = []
+    for key in ("error_code", "error", "error_description", "message"):
+        value = obj.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, dict):
+            nested = []
+            for name, item in value.items():
+                if isinstance(item, list):
+                    nested.append(f"{name}: {', '.join(str(v) for v in item)}")
+                else:
+                    nested.append(f"{name}: {item}")
+            if nested:
+                parts.append("; ".join(nested))
+        elif isinstance(value, list):
+            parts.append(", ".join(str(item) for item in value))
+        else:
+            parts.append(str(value))
+    return " | ".join(parts)[:500]
 
 
 def refs_from_versions(versions: Any) -> dict[str, str] | None:
