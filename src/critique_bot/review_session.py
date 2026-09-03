@@ -19,7 +19,6 @@ from critique_bot.patch import (
     finalize_prompt,
     format_sanitize_note,
     sanitize_one,
-    skip_changed_file_bodies,
 )
 
 FILES_ALREADY_SENT = (
@@ -27,14 +26,7 @@ FILES_ALREADY_SENT = (
     "(one file per turn). Use those HEAD line numbers for comments[].line "
     'on side: "new".'
 )
-PATCH_ONLY_FILES = (
-    "This merge request changes too many files to paste HEAD bodies. "
-    "Review the unified diff below. Use patch line numbers for comments[].line "
-    'on side: "new".'
-)
 REVIEW_NOW = "REVIEW NOW"
-#: ChatGPT's web UI stops producing replies after too many large pastes.
-MAX_STAGED_FILES = 8
 
 
 @dataclass(frozen=True)
@@ -95,32 +87,27 @@ def split_review_payload(
 ) -> PromptPayload:
     """Return prompt + files. ``files`` is empty when one-shot is enough."""
     path_count = changed_path_count or len(file_attachments)
-    if skip_changed_file_bodies(path_count, limits.patch_only_file_count):
-        log.info(
-            f"{path_count} changed files "
-            f"(>= {limits.patch_only_file_count}); sending the patch only"
-        )
-        one_shot = compose_prompt(
-            template, patch_body, mr_context, files=PATCH_ONLY_FILES
-        )
-        return PromptPayload(prompt=finalize_prompt(one_shot, limits, stats))
     files_body = (
         format_attachments(file_attachments, named=True) if file_attachments else ""
     )
     one_shot = compose_prompt(template, patch_body, mr_context, files=files_body)
     if not file_attachments or one_shot_fits(one_shot, limits, stats):
+        if file_attachments:
+            log.info(
+                f"inlining {len(file_attachments)} changed file(s) "
+                f"({path_count} path(s) in the patch)"
+            )
+        elif path_count:
+            log.info(
+                f"{path_count} changed path(s) in the patch but no HEAD "
+                "bodies to attach (deleted, binary, or markdown)"
+            )
         return PromptPayload(prompt=finalize_prompt(one_shot, limits, stats))
     staged = compose_prompt(
         template, patch_body, mr_context, files=FILES_ALREADY_SENT
     )
     prompt = finalize_prompt(staged, limits, stats)
-    kept = file_attachments[:MAX_STAGED_FILES]
-    if len(file_attachments) > MAX_STAGED_FILES:
-        log.info(
-            f"staging {len(kept)} of {len(file_attachments)} file(s) "
-            f"(max {MAX_STAGED_FILES} chat turns)"
-        )
-    files = {name: body for name, body in kept}
+    files = {name: body for name, body in file_attachments}
     log.info(
         f"review overflow ({len(one_shot)} chars); "
         f"staging {len(files)} file(s) across chat turns"

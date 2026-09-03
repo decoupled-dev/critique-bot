@@ -156,7 +156,6 @@ def _collect_attachments(
                 max_file_chars=limits.max_file_chars,
                 max_files=limits.max_files,
                 max_read_bytes=per_read,
-                patch_only_file_count=limits.patch_only_file_count,
             )
         return [_read_text_file(path, per_file_limits) for path in paths[:open_cap]]
     if not allow_stdin:
@@ -252,7 +251,6 @@ def _build_review_prompt(
     config=None,
 ) -> PromptPayload:
     repo_dir = Path(getattr(args, "repo_dir", None) or ".")
-    include_changed = bool(getattr(args, "include_changed_files", False))
     patch_file = args.patch_file
     patch_input: LoadedInput | None = None
     extra_loaded: list[LoadedInput] = []
@@ -267,7 +265,6 @@ def _build_review_prompt(
             raise ConfigError(str(exc)) from exc
         patch_input = LoadedInput(name=str(write_to), text=text)
         patch_file = str(write_to)
-        include_changed = True
 
     if patch_input is None:
         loaded = _collect_attachments(
@@ -307,13 +304,12 @@ def _build_review_prompt(
         raise ConfigError("review mode needs a patch")
 
     context_inputs = list(extra_loaded)
-    if include_changed:
-        seen = {item.name for item in context_inputs}
-        for item in load_changed_files(repo_dir, patch_input.text, limits):
-            if item.name in seen:
-                continue
-            context_inputs.append(item)
-            seen.add(item.name)
+    seen = {item.name for item in context_inputs}
+    for item in load_changed_files(repo_dir, patch_input.text, limits):
+        if item.name in seen:
+            continue
+        context_inputs.append(item)
+        seen.add(item.name)
 
     template_path = (
         Path(args.prompt_template)
@@ -590,9 +586,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-changed-files",
         action="store_true",
         help=(
-            "load HEAD contents of paths in the patch from --repo-dir "
-            "(inlined when they fit one paste; otherwise sent one per chat "
-            "turn). Implied when CI builds the workspace diff"
+            "load HEAD contents of paths in the patch from --repo-dir. "
+            "Review mode always does this; the flag is kept for older scripts"
         ),
     )
     parser.add_argument(
@@ -657,7 +652,6 @@ def _log_config(config) -> None:
             max_prompt_chars=config.max_prompt_chars,
             max_file_chars=config.max_file_chars,
             max_files=config.max_files,
-            patch_only_file_count=config.patch_only_file_count,
             max_read_bytes=config.max_read_bytes,
             user_data_dir=config.user_data_dir,
             cdp_url=config.cdp_url,

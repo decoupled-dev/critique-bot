@@ -18,7 +18,6 @@
   "max_prompt_chars": 120000,
   "max_file_chars": 32000,
   "max_files": 80,
-  "patch_only_file_count": 10,
   "max_read_bytes": 16000000,
   "user_data_dir": ".edge-profile",
   "cdp_url": "",

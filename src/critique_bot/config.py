@@ -10,14 +10,12 @@ from critique_bot import log
 from critique_bot.patch import (
     ABSOLUTE_MAX_FILE_CHARS,
     ABSOLUTE_MAX_FILES,
-    ABSOLUTE_MAX_PATCH_ONLY_FILE_COUNT,
     ABSOLUTE_MAX_PROMPT_CHARS,
     ABSOLUTE_MAX_READ_BYTES,
     DEFAULT_MAX_FILE_CHARS,
     DEFAULT_MAX_FILES,
     DEFAULT_MAX_PROMPT_CHARS,
     DEFAULT_MAX_READ_BYTES,
-    DEFAULT_PATCH_ONLY_FILE_COUNT,
     InputLimits,
 )
 
@@ -99,7 +97,6 @@ class BotConfig:
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
-    patch_only_file_count: int = DEFAULT_PATCH_ONLY_FILE_COUNT
     backend: str = BACKEND_BROWSER
     gitlab: GitLabConfig = GitLabConfig()
 
@@ -110,7 +107,6 @@ class BotConfig:
             max_file_chars=self.max_file_chars,
             max_files=self.max_files,
             max_read_bytes=self.max_read_bytes,
-            patch_only_file_count=self.patch_only_file_count,
         )
 
     @property
@@ -345,12 +341,6 @@ def load_config(
             raw.get("max_read_bytes"),
             DEFAULT_MAX_READ_BYTES,
             ABSOLUTE_MAX_READ_BYTES,
-        ),
-        patch_only_file_count=_clamped_positive_int(
-            "patch_only_file_count",
-            raw.get("patch_only_file_count"),
-            DEFAULT_PATCH_ONLY_FILE_COUNT,
-            ABSOLUTE_MAX_PATCH_ONLY_FILE_COUNT,
         ),
         backend=BACKEND_BROWSER,
         gitlab=_load_gitlab(raw),

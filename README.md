@@ -71,7 +71,7 @@ Wraps the patch in [`prompts/review.txt`](prompts/review.txt) and writes `{outpu
 python -m critique_bot --config config.json --patch-file diff.patch --output-dir ./out
 ```
 
-`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` required; `{files}` is HEAD contents of changed files when they fit one paste). `--include-changed-files` loads those files from `--repo-dir` and inlines them, or sends at most 8 per chat turn (next file on ACK) if the prompt would overflow. `patch_only_file_count` or more changed files (default 10): patch only.
+`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` required; `{files}` is HEAD contents of changed files when they fit one paste). Review mode always loads those files from `--repo-dir` (or the CI checkout) and inlines them, or sends them one per chat turn (next file on ACK) if the prompt would overflow.
 
 ### General
 

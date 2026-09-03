@@ -68,6 +68,11 @@ def post_review(
         raise GitLabPostError(f"review file is empty: {review_file}")
     patch = patch_file.read_text(encoding="utf-8") if patch_file and patch_file.is_file() else ""
     comments = parse_inline_comments(review_md)
+    if not comments and _looks_like_review_json(review_md):
+        log.warn(
+            "review contains JSON but no inline comments could be parsed; "
+            "posting the summary only"
+        )
     local_lines = parse_diff_lines(patch) if patch else []
     remote_lines: list[DiffLine] | None = None
     refs = _diff_refs(api_url, project_id, mr_iid, resolved_token)
@@ -165,8 +170,7 @@ def _post_diff_thread(
     head_sha, old_path, new_path, position_type, and new_line (or old_line).
     Some GitLab versions also want line_range; retry with that if needed.
     """
-    for with_range in (False, True):
-        position = discussion_position(refs, row, with_line_range=with_range)
+    for position in _position_variants(refs, row):
         try:
             _post_discussion(url, token, body, position=position)
             return True
@@ -177,11 +181,40 @@ def _post_diff_thread(
                     path=position.get("new_path"),
                     new_line=position.get("new_line"),
                     old_line=position.get("old_line"),
-                    line_range=bool(with_range),
+                    line_range=bool(position.get("line_range")),
                 )
                 + f" {exc}"
             )
     return False
+
+
+def _position_variants(refs: dict[str, str], row: DiffLine) -> list[dict[str, Any]]:
+    variants = [
+        discussion_position(refs, row, with_line_range=False),
+        discussion_position(refs, row, with_line_range=True),
+    ]
+    base = variants[0]
+    if "old_line" in base and "new_line" in base:
+        slim = dict(base)
+        slim.pop("old_line", None)
+        variants.append(slim)
+        ranged = dict(slim)
+        ranged["line_range"] = variants[1]["line_range"]
+        variants.append(ranged)
+    seen: list[dict[str, Any]] = []
+    for item in variants:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _looks_like_review_json(review_md: str) -> bool:
+    text = review_md or ""
+    if '"path"' not in text and '"file"' not in text:
+        return False
+    if "```json" in text.lower():
+        return True
+    return any(f'"{key}"' in text for key in ("comments", "inline_comments", "findings"))
 
 
 def _post_discussion(

@@ -5,8 +5,6 @@ import unittest
 from critique_bot.patch import InputLimits, SanitizeStats
 from critique_bot.review_session import (
     FILES_ALREADY_SENT,
-    MAX_STAGED_FILES,
-    PATCH_ONLY_FILES,
     REVIEW_NOW,
     PromptPayload,
     format_file_turn,
@@ -73,10 +71,8 @@ class FitAndSplitTests(unittest.TestCase):
         self.assertNotIn("int x;", payload.prompt)
         self.assertIn("+hi", payload.prompt)
 
-    def test_overflow_caps_staged_file_turns(self) -> None:
-        limits = InputLimits(
-            max_prompt_chars=200, max_file_chars=2_000, patch_only_file_count=80
-        )
+    def test_overflow_stages_every_changed_file(self) -> None:
+        limits = InputLimits(max_prompt_chars=200, max_file_chars=2_000)
         files = [(f"f{i}.java", "class X {}\n" * 5) for i in range(12)]
         payload = split_review_payload(
             "FILES\n{files}\nPATCH\n{patch}\n",
@@ -86,11 +82,11 @@ class FitAndSplitTests(unittest.TestCase):
             limits,
             SanitizeStats(),
         )
-        self.assertEqual(len(payload.files), MAX_STAGED_FILES)
-        self.assertEqual(list(payload.files), [f"f{i}.java" for i in range(MAX_STAGED_FILES)])
-        self.assertNotIn("f8.java", payload.files)
+        self.assertEqual(len(payload.files), 12)
+        self.assertEqual(list(payload.files), [f"f{i}.java" for i in range(12)])
+        self.assertIn(FILES_ALREADY_SENT, payload.prompt)
 
-    def test_many_changed_files_are_patch_only(self) -> None:
+    def test_many_changed_files_still_include_bodies(self) -> None:
         limits = InputLimits(max_prompt_chars=400, max_file_chars=2_000)
         files = [(f"f{i}.java", "class X {}\n") for i in range(3)]
         payload = split_review_payload(
@@ -103,28 +99,9 @@ class FitAndSplitTests(unittest.TestCase):
             changed_path_count=10,
         )
         self.assertEqual(payload.files, {})
-        self.assertIn(PATCH_ONLY_FILES, payload.prompt)
-        self.assertIn("+hi", payload.prompt)
-        self.assertNotIn("class X {}", payload.prompt)
+        self.assertIn("class X {}", payload.prompt)
+        self.assertIn("--- file: f0.java ---", payload.prompt)
         self.assertNotIn(FILES_ALREADY_SENT, payload.prompt)
-
-    def test_patch_only_threshold_is_configurable(self) -> None:
-        limits = InputLimits(
-            max_prompt_chars=200,
-            max_file_chars=2_000,
-            patch_only_file_count=20,
-        )
-        files = [(f"f{i}.java", "class X {}\n" * 5) for i in range(12)]
-        payload = split_review_payload(
-            "FILES\n{files}\nPATCH\n{patch}\n",
-            "+hi\n",
-            "",
-            files,
-            limits,
-            SanitizeStats(),
-            changed_path_count=12,
-        )
-        self.assertEqual(len(payload.files), MAX_STAGED_FILES)
 
 
 class SanitizeContextFilesTests(unittest.TestCase):

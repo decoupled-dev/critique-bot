@@ -18,7 +18,6 @@ from critique_bot.patch import (
     context_file_priority,
     load_path,
     looks_binary_path,
-    skip_changed_file_bodies,
     skip_file_context,
 )
 
@@ -116,12 +115,6 @@ def load_changed_files(
     """Read HEAD contents of text files listed in ``patch`` from ``repo_dir``."""
     repo = Path(repo_dir)
     ordered = sorted(changed_file_paths(patch), key=context_file_priority)
-    if skip_changed_file_bodies(len(ordered), limits.patch_only_file_count):
-        log.info(
-            f"{len(ordered)} changed files "
-            f"(>= {limits.patch_only_file_count}); sending the patch only"
-        )
-        return []
     loaded: list[LoadedInput] = []
     for path in ordered:
         if looks_binary_path(path) or skip_file_context(path):

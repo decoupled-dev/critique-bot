@@ -258,7 +258,6 @@ class BuildPromptTests(unittest.TestCase):
             prompt=None,
             prompt_file=None,
             prompt_template=str(template),
-            include_changed_files=True,
             repo_dir=str(self.folder),
             write_patch=None,
         )
@@ -294,7 +293,6 @@ class BuildPromptTests(unittest.TestCase):
             prompt=None,
             prompt_file=None,
             prompt_template=str(template),
-            include_changed_files=True,
             repo_dir=str(self.folder),
             write_patch=None,
         )

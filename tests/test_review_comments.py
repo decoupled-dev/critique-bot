@@ -398,6 +398,82 @@ class ReviewCommentTests(unittest.TestCase):
         )
         self.assertEqual(nested.path, "src/pay.py")
 
+    def test_trailing_comma_and_smart_quotes(self) -> None:
+        text = (
+            "**Risk: Risky**\n1. Fix it.\n\n"
+            "```json\n"
+            '{“risk”: “risky”, “comments”: [{'
+            '“path”: “src/pay.py”, “line”: 12, “body”: “coupon is not defined”,'
+            '}]}\n'
+            "```\n"
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+        self.assertEqual(comments[0].line, 12)
+
+    def test_unescaped_newline_in_body(self) -> None:
+        text = (
+            '```json\n{"comments":[{"path":"src/pay.py","line":12,"body":"'
+            "**Must fix**\n\nrestore identity"
+            '"}]}\n```\n'
+        )
+        comments = parse_inline_comments(text)
+        self.assertEqual(len(comments), 1)
+        self.assertIn("restore identity", comments[0].body)
+
+    def test_top_level_array_and_line_as_string(self) -> None:
+        comments = parse_inline_comments(
+            '[{"path":"src/pay.py","line":"L12","message":"x"}]'
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].line, 12)
+        self.assertEqual(comments[0].body, "x")
+
+    def test_truncated_json_is_closed(self) -> None:
+        comments = parse_inline_comments(
+            '{"comments":[{"path":"src/pay.py","line":12,"body":"x"}]'
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].path, "src/pay.py")
+
+    def test_comments_object_instead_of_list(self) -> None:
+        comments = parse_inline_comments(
+            '{"comments":{"path":"src/pay.py","line":12,"body":"x"}}'
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].body, "x")
+
+    def test_normalize_summary_splits_paragraph(self) -> None:
+        from critique_bot.review_comments import (
+            format_gitlab_summary,
+            normalize_summary_markdown,
+        )
+
+        paragraph = (
+            "**Risk: Risky** **2 actions** 1. Restore Binder identity in Foo.java. "
+            "2. Add a test that a 3p caller is rejected."
+        )
+        body = normalize_summary_markdown(paragraph)
+        self.assertIn("**Risk: Risky**", body)
+        self.assertIn("**2 actions**", body)
+        self.assertIn("1. Restore Binder identity in Foo.java.", body)
+        self.assertIn("2. Add a test that a 3p caller is rejected.", body)
+        self.assertIn("\n\n1. ", "\n\n" + body)
+        self.assertRegex(body, r"1\. Restore Binder identity.*\n2\. Add a test")
+        formatted = format_gitlab_summary(paragraph, risk="risky")
+        self.assertIn("\n1. Restore Binder identity in Foo.java.\n2. ", formatted)
+        self.assertIn("### AAOS system-app review", formatted)
+
+    def test_normalize_summary_adds_blank_line_before_list(self) -> None:
+        from critique_bot.review_comments import format_gitlab_summary
+
+        formatted = format_gitlab_summary(
+            "**2 actions**\n1. Restore identity.\n2. Add a test.",
+            risk="risky",
+        )
+        self.assertIn("**2 actions**\n\n1. Restore identity.\n2. Add a test.", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()

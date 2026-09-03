@@ -8,16 +8,31 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.S | re.I)
-_FENCE_PREFIX_RE = re.compile(r"```(?:json)?[^\n]*\n?\s*$", re.I)
+_JSON_FENCE_RE = re.compile(r"```(?:json|javascript|js)?[^\n]*\r?\n?(.*?)```", re.S | re.I)
+_FENCE_PREFIX_RE = re.compile(r"```(?:json|javascript|js)?[^\n]*\n?\s*$", re.I)
 _FENCE_SUFFIX_RE = re.compile(r"\s*```[ \t]*")
-_COMMENT_LIST_KEYS = ("comments", "inline_comments", "findings", "review_comments")
+_COMMENT_LIST_KEYS = (
+    "comments",
+    "inline_comments",
+    "findings",
+    "review_comments",
+    "issues",
+    "inline",
+)
+_PATH_KEYS = ("path", "file", "file_path", "filename", "filepath", "new_path")
+_LINE_KEYS = ("line", "new_line", "old_line", "line_number", "lineno", "start_line")
 _BODY_KEYS = ("body", "message", "comment", "text", "content")
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _TITLED_BODY_RE = re.compile(
     r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action)\*\*",
     re.I,
 )
+_INLINE_ITEM_RE = re.compile(r"(?:(?<=^)|(?<=\s))(\d{1,2})[.)]\s+")
+_ACTIONS_HEADER_RE = re.compile(
+    r"\*{0,2}\s*\d+\s+actions?\s*\*{0,2}",
+    re.I,
+)
+_LINE_NUMBER_RE = re.compile(r"(\d+)")
 MAX_INLINE_COMMENTS = 12
 MAX_INLINE_BODY_CHARS = 700
 MAX_SUMMARY_CHARS = 2000
@@ -161,19 +176,14 @@ def parse_inline_comments(review_md: str) -> list[InlineComment]:
     payload = _extract_json(review_md)
     if payload is None:
         return []
-    raw: Any = None
-    for key in _COMMENT_LIST_KEYS:
-        value = payload.get(key)
-        if isinstance(value, list):
-            raw = value
-            break
+    raw = _comment_list(payload)
     if not isinstance(raw, list):
         return []
     comments: list[InlineComment] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        path = _clean_path(str(item.get("path") or item.get("file") or ""))
+        path = _comment_path(item)
         body = ""
         for key in _BODY_KEYS:
             value = item.get(key)
@@ -190,12 +200,7 @@ def parse_inline_comments(review_md: str) -> list[InlineComment]:
             side = "old"
         if side not in {"new", "old"}:
             side = "new"
-        try:
-            line = int(
-                item.get("line") or item.get("new_line") or item.get("old_line") or 0
-            )
-        except (TypeError, ValueError):
-            continue
+        line = _comment_line(item, side)
         if not path or not body or line < 1:
             continue
         comments.append(
@@ -370,6 +375,7 @@ def format_gitlab_summary(
     risk: str = "",
 ) -> str:
     text = truncate_markdown(summary.strip(), MAX_SUMMARY_CHARS)
+    text = normalize_summary_markdown(text)
     if risk:
         text = _RISK_LINE_RE.sub("", text, count=1).strip()
     parts = ["### AAOS system-app review", ""]
@@ -381,7 +387,8 @@ def format_gitlab_summary(
         if emoji:
             heading = f"{emoji} {heading}"
         parts.extend([heading, ""])
-    parts.append(text)
+    if text:
+        parts.append(text)
     bits: list[str] = []
     if inline_count:
         bits.append(f"{inline_count} inline thread(s) on the **Changes** tab")
@@ -398,6 +405,39 @@ def format_gitlab_summary(
             ]
         )
     return "\n".join(parts)
+
+
+def normalize_summary_markdown(text: str) -> str:
+    """Turn a one-paragraph model summary into GitLab-renderable markdown."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    parts: list[str] = []
+    working = raw
+    risk_match = _RISK_LINE_RE.search(working)
+    if risk_match is None:
+        inline = re.search(r"\*{0,2}Risk:\s*([^*\n]+)\*{0,2}", working, re.I)
+        if inline is not None and inline.start() < 40:
+            risk_match = inline
+    if risk_match:
+        label_raw = risk_match.group(1).strip().strip("*").strip()
+        canonical = _canonical_risk(label_raw)
+        label = RISK_LABELS.get(canonical, label_raw)
+        parts.append(f"**Risk: {label}**")
+        working = (working[: risk_match.start()] + working[risk_match.end() :]).strip()
+    header_match = _ACTIONS_HEADER_RE.search(working)
+    if header_match and header_match.start() <= 24:
+        header = header_match.group(0).strip().strip("*").strip()
+        parts.append(f"**{header}**")
+        working = (
+            working[: header_match.start()] + working[header_match.end() :]
+        ).strip()
+    preamble, items = _extract_numbered_items(working)
+    if preamble:
+        parts.append(preamble)
+    if items:
+        parts.append("\n".join(f"{i}. {item}" for i, item in enumerate(items, start=1)))
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 def truncate_markdown(text: str, limit: int) -> str:
@@ -467,10 +507,93 @@ def _path_matches(wanted: str, row: DiffLine) -> bool:
     return False
 
 
-def _is_review_payload(obj: dict) -> bool:
-    if any(isinstance(obj.get(key), list) for key in _COMMENT_LIST_KEYS):
+def _comment_list(payload: dict) -> list | None:
+    for key in _COMMENT_LIST_KEYS:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict) and _comment_path(value):
+            return [value]
+    if _comment_path(payload) and any(payload.get(key) for key in _BODY_KEYS):
+        return [payload]
+    return None
+
+
+def _comment_path(item: dict) -> str:
+    for key in _PATH_KEYS:
+        value = item.get(key)
+        if value:
+            return _clean_path(str(value))
+    return ""
+
+
+def _comment_line(item: dict, side: str) -> int:
+    keys = _LINE_KEYS
+    if side == "old":
+        keys = ("old_line", "line", "line_number", "lineno", "start_line", "new_line")
+    for key in keys:
+        parsed = _parse_line_value(item.get(key))
+        if parsed >= 1:
+            return parsed
+    return 0
+
+
+def _parse_line_value(value: object) -> int:
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    match = _LINE_NUMBER_RE.search(str(value).strip())
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_numbered_items(text: str) -> tuple[str, list[str]]:
+    text = text.strip()
+    if not text:
+        return "", []
+    found = list(_INLINE_ITEM_RE.finditer(text))
+    if found and found[0].group(1) == "1" and found[0].start() < 80:
+        preamble_text = text[: found[0].start()].strip()
+        items: list[str] = []
+        for i, match in enumerate(found):
+            start = match.end()
+            end = found[i + 1].start() if i + 1 < len(found) else len(text)
+            item = text[start:end].strip().rstrip(";").strip()
+            item = re.sub(r"[ \t]*\n[ \t]*", " ", item).strip()
+            if item:
+                items.append(item)
+        return preamble_text, items
+    return text, []
+
+
+def _is_review_payload(obj: object) -> bool:
+    payload = _as_payload(obj)
+    if payload is None:
+        return False
+    if _comment_list(payload) is not None:
         return True
-    return "risk" in obj
+    return "risk" in payload
+
+
+def _next_json_start(text: str, start: int) -> int:
+    brace = text.find("{", start)
+    bracket = text.find("[", start)
+    while bracket >= 0:
+        rest = text[bracket + 1 : bracket + 12].lstrip()
+        if rest[:1] in {"{", '"'}:
+            break
+        bracket = text.find("[", bracket + 1)
+    starts = [pos for pos in (brace, bracket) if pos >= 0]
+    return min(starts) if starts else -1
 
 
 def _iter_json_objects(text: str):
@@ -478,7 +601,7 @@ def _iter_json_objects(text: str):
     i = 0
     n = len(text)
     while i < n:
-        brace = text.find("{", i)
+        brace = _next_json_start(text, i)
         if brace < 0:
             return
         try:
@@ -486,7 +609,7 @@ def _iter_json_objects(text: str):
         except json.JSONDecodeError:
             i = brace + 1
             continue
-        if isinstance(obj, dict):
+        if isinstance(obj, (dict, list)):
             yield brace, end, obj
         i = max(end, brace + 1)
 
@@ -502,11 +625,140 @@ def _expand_fence(text: str, start: int, end: int) -> tuple[int, int]:
     return lo, hi
 
 
+def _as_payload(obj: object) -> dict | None:
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, list) and obj and all(isinstance(item, dict) for item in obj):
+        return {"comments": obj}
+    return None
+
+
+def _loads_loose(text: str) -> object | None:
+    blob = (text or "").strip().lstrip("\ufeff")
+    if not blob:
+        return None
+    decoder = json.JSONDecoder()
+    for candidate in (blob, _repair_json_text(blob)):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        try:
+            obj, _end = decoder.raw_decode(candidate)
+            return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _repair_json_text(text: str) -> str:
+    blob = text.strip().lstrip("\ufeff")
+    blob = blob.translate(
+        str.maketrans(
+            {
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2018": "'",
+                "\u2019": "'",
+            }
+        )
+    )
+    blob = _escape_newlines_in_json_strings(blob)
+    blob = re.sub(r",\s*([}\]])", r"\1", blob)
+    blob = re.sub(r"\bTrue\b", "true", blob)
+    blob = re.sub(r"\bFalse\b", "false", blob)
+    blob = re.sub(r"\bNone\b", "null", blob)
+    return _close_truncated_json(blob)
+
+
+def _escape_newlines_in_json_strings(text: str) -> str:
+    out: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                out.append(ch)
+                escape = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_string = True
+        out.append(ch)
+    return "".join(out)
+
+
+def _close_truncated_json(text: str) -> str:
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    if in_string:
+        text += '"'
+    if not stack:
+        return text
+    return text.rstrip().rstrip(",") + "".join(reversed(stack))
+
+
+def _json_candidate_blobs(text: str) -> list[str]:
+    blobs = [match.group(1) for match in _JSON_FENCE_RE.finditer(text)]
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        blobs.append(stripped)
+    return blobs
+
+
 def _extract_json(text: str) -> dict | None:
     last = None
     review = None
+    seen: list[dict] = []
+    for blob in _json_candidate_blobs(text):
+        payload = _as_payload(_loads_loose(blob))
+        if payload is not None:
+            seen.append(payload)
     for _, _, obj in _iter_json_objects(text):
-        last = obj
-        if any(isinstance(obj.get(key), list) for key in _COMMENT_LIST_KEYS):
-            review = obj
+        payload = _as_payload(obj)
+        if payload is not None:
+            seen.append(payload)
+    for payload in seen:
+        last = payload
+        if any(
+            isinstance(payload.get(key), list) or isinstance(payload.get(key), dict)
+            for key in _COMMENT_LIST_KEYS
+        ) or _comment_path(payload):
+            review = payload
     return review or last

@@ -13,14 +13,11 @@ DEFAULT_MAX_PROMPT_CHARS = 120_000
 DEFAULT_MAX_FILE_CHARS = 32_000
 DEFAULT_MAX_FILES = 80
 DEFAULT_MAX_READ_BYTES = 16_000_000
-#: Skip HEAD file bodies when the MR has this many changed files (or more).
-DEFAULT_PATCH_ONLY_FILE_COUNT = 10
 
 ABSOLUTE_MAX_PROMPT_CHARS = 400_000
 ABSOLUTE_MAX_FILE_CHARS = 200_000
 ABSOLUTE_MAX_FILES = 400
 ABSOLUTE_MAX_READ_BYTES = 64_000_000
-ABSOLUTE_MAX_PATCH_ONLY_FILE_COUNT = ABSOLUTE_MAX_FILES
 
 PREAMBLE_MAX_CHARS = 4_000
 OMITTED_PATH_SAMPLE = 24
@@ -107,7 +104,6 @@ class InputLimits:
     max_file_chars: int = DEFAULT_MAX_FILE_CHARS
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
-    patch_only_file_count: int = DEFAULT_PATCH_ONLY_FILE_COUNT
 
 
 @dataclass
@@ -450,16 +446,6 @@ def context_file_priority(path: str) -> tuple[int, str]:
 def skip_file_context(path: str) -> bool:
     """Docs diffs are covered by the patch; do not paste full markdown bodies."""
     return Path(path).suffix.lower() in {".md", ".rst", ".markdown"}
-
-
-def skip_changed_file_bodies(
-    path_count: int,
-    threshold: int = DEFAULT_PATCH_ONLY_FILE_COUNT,
-) -> bool:
-    """True when the MR has enough changed files to review from the patch only."""
-    if threshold <= 0:
-        return False
-    return path_count >= threshold
 
 
 def _section_is_binary(section: str, path: str) -> bool:

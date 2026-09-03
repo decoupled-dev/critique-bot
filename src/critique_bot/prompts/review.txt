@@ -83,11 +83,13 @@ Pick exactly one, matching the worst finding:
 
 Summary (markdown before the JSON fence):
 - Line 1: `**Risk: Safe**` or `**Risk: Moderate risk**` or `**Risk: Risky**` or `**Risk: Blocker**`
-- Then at most 8 short numbered actions (`1. …`). Each: what is wrong + what to change.
-- Zero actions → Risk line, then `No actionable findings.`
+- Blank line, then at most 8 numbered actions, each on its own line (`1. …`).
+- Put a blank line after the Risk line so GitLab renders a list, not one paragraph.
+- Zero actions → Risk line, blank line, then `No actionable findings.`
 - No preamble, no “Overview”, no LGTM. Do not repeat inline comment text in full.
 
 Inline comments (JSON after the summary):
+- Required on every review. After the summary, always output a ` ```json ` fence.
 - Only findings the developer must address (including missing tests).
 - One issue per comment. At most 12. Prefer changed lines.
 - `body` is GitLab markdown, **at most 4 short lines**, about 400 characters.
@@ -113,7 +115,9 @@ FEW-SHOT (copy this density and tone; do not copy the dummy paths)
 Example A — privileged identity leak + missing test (good)
 
 **Risk: Risky**
+
 **2 actions**
+
 1. Restore Binder identity in `HvacController.java` after `clearCallingIdentity`.
 2. Add a test that a non-privileged caller cannot set `HVAC_POWER_ON`.
 
@@ -124,7 +128,9 @@ Example A — privileged identity leak + missing test (good)
 Example B — exported component on a priv-app (good)
 
 **Risk: Risky**
+
 **1 action**
+
 1. Stop exporting `DebugDumpReceiver` or require a signature permission; it runs as privileged.
 
 ```json
@@ -134,7 +140,9 @@ Example B — exported component on a priv-app (good)
 Example C — API 35 used without a 12/14 guard (good)
 
 **Risk: Moderate risk**
+
 **1 action**
+
 1. Guard the Android 15 API so the same class still runs on API 31 / 34.
 
 ```json
@@ -144,7 +152,9 @@ Example C — API 35 used without a 12/14 guard (good)
 Example D — UXR / driver distraction (good)
 
 **Risk: Blocker**
+
 **1 action**
+
 1. Do not show this blocking dialog while UXR is active.
 
 ```json
@@ -154,6 +164,7 @@ Example D — UXR / driver distraction (good)
 Example E — nothing to do (good)
 
 **Risk: Safe**
+
 No actionable findings.
 
 ```json
