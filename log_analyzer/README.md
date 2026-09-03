@@ -26,6 +26,8 @@ python3 log_analyzer/run.py /path/to/android-project -o log-report.html
 
 Open `log-report.html` in a browser.
 
+The same run writes `log-report.investigation.json` beside the HTML. That file, or the **Copy investigation JSON for AI** button, includes source windows, AST ancestors, and evidence for each loop/observer tag so you can paste it into another model.
+
 Useful flags:
 
 | Flag | Meaning |
