@@ -342,6 +342,50 @@ class PostReviewFlowTests(EnvIsolated):
         self.assertIn("allowlist the new permission", summary[2]["body"])
         self.assertIn("Binder identity is not restored.", summary[2]["body"])
 
+    def test_inline_comment_includes_impact(self) -> None:
+        review = self.folder / "review.md"
+        review.write_text(
+            "Adds coupon math to totals.\n"
+            "Untrusted callers can inflate the price.\n"
+            "Define coupon or reject the untrusted path.\n"
+            "```json\n"
+            '{"risk":"risky","comments":[{"path":"src/pay.py","line":12,'
+            '"side":"new","severity":"security","body":"coupon is not defined",'
+            '"impact":"Totals can be inflated by any caller."}]}\n'
+            "```\n",
+            encoding="utf-8",
+        )
+        patch_path = self.folder / "diff.patch"
+        patch_path.write_text(PATCH, encoding="utf-8")
+        calls: list[tuple[str, str, object]] = []
+
+        def fake_request(method, url, token, payload=None):
+            calls.append((method, url, payload))
+            if method == "GET":
+                return {"diff_refs": {"base_sha": "a", "start_sha": "a", "head_sha": "b"}}
+            return {}
+
+        buf = io.StringIO()
+        with patch("critique_bot.gitlab_post._request", side_effect=fake_request):
+            with redirect_stdout(buf):
+                post_review(
+                    review_file=review,
+                    patch_file=patch_path,
+                    project_id="1",
+                    mr_iid="2",
+                    api_url="https://gitlab.example/api/v4",
+                    token="t",
+                )
+        discussion_posts = [
+            c for c in calls if c[0] == "POST" and "discussions" in c[1]
+        ]
+        inline = next(c for c in discussion_posts if c[2].get("position"))
+        summary = next(c for c in discussion_posts if not c[2].get("position"))
+        self.assertIn("**Impact:** Totals can be inflated by any caller.", inline[2]["body"])
+        self.assertIn("Adds coupon math to totals.", summary[2]["body"])
+        self.assertIn("Untrusted callers can inflate the price.", summary[2]["body"])
+        self.assertNotIn("**Impact:**", summary[2]["body"])
+
     def test_inline_rejection_is_skipped(self) -> None:
         review = self.folder / "review.md"
         review.write_text(REVIEW, encoding="utf-8")

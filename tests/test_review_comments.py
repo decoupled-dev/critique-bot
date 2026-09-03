@@ -43,6 +43,29 @@ class ReviewCommentTests(unittest.TestCase):
         self.assertEqual(comments[0].side, "new")
         self.assertIn("coupon", comments[0].body)
 
+    def test_parses_impact_field(self) -> None:
+        comments = parse_inline_comments(
+            json.dumps(
+                {
+                    "comments": [
+                        {
+                            "path": "src/pay.py",
+                            "line": 12,
+                            "body": "coupon is not defined",
+                            "impact": "Totals can be inflated by any caller.",
+                        }
+                    ]
+                }
+            )
+        )
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].impact, "Totals can be inflated by any caller.")
+        aliased = parse_inline_comments(
+            '{"comments":[{"path":"src/pay.py","line":12,"body":"x",'
+            '"if_unfixed":"Checkout charges the wrong amount."}]}'
+        )
+        self.assertEqual(aliased[0].impact, "Checkout charges the wrong amount.")
+
     def test_strip_json_leaves_prose(self) -> None:
         self.assertEqual(strip_json_block(REVIEW), "Coupon is unbounded.")
 
@@ -300,6 +323,25 @@ class ReviewCommentTests(unittest.TestCase):
             path="Foo.java", line=8, side="new", body="Restore identity.", severity="test"
         )
         self.assertIn("**Missing test**", format_gitlab_comment(untitled))
+        with_impact = InlineComment(
+            path="Foo.java",
+            line=8,
+            side="new",
+            body="**Security**\n\nRestore identity.",
+            severity="security",
+            impact="A caller can keep the system identity.",
+        )
+        formatted_impact = format_gitlab_comment(with_impact)
+        self.assertIn("**Impact:** A caller can keep the system identity.", formatted_impact)
+        already = InlineComment(
+            path="Foo.java",
+            line=8,
+            side="new",
+            body="**Security**\n\nRestore identity.\n\n**Impact:** already in body.",
+            severity="security",
+            impact="duplicate",
+        )
+        self.assertNotIn("duplicate", format_gitlab_comment(already))
         located = format_gitlab_comment(untitled, include_location=True)
         self.assertIn("`Foo.java:8`", located)
         summary = format_gitlab_summary(
@@ -540,6 +582,29 @@ class ReviewCommentTests(unittest.TestCase):
             summary_blurb("1. Restore identity in Foo.java."),
             "",
         )
+
+    def test_summary_blurb_keeps_status_lines(self) -> None:
+        from critique_bot.review_comments import (
+            format_gitlab_summary,
+            summary_blurb,
+        )
+
+        text = (
+            "**Risk: Risky**\n"
+            "Adds an HVAC property setter for climate control.\n"
+            "Binder identity is not restored, so a caller can keep system UID.\n"
+            "Restore identity in `finally` and add a caller-UID test.\n"
+            "1. Restore Binder identity in `HvacController.java:88`.\n"
+        )
+        body = summary_blurb(text)
+        self.assertIn("Adds an HVAC property setter", body)
+        self.assertIn("Binder identity is not restored", body)
+        self.assertIn("Restore identity in `finally`", body)
+        self.assertNotIn("HvacController.java:88", body)
+        self.assertEqual(len([ln for ln in body.splitlines() if ln.strip()]), 3)
+        formatted = format_gitlab_summary(text, risk="risky", inline_count=1)
+        self.assertIn("Adds an HVAC property setter", formatted)
+        self.assertNotIn("1. Restore Binder identity", formatted)
 
     def test_orphan_summary_actions_keeps_unpinnable_items(self) -> None:
         from critique_bot.review_comments import (

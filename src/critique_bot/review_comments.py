@@ -35,11 +35,13 @@ _COMMENT_LIST_KEYS = (
 _PATH_KEYS = ("path", "file", "file_path", "filename", "filepath", "new_path")
 _LINE_KEYS = ("line", "new_line", "old_line", "line_number", "lineno", "start_line")
 _BODY_KEYS = ("body", "message", "comment", "text", "content")
+_IMPACT_KEYS = ("impact", "if_unfixed", "consequence", "why_it_matters", "effect")
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _TITLED_BODY_RE = re.compile(
-    r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action)\*\*",
+    r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action|Impact)\*\*",
     re.I,
 )
+_IMPACT_BODY_RE = re.compile(r"\*\*Impact:\*\*", re.I)
 _INLINE_ITEM_RE = re.compile(
     r"(?:(?<=^)|(?<=\s))(?:\*{1,2})?(\d{1,2})(?:\*{1,2})?[.)]\s+"
 )
@@ -52,8 +54,10 @@ _ACTIONS_HEADER_RE = re.compile(
 _LINE_NUMBER_RE = re.compile(r"(\d+)")
 MAX_INLINE_COMMENTS = 12
 MAX_INLINE_BODY_CHARS = 700
+MAX_INLINE_IMPACT_CHARS = 220
 MAX_SUMMARY_CHARS = 2000
-MAX_SUMMARY_BLURB_CHARS = 280
+MAX_SUMMARY_BLURB_CHARS = 720
+MAX_SUMMARY_BLURB_LINES = 4
 _RISK_LINE_RE = re.compile(
     r"^\s*\*?\*?Risk:\s*([^*\n]+)\*?\*?\s*$",
     re.I | re.M,
@@ -125,6 +129,7 @@ class InlineComment:
     side: str
     body: str
     severity: str = ""
+    impact: str = ""
 
 
 @dataclass(frozen=True)
@@ -381,11 +386,41 @@ def format_gitlab_comment(
         lines.append(f"**{title}**")
         lines.append("")
     lines.append(body)
+    impact = truncate_markdown((comment.impact or "").strip(), MAX_INLINE_IMPACT_CHARS)
+    if impact and not _IMPACT_BODY_RE.search(body):
+        lines.append("")
+        if _IMPACT_BODY_RE.match(impact):
+            lines.append(impact)
+        else:
+            lines.append(f"**Impact:** {impact}")
     return "\n".join(lines).strip()
 
 
 def summary_blurb(summary: str) -> str:
-    """One- or two-line overview with risk and action lists removed."""
+    """2–4 line MR status with risk and per-file action lists removed."""
+    working = _strip_risk_and_actions_header(summary)
+    if not working:
+        return ""
+    if _NO_FINDINGS_RE.search(working):
+        _, items = _extract_numbered_items(working)
+        if not items:
+            _, items = _extract_bullet_items(working)
+        if not items:
+            return "No actionable findings."
+    preamble, items = _extract_numbered_items(working)
+    if not items:
+        preamble, items = _extract_bullet_items(working)
+    if items:
+        return _truncate_blurb(preamble)
+    mention_items = _items_from_file_mentions(working)
+    if mention_items:
+        others = [
+            part.strip().rstrip(";").strip()
+            for part in re.split(r"(?<=[.!?])\s+", working)
+            if part.strip() and not _iter_file_mentions(part)
+        ]
+        return _truncate_blurb(" ".join(others))
+    return _truncate_blurb(working)
     working = _strip_risk_and_actions_header(summary)
     if not working:
         return ""
@@ -448,7 +483,7 @@ def format_gitlab_summary(
     orphan_actions: list[str] | None = None,
     risk: str = "",
 ) -> str:
-    """Short MR overview: risk, optional blurb, then only unpinned findings."""
+    """MR overview: risk, 2–4 line status, then only unpinned findings."""
     blurb = summary_blurb(summary)
     pinned: list[str] = []
     for comment in unmapped or []:
@@ -598,10 +633,21 @@ def _strip_risk_and_actions_header(text: str) -> str:
 
 
 def _truncate_blurb(text: str) -> str:
-    blurb = re.sub(r"\s+", " ", (text or "").strip())
-    if not blurb:
+    raw = (text or "").strip()
+    if not raw:
         return ""
-    return truncate_markdown(blurb, MAX_SUMMARY_BLURB_CHARS)
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in raw.splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) == 1:
+        sentences = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+", lines[0])
+            if part.strip()
+        ]
+        if len(sentences) > 1:
+            lines = sentences
+    lines = lines[:MAX_SUMMARY_BLURB_LINES]
+    return truncate_markdown("\n".join(lines), MAX_SUMMARY_BLURB_CHARS)
 
 
 def _folded(text: str) -> str:
@@ -695,7 +741,12 @@ def _comments_from_items(raw: list | None) -> list[InlineComment]:
             line = 1
         comments.append(
             InlineComment(
-                path=path, line=line, side=side, body=body, severity=severity
+                path=path,
+                line=line,
+                side=side,
+                body=body,
+                severity=severity,
+                impact=_comment_impact(item),
             )
         )
         if len(comments) >= MAX_INLINE_COMMENTS:
@@ -713,6 +764,14 @@ def _comment_body(item: dict) -> str:
             continue
         if value:
             return str(value).strip()
+    return ""
+
+
+def _comment_impact(item: dict) -> str:
+    for key in _IMPACT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
