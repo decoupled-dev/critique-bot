@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -109,7 +110,15 @@ class DetectTests(unittest.TestCase):
             html = out.read_text(encoding="utf-8")
             self.assertIn("Android Log Analyzer", html)
             self.assertIn("LoopLogs.java", html)
+            self.assertIn("Files by log count", html)
+            self.assertIn("Filters", html)
             self.assertNotIn("<<<LOG_ANALYZER_JSON>>>", html)
+            start = html.find(">", html.find("log-analyzer-data")) + 1
+            end = html.find("</script>", start)
+            payload = json.loads(html[start:end])
+            counts = [item["count"] for item in payload["files"]]
+            self.assertEqual(counts, sorted(counts, reverse=True))
+            self.assertGreaterEqual(counts[0], counts[-1])
 
     def test_cli_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

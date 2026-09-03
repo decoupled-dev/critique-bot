@@ -57,7 +57,7 @@ def _payload(
         },
         "files": sorted(
             files.values(),
-            key=lambda item: (-item["max_score"], -item["count"], item["path"]),
+            key=lambda item: (-item["count"], -item["high_freq"], item["path"]),
         ),
         "findings": [finding.to_dict() for finding in findings],
         "errors": [error.to_dict() for error in errors],
