@@ -8,20 +8,19 @@
 #   2. gitlab-post — turn that review into MR summary + inline comments
 # The long-running worker on this PC owns the signed-in browser.
 #
-# Original files (file-by-file). Do not add --patch-file or --file here.
-# submit (no --patch-file) uses the job checkout:
+# Original files. Do not add --patch-file or --file here.
+# submit (no --patch-file) owns the checkout work:
 #   git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
 #   git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA
-#   writes diff.patch, then reads HEAD contents of every changed text file
-#   (markdown/RST and binaries skipped; deleted paths skipped).
-# The worker then sends those original files to the chat UI:
-#   - Small MR: template + files + patch fit in max_prompt_chars
-#     (default 120000) → one paste.
-#   - Larger MR: same Edge tab, then one file per chat turn:
-#       1) prime: "I will send N files one at a time"
-#       2) FILE i of N; wait for ACK <path>; send the next file immediately
-#       3) review prompt + patch (REVIEW NOW)
-# Cap is max_files in config.json (default 80). File-by-file reviews take
+#   writes diff.patch, reads HEAD contents of every changed text file
+#   (markdown/RST and binaries skipped; deleted paths skipped), then
+#   enqueues the job:
+#     - Small MR: template + files + patch fit in max_prompt_chars
+#       (default 120000) → one prompt on the job.
+#     - Larger MR: original files are staged on the job (one body each,
+#       cap max_files, default 80) plus the review prompt/patch.
+# The worker is chat-only: it pastes whatever submit queued (one paste,
+# or prime + each staged file + review). File-by-file reviews take
 # longer; this job waits 30 minutes (--wait-timeout 1800) and times out at 1h.
 #
 # PowerShell (do not convert $CRITIQUE_BIN to $env:CRITIQUE_BIN):

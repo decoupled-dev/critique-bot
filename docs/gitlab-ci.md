@@ -101,7 +101,7 @@ Artifacts (always, 1 week): `out/`, `diff.patch`. Job timeout: 1 hour. Submit wa
 
 ### Original files (file-by-file)
 
-The YAML job never pastes into the chat UI. `submit` builds the prompt on the runner; the **worker** sends it.
+**`submit` prepares the files. The worker only chats** (pastes what submit queued into Edge). The YAML job never talks to the chat UI.
 
 Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, submit uses the job checkout:
 
@@ -109,29 +109,32 @@ Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, 
 2. `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job).
 3. Writes `diff.patch`.
 4. Reads **HEAD contents** of every changed text file from the checkout (the original files, not only the hunks). Markdown/RST and binaries are skipped; deleted paths are skipped because they are not on disk.
+5. Puts the result on the queue job:
+   - If template + files + patch fit in `max_prompt_chars` (default `120000`): **one prompt** (`{files}` inlined).
+   - If they would overflow: **staged file bodies** on the job (`files`, one path each, cap `max_files` default `80`) plus the review prompt and patch.
 
-The worker then sends those original files:
+The worker then pastes that job (chat only):
 
-| Size | What the worker does |
+| What submit queued | What the worker pastes |
 | --- | --- |
-| Template + files + patch fit in `max_prompt_chars` (default `120000`) | **One paste** (files inlined in `{files}`, then the patch) |
-| Would overflow that budget | **One file per chat turn** on the same Edge tab |
+| One prompt | A single paste |
+| Staged `files` + review prompt | Prime → each file → review |
 
-File-by-file sequence on that tab:
+Staged-file sequence on the same Edge tab:
 
 1. Prime: “I will send N changed file(s) one at a time”. The model must reply `ACK` only, not a review.
-2. `FILE i of N` with that file’s HEAD body. As soon as the reply starts with `ACK <path>`, the next file is pasted (`turn_pause_seconds` default `0`).
+2. `FILE i of N` with the body submit already loaded. As soon as the reply starts with `ACK <path>`, the next file is pasted (`turn_pause_seconds` default `0`).
 3. After the last ACK: the review template + patch + `REVIEW NOW`. Only this last reply is `review.md`.
 
-Caps and skips:
+Caps and skips (applied by **submit** when it loads the checkout):
 
 - At most `max_files` bodies (default `80`); each body truncated at `max_file_chars` (default `32000`).
-- Markdown/RST, binaries, and missing/deleted paths are not pasted (their diffs stay in `diff.patch`).
-- If a file turn gets no assistant reply, remaining file sends are dropped and the review prompt is still sent.
+- Markdown/RST, binaries, and missing/deleted paths are not staged (their diffs stay in `diff.patch`).
+- If a file turn gets no assistant reply, the worker drops remaining file pastes and still sends the review prompt.
 
-File-by-file reviews take longer than a one-shot paste. Keep `--wait-timeout 1800` and the job `timeout: 1h`. Worker logs show `inlining N changed file(s)` or `staging N file(s) across chat turns`.
+File-by-file reviews take longer than a one-shot paste. Keep `--wait-timeout 1800` and the job `timeout: 1h`. Submit logs `inlining N changed file(s)` or `staging N file(s) across chat turns`.
 
-Windows: this behavior is already in [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml). The `& "$CRITIQUE_BIN" submit …` line is enough; there is no extra flag for file-by-file.
+Windows: this is already how [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml) works. The `& "$CRITIQUE_BIN" submit …` line is enough; there is no extra flag.
 
 Concurrent MRs all enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default **1**, same Edge, separate tabs). Starts are staggered by `min_interval_seconds` (default 30) plus jitter.
 
