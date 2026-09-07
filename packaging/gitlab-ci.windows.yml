@@ -10,8 +10,8 @@
 #
 # Original files. Do not add --patch-file or --file here.
 # submit (no --patch-file) owns the checkout work:
-#   git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
-#   git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA
+#   git fetch origin $CI_MERGE_REQUEST_DIFF_BASE_SHA (deepen target if needed)
+#   git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA $CI_COMMIT_SHA
 #   writes diff.patch, reads HEAD contents of every changed text file
 #   (markdown/RST and binaries skipped; deleted paths skipped), then
 #   enqueues the job:

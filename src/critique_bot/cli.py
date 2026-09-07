@@ -262,7 +262,9 @@ def _build_review_prompt(
         except EmptyDiff:
             raise
         except WorkspaceError as exc:
-            raise ConfigError(str(exc)) from exc
+            text = _workspace_patch_from_gitlab(config, write_to, exc)
+            if text is None:
+                raise ConfigError(str(exc)) from exc
         patch_input = LoadedInput(name=str(write_to), text=text)
         patch_file = str(write_to)
 
@@ -366,6 +368,19 @@ def _split_patch_and_files(
     if len(loaded) == 1:
         return loaded[0], []
     return loaded[0], loaded[1:]
+
+
+def _workspace_patch_from_gitlab(config, write_to: Path, exc: WorkspaceError) -> str | None:
+    """Use GitLab's MR diffs when the job checkout cannot compute a merge-base."""
+    log.warn(f"local git diff failed ({exc}); trying GitLab MR diffs")
+    fetched = _load_gitlab_mr_context(config, need_patch=True)
+    if fetched is None or not fetched.patch.strip():
+        return None
+    write_to = Path(write_to)
+    write_to.parent.mkdir(parents=True, exist_ok=True)
+    write_to.write_text(fetched.patch, encoding="utf-8")
+    log.info(f"wrote {write_to} from GitLab API ({len(fetched.patch)} chars)")
+    return fetched.patch
 
 
 def _load_gitlab_mr_context(config, *, need_patch: bool):

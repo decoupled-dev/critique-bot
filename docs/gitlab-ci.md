@@ -105,11 +105,12 @@ Artifacts (always, 1 week): `out/`, `diff.patch`. Job timeout: 1 hour. Submit wa
 
 Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, submit uses the job checkout:
 
-1. `git fetch` of the MR target branch (depth 50).
-2. `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA` (or `HEAD~1...HEAD` on a branch job).
-3. Writes `diff.patch`.
-4. Reads **HEAD contents** of every changed text file from the checkout (the original files, not only the hunks). Markdown/RST and binaries are skipped; deleted paths are skipped because they are not on disk.
-5. Puts the result on the queue job:
+1. Fetch `CI_MERGE_REQUEST_DIFF_BASE_SHA` (and deepen/unshallow the target branch if that SHA is still missing). GitLab's default shallow clone often omits the merge-base even when the MR is mergeable.
+2. `git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA $CI_COMMIT_SHA` (two-dot: GitLab already computed the merge-base). Three-dot `base...HEAD` fails with `fatal: no merge base` on a shallow clone. Branch jobs use `HEAD~1 HEAD`.
+3. If local git still cannot see those commits, submit falls back to the GitLab MR diffs API.
+4. Writes `diff.patch`.
+5. Reads **HEAD contents** of every changed text file from the checkout (the original files, not only the hunks). Markdown/RST and binaries are skipped; deleted paths are skipped because they are not on disk.
+6. Puts the result on the queue job:
    - If template + files + patch fit in `max_prompt_chars` (default `120000`): **one prompt** (`{files}` inlined).
    - If they would overflow: **staged file bodies** on the job (`files`, one path each, cap `max_files` default `80`) plus the review prompt and patch.
 
@@ -163,3 +164,4 @@ Start with a one-shot `--mode general` prompt (login, selectors, real round trip
 | `No Chromium browser was found` | Edge installed for the runner user |
 | Permission denied on queue | Worker user ≠ GitLab runner user |
 | Cloudflare / login page | Headless is blocked; re-login with `--headed` |
+| `could not build git diff` / `no merge base` | Shallow clone missed the MR merge-base. Upgrade critique-bot (submit fetches that SHA and uses two-dot diff). Retry the job. |

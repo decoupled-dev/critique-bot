@@ -196,6 +196,76 @@ class SubmitCliTests(unittest.TestCase):
                         )
         self.assertEqual(code, 0)
 
+    def test_submit_falls_back_to_gitlab_diff_when_merge_base_missing(self) -> None:
+        from critique_bot.gitlab import MrContext
+        from critique_bot.queue import FileQueue, JobStatus
+        from critique_bot.workspace import WorkspaceError
+
+        queue = FileQueue(self.folder / "queue")
+        queue.beat()
+        original_wait = FileQueue.wait
+
+        def finish_then_wait(self_q, job_id, *, timeout_sec, poll_sec=0.5):
+            dest = self_q.result_dir(job_id)
+            (dest / "review.md").write_text("ok\n", encoding="utf-8")
+            self_q.finish(
+                job_id,
+                JobStatus(
+                    id=job_id,
+                    ok=True,
+                    error=None,
+                    stem="review",
+                    started_at=None,
+                    finished_at=None,
+                    elapsed_seconds=0.1,
+                    label="mr",
+                    meta={},
+                ),
+            )
+            return original_wait(
+                self_q, job_id, timeout_sec=timeout_sec, poll_sec=poll_sec
+            )
+
+        api_patch = "diff --git a/feat.py b/feat.py\n+print(1)\n"
+        ctx = MrContext(title="feat", patch=api_patch)
+        env = {
+            "GITLAB_CI": "true",
+            "CI_MERGE_REQUEST_DIFF_BASE_SHA": "base",
+            "CI_COMMIT_SHA": "head",
+        }
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            with unittest.mock.patch(
+                "critique_bot.cli.prepare_workspace_patch",
+                side_effect=WorkspaceError("fatal: no merge base"),
+            ):
+                with unittest.mock.patch(
+                    "critique_bot.cli._load_gitlab_mr_context",
+                    return_value=ctx,
+                ):
+                    with unittest.mock.patch.object(FileQueue, "wait", finish_then_wait):
+                        with redirect_stderr(io.StringIO()):
+                            from contextlib import redirect_stdout
+
+                            with redirect_stdout(io.StringIO()):
+                                code = main(
+                                    [
+                                        "submit",
+                                        "--config",
+                                        str(self.config),
+                                        "--output-dir",
+                                        str(self.out),
+                                        "--write-patch",
+                                        str(self.folder / "from-api.patch"),
+                                        "--wait-timeout",
+                                        "5",
+                                    ]
+                                )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.folder / "from-api.patch").read_text(encoding="utf-8"),
+            api_patch,
+        )
+
     def test_submit_empty_workspace_diff_exits_zero(self) -> None:
         from critique_bot.workspace import EmptyDiff
 

@@ -22,7 +22,7 @@ from critique_bot.patch import (
 )
 
 DEFAULT_PATCH_NAME = "diff.patch"
-FETCH_DEPTH = 50
+FETCH_DEPTHS = (50, 200, 1000)
 ENV_GITLAB_CI = "GITLAB_CI"
 ENV_DIFF_BASE = "CI_MERGE_REQUEST_DIFF_BASE_SHA"
 ENV_COMMIT_SHA = "CI_COMMIT_SHA"
@@ -72,27 +72,28 @@ def prepare_workspace_patch(
     *,
     git_run=None,
 ) -> str:
-    """Fetch enough of target for the merge-base, write ``git diff``, return it.
+    """Fetch the merge-base commit if needed, write ``git diff``, return it.
 
-    Three-dot ``base...HEAD`` is the MR delta (same as today's CI yaml). Without
-    ``CI_MERGE_REQUEST_DIFF_BASE_SHA``, uses ``HEAD~1...HEAD``.
+    GitLab already computed ``CI_MERGE_REQUEST_DIFF_BASE_SHA`` as the MR
+    merge-base. Two-dot ``git diff base head`` diffs those trees directly and
+    does not need connecting history, unlike three-dot ``base...head`` which
+    fails with ``fatal: no merge base`` on a shallow clone even when GitLab
+    can merge the MR.
+
+    Without ``CI_MERGE_REQUEST_DIFF_BASE_SHA``, uses ``HEAD~1 HEAD``.
     """
     repo = Path(repo_dir)
     refs = ci_review_refs()
     if refs:
-        if refs["target"]:
-            _git(
-                repo,
-                ["fetch", f"--depth={FETCH_DEPTH}", "origin", refs["target"]],
-                check=False,
-                git_run=git_run,
-            )
-        spec = f"{refs['base']}...{refs['head']}"
+        _ensure_review_commits(repo, refs, git_run=git_run)
+        diff_args = ["diff", refs["base"], refs["head"]]
+        spec = f"{refs['base']} {refs['head']}"
     else:
-        spec = "HEAD~1...HEAD"
+        diff_args = ["diff", "HEAD~1", "HEAD"]
+        spec = "HEAD~1 HEAD"
     log.info(f"building workspace diff {spec} in {repo}")
     try:
-        text = _git(repo, ["diff", spec], check=True, git_run=git_run)
+        text = _git(repo, diff_args, check=True, git_run=git_run)
     except WorkspaceError as exc:
         raise WorkspaceError(
             f"could not build git diff {spec} in {repo}: {exc}"
@@ -134,6 +135,51 @@ def load_changed_files(
         f"({len(ordered)} reviewable path(s) in the patch)"
     )
     return loaded
+
+
+def _ensure_review_commits(repo: Path, refs: dict[str, str], *, git_run) -> None:
+    """Make sure the MR base and HEAD objects exist in a possibly shallow clone."""
+    wanted = [sha for sha in (refs["base"], refs["head"]) if sha]
+    missing = [sha for sha in wanted if not _commit_exists(repo, sha, git_run)]
+    for sha in missing:
+        log.info(f"fetching commit {sha[:12]} from origin")
+        _git(repo, ["fetch", "--depth=1", "origin", sha], check=False, git_run=git_run)
+    missing = [sha for sha in wanted if not _commit_exists(repo, sha, git_run)]
+    if not missing:
+        return
+    target = refs.get("target") or ""
+    if target:
+        for depth in FETCH_DEPTHS:
+            log.info(f"deepening origin/{target} to depth {depth}")
+            _git(
+                repo,
+                ["fetch", f"--depth={depth}", "origin", target],
+                check=False,
+                git_run=git_run,
+            )
+            missing = [sha for sha in wanted if not _commit_exists(repo, sha, git_run)]
+            if not missing:
+                return
+        log.info(f"unshallowing origin/{target}")
+        _git(repo, ["fetch", "--unshallow", "origin", target], check=False, git_run=git_run)
+        _git(repo, ["fetch", "origin", target], check=False, git_run=git_run)
+    missing = [sha for sha in wanted if not _commit_exists(repo, sha, git_run)]
+    if missing:
+        shown = ", ".join(sha[:12] for sha in missing)
+        raise WorkspaceError(
+            f"commit(s) not in the checkout after fetch: {shown}. "
+            "GitLab shallow clones often omit the MR merge-base"
+        )
+
+
+def _commit_exists(repo: Path, sha: str, git_run) -> bool:
+    run = git_run or subprocess.run
+    proc = run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    return int(getattr(proc, "returncode", 1) or 0) == 0
 
 
 def _git(
