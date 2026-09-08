@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -20,7 +21,12 @@ if _ROOT_STR not in _pythonpath.split(os.pathsep):
 from log_analyzer.detect import detect_source
 from log_analyzer.models import FileError, Finding, ScanStats
 from log_analyzer.report import render_html
-from log_analyzer.scan import DEFAULT_EXTENSIONS, iter_source_files, relative_posix
+from log_analyzer.scan import (
+    DEFAULT_EXTENSIONS,
+    iter_source_files,
+    normalize_user_path,
+    relative_posix,
+)
 
 
 def _analyze_one(payload: tuple[str, str]) -> tuple[str, list[dict], str | None, int]:
@@ -69,10 +75,14 @@ def analyze_path(
         results = [_analyze_one(item) for item in payloads]
     else:
         results = []
-        with ProcessPoolExecutor(max_workers=worker_count) as pool:
-            futures = [pool.submit(_analyze_one, item) for item in payloads]
-            for future in as_completed(futures):
-                results.append(future.result())
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=worker_count, mp_context=ctx) as pool:
+                futures = [pool.submit(_analyze_one, item) for item in payloads]
+                for future in as_completed(futures):
+                    results.append(future.result())
+        except Exception:
+            results = [_analyze_one(item) for item in payloads]
 
     for relpath, raw_findings, error, size in results:
         stats.bytes_scanned += size
@@ -98,7 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
             "and write a navigable HTML report."
         ),
     )
-    parser.add_argument("root", help="Android project (or source) directory")
+    parser.add_argument(
+        "root",
+        help="Android project directory or a single .java/.kt file (Linux path, e.g. /home/you/MyApp)",
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -108,8 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=os.cpu_count() or 1,
-        help="Parallel file parsers (default: CPU count)",
+        default=1,
+        help="Parallel file parsers (default: 1, safest on Linux). Use --jobs 8 on large trees.",
     )
     parser.add_argument(
         "--include-generated",
@@ -126,12 +139,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    root = Path(args.root).expanduser()
+    raw_root = args.root.strip()
+    if len(raw_root) >= 2 and raw_root[1] == ":" and raw_root[0].isalpha() and "\\" in raw_root:
+        print(
+            "error: that looks like a Windows path. On Linux use "
+            "/home/you/MyApp or ~/MyApp, not C:\\\\Users\\\\...",
+            file=sys.stderr,
+        )
+        return 2
+    root = normalize_user_path(args.root)
     if not root.exists():
         print(f"error: path not found: {root}", file=sys.stderr)
+        print("hint: use an absolute Linux path, e.g. /home/you/AndroidStudioProjects/MyApp", file=sys.stderr)
         return 2
-    if not root.is_dir():
-        print(f"error: not a directory: {root}", file=sys.stderr)
+    if not root.is_dir() and not root.is_file():
+        print(f"error: not a file or directory: {root}", file=sys.stderr)
         return 2
 
     findings, errors, stats = analyze_path(
@@ -140,13 +162,21 @@ def main(argv: list[str] | None = None) -> int:
         include_generated=args.include_generated,
         extensions=_parse_extensions(args.extensions),
     )
-    output = Path(args.output).expanduser()
+    output = normalize_user_path(args.output)
     render_html(findings, errors, stats, output)
 
     print(f"scanned {stats.files_scanned} files ({stats.bytes_scanned} bytes)")
     print(f"found {stats.findings} log calls in {stats.files_with_findings} files")
-    if stats.parse_failures:
-        print(f"parse/read issues: {stats.parse_failures}")
+    if stats.files_scanned == 0:
+        print(
+            "warning: no .java/.kt files found. Pass the project folder "
+            "(the directory that contains app/src), not a Windows path.",
+            file=sys.stderr,
+        )
+    if errors:
+        print(f"parse/read issues: {len(errors)}", file=sys.stderr)
+        for err in errors[:8]:
+            print(f"  {err.file}: {err.error}", file=sys.stderr)
     print(f"wrote {output.resolve()}")
     sidecar = output.with_suffix(".investigation.json")
     if sidecar.is_file():

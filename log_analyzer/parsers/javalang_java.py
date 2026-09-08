@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import javalang
-from javalang.tree import MethodInvocation
-
 from ..classify import classify_call, snippet_from_text
 from ..context import annotate_finding, contexts_from_javalang_path
 from ..models import Finding
@@ -67,6 +64,11 @@ def _emit(
 
 
 def analyze_java_javalang(relpath: str, source: str) -> list[Finding]:
+    try:
+        import javalang
+        from javalang.tree import MethodInvocation
+    except ImportError:
+        return []
     try:
         tree = javalang.parse.parse(source)
     except (javalang.parser.JavaSyntaxError, javalang.tokenizer.LexerError, IndexError, TypeError):

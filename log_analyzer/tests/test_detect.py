@@ -204,6 +204,53 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage:", result.stdout.lower())
 
+    def test_scan_does_not_skip_project_inside_build_path(self) -> None:
+        from log_analyzer.scan import iter_source_files, normalize_user_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Linux homes sometimes live under .../build/... or .../out/...
+            project = Path(tmp) / "build" / "MyApp" / "app" / "src" / "main" / "java"
+            project.mkdir(parents=True)
+            source = project / "Hello.java"
+            source.write_text(
+                'class Hello { void m() { android.util.Log.d("T", "hi"); } }\n',
+                encoding="utf-8",
+            )
+            generated = Path(tmp) / "build" / "MyApp" / "app" / "build" / "generated" / "Skip.java"
+            generated.parent.mkdir(parents=True)
+            generated.write_text(
+                'class Skip { void m() { Log.e("T", "no"); } }\n',
+                encoding="utf-8",
+            )
+            files = iter_source_files(Path(tmp) / "build" / "MyApp")
+            names = [p.name for p in files]
+            self.assertIn("Hello.java", names)
+            self.assertNotIn("Skip.java", names)
+
+            quoted = normalize_user_path(f'"{Path(tmp) / "build" / "MyApp"}/"')
+            findings, _errors, stats = analyze_path(
+                quoted,
+                jobs=1,
+                include_generated=False,
+                extensions={".java", ".kt"},
+            )
+            self.assertGreaterEqual(stats.files_scanned, 1)
+            self.assertTrue(any(f.method == "d" for f in findings), findings)
+
+    def test_quoted_linux_path_and_single_file(self) -> None:
+        from log_analyzer.scan import normalize_user_path
+
+        target = FIXTURES / "LoopLogs.java"
+        root = normalize_user_path(f'"{target}"')
+        findings, _errors, stats = analyze_path(
+            root,
+            jobs=1,
+            include_generated=False,
+            extensions={".java", ".kt"},
+        )
+        self.assertEqual(stats.files_scanned, 1)
+        self.assertGreater(len(findings), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

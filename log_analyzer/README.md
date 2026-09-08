@@ -14,8 +14,10 @@ From the repository root:
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python3 -m pip install -r log_analyzer/requirements.txt
-python3 run_log_analyzer.py /path/to/android-project -o log-report.html
+python3 run_log_analyzer.py /home/you/AndroidStudioProjects/MyApp -o log-report.html
 ```
+
+Use a Linux path (`/home/...` or `~/MyApp`). Do not pass a Windows path like `C:\Users\...`. Quotes around the path are fine. `build/` and `out/` under the project are skipped; having `build` in the home path is not.
 
 These also work after the same `requirements.txt` install:
 
@@ -33,7 +35,7 @@ Useful flags:
 | Flag | Meaning |
 | --- | --- |
 | `-o`, `--output` | HTML path (default: `log-report.html`) |
-| `--jobs N` | Parallel file parsers (default: CPU count) |
+| `--jobs N` | Parallel file parsers (default: 1; use 8 on large projects) |
 | `--include-generated` | Also scan `build/`, `generated/`, `out/`, `.gradle/` |
 | `--extensions .java,.kt` | File types to include |
 

@@ -1,32 +1,21 @@
 from __future__ import annotations
 
-from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_java as tsjava
 
 from ..classify import classify_call, snippet_from_text
 from ..context import annotate_finding, contexts_from_ts_node
 from ..models import Finding
+from .tscompat import iter_named, make_language, make_parser
 
-_LANGUAGE: Language | None = None
-_PARSER: Parser | None = None
-_QUERY: Query | None = None
+_PARSER = None
 
 
-def _ensure() -> tuple[Parser, Query]:
-    global _LANGUAGE, _PARSER, _QUERY
-    if _LANGUAGE is None:
-        _LANGUAGE = Language(tsjava.language())
-        _PARSER = Parser(_LANGUAGE)
-        _QUERY = Query(
-            _LANGUAGE,
-            """
-            (method_invocation
-              name: (identifier) @method
-            ) @call
-            """,
-        )
-    assert _PARSER is not None and _QUERY is not None
-    return _PARSER, _QUERY
+def _ensure():
+    global _PARSER
+    if _PARSER is None:
+        language = make_language(tsjava, "java")
+        _PARSER = make_parser(language)
+    return _PARSER
 
 
 def _text(node) -> str:
@@ -34,19 +23,17 @@ def _text(node) -> str:
 
 
 def analyze_java_ts(relpath: str, source: bytes) -> list[Finding]:
-    parser, query = _ensure()
+    parser = _ensure()
     tree = parser.parse(source)
     findings: list[Finding] = []
-    matches = QueryCursor(query).matches(tree.root_node)
-    for _pattern, captures in matches:
-        call_nodes = captures.get("call") or []
-        method_nodes = captures.get("method") or []
-        if not call_nodes or not method_nodes:
+    for call in iter_named(tree.root_node):
+        if call.type != "method_invocation":
             continue
-        call = call_nodes[0]
-        method = _text(method_nodes[0])
-        obj = call.child_by_field_name("object")
-        receiver = _text(obj)
+        name_node = call.child_by_field_name("name")
+        method = _text(name_node)
+        if not method:
+            continue
+        receiver = _text(call.child_by_field_name("object"))
         classified = classify_call(receiver, method)
         if classified is None:
             continue

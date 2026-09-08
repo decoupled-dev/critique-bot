@@ -1,30 +1,21 @@
 from __future__ import annotations
 
-from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_kotlin as tskotlin
 
 from ..classify import classify_call, snippet_from_text
 from ..context import annotate_finding, contexts_from_ts_node
 from ..models import Finding
+from .tscompat import iter_named, make_language, make_parser
 
-_LANGUAGE: Language | None = None
-_PARSER: Parser | None = None
-_QUERY: Query | None = None
+_PARSER = None
 
 
-def _ensure() -> tuple[Parser, Query]:
-    global _LANGUAGE, _PARSER, _QUERY
-    if _LANGUAGE is None:
-        _LANGUAGE = Language(tskotlin.language())
-        _PARSER = Parser(_LANGUAGE)
-        _QUERY = Query(
-            _LANGUAGE,
-            """
-            (call_expression) @call
-            """,
-        )
-    assert _PARSER is not None and _QUERY is not None
-    return _PARSER, _QUERY
+def _ensure():
+    global _PARSER
+    if _PARSER is None:
+        language = make_language(tskotlin, "kotlin")
+        _PARSER = make_parser(language)
+    return _PARSER
 
 
 def _text(node) -> str:
@@ -53,15 +44,12 @@ def _receiver_and_method(call) -> tuple[str, str]:
 
 
 def analyze_kotlin_ts(relpath: str, source: bytes) -> list[Finding]:
-    parser, query = _ensure()
+    parser = _ensure()
     tree = parser.parse(source)
     findings: list[Finding] = []
-    matches = QueryCursor(query).matches(tree.root_node)
-    for _pattern, captures in matches:
-        call_nodes = captures.get("call") or []
-        if not call_nodes:
+    for call in iter_named(tree.root_node):
+        if call.type != "call_expression":
             continue
-        call = call_nodes[0]
         receiver, method = _receiver_and_method(call)
         if not method:
             continue
