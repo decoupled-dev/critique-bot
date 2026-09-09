@@ -131,11 +131,11 @@ class DetectTests(unittest.TestCase):
 
             render_html(findings, errors, stats, out)
             html = out.read_text(encoding="utf-8")
-            self.assertIn("Android Log Analyzer", html)
+            self.assertIn("LogCritique", html)
             self.assertIn("LoopLogs.java", html)
-            self.assertIn("Files by log count", html)
+            self.assertIn("Files", html)
             self.assertIn("Filters", html)
-            self.assertIn("Copy investigation JSON for AI", html)
+            self.assertIn("Export JSON", html)
             self.assertNotIn("<<<LOG_ANALYZER_JSON>>>", html)
             start = html.find(">", html.find("log-analyzer-data")) + 1
             end = html.find("</script>", start)
@@ -171,7 +171,7 @@ class DetectTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Android Java/Kotlin", result.stdout)
+        self.assertIn("LogCritique", result.stdout)
 
     def test_analyze_py_runs_as_a_script(self) -> None:
         script = REPO_ROOT / "log_analyzer" / "analyze.py"
@@ -187,7 +187,7 @@ class DetectTests(unittest.TestCase):
         self.assertIn("usage:", result.stdout.lower())
 
     def test_root_launcher_runs_as_a_script(self) -> None:
-        script = REPO_ROOT / "run_log_analyzer.py"
+        script = REPO_ROOT / "logcritique.py"
         result = subprocess.run(
             [sys.executable, str(script), "--help"],
             cwd="/tmp",
@@ -197,17 +197,7 @@ class DetectTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage:", result.stdout.lower())
-
-    def test_typo_module_log_nalayzer(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-m", "log_nalayzer", "--help"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("usage:", result.stdout.lower())
+        self.assertIn("LogCritique", result.stdout)
 
     def test_scan_does_not_skip_project_inside_build_path(self) -> None:
         from log_analyzer.scan import iter_source_files, normalize_user_path

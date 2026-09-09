@@ -3,11 +3,8 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-out/
 dist/
 build/
-config.json
-storage_state.json
-.edge-profile/
-.critique-queue/
 .python-version
+logcritique.html
+*.investigation.json

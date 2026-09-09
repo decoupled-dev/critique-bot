@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run the analyzer without installing the package or being in the repo root.
+"""Run LogCritique without installing the package.
 
-    python log_analyzer/run.py /path/to/android -o report.html
+    python log_analyzer/run.py /path/to/android -o logcritique.html
 """
 
 from __future__ import annotations

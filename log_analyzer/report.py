@@ -10,7 +10,7 @@ _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "report.html"
 
 _AI_GUIDE = {
     "purpose": (
-        "Investigation pack for an Android Java/Kotlin logging audit. "
+        "LogCritique investigation pack for an Android Java/Kotlin logging audit. "
         "Use this JSON (also embedded in the HTML) to decide which log calls "
         "are actually chatty and which context tags are trustworthy."
     ),

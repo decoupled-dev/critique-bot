@@ -1,4 +1,4 @@
-"""Allow `python -m log_analyzer` or `python log_analyzer/__main__.py`."""
+"""Allow `python -m log_analyzer`."""
 
 from __future__ import annotations
 

@@ -1,1 +1,4 @@
-playwright>=1.49.0
+tree-sitter>=0.21
+tree-sitter-java>=0.21
+tree-sitter-kotlin>=1.0
+javalang>=0.13

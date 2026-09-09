@@ -1,4 +1,4 @@
-"""Offline Android Java/Kotlin log analyzer."""
+"""LogCritique — offline audit of Android Java and Kotlin log calls."""
 
 from .models import Finding
 

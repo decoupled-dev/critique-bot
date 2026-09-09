@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "android-log-analyzer"
+name = "logcritique"
 version = "0.1.0"
-description = "Offline Android Java/Kotlin log analyzer with an HTML report."
+description = "LogCritique — offline audit of Android Java and Kotlin log calls."
 requires-python = ">=3.10"
 dependencies = [
     "tree-sitter>=0.21",
@@ -15,8 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-log-analyzer = "log_analyzer.analyze:main"
-log_analyzer = "log_analyzer.analyze:main"
+logcritique = "log_analyzer.analyze:main"
 
 [tool.setuptools]
 include-package-data = true

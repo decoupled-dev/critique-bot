@@ -104,10 +104,10 @@ def analyze_path(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="log_analyzer",
+        prog="logcritique",
         description=(
-            "Scan Android Java/Kotlin sources for chatty Log/Timber/println calls "
-            "and write a navigable HTML report."
+            "LogCritique — scan Android Java/Kotlin sources for noisy "
+            "Log/Timber/println calls and write an HTML report."
         ),
     )
     parser.add_argument(
@@ -117,8 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--output",
-        default="log-report.html",
-        help="HTML report path (default: log-report.html)",
+        default="logcritique.html",
+        help="HTML report path (default: logcritique.html)",
     )
     parser.add_argument(
         "--jobs",
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {output.resolve()}")
     sidecar = output.with_suffix(".investigation.json")
     if sidecar.is_file():
-        print(f"wrote {sidecar.resolve()}  (give this JSON to an AI for follow-up)")
+        print(f"wrote {sidecar.resolve()}")
     return 0
 
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Typo-friendly launcher. The real package name is log_analyzer."""
+"""Launch LogCritique without installing the package.
+
+    python3 logcritique.py /path/to/android-project -o logcritique.html
+"""
 
 from __future__ import annotations
 
