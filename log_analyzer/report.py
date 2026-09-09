@@ -19,9 +19,10 @@ _AI_GUIDE = {
         "findings[] includes source_window (numbered lines, `>` marks the call).",
         "context_reasons[] explains every loop/observer/listener/hot_path tag.",
         "ancestors[] is the AST parent chain used for those tags.",
-        "loop is applied only when the call is an AST descendant of for/while/do "
-        "or of forEach/forEachIndexed/onEach/repeat. Nearby loops in the same "
-        "method do NOT count.",
+        "loop/observer/listener are applied when the call is an AST descendant "
+        "of for/while/do, forEach/observe/setOn*Listener, OR when a brace/paren "
+        "scan shows the call is still inside that header. Logs after the closing "
+        "brace or ')' do NOT count (same method, nearby loop is not enough).",
         "parse_sources lists which parsers found the call (tree-sitter, javalang, regex).",
         "chatty_score is ranking only; it is not a proof the call is wrong.",
     ],
@@ -67,6 +68,7 @@ def _payload(
     levels = ["v", "d", "i", "w", "e", "wtf", "println", "print"]
     by_level = {level: 0 for level in levels}
     by_context = {"loop": 0, "observer": 0, "listener": 0, "hot_path": 0}
+    by_parser = {"tree-sitter": 0, "javalang": 0, "regex": 0}
     files: dict[str, dict] = {}
     high_freq = 0
     for finding in findings:
@@ -74,6 +76,8 @@ def _payload(
         for ctx in finding.contexts:
             if ctx in by_context:
                 by_context[ctx] += 1
+        for src in finding.parse_sources:
+            by_parser[src] = by_parser.get(src, 0) + 1
         if finding.contexts:
             high_freq += 1
         bucket = files.setdefault(
@@ -108,6 +112,7 @@ def _payload(
             "high_freq": high_freq,
             "by_level": by_level,
             "by_context": by_context,
+            "by_parser": by_parser,
         },
         "files": sorted(
             files.values(),

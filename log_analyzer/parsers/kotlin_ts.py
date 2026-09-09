@@ -5,7 +5,7 @@ import tree_sitter_kotlin as tskotlin
 from ..classify import classify_call, snippet_from_text
 from ..context import annotate_finding, contexts_from_ts_node
 from ..models import Finding
-from .tscompat import iter_named, make_language, make_parser
+from .tscompat import iter_with_ancestors, make_language, make_parser
 
 _PARSER = None
 
@@ -47,8 +47,8 @@ def analyze_kotlin_ts(relpath: str, source: bytes) -> list[Finding]:
     parser = _ensure()
     tree = parser.parse(source)
     findings: list[Finding] = []
-    for call in iter_named(tree.root_node):
-        if call.type != "call_expression":
+    for call, ancestors in iter_with_ancestors(tree.root_node):
+        if call.type not in {"call_expression", "call"}:
             continue
         receiver, method = _receiver_and_method(call)
         if not method:
@@ -57,7 +57,7 @@ def analyze_kotlin_ts(relpath: str, source: bytes) -> list[Finding]:
         if classified is None:
             continue
         level, api = classified
-        info = contexts_from_ts_node(call, "kotlin")
+        info = contexts_from_ts_node(call, "kotlin", ancestors=ancestors)
         finding = Finding(
             file=relpath,
             line=call.start_point[0] + 1,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .context import annotate_finding, attach_source_window
+from .context import annotate_finding, apply_structural_contexts, attach_source_window
 from .models import Finding
 from .parsers.regex_logs import analyze_regex
 
@@ -75,4 +75,35 @@ def detect_source(relpath: str, source: bytes) -> list[Finding]:
     else:
         return []
     findings = merge_findings(*groups)
-    return [attach_source_window(finding, text) for finding in findings]
+    enriched = []
+    for finding in findings:
+        apply_structural_contexts(finding, text)
+        enriched.append(attach_source_window(finding, text))
+    return enriched
+
+
+def probe_parsers() -> dict[str, str]:
+    """One-shot health check so Linux users can see why AST tags are missing."""
+    status: dict[str, str] = {}
+    try:
+        from .parsers.java_ts import analyze_java_ts
+
+        analyze_java_ts("Probe.java", b"class Probe { void m() { x(); } }\n")
+        status["tree-sitter-java"] = "ok"
+    except Exception as exc:
+        status["tree-sitter-java"] = f"{type(exc).__name__}: {exc}"
+    try:
+        from .parsers.kotlin_ts import analyze_kotlin_ts
+
+        analyze_kotlin_ts("Probe.kt", b"fun m() { x() }\n")
+        status["tree-sitter-kotlin"] = "ok"
+    except Exception as exc:
+        status["tree-sitter-kotlin"] = f"{type(exc).__name__}: {exc}"
+    try:
+        import javalang
+
+        javalang.parse.parse("class Probe { void m() {} }")
+        status["javalang"] = "ok"
+    except Exception as exc:
+        status["javalang"] = f"{type(exc).__name__}: {exc}"
+    return status

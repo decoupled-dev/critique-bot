@@ -267,7 +267,12 @@
       $("kpis").innerHTML = items.map(([label, value, primary]) =>
         `<div class="stat ${primary ? "primary" : ""}"><b>${value}</b><span>${label}</span></div>`
       ).join("");
-      $("subtitle").textContent = `${DATA.root}  ·  ${DATA.generated_at}`;
+      const parsers = s.by_parser || {};
+      const parserBits = ["tree-sitter", "javalang", "regex"]
+        .filter((name) => parsers[name])
+        .map((name) => `${name} ${parsers[name]}`);
+      $("subtitle").textContent = `${DATA.root}  ·  ${DATA.generated_at}`
+        + (parserBits.length ? `  ·  ${parserBits.join(" · ")}` : "");
     }
 
     function rankedFiles() {

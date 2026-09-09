@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from log_analyzer.analyze import analyze_path, main
 from log_analyzer.detect import detect_source
@@ -144,6 +145,10 @@ class DetectTests(unittest.TestCase):
             self.assertGreaterEqual(counts[0], counts[-1])
             self.assertIn("ai_guide", payload)
             self.assertTrue(payload["findings"][0]["source_window"])
+            self.assertGreater(payload["stats"]["by_context"]["loop"], 0)
+            self.assertGreater(payload["stats"]["by_context"]["observer"], 0)
+            self.assertGreater(payload["stats"]["by_context"]["listener"], 0)
+            self.assertGreater(payload["stats"]["by_parser"]["regex"], 0)
             sidecar = out.with_suffix(".investigation.json")
             self.assertTrue(sidecar.is_file())
             self.assertIn("source_window", sidecar.read_text(encoding="utf-8"))
@@ -236,6 +241,52 @@ class DetectTests(unittest.TestCase):
             )
             self.assertGreaterEqual(stats.files_scanned, 1)
             self.assertTrue(any(f.method == "d" for f in findings), findings)
+
+    def _regex_only(self, label: str, fn):
+        if "regex" in label:
+            return fn()
+        return []
+
+    def test_regex_only_linux_still_tags_loops_observers_listeners(self) -> None:
+        """When tree-sitter/javalang fail (typical Linux pip mismatch), brace scan still tags."""
+        with patch("log_analyzer.detect._safe_parse", side_effect=self._regex_only):
+            loops = detect_source(*load("LoopLogs.java"))
+            observe = detect_source(*load("Observe.kt"))
+            listener = detect_source(*load("Listener.kt"))
+            after = detect_source(*load("NotInLoop.java"))
+
+        self.assertTrue(any(f.method == "d" and "loop" in f.contexts for f in loops), loops)
+        self.assertTrue(any(f.method == "v" and "loop" in f.contexts for f in loops), loops)
+        self.assertTrue(any(f.method == "w" and "loop" in f.contexts for f in loops), loops)
+        self.assertGreaterEqual(sum(1 for f in observe if "observer" in f.contexts), 3, observe)
+        self.assertTrue(any("listener" in f.contexts and f.method == "d" for f in listener), listener)
+        self.assertTrue(any("listener" in f.contexts and f.method == "i" for f in listener), listener)
+
+        for finding in after:
+            if "inside for" in finding.snippet:
+                self.assertIn("loop", finding.contexts, finding)
+            else:
+                self.assertNotIn("loop", finding.contexts, finding)
+
+        self.assertTrue(all(f.parse_sources == ["regex"] for f in loops))
+
+    def test_braceless_for_is_loop_after_is_not(self) -> None:
+        source = b"""
+class NoBrace {
+  void n(String[] items) {
+    for (int i = 0; i < items.length; i++)
+      android.util.Log.d("T", items[i]);
+    android.util.Log.i("T", "after");
+  }
+}
+"""
+        findings = detect_source("NoBrace.java", source)
+        debugs = [f for f in findings if f.method == "d"]
+        infos = [f for f in findings if f.method == "i"]
+        self.assertTrue(debugs, findings)
+        self.assertIn("loop", debugs[0].contexts)
+        self.assertTrue(infos)
+        self.assertNotIn("loop", infos[0].contexts)
 
     def test_quoted_linux_path_and_single_file(self) -> None:
         from log_analyzer.scan import normalize_user_path

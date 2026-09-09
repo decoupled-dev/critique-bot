@@ -16,12 +16,17 @@ class ContextInfo:
     ancestors: list[str] = field(default_factory=list)
 
 LOOP_NODE_TYPES = {
+    "for",
+    "while",
+    "do",
     "for_statement",
     "enhanced_for_statement",
     "while_statement",
     "do_statement",
     "do_while_statement",
     "for_in_statement",
+    "for_expression",
+    "while_expression",
 }
 
 CLASS_NODE_TYPES = {
@@ -39,7 +44,7 @@ FUNCTION_NODE_TYPES = {
     "secondary_constructor",
 }
 
-CALL_NODE_TYPES = {"method_invocation", "call_expression"}
+CALL_NODE_TYPES = {"method_invocation", "call_expression", "call"}
 
 LOOP_CALL_NAMES = {
     "foreach",
@@ -193,7 +198,11 @@ def _is_listener_call(name: str) -> bool:
     return lowered.startswith(LISTENER_CALL_PREFIXES)
 
 
-def contexts_from_ts_node(node, flavor: str) -> ContextInfo:
+def _is_loop_node(ntype: str) -> bool:
+    return ntype in LOOP_NODE_TYPES or ntype.lower() in LOOP_NODE_TYPES
+
+
+def contexts_from_ts_node(node, flavor: str, ancestors: list | None = None) -> ContextInfo:
     info = ContextInfo()
     seen: set[str] = set()
 
@@ -203,10 +212,18 @@ def contexts_from_ts_node(node, flavor: str) -> ContextInfo:
             info.contexts.append(tag)
         info.reasons.append(reason)
 
-    current = node.parent
-    while current is not None:
+    chain: list = []
+    if ancestors:
+        chain = list(reversed(ancestors))
+    else:
+        current = getattr(node, "parent", None)
+        while current is not None:
+            chain.append(current)
+            current = getattr(current, "parent", None)
+
+    for current in chain:
         ntype = current.type
-        if ntype in LOOP_NODE_TYPES:
+        if _is_loop_node(ntype):
             add("loop", f"loop ← AST ancestor `{ntype}`")
         if ntype in CLASS_NODE_TYPES and not info.enclosing_class:
             info.enclosing_class = node_name(current)
@@ -223,7 +240,6 @@ def contexts_from_ts_node(node, flavor: str) -> ContextInfo:
                 add("listener", f"listener ← AST call `{call}()`")
         elif ntype in FUNCTION_NODE_TYPES or ntype in CLASS_NODE_TYPES:
             info.ancestors.append(f"{ntype}:{node_name(current) or '?'}")
-        current = current.parent
 
     func_key = info.enclosing_function.lower()
     class_key = info.enclosing_class.lower()
@@ -277,6 +293,181 @@ def contexts_from_javalang_path(path: Iterable[object]) -> ContextInfo:
     return info
 
 
+def _line_col_to_offset(source: str, line: int, column: int) -> int:
+    parts = source.splitlines(keepends=True)
+    if line < 1 or not parts:
+        return 0
+    if line > len(parts):
+        return len(source)
+    return sum(len(part) for part in parts[: line - 1]) + max(0, min(column, len(parts[line - 1])) - 1)
+
+
+def _header_before(source: str, index: int) -> str:
+    start = source.rfind("\n", 0, index)
+    line = source[start + 1 : index].strip()
+    if not line or line in {")", "]", "->", "=", ","}:
+        if start >= 0:
+            prev = source.rfind("\n", 0, start)
+            prev_line = source[prev + 1 : start]
+            line = f"{prev_line} {line}".strip()
+    return re.sub(r"\s+", " ", line)
+
+
+def _call_name_before(source: str, paren_index: int) -> str:
+    j = paren_index - 1
+    while j >= 0 and source[j].isspace():
+        j -= 1
+    end = j + 1
+    while j >= 0 and (source[j].isalnum() or source[j] == "_"):
+        j -= 1
+    return source[j + 1 : end]
+
+
+def _call_name_from_header(header: str) -> str:
+    """Last call/keyword attached to the '{' or '(' that opened this scope."""
+    text = header.strip()
+    while text.endswith(")"):
+        depth = 0
+        cut = None
+        for i in range(len(text) - 1, -1, -1):
+            if text[i] == ")":
+                depth += 1
+            elif text[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    cut = i
+                    break
+        if cut is None:
+            break
+        text = text[:cut].rstrip()
+    tokens = re.findall(r"[A-Za-z_]\w*", text)
+    return tokens[-1].lower() if tokens else ""
+
+
+def classify_header(header: str) -> list[tuple[str, str]]:
+    if not header:
+        return []
+    tags: list[tuple[str, str]] = []
+    snippet = header[:120]
+    name = _call_name_from_header(header)
+    if (
+        name in LOOP_CALL_NAMES
+        or name in {"for", "while", "do"}
+        or re.search(r"\bfor\s*\(", header)
+        or re.search(r"\bwhile\s*\(", header)
+        or re.search(r"\bdo\b", header)
+    ):
+        tags.append(("loop", f"loop ← enclosing `{snippet}`"))
+    if name in OBSERVER_CALL_NAMES:
+        tags.append(("observer", f"observer ← enclosing `{snippet}`"))
+    if _is_listener_call(name):
+        tags.append(("listener", f"listener ← enclosing `{snippet}`"))
+    return tags
+
+
+def _scan_enclosing_headers(source: str, offset: int) -> list[str]:
+    """Forward-scan to offset and return headers of open { } and qualifying ( ) scopes."""
+    brace_stack: list[str] = []
+    paren_stack: list[str] = []
+    pending = ""
+    i = 0
+    n = min(offset, len(source))
+    in_line = in_block = False
+    quote = ""
+    while i < n:
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
+        if in_line:
+            if ch == "\n":
+                in_line = False
+            i += 1
+            continue
+        if in_block:
+            if ch == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if quote:
+            if ch == "\\" and nxt:
+                i += 2
+                continue
+            if source.startswith(quote, i):
+                i += len(quote)
+                quote = ""
+                continue
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            in_line = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            continue
+        if source.startswith('"""', i) or source.startswith("'''", i):
+            quote = source[i : i + 3]
+            i += 3
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            pending = ""
+            brace_stack.append(_header_before(source, i))
+        elif ch == "}" and brace_stack:
+            brace_stack.pop()
+        elif ch == "(":
+            paren_stack.append(_call_name_before(source, i))
+        elif ch == ")" and paren_stack:
+            pending = paren_stack.pop()
+        elif ch == ";" and not paren_stack:
+            pending = ""
+        i += 1
+    headers = list(brace_stack)
+    if pending:
+        headers.append(pending + "()")
+    for name in paren_stack:
+        if name.lower() in LOOP_CALL_NAMES | OBSERVER_CALL_NAMES or _is_listener_call(name):
+            headers.append(name + "()")
+        elif name.lower() in {"for", "while", "do"}:
+            headers.append(name + "()")
+    return headers
+
+
+def contexts_from_source_structure(source: str, line: int, column: int) -> ContextInfo:
+    """Brace/paren-accurate context. Same on Linux and Windows; does not use nearby-line guesses."""
+    info = contexts_from_source_text(source, line)
+    info.reasons = [r for r in info.reasons if "not inferred from nearby text" not in r]
+    offset = _line_col_to_offset(source, line, column)
+    for header in _scan_enclosing_headers(source, offset):
+        for tag, reason in classify_header(header):
+            if tag not in info.contexts:
+                info.contexts.append(tag)
+            info.reasons.append(reason)
+            info.ancestors.append(header[:80])
+    return info
+
+
+def apply_structural_contexts(finding: Finding, source: str) -> Finding:
+    extra = contexts_from_source_structure(source, finding.line, finding.column or 1)
+    for tag in extra.contexts:
+        if tag not in finding.contexts:
+            finding.contexts.append(tag)
+    if extra.reasons:
+        finding.context_reasons = list(dict.fromkeys(finding.context_reasons + extra.reasons))
+    if extra.ancestors and not finding.ancestors:
+        finding.ancestors = extra.ancestors
+    if extra.enclosing_function and not finding.enclosing_function:
+        finding.enclosing_function = extra.enclosing_function
+    if extra.enclosing_class and not finding.enclosing_class:
+        finding.enclosing_class = extra.enclosing_class
+    return annotate_finding(finding)
+
+
 def contexts_from_source_text(source: str, line: int) -> ContextInfo:
     """Name/hot-path only. Do not guess loop/observer/listener from nearby text."""
     info = ContextInfo()
@@ -300,7 +491,6 @@ def contexts_from_source_text(source: str, line: int) -> ContextInfo:
     if func_key in HOT_METHODS:
         info.contexts.append("hot_path")
         info.reasons.append(f"hot_path ← enclosing method `{info.enclosing_function}` (regex)")
-    info.reasons.append("loop/observer/listener not inferred from nearby text")
     return info
 
 

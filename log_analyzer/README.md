@@ -59,6 +59,8 @@ Each hit is tagged when it sits in a high-frequency place:
 - listeners (`setOnClickListener`, `addTextChangedListener`, `*Listener`, …)
 - hot methods (`onBindViewHolder`, `onDraw`, `onScrolled`, `onTouchEvent`, …)
 
+Tags come from the AST when tree-sitter/javalang load, and from a brace/paren scan of the same file when they do not (common on Linux if those packages fail to import). Logs *after* a loop in the same method are not tagged. The CLI prints `contexts: loop=… observer=… listener=…` so you can see the counts immediately.
+
 A chatty score ranks items so the noisiest calls surface first. `Log.e` inside a loop is still flagged because it can flood logcat.
 
 ## HTML report

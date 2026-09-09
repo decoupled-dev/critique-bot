@@ -18,7 +18,9 @@ if _ROOT_STR not in _pythonpath.split(os.pathsep):
         _ROOT_STR + (os.pathsep + _pythonpath if _pythonpath else "")
     )
 
-from log_analyzer.detect import detect_source
+from collections import Counter
+
+from log_analyzer.detect import detect_source, probe_parsers
 from log_analyzer.models import FileError, Finding, ScanStats
 from log_analyzer.report import render_html
 from log_analyzer.scan import (
@@ -167,6 +169,30 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"scanned {stats.files_scanned} files ({stats.bytes_scanned} bytes)")
     print(f"found {stats.findings} log calls in {stats.files_with_findings} files")
+    parsers = Counter()
+    contexts = Counter()
+    for finding in findings:
+        for src in finding.parse_sources:
+            parsers[src] += 1
+        for tag in finding.contexts:
+            contexts[tag] += 1
+    print(
+        "contexts: "
+        f"loop={contexts['loop']} observer={contexts['observer']} "
+        f"listener={contexts['listener']} hot_path={contexts['hot_path']}"
+    )
+    if parsers:
+        print("parsers: " + ", ".join(f"{name}={count}" for name, count in parsers.most_common()))
+    if findings and not parsers.get("tree-sitter") and not parsers.get("javalang"):
+        health = probe_parsers()
+        print(
+            "warning: tree-sitter/javalang did not tag any calls; "
+            "loop/observer/listener tags used brace matching instead.",
+            file=sys.stderr,
+        )
+        for name, note in health.items():
+            if note != "ok":
+                print(f"  {name}: {note}", file=sys.stderr)
     if stats.files_scanned == 0:
         print(
             "warning: no .java/.kt files found. Pass the project folder "

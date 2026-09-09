@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..classify import classify_call, snippet_from_text
-from ..context import annotate_finding, contexts_from_source_text
+from ..context import annotate_finding, contexts_from_source_structure
 from ..models import Finding
 
 _LOG_CALL = re.compile(
@@ -116,7 +116,7 @@ def _add(
     line = source[: match.start()].count("\n") + 1
     last_nl = source.rfind("\n", 0, match.start())
     column = match.start() - last_nl
-    info = contexts_from_source_text(original, line)
+    info = contexts_from_source_structure(original, line, column)
     line_end = original.find("\n", match.start())
     if line_end < 0:
         line_end = len(original)

@@ -39,3 +39,19 @@ def iter_named(root: Node):
         children = list(node.children)
         for child in reversed(children):
             stack.append(child)
+
+
+def iter_with_ancestors(root: Node):
+    """Walk the CST with an explicit ancestor stack.
+
+    Some Linux tree-sitter builds leave ``node.parent`` as None. The stack
+    is the reliable way to know whether a call sits inside a loop.
+    """
+    stack: list[tuple[Node, list[Node]]] = [(root, [])]
+    while stack:
+        node, ancestors = stack.pop()
+        yield node, ancestors
+        nxt = ancestors + [node]
+        children = list(node.children)
+        for child in reversed(children):
+            stack.append((child, nxt))
