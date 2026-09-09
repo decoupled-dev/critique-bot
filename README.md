@@ -2,21 +2,29 @@
 
 Offline audit of Android Java and Kotlin log calls. Scan a project, then open a single HTML report.
 
+## Linux
+
 ```bash
 python3 -m pip install -r requirements.txt
 python3 logcritique.py /home/you/MyApp -o logcritique.html
 ```
 
-Use a Linux path (`/home/...` or `~/MyApp`). Do not pass `C:\...`. Quotes around the path are fine.
+## Windows PowerShell
 
-Also valid:
-
-```bash
-python3 -m log_analyzer /path/to/android-project -o logcritique.html
-python3 log_analyzer/analyze.py /path/to/android-project -o logcritique.html
+```powershell
+python -m pip install -r requirements.txt
+python logcritique.py C:\Users\you\MyApp -o logcritique.html
 ```
 
-The run writes `logcritique.html` and a JSON sidecar next to it (`*.investigation.json`) with source windows and evidence for each tag.
+Quotes are fine when the path has spaces:
+
+```powershell
+python logcritique.py "C:\Users\you\Android Studio Projects\MyApp" -o logcritique.html
+```
+
+`py -3` works if `python` is not on PATH. `~\MyApp` is also accepted.
+
+The run writes `logcritique.html` and a JSON sidecar next to it (`*.investigation.json`).
 
 | Flag | Meaning |
 | --- | --- |

@@ -5,3 +5,7 @@ Python package for the LogCritique CLI. See the repository root `README.md` for 
 ```bash
 python3 logcritique.py /path/to/android-project -o logcritique.html
 ```
+
+```powershell
+python logcritique.py C:\Users\you\MyApp -o logcritique.html
+```

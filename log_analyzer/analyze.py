@@ -112,7 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "root",
-        help="Android project directory or a single .java/.kt file (Linux path, e.g. /home/you/MyApp)",
+        help=(
+            "Android project directory or a single .java/.kt file "
+            "(Linux: /home/you/MyApp  PowerShell: C:\\Users\\you\\MyApp)"
+        ),
     )
     parser.add_argument(
         "-o",
@@ -124,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=int,
         default=1,
-        help="Parallel file parsers (default: 1, safest on Linux). Use --jobs 8 on large trees.",
+        help="Parallel file parsers (default: 1). Use --jobs 8 on large trees.",
     )
     parser.add_argument(
         "--include-generated",
@@ -141,18 +144,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    raw_root = args.root.strip()
-    if len(raw_root) >= 2 and raw_root[1] == ":" and raw_root[0].isalpha() and "\\" in raw_root:
-        print(
-            "error: that looks like a Windows path. On Linux use "
-            "/home/you/MyApp or ~/MyApp, not C:\\\\Users\\\\...",
-            file=sys.stderr,
-        )
-        return 2
     root = normalize_user_path(args.root)
     if not root.exists():
         print(f"error: path not found: {root}", file=sys.stderr)
-        print("hint: use an absolute Linux path, e.g. /home/you/AndroidStudioProjects/MyApp", file=sys.stderr)
+        print(
+            "hint: pass the project folder that contains app/src. "
+            r"PowerShell: C:\Users\you\MyApp   Linux: /home/you/MyApp",
+            file=sys.stderr,
+        )
         return 2
     if not root.is_dir() and not root.is_file():
         print(f"error: not a file or directory: {root}", file=sys.stderr)
@@ -196,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     if stats.files_scanned == 0:
         print(
             "warning: no .java/.kt files found. Pass the project folder "
-            "(the directory that contains app/src), not a Windows path.",
+            "that contains app/src (Linux or Windows path for this machine).",
             file=sys.stderr,
         )
     if errors:

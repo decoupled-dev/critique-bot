@@ -278,6 +278,32 @@ class NoBrace {
         self.assertTrue(infos)
         self.assertNotIn("loop", infos[0].contexts)
 
+    def test_cli_accepts_windows_path_shape(self) -> None:
+        from io import StringIO
+
+        err = StringIO()
+        with patch("sys.stderr", err):
+            code = main([r"C:\Users\nobody\DoesNotExistApp", "-o", "x.html"])
+        self.assertEqual(code, 2)
+        text = err.getvalue()
+        self.assertNotIn("looks like a Windows path", text)
+        self.assertNotIn("running on Linux", text)
+        self.assertIn("path not found", text.lower())
+
+    def test_windows_and_posix_path_shapes(self) -> None:
+        from log_analyzer.scan import candidate_paths, looks_like_windows_path, normalize_user_path
+
+        self.assertTrue(looks_like_windows_path(r"C:\Users\me\MyApp"))
+        self.assertTrue(looks_like_windows_path("C:/Users/me/MyApp"))
+        self.assertTrue(looks_like_windows_path(r'"C:\Users\me\MyApp\"'))
+        self.assertFalse(looks_like_windows_path("/home/you/MyApp"))
+        spellings = [str(path).replace("\\", "/") for path in candidate_paths(r"C:\Users\me\MyApp")]
+        self.assertTrue(any(item.endswith("/mnt/c/Users/me/MyApp") for item in spellings), spellings)
+        self.assertTrue(any(item.endswith("/c/Users/me/MyApp") for item in spellings), spellings)
+
+        target = FIXTURES / "LoopLogs.java"
+        self.assertTrue(normalize_user_path(f'"{target}"').exists())
+
     def test_quoted_linux_path_and_single_file(self) -> None:
         from log_analyzer.scan import normalize_user_path
 
