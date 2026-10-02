@@ -44,6 +44,7 @@ class Job:
     meta: dict[str, Any]
     attempts: int = 0
     files: dict[str, str] = field(default_factory=dict)
+    patch: str = ""
 
 
 @dataclass
@@ -259,9 +260,11 @@ class FileQueue:
         meta: dict[str, Any] | None = None,
         label: str | None = None,
         files: dict[str, str] | None = None,
+        patch: str | None = None,
     ) -> str:
         meta = dict(meta or {})
         file_map = _job_files({"files": files} if files else {})
+        patch_text = patch if isinstance(patch, str) and patch.strip() else ""
         slug = job_label(meta, explicit=label)
         job_id = _new_job_id(slug)
         payload = {
@@ -277,11 +280,14 @@ class FileQueue:
         }
         if file_map:
             payload["files"] = file_map
+        if patch_text:
+            payload["patch"] = patch_text
         dest = self.inbox / f"{job_id}.json"
         _atomic_write_json(dest, payload)
         log.info(
             f"enqueued job {job_id} ({len(prompt)} chars, mode={mode}, label={slug}"
             + (f", {len(file_map)} staged file(s)" if file_map else "")
+            + (f", patch {len(patch_text)} chars" if patch_text else "")
             + ")"
         )
         return job_id
@@ -333,6 +339,7 @@ class FileQueue:
                 "meta": job.meta,
                 "prompt_chars": len(job.prompt),
                 "staged_files": len(job.files) or None,
+                "patch_chars": len(job.patch) or None,
             },
         )
 
@@ -593,7 +600,17 @@ def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
         meta=meta,
         attempts=_attempt_count(data),
         files=_job_files(data),
+        patch=_job_patch(data),
     )
+
+
+def _job_patch(data: dict[str, Any]) -> str:
+    raw = data.get("patch")
+    if not raw:
+        return ""
+    if not isinstance(raw, str):
+        raise QueueError("job patch must be a string")
+    return raw
 
 
 def _job_files(data: dict[str, Any]) -> dict[str, str]:

@@ -135,6 +135,34 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertNotIn("class B {}", session.prompts[1])
         self.assertTrue(session.prompts[3].rstrip().endswith("REVIEW NOW"))
 
+    def test_split_prompt_files_then_patch(self) -> None:
+        job_id = self.queue.enqueue(
+            mode="review",
+            stem="review",
+            prompt="INSTRUCTIONS READY",
+            files={"a.java": "class A {}", "b.java": "class B {}"},
+            patch="+hi\n",
+            label="t",
+        )
+        job = self.queue.claim()
+        assert job is not None
+        self.assertEqual(job.id, job_id)
+        self.config = _config(str(self.root), turn_pause_seconds=0)
+        provider = FakeProvider(
+            ["READY", "ACK a.java", "ACK b.java", "**Risk: Moderate risk**\n```json\n{}\n```"]
+        )
+        _execute_job(provider, self.config, self.queue, job, isolated=False)
+        status = self.queue.read_status(job.id)
+        assert status is not None
+        self.assertTrue(status.ok)
+        session = provider.sessions[0]
+        self.assertEqual(len(session.prompts), 4)
+        self.assertIn("INSTRUCTIONS", session.prompts[0])
+        self.assertNotIn("+hi", session.prompts[0])
+        self.assertIn("class A {}", session.prompts[1])
+        self.assertIn("+hi", session.prompts[3])
+        self.assertTrue(session.prompts[3].rstrip().endswith("REVIEW NOW"))
+
     def test_empty_reply_fails(self) -> None:
         job = self._job()
         _execute_job(FakeProvider("  \n"), self.config, self.queue, job, isolated=False)

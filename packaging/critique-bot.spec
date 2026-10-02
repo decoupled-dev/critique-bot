@@ -40,12 +40,13 @@ try:
 except ImportError:
     pass
 
-prompts = ROOT / "prompts" / "review.txt"
-if prompts.is_file():
-    datas.append((str(prompts), "prompts"))
-packaged_prompt = ROOT / "src" / "critique_bot" / "prompts" / "review.txt"
-if packaged_prompt.is_file():
-    datas.append((str(packaged_prompt), "critique_bot/prompts"))
+for prompt_name in ("review.txt", "agent.txt"):
+    prompts = ROOT / "prompts" / prompt_name
+    if prompts.is_file():
+        datas.append((str(prompts), "prompts"))
+    packaged_prompt = ROOT / "src" / "critique_bot" / "prompts" / prompt_name
+    if packaged_prompt.is_file():
+        datas.append((str(packaged_prompt), "critique_bot/prompts"))
 
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],
@@ -64,6 +65,10 @@ a = Analysis(
         "critique_bot.patch",
         "critique_bot.queue",
         "critique_bot.worker",
+        "critique_bot.agent",
+        "critique_bot.agent_cli",
+        "critique_bot.bot_home",
+        "critique_bot.code_index",
         "playwright.sync_api",
         "greenlet",
     ],

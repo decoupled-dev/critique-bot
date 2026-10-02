@@ -111,29 +111,28 @@ Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, 
 4. Writes `diff.patch`.
 5. Reads **HEAD contents** of every changed text file from the checkout (the original files, not only the hunks). Markdown/RST and binaries are skipped; deleted paths are skipped because they are not on disk.
 6. Puts the result on the queue job:
-   - If template + files + patch fit in `max_prompt_chars` (default `120000`): **one prompt** (`{files}` inlined).
-   - If they would overflow: **staged file bodies** on the job (`files`, one path each, cap `max_files` default `80`) plus the review prompt and patch.
+   - If template + HEAD files + patch fit in `max_prompt_chars` (default `120000`): **one prompt**, ordered instructions → original files → patch.
+   - If they would overflow: **instructions** (`prompt`), **staged HEAD file bodies** (`files`, one path each, cap `max_files` default `80`), and the **patch** as its own field. The worker pastes them as separate turns in that order.
 
 The worker then pastes that job (chat only):
 
 | What submit queued | What the worker pastes |
 | --- | --- |
-| One prompt | A single paste |
-| Staged `files` + review prompt | Prime → each file → review |
+| One prompt | A single paste (instructions, then HEAD files, then patch) |
+| `prompt` + `files` + `patch` | Instructions → each HEAD file → patch |
 
-Staged-file sequence on the same Edge tab:
+Overflow sequence on the same Edge tab:
 
-1. Prime: “I will send N changed file(s) one at a time”. The model must reply `ACK` only, not a review.
-2. `FILE i of N` with the body submit already loaded. As soon as the reply starts with `ACK <path>`, the next file is pasted (`turn_pause_seconds` default `0`).
-3. After the last ACK: the review template + patch + `REVIEW NOW`. Only this last reply is `review.md`.
+1. Instructions (role, MR context, output contract). The model should reply `READY`, not a review.
+2. `FILE i of N` with the HEAD body. ACK means the file is **kept for the review** (line numbers, enclosing methods), not discarded. Next file as soon as the reply starts with `ACK <path>` (`turn_pause_seconds` default `0`).
+3. The unified diff last, plus `REVIEW NOW` and a reminder to use the ACK'd HEAD files. Only this last reply is `review.md`.
 
 Caps and skips (applied by **submit** when it loads the checkout):
 
 - At most `max_files` bodies (default `80`); each body truncated at `max_file_chars` (default `32000`).
 - Markdown/RST, binaries, and missing/deleted paths are not staged (their diffs stay in `diff.patch`).
-- If a file turn gets no assistant reply, the worker drops remaining file pastes and still sends the review prompt.
-
-File-by-file reviews take longer than a one-shot paste. Keep `--wait-timeout 1800` and the job `timeout: 1h`. Submit logs `inlining N changed file(s)` or `staging N file(s) across chat turns`.
+- If a file turn gets no assistant reply, the worker drops remaining file pastes and still sends the patch.
+- File-by-file reviews take longer than a one-shot paste. Keep `--wait-timeout 1800` and the job `timeout: 1h`. Submit logs `inlining N changed file(s)` or `prompt, then N file(s), then patch`.
 
 Windows: this is already how [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml) works. The `& "$CRITIQUE_BIN" submit …` line is enough; there is no extra flag.
 

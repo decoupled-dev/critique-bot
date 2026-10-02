@@ -143,13 +143,31 @@ class FileQueueTests(unittest.TestCase):
         raw = json.loads((self.root / "processing" / f"{job_id}.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["files"]["Foo.java"], "class Foo {}")
 
+    def test_enqueue_round_trips_separate_patch(self) -> None:
+        job_id = self.queue.enqueue(
+            mode="review",
+            stem="review",
+            prompt="INSTRUCTIONS",
+            files={"Foo.java": "class Foo {}"},
+            patch="diff --git a/Foo.java b/Foo.java\n+hi\n",
+        )
+        claimed = self.queue.claim()
+        assert claimed is not None
+        self.assertEqual(claimed.id, job_id)
+        self.assertEqual(claimed.patch, "diff --git a/Foo.java b/Foo.java\n+hi\n")
+        raw = json.loads((self.root / "processing" / f"{job_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["patch"], claimed.patch)
+        self.assertNotIn("+hi", claimed.prompt)
+
     def test_enqueue_omits_empty_files(self) -> None:
         job_id = self.queue.enqueue(mode="review", stem="review", prompt="p")
         raw = json.loads((self.root / "inbox" / f"{job_id}.json").read_text(encoding="utf-8"))
         self.assertNotIn("files", raw)
+        self.assertNotIn("patch", raw)
         claimed = self.queue.claim()
         assert claimed is not None
         self.assertEqual(claimed.files, {})
+        self.assertEqual(claimed.patch, "")
 
     def test_enqueue_explicit_label_overrides_meta(self) -> None:
         job_id = self.queue.enqueue(

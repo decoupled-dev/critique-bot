@@ -4,13 +4,16 @@ import unittest
 
 from critique_bot.patch import InputLimits, SanitizeStats
 from critique_bot.review_session import (
-    FILES_ALREADY_SENT,
+    PATCH_COMING,
+    READY,
     REVIEW_NOW,
     PromptPayload,
     format_file_turn,
+    format_patch_turn,
     format_prime_turn,
     one_shot_fits,
     reply_is_ack,
+    reply_is_ready,
     run_review_session,
     sanitize_context_files,
     split_review_payload,
@@ -49,14 +52,19 @@ class FitAndSplitTests(unittest.TestCase):
             stats,
         )
         self.assertEqual(payload.files, {})
+        self.assertEqual(payload.patch, "")
         self.assertIn("class Foo {}", payload.prompt)
         self.assertIn("--- file: Foo.java ---", payload.prompt)
-        self.assertNotIn(FILES_ALREADY_SENT, payload.prompt)
-        self.assertNotIn(REVIEW_NOW, payload.prompt)
+        self.assertIn("+hi", payload.prompt)
+        self.assertNotIn(PATCH_COMING, payload.prompt)
+        self.assertIn(REVIEW_NOW, payload.prompt)
+        files_part, patch_part = payload.prompt.split("PATCH", 1)
+        self.assertIn("class Foo {}", files_part)
+        self.assertIn("+hi", patch_part)
 
-    def test_overflow_stages_files_and_omits_bodies_from_prompt(self) -> None:
-        body = "class Foo {\n" + ("    int x;\n" * 40) + "}\n"
-        limits = InputLimits(max_prompt_chars=400, max_file_chars=2_000)
+    def test_overflow_sends_prompt_then_files_then_patch(self) -> None:
+        body = "class Foo {\n" + ("    int x;\n" * 200) + "}\n"
+        limits = InputLimits(max_prompt_chars=2_000, max_file_chars=8_000)
         payload = split_review_payload(
             "FILES\n{files}\nPATCH\n{patch}\n",
             "+hi\n",
@@ -67,13 +75,17 @@ class FitAndSplitTests(unittest.TestCase):
         )
         self.assertIn("Foo.java", payload.files)
         self.assertEqual(payload.files["Foo.java"], body)
-        self.assertIn(FILES_ALREADY_SENT, payload.prompt)
+        self.assertEqual(payload.patch, "+hi\n")
+        self.assertIn(PATCH_COMING, payload.prompt)
+        self.assertIn(READY, payload.prompt)
         self.assertNotIn("int x;", payload.prompt)
-        self.assertIn("+hi", payload.prompt)
+        self.assertNotIn("+hi", payload.prompt)
+        self.assertIn("USE it in the review", payload.prompt)
+        self.assertIn("Foo.java", payload.prompt)
 
     def test_overflow_stages_every_changed_file(self) -> None:
-        limits = InputLimits(max_prompt_chars=200, max_file_chars=2_000)
-        files = [(f"f{i}.java", "class X {}\n" * 5) for i in range(12)]
+        limits = InputLimits(max_prompt_chars=2_000, max_file_chars=8_000)
+        files = [(f"f{i}.java", "class X {}\n" * 80) for i in range(12)]
         payload = split_review_payload(
             "FILES\n{files}\nPATCH\n{patch}\n",
             "+hi\n",
@@ -84,10 +96,11 @@ class FitAndSplitTests(unittest.TestCase):
         )
         self.assertEqual(len(payload.files), 12)
         self.assertEqual(list(payload.files), [f"f{i}.java" for i in range(12)])
-        self.assertIn(FILES_ALREADY_SENT, payload.prompt)
+        self.assertEqual(payload.patch, "+hi\n")
+        self.assertIn(PATCH_COMING, payload.prompt)
 
-    def test_many_changed_files_still_include_bodies(self) -> None:
-        limits = InputLimits(max_prompt_chars=400, max_file_chars=2_000)
+    def test_many_changed_files_still_include_bodies_when_they_fit(self) -> None:
+        limits = InputLimits(max_prompt_chars=4_000, max_file_chars=2_000)
         files = [(f"f{i}.java", "class X {}\n") for i in range(3)]
         payload = split_review_payload(
             "FILES\n{files}\nPATCH\n{patch}\n",
@@ -99,9 +112,25 @@ class FitAndSplitTests(unittest.TestCase):
             changed_path_count=10,
         )
         self.assertEqual(payload.files, {})
+        self.assertEqual(payload.patch, "")
         self.assertIn("class X {}", payload.prompt)
         self.assertIn("--- file: f0.java ---", payload.prompt)
-        self.assertNotIn(FILES_ALREADY_SENT, payload.prompt)
+        self.assertNotIn(PATCH_COMING, payload.prompt)
+
+    def test_huge_patch_without_files_still_splits_prompt_and_patch(self) -> None:
+        limits = InputLimits(max_prompt_chars=500)
+        payload = split_review_payload(
+            "REVIEW:\n{patch}\n",
+            "diff --git a/a b/a\n" + ("+x\n" * 200),
+            "",
+            [],
+            limits,
+            SanitizeStats(),
+        )
+        self.assertEqual(payload.files, {})
+        self.assertTrue(payload.patch.startswith("diff --git"))
+        self.assertIn(PATCH_COMING, payload.prompt)
+        self.assertNotIn("+x", payload.prompt)
 
 
 class SanitizeContextFilesTests(unittest.TestCase):
@@ -131,14 +160,25 @@ class FormatTurnTests(unittest.TestCase):
         self.assertIn("2 changed file", text)
         self.assertIn("src/Foo.java (3 chars)", text)
         self.assertIn("ACK <path>", text)
+        self.assertIn("retained the HEAD file", text)
         self.assertIn(REVIEW_NOW, text)
 
-    def test_file_turn_is_one_path(self) -> None:
+    def test_file_turn_is_review_evidence_not_ack_only(self) -> None:
         text = format_file_turn(1, 2, "Foo.java", "class Foo {}")
-        self.assertIn("FILE 1 of 2", text)
+        self.assertIn("FILE 1 of 2: Foo.java", text)
         self.assertIn("ACK Foo.java", text)
+        self.assertIn("You MUST use it after the PATCH", text)
+        self.assertIn("receipt that you stored this file", text)
         self.assertIn("--- file: Foo.java ---", text)
         self.assertIn("class Foo {}", text)
+
+    def test_patch_turn_points_back_at_head_files(self) -> None:
+        text = format_patch_turn("+hi\n", {"Foo.java": "class Foo {}"})
+        self.assertIn("```diff", text)
+        self.assertIn("+hi", text)
+        self.assertIn("Foo.java", text)
+        self.assertIn(REVIEW_NOW, text)
+        self.assertTrue(text.rstrip().endswith(REVIEW_NOW))
 
 
 class AckTests(unittest.TestCase):
@@ -149,6 +189,12 @@ class AckTests(unittest.TestCase):
         self.assertFalse(reply_is_ack("", "Foo.java"))
         self.assertFalse(reply_is_ack("ACK other.java", "Foo.java"))
 
+    def test_ready_first_line(self) -> None:
+        self.assertTrue(reply_is_ready("READY"))
+        self.assertTrue(reply_is_ready("ready\nextra"))
+        self.assertFalse(reply_is_ready("ACK Foo.java"))
+        self.assertFalse(reply_is_ready(""))
+
 
 class RunReviewSessionTests(unittest.TestCase):
     def test_empty_files_single_send(self) -> None:
@@ -158,32 +204,55 @@ class RunReviewSessionTests(unittest.TestCase):
         self.assertEqual(out, "review body")
         self.assertEqual(session.prompts, ["ONE SHOT"])
 
-    def test_staged_discards_intermediate_replies(self) -> None:
+    def test_split_sends_instructions_then_files_then_patch(self) -> None:
         session = FakeSession(
-            ["ok", "ACK a.java", "I already found a bug", "FINAL REVIEW"]
+            ["READY", "ACK a.java", "ACK b.java", "FINAL REVIEW"]
         )
         limits = InputLimits(max_prompt_chars=10_000)
         files = {"a.java": "class A {}", "b.java": "class B {}"}
         sleeps: list[float] = []
         out = run_review_session(
             session,
-            "REVIEW TEMPLATE\nPATCH",
+            "INSTRUCTIONS\nREADY please",
             files,
             limits,
+            patch="+hi\n",
             turn_pause_seconds=0.5,
             sleep=sleeps.append,
         )
         self.assertEqual(out, "FINAL REVIEW")
         self.assertEqual(len(session.prompts), 4)
-        self.assertIn("ACK <path>", session.prompts[0])
+        self.assertIn("INSTRUCTIONS", session.prompts[0])
+        self.assertNotIn("+hi", session.prompts[0])
         self.assertIn("FILE 1 of 2", session.prompts[1])
         self.assertIn("class A {}", session.prompts[1])
+        self.assertIn("You MUST use it after the PATCH", session.prompts[1])
         self.assertNotIn("class B {}", session.prompts[1])
         self.assertIn("FILE 2 of 2", session.prompts[2])
         self.assertIn("class B {}", session.prompts[2])
+        self.assertIn("+hi", session.prompts[3])
+        self.assertIn("a.java", session.prompts[3])
+        self.assertTrue(session.prompts[3].rstrip().endswith(REVIEW_NOW))
+        self.assertEqual(sleeps, [0.5, 0.5, 0.5])
+
+    def test_legacy_files_without_patch_still_prime_then_prompt(self) -> None:
+        session = FakeSession(
+            ["ok", "ACK a.java", "I already found a bug", "FINAL REVIEW"]
+        )
+        limits = InputLimits(max_prompt_chars=10_000)
+        files = {"a.java": "class A {}", "b.java": "class B {}"}
+        out = run_review_session(
+            session,
+            "REVIEW TEMPLATE\nPATCH",
+            files,
+            limits,
+        )
+        self.assertEqual(out, "FINAL REVIEW")
+        self.assertEqual(len(session.prompts), 4)
+        self.assertIn("ACK <path>", session.prompts[0])
+        self.assertIn("FILE 1 of 2", session.prompts[1])
         self.assertTrue(session.prompts[3].rstrip().endswith(REVIEW_NOW))
         self.assertIn("REVIEW TEMPLATE", session.prompts[3])
-        self.assertEqual(sleeps, [0.5, 0.5, 0.5])
 
     def test_no_pause_when_interval_is_zero(self) -> None:
         session = FakeSession(["ACK a.java", "ACK a.java", "done"])
@@ -198,7 +267,7 @@ class RunReviewSessionTests(unittest.TestCase):
         )
         self.assertEqual(called, [])
 
-    def test_file_turn_chat_error_still_sends_review(self) -> None:
+    def test_file_turn_chat_error_still_sends_patch(self) -> None:
         from critique_bot.chat_client import ChatError
 
         class BoomSession:
@@ -222,15 +291,18 @@ class RunReviewSessionTests(unittest.TestCase):
         session = BoomSession()
         out = run_review_session(
             session,
-            "REVIEW TEMPLATE\nPATCH",
+            "INSTRUCTIONS",
             {"a.java": "class A {}", "b.java": "class B {}", "c.java": "class C {}"},
             InputLimits(max_prompt_chars=10_000),
+            patch="+hi\n",
         )
         self.assertEqual(out, "FINAL REVIEW")
         self.assertEqual(len(session.prompts), 4)
+        self.assertIn("INSTRUCTIONS", session.prompts[0])
         self.assertIn("FILE 1 of 3", session.prompts[1])
         self.assertIn("FILE 2 of 3", session.prompts[2])
         self.assertNotIn("FILE 3 of 3", "".join(session.prompts))
+        self.assertIn("+hi", session.prompts[-1])
         self.assertTrue(session.prompts[-1].rstrip().endswith(REVIEW_NOW))
 
 
@@ -238,4 +310,5 @@ class PromptPayloadTests(unittest.TestCase):
     def test_default_files_empty(self) -> None:
         payload = PromptPayload(prompt="x")
         self.assertEqual(payload.files, {})
+        self.assertEqual(payload.patch, "")
         self.assertEqual(payload.prompt, "x")

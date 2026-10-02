@@ -38,7 +38,7 @@ _BODY_KEYS = ("body", "message", "comment", "text", "content")
 _IMPACT_KEYS = ("impact", "if_unfixed", "consequence", "why_it_matters", "effect")
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _TITLED_BODY_RE = re.compile(
-    r"^\*\*(Must fix|Security|Missing test|Compat|Blocker|Action|Impact)\*\*",
+    r"^\*\*(Must fix|Should fix|Security|Missing test|Compat|Blocker|Action|Impact)\*\*",
     re.I,
 )
 _IMPACT_BODY_RE = re.compile(r"\*\*Impact:\*\*", re.I)
@@ -97,6 +97,8 @@ _SEVERITY_RISK = {
     "missing-test": "moderate",
     "compat": "moderate",
     "compatibility": "moderate",
+    "should-fix": "moderate",
+    "should_fix": "moderate",
 }
 SKIP_SEVERITIES = {
     "nit",
@@ -119,6 +121,8 @@ SEVERITY_TITLES = {
     "missing-test": "Missing test",
     "compat": "Compat",
     "compatibility": "Compat",
+    "should-fix": "Should fix",
+    "should_fix": "Should fix",
 }
 
 

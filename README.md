@@ -71,7 +71,7 @@ Wraps the patch in [`prompts/review.txt`](prompts/review.txt) and writes `{outpu
 python -m critique_bot --config config.json --patch-file diff.patch --output-dir ./out
 ```
 
-`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` required; `{files}` is HEAD contents of changed files when they fit one paste). Review mode always loads those files from `--repo-dir` (or the CI checkout) and inlines them, or sends them one per chat turn (next file on ACK) if the prompt would overflow.
+`--headed` shows the window while you debug selectors. Omit `--patch-file` to read the patch from stdin. `--prompt-template` can replace the default review template (`{patch}` required; `{files}` is HEAD contents of changed files when they fit one paste). Review mode always loads those files from `--repo-dir` (or the CI checkout). When everything fits, one paste is ordered instructions → HEAD files → patch. When it would overflow, the worker sends those as separate turns in the same order (ACK on a file means keep it for the review).
 
 ### General
 
@@ -113,6 +113,17 @@ python -m critique_bot --config config.json --mode chat \
 ```
 
 In-session commands: `/help`, `/file PATH [message]` to attach a file to the next turn, and a trailing `\` to continue a line.
+
+### Agent
+
+`bot-agent` is an alias for `--mode agent`. It edits the repo on this machine. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results. Before the first edit_file, write_files, delete_file, or apply_patch, a plan block is required, and the edit goes in a later reply. A reply with no tool tag is the answer. `exit` ends the session.
+
+```bash
+bot-agent init
+bot-agent "update the test cases"
+```
+
+`init` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. Run it again to rebuild the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward.
 
 ## CI runner (GitLab)
 

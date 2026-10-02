@@ -144,9 +144,8 @@ class CiMetaAndCopyTests(unittest.TestCase):
 
 class ParserTests(unittest.TestCase):
     def test_requires_config(self) -> None:
-        parser = build_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args([])
+        code = main([])
+        self.assertEqual(code, 1)
 
     def test_parses_common_flags(self) -> None:
         parser = build_parser()
@@ -261,7 +260,10 @@ class BuildPromptTests(unittest.TestCase):
             repo_dir=str(self.folder),
             write_patch=None,
         )
-        prompt = _build_prompt(args, MODE_REVIEW, self.limits)
+        payload = _build_prompt_payload(args, MODE_REVIEW, self.limits)
+        prompt = payload.prompt
+        self.assertEqual(payload.files, {})
+        self.assertEqual(payload.patch, "")
         self.assertIn("class Foo {", prompt)
         self.assertIn("--- file: Foo.java ---", prompt)
         self.assertIn("```diff", prompt)
@@ -269,6 +271,7 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("class Foo {", files_part)
         self.assertIn("+    void bar() {}", patch_part)
         self.assertNotIn("--- file: Foo.java ---", patch_part)
+        self.assertIn("REVIEW NOW", prompt)
 
     def test_review_overflow_stages_files_out_of_the_prompt(self) -> None:
         src = self.folder / "Foo.java"
@@ -301,8 +304,10 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("Foo.java", payload.files)
         self.assertGreater(payload.files["Foo.java"].count("int n;"), 10)
         self.assertNotIn("--- file: Foo.java ---", payload.prompt)
-        self.assertIn("already sent", payload.prompt)
-        self.assertIn("```diff", payload.prompt)
+        self.assertIn("sent next", payload.prompt)
+        self.assertIn("USE it in the review", payload.prompt)
+        self.assertTrue(payload.patch.startswith("diff --git"))
+        self.assertNotIn("int n;", payload.prompt)
 
     def test_general_appends_files(self) -> None:
         src = self.folder / "a.py"

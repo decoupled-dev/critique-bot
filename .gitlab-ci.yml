@@ -29,7 +29,7 @@
 # Several MRs can trigger this job at once. They enqueue and wait; the
 # worker serializes Edge and applies min_interval_seconds from config.
 # submit builds diff.patch from the job checkout, loads original file
-# bodies, and enqueues them (one prompt, or staged files + review).
+# bodies, and enqueues them (one ordered paste, or instructions + files + patch).
 # The worker is chat-only: it pastes that job. See docs/gitlab-ci.md.
 
 workflow:

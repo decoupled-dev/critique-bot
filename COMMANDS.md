@@ -42,7 +42,7 @@ Flags: `--config` (required; the file must already exist, copy an example first)
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
 
-Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected. In GitLab CI, omit `--patch-file` so submit builds `diff.patch` from the job checkout and always loads changed file bodies. Small reviews still go as one paste; if template + files + patch would exceed `max_prompt_chars`, the worker sends those files one per chat turn on the same Edge tab (next file as soon as the model ACKs; markdown/RST skipped), then the review prompt. `--include-changed-files` is always on in review mode; `--repo-dir` does the same against a local clone.
+Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--file`, `--mode`, `--output-dir`, …). Extra: `--wait-timeout SEC` (default 1800), `--label NAME` (optional; default is GitLab MR IID, CI job id, or `local`). `--headed` is ignored. `--mode chat` is rejected. In GitLab CI, omit `--patch-file` so submit builds `diff.patch` from the job checkout and always loads changed file bodies. Small reviews stay one paste (instructions, then HEAD files, then the patch, in that order). If that would exceed `max_prompt_chars`, the worker sends **instructions first**, then each HEAD file (ACK means the file is kept for the review, not ignored), then the patch last. Markdown/RST skipped. `--include-changed-files` is always on in review mode; `--repo-dir` does the same against a local clone.
 
 Each submit creates its own job id and **only waits for that id**. The worker does not match by MR: it claims the oldest inbox file (FIFO, one at a time). GitLab env (`CI_MERGE_REQUEST_IID`, `CI_PROJECT_PATH`, …) is stored on the job as `meta` and in the filename, e.g. `1735689600123-group-app-mr42-a1b2c3d4.json`.
 
@@ -62,9 +62,10 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 
 | Mode | When to use | Prompt | Files | Output |
 | --- | --- | --- | --- | --- |
-| `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). Changed files are inlined when they fit; otherwise one per chat turn | `{output-dir}/review.md` + `review.json` |
+| `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). HEAD files + patch are inlined when they fit (instructions, then files, then patch). Otherwise: instructions, then one file per chat turn, then the patch | `{output-dir}/review.md` + `review.json` |
 | `general` | One-shot question | `--prompt` or `--prompt-file` (required) | Optional | `{output-dir}/reply.md` + `reply.json` |
 | `chat` | Interactive conversation | Optional first message via `--prompt` / `--prompt-file` | Optional on the first turn; more via `/file` | `{output-dir}/chat.md` + `chat.json` |
+| `agent` | Local coding harness. `bot-agent` is an alias | Positional task, or `--prompt` | The model reads files itself with tools | `.bot/sessions/<stamp>/agent.md` + `agent.json` |
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
@@ -72,7 +73,7 @@ Chat mode is headless unless you pass `--headed`.
 
 ### Placeholders
 
-In **review** templates, `{patch}` is required (the unified diff). `{files}` is the HEAD contents of changed files when they fit in one paste; otherwise the worker sends those files one per chat turn first. `{mr_context}` is GitLab MR metadata.
+In **review** templates, `{patch}` is required (the unified diff). `{files}` is the HEAD (original/current) contents of changed files when they fit in one paste; otherwise the worker sends instructions first, those files one per chat turn, then the patch. `{mr_context}` is GitLab MR metadata.
 
 In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, those are replaced with attached file contents. Otherwise files are appended after the prompt, labeled `--- file: <path> ---`.
 
@@ -89,7 +90,7 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--file PATH` | all | Attach a UTF-8 file (repeatable). Patch, source, or any text file. |
 | `FILE ...` | all | Trailing paths; same as `--file`. |
 | `--patch-file PATH` | all | Patch/diff to include. In review, omit in GitLab CI to build it from the checkout; locally, omit to read stdin. |
-| `--include-changed-files` | review | Always on in review mode (kept for older scripts). Loads HEAD contents of paths in the patch from `--repo-dir`. Inlined when they fit one paste; otherwise sent one per chat turn (ACK handshake). Markdown/RST skipped. |
+| `--include-changed-files` | review | Always on in review mode (kept for older scripts). Loads HEAD contents of paths in the patch from `--repo-dir`. Inlined when they fit one paste; otherwise sent one per chat turn after the instructions and before the patch (ACK = keep for review). Markdown/RST skipped. |
 | `--repo-dir DIR` | review | Checkout to read changed files from (default: current directory). |
 | `--write-patch PATH` | review | Where to write a generated git diff (default: `diff.patch`). |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
@@ -117,6 +118,19 @@ Used only after `--mode chat` is running (`You>` prompt).
 | `/help` | Print in-session help |
 | `/file PATH [text]` | Attach a file to this turn (optional extra prompt after the path) |
 | line ending with `\` | Continue on the next line (`... `) |
+
+---
+
+## Agent (`bot-agent`)
+
+`bot-agent` is an alias for `critique-bot --mode agent`. Same flags, shorter command.
+
+```text
+bot-agent init
+bot-agent "update the test cases"
+```
+
+`init` creates `.bot/` in the current directory (or `--repo-dir`) and indexes the code. If `config.json` is in that directory, later tasks can omit `--config`. The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A `<plan>` block is required before the first edit, write, delete, or patch, and that edit has to be in a later reply. A failed tool, a cut-off tag, or a reply that only promises the next step is sent back so the task continues. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
 
 ---
 

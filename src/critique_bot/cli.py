@@ -48,10 +48,12 @@ from critique_bot.workspace import (
 MODE_REVIEW = "review"
 MODE_GENERAL = "general"
 MODE_CHAT = "chat"
+MODE_AGENT = "agent"
 OUTPUT_STEM = {
     MODE_REVIEW: "review",
     MODE_GENERAL: "reply",
     MODE_CHAT: "chat",
+    MODE_AGENT: "agent",
 }
 _CHAT_QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
 
@@ -124,6 +126,10 @@ def _resolve_mode(args: argparse.Namespace) -> str:
         raise ConfigError("--mode general requires --prompt or --prompt-file")
     if mode != MODE_REVIEW and args.prompt_template:
         raise ConfigError("--prompt-template is only used in --mode review")
+    if mode == MODE_AGENT and args.prompt and args.paths:
+        raise ConfigError(
+            "pass the task as a positional string or --prompt, not both"
+        )
     return mode
 
 
@@ -319,8 +325,7 @@ def _build_review_prompt(
         else default_prompt_template_path()
     )
     template = _load_template(template_path, limits)
-    overhead = max(len(template) - 7, 0) + len(mr_context)
-    patch_budget = max(limits.max_prompt_chars - overhead - NOTE_RESERVE_CHARS, 2_000)
+    patch_budget = max(limits.max_prompt_chars - NOTE_RESERVE_CHARS, 2_000)
 
     patch_body, patch_stats = sanitize_one(
         patch_input.name,
@@ -348,7 +353,7 @@ def _build_review_prompt(
     log.info(
         f"composed review prompt ({len(payload.prompt)} chars"
         + (f", {len(file_attachments)} file(s)" if file_attachments else "")
-        + (", staged" if payload.files else "")
+        + (", staged" if payload.files or payload.patch else "")
         + (", sanitized" if patch_stats.did_sanitize else "")
         + (", gitlab mr context" if mr_context else "")
         + ")"
@@ -532,7 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Browser chat automation bot. Drives a web chat UI in headless "
             "Microsoft Edge. Default mode is a specialized code reviewer; "
             "--mode general sends any prompt and optional files; "
-            "--mode chat is an interactive terminal session."
+            "--mode chat is an interactive terminal session; "
+            "--mode agent is the local coding harness (alias: bot-agent)."
         ),
         epilog=(
             "first run on a new machine:\n"
@@ -550,22 +556,29 @@ def build_parser() -> argparse.ArgumentParser:
             "  critique-bot --config config.json --mode general "
             "--prompt 'Summarize this' notes.txt\n"
             "  critique-bot --config config.json --mode chat\n"
+            "\n"
+            "local coding agent (bot-agent is an alias for --mode agent):\n"
+            "  bot-agent init\n"
+            "  bot-agent \"update the test cases\"\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--config",
-        required=True,
-        help="path to JSON config (see config.example.json)",
+        help=(
+            "path to JSON config (see config.example.json). "
+            "Required except an agent task after bot-agent init stored it"
+        ),
     )
     parser.add_argument(
         "--mode",
-        choices=(MODE_REVIEW, MODE_GENERAL, MODE_CHAT),
+        choices=(MODE_REVIEW, MODE_GENERAL, MODE_CHAT, MODE_AGENT),
         help=(
             f"{MODE_REVIEW} (default): code-review template + patch. "
             f"{MODE_GENERAL}: send --prompt and optional files as-is. "
             f"{MODE_CHAT}: interactive conversation in this terminal "
-            f"(--prompt is optional as the first message)"
+            f"(--prompt is optional as the first message). "
+            f"{MODE_AGENT}: local coding harness; bot-agent is an alias"
         ),
     )
     prompt_src = parser.add_mutually_exclusive_group()
@@ -588,7 +601,10 @@ def build_parser() -> argparse.ArgumentParser:
         "paths",
         nargs="*",
         metavar="FILE",
-        help="files to include in the prompt (same as --file)",
+        help=(
+            "files to include in the prompt (same as --file). "
+            "In agent mode this is the task text, or the word init"
+        ),
     )
     parser.add_argument(
         "--patch-file",
@@ -639,6 +655,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-template",
         help="template file containing a {patch} placeholder (review mode)",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=None,
+        help="optional cap on agent tool rounds; omit to run until the model stops",
     )
     parser.add_argument(
         "--logs",
@@ -825,11 +847,11 @@ def _main_submit(argv: list[str]) -> int:
         mode = _resolve_mode(args)
     except ConfigError as exc:
         return _config_error(exc)
-    if mode == MODE_CHAT:
+    if mode in (MODE_CHAT, MODE_AGENT):
         return _config_error(
             ConfigError(
-                "submit cannot run --mode chat; use review or general, "
-                "or run `critique-bot --mode chat` locally"
+                f"submit cannot run --mode {mode}; use review or general, "
+                "or run the mode locally"
             )
         )
     if args.headed:
@@ -879,6 +901,7 @@ def _main_submit(argv: list[str]) -> int:
             stem=stem,
             prompt=payload.prompt,
             files=payload.files,
+            patch=payload.patch or None,
             model=args.model,
             meta=meta,
             label=args.label,
@@ -1082,6 +1105,82 @@ def _main_gitlab_post(argv: list[str]) -> int:
         return 1
 
 
+def _main_agent(args: argparse.Namespace) -> int:
+    """``--mode agent`` / ``bot-agent``: init the workspace, or run a task."""
+    from critique_bot.agent import run_agent
+    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home
+
+    workspace = Path(args.repo_dir).resolve()
+    words = [part for part in (args.paths or []) if part]
+    if words == ["init"]:
+        if args.prompt or args.prompt_file:
+            return _config_error(ConfigError("init does not take a prompt"))
+        try:
+            init_bot_home(workspace)
+        except BotHomeError as exc:
+            return _config_error(ConfigError(str(exc)))
+        return 0
+    if words and words[0] == "init":
+        return _config_error(ConfigError("init does not take extra arguments"))
+
+    home = find_bot_home(workspace)
+    if home is None:
+        print(
+            "error: no .bot folder here. Run: bot-agent init",
+            file=sys.stderr,
+        )
+        return 1
+    config_path = Path(args.config) if args.config else home.config_file()
+    if config_path is None or not config_path.is_file():
+        return _config_error(
+            ConfigError(
+                "no Edge config. Place config.json in the repo and run "
+                "bot-agent init, or pass --config"
+            )
+        )
+    try:
+        config = load_config(
+            config_path,
+            model_override=args.model,
+            cdp_url_override=args.cdp_url,
+        )
+        _log_config(config)
+    except ConfigError as exc:
+        return _config_error(exc)
+
+    task = ""
+    if args.prompt_file:
+        try:
+            task = _read_text_file(
+                args.prompt_file,
+                config.input_limits,
+                label="prompt file",
+                allow_binary=False,
+            ).text
+        except ConfigError as exc:
+            return _config_error(exc)
+    elif args.prompt:
+        task = args.prompt
+    elif words:
+        task = " ".join(words)
+    extra = list(args.files or [])
+    if extra:
+        listed = "\n".join(f"- {path}" for path in extra)
+        task = (task + "\n\nPaths:\n" + listed).strip()
+    rounds = args.max_rounds
+    if rounds is not None and rounds < 1:
+        return _config_error(ConfigError("--max-rounds must be at least 1"))
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    return run_agent(
+        config,
+        home,
+        task,
+        max_rounds=rounds,
+        output_dir=output_dir,
+        headed=bool(args.headed),
+    )
+
+
 def _main_run(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1091,6 +1190,10 @@ def _main_run(argv: list[str]) -> int:
         mode = _resolve_mode(args)
     except ConfigError as exc:
         return _config_error(exc)
+    if mode == MODE_AGENT:
+        return _main_agent(args)
+    if not args.config:
+        return _config_error(ConfigError("--config is required"))
     stem = OUTPUT_STEM[mode]
     headed = args.headed
     log.info(
@@ -1150,6 +1253,7 @@ def _main_run(argv: list[str]) -> int:
                             prompt,
                             payload.files,
                             config.input_limits,
+                            patch=payload.patch,
                             turn_pause_seconds=config.turn_pause_seconds,
                         )
                         completion = getattr(session, "last_detail", None)

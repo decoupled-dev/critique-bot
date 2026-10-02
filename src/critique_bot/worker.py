@@ -328,6 +328,7 @@ def _execute_job(
             mode=job.mode,
             prompt_chars=len(job.prompt),
             staged_files=len(job.files) or None,
+            patch_chars=len(job.patch) or None,
             model=model or "(none)",
             meta=job.meta or None,
         )
@@ -345,6 +346,7 @@ def _execute_job(
                             job.prompt,
                             job.files,
                             config.input_limits,
+                            patch=job.patch,
                             turn_pause_seconds=config.turn_pause_seconds,
                         )
                     else:

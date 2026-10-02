@@ -128,7 +128,7 @@ class BotConfig:
         extra = max(int(staged_files), 0)
         if extra <= 0:
             return base
-        # prime + each file + the review paste
+        # instructions + each file + the patch paste
         return max(base, (extra + 2) * per_turn + 60.0)
 
 

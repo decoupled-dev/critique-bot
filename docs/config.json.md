@@ -196,7 +196,7 @@ When `stop_button` is configured, `idle_ms` no longer decides completion — it 
 
 Wall-clock ceiling for one queued job. If a job overruns, the worker marks it failed so a waiting `submit` (and the CI job behind it) stops blocking. A wedged Playwright call cannot be interrupted, so this bounds the *waiting*, not the work; the browser-restart path clears the session afterwards.
 
-When files are staged across chat turns, the auto ceiling becomes `(staged files + 2) × timeout_ms + 60s` so ACK turns are not killed at the single-paste 420s default.
+When files are staged across chat turns, the auto ceiling becomes `(staged files + 2) × timeout_ms + 60s` so instruction + ACK + patch turns are not killed at the single-paste 420s default.
 
 ---
 
@@ -206,9 +206,9 @@ These protect the chat UI from huge patches. Values above the absolute max are c
 
 | Key | Default | Absolute max | Meaning |
 | --- | --- | --- | --- |
-| `max_prompt_chars` | `120000` | `400000` | Entire prompt sent in **one** paste (template + files + patch). If files would push past this, they are sent one per chat turn instead |
+| `max_prompt_chars` | `120000` | `400000` | Cap for **one** paste. If template + HEAD files + patch would exceed this, the worker sends instructions, then files, then the patch as separate turns |
 | `max_file_chars` | `32000` | `200000` | Per attached file, after read |
-| `max_files` | `80` | `400` | How many changed-file bodies are read from the checkout and sent (inlined or one per chat turn) |
+| `max_files` | `80` | `400` | How many changed-file bodies are read from the checkout and sent (inlined or one per chat turn, after instructions and before the patch) |
 | `max_read_bytes` | `16000000` | `64000000` | Bytes read from each path before decode |
 
 Oversized / binary files are truncated or omitted and a short note is added to the prompt. Raise these only if the chat UI can actually accept that much paste.
