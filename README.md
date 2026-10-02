@@ -116,7 +116,7 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 ### Agent
 
-`bot-agent` is an alias for `--mode agent`. It edits the repo on this machine. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results. Before the first edit_file, write_files, delete_file, or apply_patch, a plan block is required, and the edit goes in a later reply. A reply with no tool tag is the answer. `exit` ends the session.
+`bot-agent` is an alias for `--mode agent`. It edits the repo on this machine. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results. Before the first edit_file, write_files, delete_file, or apply_patch, a plan block is required, and the edit goes in a later reply. A question or a refusal is sent back until the model calls a tool or finishes the task. `exit` ends the session.
 
 ```bash
 bot-agent init

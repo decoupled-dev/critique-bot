@@ -130,7 +130,7 @@ bot-agent init
 bot-agent "update the test cases"
 ```
 
-`init` creates `.bot/` in the current directory (or `--repo-dir`) and indexes the code. If `config.json` is in that directory, later tasks can omit `--config`. The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A `<plan>` block is required before the first edit, write, delete, or patch, and that edit has to be in a later reply. A failed tool, a cut-off tag, or a reply that only promises the next step is sent back so the task continues. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
+`init` creates `.bot/` in the current directory (or `--repo-dir`) and indexes the code. If `config.json` is in that directory, later tasks can omit `--config`. The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A question, a refusal, or a promise to keep working is sent back again until the model calls a tool or actually finishes. The `You>` prompt stays up until exit or Ctrl-D. A `<plan>` block is required before the first edit, write, delete, or patch, and that edit has to be in a later reply. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
 
 ---
 

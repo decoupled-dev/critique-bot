@@ -326,6 +326,133 @@ class LoopTests(unittest.TestCase):
         self.assertIn("1|keep", session.sent[4])
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "keep\n")
 
+    def test_question_after_a_read_is_sent_back_until_a_tool(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    (
+                        '<tool_call>\n{"tool": "read_files", "arguments": '
+                        '{"paths": ["note.txt"]}}\n</tool_call>'
+                    ),
+                    "I have the relevant code context now. What would you like me to change?",
+                    "The edit tools aren't available in my current tool set.",
+                    (
+                        "<plan>\nFiles: note.txt\nChange: replace one with two\n"
+                        "Check: read note.txt\n</plan>"
+                    ),
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "one", "new_string": "two"}}\n'
+                        "</tool_call>"
+                    ),
+                    "Done. note.txt now says two.",
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        session = Session()
+        run_agent_loop(
+            session,
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="replace one with two in note.txt",
+            max_rounds=None,
+            max_result_chars=8000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+        )
+        self.assertIn("what to change", session.sent[2].lower())
+        self.assertIn("unavailable", session.sent[3].lower())
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_reworded_refusal_is_sent_back(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    (
+                        '<tool_call>\n{"tool": "read_files", "arguments": '
+                        '{"paths": ["note.txt"]}}\n</tool_call>'
+                    ),
+                    (
+                        "I’m unable to send the requested repository tool call "
+                        "because the exposed tool set contains no repository "
+                        "file-operation action."
+                    ),
+                    (
+                        "<plan>\nFiles: note.txt\nChange: replace one with two\n"
+                        "Check: read note.txt\n</plan>"
+                    ),
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "one", "new_string": "two"}}\n'
+                        "</tool_call>"
+                    ),
+                    "Done. note.txt now says two.",
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        session = Session()
+        run_agent_loop(
+            session,
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="replace one with two in note.txt",
+            max_rounds=None,
+            max_result_chars=8000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+        )
+        self.assertIn("edit_file", session.sent[2])
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_read_files_accepts_start_and_end_line(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        lines = "\n".join(f"line {index}" for index in range(10)) + "\n"
+        (root / "note.txt").write_text(lines, encoding="utf-8")
+        result = execute_tool(
+            "read_files",
+            {"paths": ["note.txt"], "start_line": 3, "end_line": 5},
+            workspace=root,
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertIn("3|line 2", result["output"])
+        self.assertIn("5|line 4", result["output"])
+        self.assertNotIn("6|line 5", result["output"])
+
+    def test_edit_rejects_a_whitespace_only_rewrite(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        target = root / "a.py"
+        target.write_text("def add():\n    return 1\n", encoding="utf-8")
+        result = execute_tool(
+            "edit_file",
+            {
+                "path": "a.py",
+                "old_string": "def add():\n return 1\n",
+                "new_string": "def add():\n return 1\n",
+            },
+            workspace=root,
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertIn("same text", result["error"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "def add():\n    return 1\n")
+
     def test_edit_before_plan_does_not_change_the_file(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")

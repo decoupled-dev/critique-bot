@@ -289,9 +289,9 @@ def run_agent_loop(
 
     When ``seed`` is set, that text is sent first. Each task is sent with a short
     reminder to print tool_call blocks. A reply with no tool_call is sent back
-    until one tool has run. After that, a reply with no tool_call is the answer
-    unless the last tool failed or the reply promises another step. Those cases
-    are sent back so a bad call or a narrated next step does not end the task.
+    until one tool has run. A question, a refusal, or a promise is sent back
+    again with no retry cap. A plain answer after a tool has run ends that
+    task, and the session then waits until the user types another task or exits.
     """
     turns: list[dict[str, str]] = []
     reader = read_message or _read_message
@@ -389,9 +389,11 @@ def run_agent_loop(
                 last_failed = True
                 continue
             if not calls:
-                if not tools_ran and nudges < 2:
-                    nudges += 1
-                    payload = _nudge_message()
+                stalled = _stalls(reply)
+                if stalled or (not tools_ran and nudges < 2):
+                    if not stalled:
+                        nudges += 1
+                    payload = _recover_message() if tools_ran else _nudge_message()
                     print(
                         "model replied without a tool_call; asking again",
                         file=sys.stderr,
@@ -400,7 +402,7 @@ def run_agent_loop(
                     turns.append({"role": "assistant", "content": reply})
                     turns.append({"role": "user", "content": payload})
                     continue
-                if recoveries < 2 and (last_failed or _promises_more(reply)):
+                if recoveries < 2 and last_failed:
                     recoveries += 1
                     payload = _recover_message()
                     print(
@@ -753,10 +755,52 @@ def _json_objects(text: str) -> list[str]:
     return found
 
 
-def _promises_more(text: str) -> bool:
+def _stalls(text: str) -> bool:
+    """True when the reply asks the user, refuses, or only promises work.
+
+    Wording varies. A question mark, "unable", "not exposed", and "no tool"
+    are the same stop as "what would you like me to change?".
+    """
     normalized = text.lower().replace("\u2019", "'").replace("\u2018", "'")
-    markers = ("i'll ", "i will ", "let me ", "next i", "going to ")
+    if "?" in normalized:
+        return True
+    markers = (
+        "what would you like",
+        "what should i",
+        "would you like",
+        "let me know",
+        "for example",
+        "shall i",
+        "do you want",
+        "what do you want",
+        "i can't",
+        "i cannot",
+        "unable",
+        "not able",
+        "aren't available",
+        "are not available",
+        "not available",
+        "isn't available",
+        "not exposed",
+        "no tool",
+        "no repository",
+        "file-operation",
+        "file operation",
+        "don't have",
+        "do not have",
+        "i won't",
+        "i will not",
+        "i'll ",
+        "i will ",
+        "let me ",
+        "next i",
+        "going to ",
+    )
     return any(marker in normalized for marker in markers)
+
+
+def _promises_more(text: str) -> bool:
+    return _stalls(text)
 
 
 def _plan_text(reply: str) -> str | None:
@@ -806,6 +850,11 @@ def _replace_span(
     haystack = text.replace("\r\n", "\n").replace("\r", "\n")
     needle = _strip_read_prefix(old).replace("\r\n", "\n").replace("\r", "\n")
     replacement = _strip_read_prefix(new).replace("\r\n", "\n").replace("\r", "\n")
+    if _same_lines(needle, replacement):
+        return None, 0, (
+            "old_string and new_string are the same text; the file was not changed. "
+            "Send a real difference, or stop if the edit is already done."
+        )
     count = haystack.count(needle)
     if count == 1 or (count > 1 and replace_all):
         times = count if replace_all else 1
@@ -826,6 +875,16 @@ def _replace_span(
         return None, 0, "old_string was not found" + _near_miss(haystack, needle)
     start, end = span
     return haystack[:start] + replacement + haystack[end:], 1, "matched ignoring surrounding whitespace"
+
+
+def _same_lines(left: str, right: str) -> bool:
+    def lines(text: str) -> list[str]:
+        parts = text.split("\n")
+        if parts and parts[-1] == "":
+            parts = parts[:-1]
+        return [line.strip() for line in parts]
+
+    return lines(left) == lines(right)
 
 
 def _strip_read_prefix(text: str) -> str:
@@ -956,6 +1015,7 @@ def _list_files(args, *, workspace, index_path, cache_dir, max_chars, command_ti
     raw = args.get("path") or "."
     if not isinstance(raw, str):
         return _tool_err("list_files", "path must be a string")
+    raw = raw.strip() or "."
     target = _resolve(workspace, raw)
     if not target.exists():
         return _tool_err("list_files", f"not found: {raw}")
@@ -1016,11 +1076,15 @@ def _read_files(args, *, workspace, index_path, cache_dir, max_chars, command_ti
         paths = [paths]
     if not isinstance(paths, list) or not paths:
         return _tool_err("read_files", "paths must be a list of files")
-    offset = args.get("offset")
-    limit = args.get("limit")
+    offset = args.get("offset", args.get("start_line", args.get("line")))
+    limit = args.get("limit", args.get("count"))
+    end_line = args.get("end_line")
     try:
         start = int(offset) if offset is not None else 1
-        count = int(limit) if limit is not None else None
+        if limit is None and end_line is not None:
+            count = int(end_line) - start + 1
+        else:
+            count = int(limit) if limit is not None else None
     except (TypeError, ValueError):
         return _tool_err("read_files", "offset and limit must be integers")
     if start < 1:
