@@ -290,8 +290,10 @@ def run_agent_loop(
     When ``seed`` is set, that text is sent first. Each task is sent with a short
     reminder to print tool_call blocks. A reply with no tool_call is sent back
     until one tool has run. A question, a refusal, or a promise is sent back
-    again with no retry cap. A plain answer after a tool has run ends that
-    task, and the session then waits until the user types another task or exits.
+    again with no retry cap. DONE, or a reply that no edit is needed, is answered
+    with DONE and that task ends. Any other plain answer after a tool has run
+    ends that task, and the session then waits until the user types another
+    task or exits.
     """
     turns: list[dict[str, str]] = []
     reader = read_message or _read_message
@@ -389,6 +391,17 @@ def run_agent_loop(
                 last_failed = True
                 continue
             if not calls:
+                if _no_edit_needed(reply):
+                    turns.append({"role": "assistant", "content": reply})
+                    if not note and reply.strip():
+                        show(reply)
+                    print("DONE", file=sys.stderr, flush=True)
+                    if not _exact_done(reply):
+                        turns.append({"role": "user", "content": "DONE"})
+                        with log.loading("Waiting for the assistant..."):
+                            session.send("DONE")
+                    finished = True
+                    break
                 stalled = _stalls(reply)
                 if stalled or (not tools_ran and nudges < 2):
                     if not stalled:
@@ -755,6 +768,50 @@ def _json_objects(text: str) -> list[str]:
     return found
 
 
+def _exact_done(text: str) -> bool:
+    compact = re.sub(r"[^a-z]+", " ", text.lower()).strip()
+    return compact == "done"
+
+
+def _no_edit_needed(text: str) -> bool:
+    """True when the model says the task needs no further edit, or replies DONE.
+
+    That reply ends the task. A promise to keep editing does not, unless the
+    whole reply is DONE.
+    """
+    if _exact_done(text):
+        return True
+    normalized = text.lower().replace("\u2019", "'").replace("\u2018", "'")
+    if any(
+        marker in normalized
+        for marker in ("i'll ", "i will ", "let me ", "going to ", "next i")
+    ):
+        return False
+    markers = (
+        "no edit needed",
+        "no edits needed",
+        "no edit is needed",
+        "no further edit",
+        "no further change",
+        "no change needed",
+        "no changes needed",
+        "nothing to change",
+        "nothing to edit",
+        "already present",
+        "already done",
+        "already applied",
+        "already contains",
+        "already in the file",
+        "no modification",
+        "does not need an edit",
+        "does not need to edit",
+        "do not need to edit",
+        "don't need to edit",
+        "no additional change",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _stalls(text: str) -> bool:
     """True when the reply asks the user, refuses, or only promises work.
 
@@ -853,7 +910,7 @@ def _replace_span(
     if _same_lines(needle, replacement):
         return None, 0, (
             "old_string and new_string are the same text; the file was not changed. "
-            "Send a real difference, or stop if the edit is already done."
+            "Send a real difference, or reply DONE if no edit is needed."
         )
     count = haystack.count(needle)
     if count == 1 or (count > 1 and replace_all):

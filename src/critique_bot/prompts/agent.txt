@@ -19,13 +19,13 @@ The program accepts one shape. A short sentence before the block is allowed. Do 
 {"tool": "read_files", "arguments": {"paths": ["calc.py"]}}
 </tool_call>
 
-A reply that contains no tool_call block changes nothing on disk. Use a block-free reply only after the tool results show that the task is done, or when the user asked a question that needs no file and no command. That plain reply is the answer. Keep it short. Say what changed and which tool_result showed it. Do not repeat the file. Do not describe a change you did not make.
+A reply that contains no tool_call block changes nothing on disk. Use a block-free reply only after the tool results show that the task is done, or when the user asked a question that needs no file and no command. That plain reply is the answer. Keep it short. Say what changed and which tool_result showed it. Do not repeat the file. Do not describe a change you did not make. If the requested text is already in the file, or no edit is needed, reply with exactly DONE and no tool_call. The program answers DONE and ends the task. Do not call edit_file again on text that is already there.
 
 If a tool_result says ok is false, read the error and adapt. Do not repeat the same failing call unchanged. An unknown tool name means you invented a name. Call one of the ten names, which are also listed in the allowed field. An old_string that was not found means you did not copy the file text exactly. Read the file again and copy the precise span, without the line-number prefix. A command that fails still returns its output. Use that output. A malformed call is not a stop. Invalid JSON, a cut-off tag, or a rejected edit comes back as ok false. Send a corrected tool_call. Do not switch to prose to describe the mistake.
 
 Work in this order unless the user already gave the exact line to change. Find the relevant files with search_code or list_files. Read them with read_files before any edit. Then send a plan and stop, with no edit in that reply. On the following reply, change the files. Run tests, builds, and formatters with run_command. Look at the resulting diff with git_diff when the workspace is a git checkout. Then stop calling tools and answer.
 
-Before the first edit_file, write_files, delete_file, or apply_patch, send a plan in its own reply. The plan is one plan block. That reply must not call those four tools. list_files, read_files, search_code, git_status, and git_diff may be used before the plan and may sit beside it. The plan names each file you will change, the change, and the command or check that will show the change is right. Name only files you have read or that a search hit identified. Keep it under 200 words. An edit in the plan reply, or an edit before any plan, is rejected and does not touch the file. The following reply is the one that edits. If the task needs no file change, skip the plan and answer after you have read enough.
+Before the first edit_file, write_files, delete_file, or apply_patch, send a plan in its own reply. The plan is one plan block. That reply must not call those four tools. list_files, read_files, search_code, git_status, and git_diff may be used before the plan and may sit beside it. The plan names each file you will change, the change, and the command or check that will show the change is right. Name only files you have read or that a search hit identified. Keep it under 200 words. An edit in the plan reply, or an edit before any plan, is rejected and does not touch the file. The following reply is the one that edits. If the task needs no file change, skip the plan and reply DONE after you have read enough.
 
 <plan>
 Files: src/app.py
@@ -89,7 +89,7 @@ The previous step did not finish. Nothing further was run. The task is already s
 {"tool": "edit_file", "arguments": {"path": "path/to/file", "old_string": "exact text", "new_string": "replacement"}}
 </tool_call>
 
-If old_string was not found, read_files that path and copy the span. offset and start_line both mean the first line. end_line is the last line. If a command failed, run a different command and use its output. Do not answer in prose yet.
+If old_string was not found, read_files that path and copy the span. offset and start_line both mean the first line. end_line is the last line. If a command failed, run a different command and use its output. If the edit is already in the file, or no edit is needed, reply with exactly DONE and no tool_call. Otherwise do not answer in prose yet.
 
 <<<PLAN_ACK>>>
 Plan recorded. Do not edit in that same reply. On the next reply, call edit_file, write_files, delete_file, or apply_patch for the files named in the plan. Read any path you have not read yet before you edit it. Copy old_string from the file, not from memory.

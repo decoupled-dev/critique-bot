@@ -326,6 +326,109 @@ class LoopTests(unittest.TestCase):
         self.assertIn("1|keep", session.sent[4])
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "keep\n")
 
+    def test_no_edit_needed_replies_done_and_ends(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        target = root / "note.txt"
+        target.write_text("keep\n", encoding="utf-8")
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    (
+                        "<plan>\n"
+                        "Files: note.txt\n"
+                        "Change: leave keep as it is\n"
+                        "Check: read note.txt\n"
+                        "</plan>"
+                    ),
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "keep", "new_string": "keep"}}\n'
+                        "</tool_call>"
+                    ),
+                    "The line is already present. No edit needed.",
+                    "ignored after DONE",
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "keep", "new_string": "changed"}}\n'
+                        "</tool_call>"
+                    ),
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        session = Session()
+        run_agent_loop(
+            session,
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="make sure note.txt says keep",
+            max_rounds=None,
+            max_result_chars=8000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+        )
+        self.assertEqual(session.sent[-1], "DONE")
+        self.assertNotIn("previous step did not finish", session.sent[-1])
+        self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
+        self.assertEqual(len(session._replies), 1)
+
+    def test_done_after_a_failed_edit_ends(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        target = root / "note.txt"
+        target.write_text("keep\n", encoding="utf-8")
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    (
+                        "<plan>\n"
+                        "Files: note.txt\n"
+                        "Change: replace keep\n"
+                        "Check: read note.txt\n"
+                        "</plan>"
+                    ),
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "missing", "new_string": "x"}}\n'
+                        "</tool_call>"
+                    ),
+                    "DONE",
+                    (
+                        '<tool_call>\n{"tool": "edit_file", "arguments": '
+                        '{"path": "note.txt", "old_string": "keep", "new_string": "changed"}}\n'
+                        "</tool_call>"
+                    ),
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        session = Session()
+        run_agent_loop(
+            session,
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="change note.txt",
+            max_rounds=None,
+            max_result_chars=8000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+        )
+        self.assertNotIn("DONE", session.sent)
+        self.assertFalse(any("previous step did not finish" in item for item in session.sent))
+        self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
+        self.assertEqual(len(session._replies), 1)
+
     def test_question_after_a_read_is_sent_back_until_a_tool(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
