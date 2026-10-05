@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import tempfile
@@ -56,9 +57,12 @@ class CommandArgvTests(unittest.TestCase):
         windows = command_argv("Get-Location", platform_name="win32")
         self.assertEqual(
             windows[:4],
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand"],
         )
-        self.assertEqual(windows[-1], "Get-Location")
+        script = base64.b64decode(windows[-1]).decode("utf-16-le")
+        self.assertIn("Get-Location", script)
+        self.assertIn("LASTEXITCODE", script)
+        self.assertIn("UTF8Encoding", script)
         self.assertEqual(command_argv("pwd", platform_name="linux"), ["bash", "-lc", "pwd"])
 
 
@@ -102,6 +106,33 @@ class ToolTests(unittest.TestCase):
             )
             self.assertTrue(result["ok"], result)
             self.assertIn("pong", result["output"])
+            self.assertIn("exit 0", result["output"])
+
+    def test_run_command_returns_powershell_text(self) -> None:
+        class Proc:
+            returncode = 1
+            stdout = "pong".encode("utf-16")
+            stderr = (
+                "#< CLIXML\n"
+                '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+                '<S S="Error">fatal: not a git repository_x000D__x000A_</S></Objs>'
+            ).encode("utf-16")
+
+        def runner(argv, **kwargs):
+            del argv, kwargs
+            return Proc()
+
+        result = execute_tool(
+            "run_command",
+            {"command": "Write-Output pong"},
+            workspace=Path("."),
+            runner=runner,
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("pong", result["output"])
+        self.assertIn("fatal: not a git repository", result["output"])
+        self.assertNotIn("CLIXML", result["output"])
+        self.assertIn("exit 1", result["output"])
 
     def test_git_status_diff_and_apply_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

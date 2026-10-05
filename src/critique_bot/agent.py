@@ -7,6 +7,7 @@ send tool instructions.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -74,14 +75,33 @@ def command_argv(command: str, *, platform_name: str | None = None) -> list[str]
     """Build the argv for ``run_command``. The command is one argument."""
     plat = platform_name if platform_name is not None else sys.platform
     if plat == "win32":
-        return [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ]
+        return _powershell_argv(command)
     return ["bash", "-lc", command]
+
+
+def _powershell_argv(command: str) -> list[str]:
+    """Run one PowerShell command and return its real exit code and UTF-8 text.
+
+    Windows PowerShell writes UTF-16 when stdout is a pipe, and a native
+    program's exit code stays in ``$LASTEXITCODE`` instead of the process
+    code. The wrapper fixes both so the tool result is the text the command
+    printed.
+    """
+    script = (
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        "$OutputEncoding = [Console]::OutputEncoding\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        f"{command.rstrip()}\n"
+        "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        encoded,
+    ]
 
 
 def parse_tool_calls(text: str) -> tuple[list[ToolCall], bool]:
@@ -269,6 +289,8 @@ def seed_message(workspace: Path, instructions: str) -> str:
         + f"os: {sys.platform}\n"
         + f"shell: {shell}\n"
         + f"workspace: {workspace}\n"
+        + "run_command uses that shell. Its tool_result is the command result. "
+        + "The output starts with exit and the code, then stdout, then stderr.\n"
     )
 
 
@@ -1387,6 +1409,7 @@ def _run_command(args, *, workspace, index_path, cache_dir, max_chars, command_t
             check=False,
             timeout=timeout,
             shell=False,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         output = _decode(exc.stdout) + _decode(exc.stderr)
@@ -1467,8 +1490,8 @@ def _git(workspace, git_args, *, max_chars, runner, tool) -> dict[str, Any]:
 
 def _command_output(proc: Any) -> str:
     code = int(getattr(proc, "returncode", 1) or 0)
-    stdout = _decode(getattr(proc, "stdout", b"")).rstrip()
-    stderr = _decode(getattr(proc, "stderr", b"")).rstrip()
+    stdout = _clean_command_text(_decode(getattr(proc, "stdout", b""))).rstrip()
+    stderr = _clean_command_text(_decode(getattr(proc, "stderr", b""))).rstrip()
     parts = [f"exit {code}"]
     if stdout:
         parts.append(stdout)
@@ -1480,9 +1503,34 @@ def _command_output(proc: Any) -> str:
 def _decode(data: object) -> str:
     if isinstance(data, str):
         return data
-    if isinstance(data, (bytes, bytearray)):
-        return bytes(data).decode("utf-8", "replace")
-    return ""
+    if not isinstance(data, (bytes, bytearray)):
+        return ""
+    raw = bytes(data)
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        return raw.decode("utf-16", "replace")
+    if len(raw) >= 4 and raw[1] == 0 and raw[3] == 0:
+        return raw.decode("utf-16-le", "replace")
+    return raw.decode("utf-8", "replace")
+
+
+def _clean_command_text(text: str) -> str:
+    """Turn a PowerShell CLIXML error record into the message it carried."""
+    if "#<" not in text or "CLIXML" not in text:
+        return text
+    messages = re.findall(r"<S\b[^>]*>(.*?)</S>", text, re.DOTALL)
+    if not messages:
+        return re.sub(r"#<\s*CLIXML[\s\S]*", "", text).strip()
+    lines: list[str] = []
+    for message in messages:
+        decoded = re.sub(
+            r"_x([0-9A-Fa-f]{4})_",
+            lambda match: chr(int(match.group(1), 16)),
+            message,
+        )
+        decoded = decoded.replace("\r", "").strip()
+        if decoded:
+            lines.append(decoded)
+    return "\n".join(lines)
 
 
 _HANDLERS = {
