@@ -125,6 +125,8 @@ bot-agent "update the test cases"
 
 `init` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. Run it again to rebuild the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward.
 
+On Windows, put `bot-agent` on `PATH` and reuse one `config.json` from any new folder: [`docs/bot-agent.md`](docs/bot-agent.md).
+
 ## CI runner (GitLab)
 
 GitLab runner and project setup: [`docs/gitlab-ci.md`](docs/gitlab-ci.md).
