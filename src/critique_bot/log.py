@@ -134,10 +134,27 @@ class _Spinner:
 
     def __init__(self, message: str) -> None:
         self.message = message
+        self._messages = [message]
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._frame = 0
         self._visible = False
+
+    def push(self, message: str) -> None:
+        """Show a nested status on this same line until :meth:`pop`."""
+        with _spinner_lock:
+            self._messages.append(message)
+            self.message = message
+            self.render()
+
+    def pop(self) -> None:
+        """Restore the status that was visible before the matching :meth:`push`."""
+        with _spinner_lock:
+            if len(self._messages) > 1:
+                self._messages.pop()
+                self.message = self._messages[-1]
+            if not self._stop.is_set():
+                self.render()
 
     def start(self) -> None:
         self.render()
@@ -185,12 +202,25 @@ class _Spinner:
 def loading(message: str) -> Iterator[None]:
     """Animate a status line on stderr until the assistant (or setup) finishes.
 
+    Nested calls share that one line: the inner message replaces the outer one
+    and the outer message comes back when the inner block ends. A second
+    spinner would repaint the same row and flicker between the two texts.
+
     Skipped when diagnostic logs are on (those already show progress) or when
     stderr is not a terminal.
     """
     global _active_spinner
     if _enabled or not sys.stderr.isatty():
         yield
+        return
+    with _spinner_lock:
+        current = _active_spinner
+    if current is not None and not current._stop.is_set():
+        current.push(message)
+        try:
+            yield
+        finally:
+            current.pop()
         return
     spinner = _Spinner(message)
     with _spinner_lock:

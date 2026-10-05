@@ -78,6 +78,39 @@ class LogHelperTests(unittest.TestCase):
             with log.loading("wait"):
                 pass
 
+    def test_nested_loading_keeps_one_spinner(self) -> None:
+        class Tty:
+            encoding = "utf-8"
+
+            def __init__(self) -> None:
+                self.chunks: list[str] = []
+
+            def isatty(self) -> bool:
+                return True
+
+            def write(self, text: str) -> int:
+                self.chunks.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                return None
+
+        err = Tty()
+        log.configure(enabled=False)
+        with patch("sys.stderr", err):
+            with log.loading("Thinking..."):
+                outer = log._active_spinner
+                self.assertIsNotNone(outer)
+                with log.loading("Waiting for assistant..."):
+                    self.assertIs(log._active_spinner, outer)
+                    assert outer is not None
+                    self.assertEqual(outer.message, "Waiting for assistant...")
+                self.assertEqual(outer.message, "Thinking...")
+            self.assertIsNone(log._active_spinner)
+        shown = "".join(err.chunks)
+        self.assertIn("Waiting for assistant...", shown)
+        self.assertIn("Thinking...", shown)
+
     def test_print_safe_survives_charmap_codec(self) -> None:
         class CharmapStream:
             encoding = "cp1252"
