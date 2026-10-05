@@ -48,10 +48,18 @@ class AgentCliTests(unittest.TestCase):
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
-                self.assertEqual(
-                    main(["--config", str(config), "--mode", "agent", "--repo-dir", str(root), "init"]),
-                    0,
-                )
+                with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                    self.assertEqual(
+                        main(["--config", str(config), "--mode", "agent", "--repo-dir", str(root), "init"]),
+                        0,
+                    )
+                self.assertEqual(run.call_args.args[2], "")
+                with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                    self.assertEqual(
+                        main(["--mode", "agent", "--repo-dir", str(root)]),
+                        0,
+                    )
+                self.assertEqual(run.call_args.args[2], "")
             with patch("critique_bot.agent.run_agent", return_value=0) as run:
                 code = main(
                     [

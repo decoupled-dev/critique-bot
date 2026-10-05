@@ -325,13 +325,12 @@ def run_agent_loop(
     reminder to print tool_call blocks. A reply with no tool_call is sent back
     until one tool has run. A question, a refusal, or a promise is sent back
     again with no retry cap. A final reply of COMPLETED, FINISHED, DONE, FAILED,
-    or BLOCKED ends that task and the command exits when a task was given.
+    or BLOCKED ends that task. The same chat stays open for the next task.
     Any other plain answer after a tool has run ends that task the same way.
     """
     turns: list[dict[str, str]] = []
     reader = read_message or _read_message
     show = emit or _emit
-    one_shot = bool(first_task.strip())
     outcome_code = "COMPLETED"
     if seed and seed.strip():
         _seed_session(
@@ -348,8 +347,6 @@ def run_agent_loop(
     announced = False
     while True:
         if not pending:
-            if one_shot:
-                break
             if not announced:
                 _ui("note", "Ready. Type a task, or exit.")
                 announced = True
@@ -516,8 +513,6 @@ def run_agent_loop(
             outcome_code = "STOPPED"
             _print_status("STOPPED")
         pending = ""
-        if one_shot:
-            break
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns

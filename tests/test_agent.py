@@ -282,9 +282,9 @@ class LoopTests(unittest.TestCase):
         self.assertIn("write_files", session.sent[2])
         self.assertEqual((root / "README.md").read_text(encoding="utf-8"), "Hello\n")
 
-    def test_status_code_finishes_without_a_shell_prompt(self) -> None:
+    def test_status_code_returns_to_the_same_session(self) -> None:
         root = Path(tempfile.mkdtemp())
-        seen: list[str] = []
+        next_tasks = ["rename the title"]
 
         class Session:
             def __init__(self) -> None:
@@ -293,28 +293,35 @@ class LoopTests(unittest.TestCase):
                 self._replies = [
                     '<tool_call>\n{"tool": "list_files", "arguments": {"path": "."}}\n</tool_call>',
                     "COMPLETED",
-                    "should not run",
+                    "FINISHED",
                 ]
 
             def send(self, prompt: str) -> str:
                 self.sent.append(prompt)
                 return self._replies.pop(0)
 
+        def reader() -> str | None:
+            if next_tasks:
+                return next_tasks.pop(0)
+            return None
+
+        session = Session()
         outcome: list[str] = []
         run_agent_loop(
-            Session(),
+            session,
             workspace=root,
             index_path=None,
             cache_dir=None,
             first_task="create README.md",
             max_rounds=None,
             max_result_chars=4000,
-            read_message=lambda: seen.append("prompt") or None,
+            read_message=reader,
             emit=lambda _text: None,
             outcome=outcome,
         )
-        self.assertEqual(seen, [])
-        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertIn("rename the title", session.sent[2])
+        self.assertEqual(outcome, ["FINISHED"])
+        self.assertEqual(session._replies, [])
 
     def test_failed_code_is_recorded(self) -> None:
         class Session:
