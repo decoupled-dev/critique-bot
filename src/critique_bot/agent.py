@@ -59,6 +59,9 @@ _SCAN_MAX_BYTES = 1_000_000
 _LINE_NO_RE = re.compile(r"^\s*\d+\|")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _PLAN_RE = re.compile(r"<plan>\s*(.*?)\s*</plan>", re.IGNORECASE | re.DOTALL)
+_UNTAGGED_PLAN_RE = re.compile(
+    r"(?is)\bfiles?\s*:.{8,}?\bchange\s*:.{8,}?\bcheck\s*:"
+)
 _MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch"})
 _MIN_PLAN_CHARS = 40
 _QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
@@ -351,6 +354,7 @@ def run_agent_loop(
         tools_ran = False
         nudges = 0
         recoveries = 0
+        plan_restates = 0
         last_failed = False
         plan = ""
         rounds = 0
@@ -388,15 +392,30 @@ def run_agent_loop(
                 last_failed = True
                 continue
             if not calls and found_plan and len(found_plan) >= _MIN_PLAN_CHARS:
-                payload = _plan_ack_message()
-                print(
-                    "plan recorded; waiting for the edit",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                turns.append({"role": "assistant", "content": reply})
-                turns.append({"role": "user", "content": payload})
-                continue
+                if planned_before:
+                    plan_restates += 1
+                    if plan_restates > 2:
+                        found_plan = None
+                    else:
+                        payload = _plan_ack_message()
+                        print(
+                            "plan already recorded; waiting for the write",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        turns.append({"role": "assistant", "content": reply})
+                        turns.append({"role": "user", "content": payload})
+                        continue
+                else:
+                    payload = _plan_ack_message()
+                    print(
+                        "plan recorded; waiting for the edit",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    turns.append({"role": "assistant", "content": reply})
+                    turns.append({"role": "user", "content": payload})
+                    continue
             if not calls and found_plan is not None:
                 payload = format_tool_result(
                     {
@@ -883,15 +902,20 @@ def _promises_more(text: str) -> bool:
 
 
 def _plan_text(reply: str) -> str | None:
-    """Return the plan body, or None when the reply has no plan tag.
+    """Return the plan body, or None when the reply has no plan.
 
     A tag that is present but blank still returns an empty string so the
     loop can ask for a real plan instead of treating the reply as the answer.
+    A chat page can drop the plan tags and leave the Files, Change, and Check
+    lines. That text is still a plan. It does not create the file.
     """
     parts = [part.strip() for part in _PLAN_RE.findall(reply)]
-    if not parts:
-        return None
-    return "\n".join(part for part in parts if part)
+    if parts:
+        return "\n".join(part for part in parts if part)
+    bare = _BLOCK_RE.sub("", reply).strip()
+    if bare and _UNTAGGED_PLAN_RE.search(bare):
+        return bare
+    return None
 
 
 def _mutation_error(tool: str, *, plan: str, planned_before: bool) -> str | None:

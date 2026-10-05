@@ -37,10 +37,12 @@ Work in this order unless the user already gave the exact line to change. Find t
 
 Before the first edit_file, write_files, delete_file, or apply_patch, send a plan in its own reply. The plan is one plan block. That reply must not call those four tools. list_files, read_files, search_code, git_status, and git_diff may be used before the plan and may sit in the plan reply as tool_call blocks. No sentence outside the plan block. The plan names each file you will change, the change, and the command or check that will show the change is right. Name only files you have read or that a search hit identified. Keep it under 200 words. An edit in the plan reply, or an edit before any plan, is rejected and does not touch the file. The following reply is the one that edits. If the task needs no file change, skip the plan and reply DONE after you have read enough.
 
+The plan tags are required, and so are the three labels Files, Change, and Check. Writing those labels without the tags does not create a file. After the plan is recorded, the next reply is only the tool_call that writes. Do not repeat Files, Change, or Check. A new file is write_files. path is the file name. contents is the exact text of the whole file, including a final newline. A file that should contain the single word Hello has contents Hello and a newline. Do not call list_files again instead of write_files. list_files does not create the file.
+
 <plan>
-Files: src/app.py
-Change: return the sum instead of the difference in add
-Check: python -m unittest tests.test_app
+Files: README.md
+Change: create README.md whose entire contents are the word Hello
+Check: read_files README.md shows Hello
 </plan>
 
 The line numbers shown by read_files are a prefix of the form N| at the start of each line. That prefix is not in the file. When you build old_string, omit N| and use the text after the bar, including its indentation. If the match must be unique, include enough neighboring lines. If old_string appears more than once and you mean every occurrence, set replace_all to true. An empty old_string is rejected. Do not use edit_file to create a missing file. Use write_files, which creates parent directories. Do not point write_files or delete_file at the workspace root itself.
@@ -102,4 +104,8 @@ The previous step did not finish. Nothing further was run. The task is already s
 If old_string was not found, read_files that path and copy the span. offset and start_line both mean the first line. end_line is the last line. If a command failed, run a different command and use its output. If the edit is already in the file, or no edit is needed, reply with exactly DONE and no tool_call. Otherwise the reply is only the next tool_call block. Do not add any other words.
 
 <<<PLAN_ACK>>>
-Plan recorded. Do not edit in that same reply. On the next reply, call edit_file, write_files, delete_file, or apply_patch for the files named in the plan. That reply is only the tool_call block, with no other words. Read any path you have not read yet before you edit it. Copy old_string from the file, not from memory.
+Plan recorded. Do not repeat the plan. The next reply is only the tool_call that writes the files named in the plan. A new file is write_files. contents is the exact file text. Example for a file whose text is Hello:
+<tool_call>
+{"tool": "write_files", "arguments": {"path": "README.md", "contents": "Hello\n"}}
+</tool_call>
+Do not call list_files instead of writing. An existing file is edit_file. Copy old_string from a read_files result, without the N| prefix. No other words.

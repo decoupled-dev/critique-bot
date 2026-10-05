@@ -214,6 +214,48 @@ class LoopTests(unittest.TestCase):
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
         self.assertEqual(turns[-1]["content"], "Done. note.txt now says two.")
 
+    def test_untagged_plan_then_writes_the_new_file(self) -> None:
+        root = Path(tempfile.mkdtemp())
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    '<tool_call>\n{"tool": "list_files", "arguments": {"path": "."}}\n</tool_call>',
+                    (
+                        "File: README.md\n"
+                        "Change: create a new README.md file in the workspace root "
+                        "containing the single word Hello\n"
+                        "Check: use list_files to confirm README.md exists in the root directory\n"
+                    ),
+                    (
+                        '<tool_call>\n{"tool": "write_files", "arguments": '
+                        '{"path": "README.md", "contents": "Hello\\n"}}\n</tool_call>'
+                    ),
+                    "DONE",
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        session = Session()
+        run_agent_loop(
+            session,
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="create an empty README.md file Hello",
+            max_rounds=6,
+            max_result_chars=8000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+        )
+        self.assertIn("Plan recorded", session.sent[2])
+        self.assertIn("write_files", session.sent[2])
+        self.assertEqual((root / "README.md").read_text(encoding="utf-8"), "Hello\n")
+
     def test_seed_is_first_and_task_follows(self) -> None:
         class Session:
             def __init__(self) -> None:
