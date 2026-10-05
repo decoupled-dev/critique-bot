@@ -89,15 +89,25 @@ def detect_shell(platform_name: str | None = None, which: Callable[[str], str | 
     return Shell("bash", "bash", "bash -lc")
 
 
-def command_argv(command: str, *, platform_name: str | None = None, shell: Shell | None = None) -> list[str]:
+def command_argv(
+    command: str,
+    *,
+    platform_name: str | None = None,
+    shell: Shell | None = None,
+    cwd: Path | None = None,
+) -> list[str]:
     """Build the argv for one command. The command text is one argument."""
     chosen = shell or detect_shell(platform_name)
     if chosen.is_powershell:
-        return _powershell_argv(command, chosen.exe)
+        return _powershell_argv(command, chosen.exe, cwd=cwd)
+    if cwd is not None:
+        import shlex
+
+        command = f"cd {shlex.quote(str(cwd))} && {command}"
     return ["bash", "-lc", command]
 
 
-def _powershell_argv(command: str, exe: str = "powershell.exe") -> list[str]:
+def _powershell_argv(command: str, exe: str = "powershell.exe", cwd: Path | None = None) -> list[str]:
     """Run one PowerShell command and return its real exit code and UTF-8 text.
 
     Windows PowerShell writes UTF-16 when stdout is a pipe, and a native
@@ -105,12 +115,17 @@ def _powershell_argv(command: str, exe: str = "powershell.exe") -> list[str]:
     code. The wrapper fixes both so the tool result is the text the command
     printed. A terminating error exits 1 with its message on stderr.
     """
+    location = ""
+    if cwd is not None:
+        literal = str(cwd).replace("'", "''")
+        location = f"Set-Location -LiteralPath '{literal}'\n"
     script = (
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
         "$OutputEncoding = [Console]::OutputEncoding\n"
         "$ProgressPreference = 'SilentlyContinue'\n"
         "$ConfirmPreference = 'None'\n"
         "try {\n"
+        f"{location}"
         f"{command.rstrip()}\n"
         "} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }\n"
         "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
@@ -200,7 +215,7 @@ def run(
 ) -> tuple[int | None, str, str, float]:
     """Run one command. Returns exit code (None on timeout), stdout, stderr, seconds."""
     chosen = shell or detect_shell()
-    argv = command_argv(adjust_command(command), shell=chosen)
+    argv = command_argv(adjust_command(command), shell=chosen, cwd=Path(cwd))
     started = time.monotonic()
     if runner is not None:
         try:

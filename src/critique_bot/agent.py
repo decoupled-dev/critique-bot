@@ -26,8 +26,10 @@ from critique_bot.agent_tools import (
     MUTATING,
     TaskState,
     ToolContext,
+    canonical_tool,
     fill,
     is_git_repo,
+    normalize_args,
 )
 from critique_bot.agent_tools import execute as _execute
 from critique_bot.bot_home import BotHome
@@ -71,6 +73,7 @@ _STATUS_WORDS = {
     "blocked": "BLOCKED",
 }
 _STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
+_FAIL_HEAD = re.compile(r"^(FAILED|BLOCKED)\b\s*[:\-—]?\s*(.*)$")
 MAX_REFUSALS = 3
 MAX_FAILED_ROUNDS = 8
 MAX_TRUNCATIONS = 4
@@ -95,7 +98,7 @@ _FALLBACKS = {
     "STATE": (
         "STATE step {step}\nTask: {task}\nRead: {reads}\nChanged: {edits}\n"
         "Last command: {command}\n"
-        "Next: the next tool_call, or one word COMPLETED, FAILED, or BLOCKED when the task is done."
+        "Next: the next tool_call, or COMPLETED. FAILED or BLOCKED must say what failed and why."
     ),
     "PLAN_NOTED": "Plan noted. Send the tool_call for its first step now, with no other words.",
     "NOTHING_CHANGED": (
@@ -104,7 +107,12 @@ _FALLBACKS = {
     ),
     "CHECK_FAILED": (
         "The project check above failed after your edits. Read the failure, fix it, and "
-        "reply COMPLETED when it passes, or FAILED if it cannot be fixed."
+        "reply COMPLETED when it passes. If it cannot be fixed, reply FAILED and say what failed and why."
+    ),
+    "WHY_FAILED": (
+        "That reply was only the word. Say what failed and why, copied from the tool result. "
+        "Start with FAILED or BLOCKED, then one or two sentences. "
+        "Send a tool_call instead if you can still fix it."
     ),
 }
 
@@ -116,9 +124,9 @@ class ToolCall:
     error: str | None = None
 
 
-def command_argv(command: str, *, platform_name: str | None = None) -> list[str]:
+def command_argv(command: str, *, platform_name: str | None = None, cwd: Path | None = None) -> list[str]:
     """Build the argv for ``run_command``. The command is one argument."""
-    return agent_shell.command_argv(command, platform_name=platform_name)
+    return agent_shell.command_argv(command, platform_name=platform_name, cwd=cwd)
 
 
 def execute_tool(
@@ -199,7 +207,7 @@ def _bare_json_calls(text: str) -> list[ToolCall]:
         except json.JSONDecodeError:
             continue
         call = _call_from_data(data)
-        if not call.error and call.tool in ALLOWED_TOOLS:
+        if not call.error and canonical_tool(call.tool):
             calls.append(call)
     return calls
 
@@ -534,17 +542,36 @@ def _json_objects(text: str) -> list[str]:
 
 
 def _status_code(text: str) -> str | None:
-    """Return a finish code when the reply is that word, or ends with it."""
+    """Return a finish code when the reply is that word, starts with FAILED or BLOCKED, or ends with it."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return None
     compact = re.sub(r"[^a-z]+", " ", text.lower()).strip()
     if compact in _STATUS_WORDS:
         return _STATUS_WORDS[compact]
+    head = _FAIL_HEAD.match(lines[0])
+    if head:
+        return _STATUS_WORDS[head.group(1).lower()]
     if len(lines) > 4:
         return None
     last = re.sub(r"[^a-z]+", " ", lines[-1].lower()).strip()
     return _STATUS_WORDS.get(last)
+
+
+def _failure_reason(text: str) -> str:
+    """The sentences after FAILED or BLOCKED. Empty when the reply is only the word."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    kept: list[str] = []
+    for line in lines:
+        match = _FAIL_HEAD.match(line)
+        if match:
+            if match.group(2).strip():
+                kept.append(match.group(2).strip())
+            continue
+        if re.sub(r"[^a-z]+", " ", line.lower()).strip() in _STATUS_WORDS:
+            continue
+        kept.append(line)
+    return " ".join(kept).strip()
 
 
 def _normalized(text: str) -> str:
@@ -700,8 +727,9 @@ def seed_message(
         lines.append("run_command is bash -lc.")
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
     lines.append(
-        "Each run_command is a new process: cd does not carry over; pass cwd instead. "
-        "Its result starts with exit, the code and seconds, then stdout, then stderr."
+        "Each run_command is a new process whose starting folder is the workspace above, "
+        "not C:\\ and not the user profile. cd does not carry over; pass cwd to use another folder. "
+        "Its result starts with exit, the code and seconds, then cwd, then stdout, then stderr."
     )
     text = agent_shell.shell_preamble(chosen) + "\n\n"
     if instructions.strip():
@@ -770,6 +798,7 @@ class _TaskRun:
         self.check_cycles = 0
         self.check_passed = False
         self.nothing_nudged = False
+        self.reason_asked = False
         self.payload = ""
 
     def run(self, first_payload: str) -> str:
@@ -818,7 +847,7 @@ class _TaskRun:
                 return self._end("BLOCKED", f"{MAX_FAILED_ROUNDS} tool rounds in a row failed")
             return None
         if status:
-            return self._finish(status)
+            return self._finish(status, reply=reply)
         if _no_edit_needed(reply):
             return self._finish("COMPLETED", unchanged_ok=True)
         if plan and self.plan_notes < 2:
@@ -858,7 +887,7 @@ class _TaskRun:
             result = _execute(call.tool, call.arguments, self.ctx)
             if result.get("ok"):
                 self.tools_ran = True
-                if call.tool in MUTATING:
+                if canonical_tool(call.tool) in MUTATING:
                     self.check_passed = False
             else:
                 self._note_failure(call, result)
@@ -884,8 +913,8 @@ class _TaskRun:
             str(result.get("error") or "tool failed")
             + f"; this exact call has now failed {count} times. Do not send it again unchanged"
         )
-        if count >= 3 and call.tool == "edit_file":
-            region = self._wide_region(call.arguments)
+        if count >= 3 and canonical_tool(call.tool) == "edit_file":
+            region = self._wide_region(normalize_args("edit_file", call.arguments))
             if region:
                 result["output"] = (
                     "The program read the closest region of the file for you. Copy old_string "
@@ -906,7 +935,16 @@ class _TaskRun:
             return ""
         return agent_edit.best_candidate(text, agent_edit.strip_read_prefix(old), context=15)
 
-    def _finish(self, status: str, *, unchanged_ok: bool = False) -> str | None:
+    def _finish(self, status: str, *, reply: str = "", unchanged_ok: bool = False) -> str | None:
+        if status in {"FAILED", "BLOCKED"}:
+            reason = _failure_reason(reply)
+            if not reason and not self.reason_asked:
+                self.reason_asked = True
+                _ui("note", "Asking why that failed.")
+                self._send_message("WHY_FAILED")
+                return None
+            if reason:
+                _ui("bad", reason)
         if status in _STATUS_OK:
             if self.state.mutated and self.check_command and not self.check_passed:
                 if self.check_cycles >= MAX_CHECK_CYCLES:
@@ -1273,6 +1311,7 @@ def _call_paths(call: ToolCall) -> str:
 def _activity(call: ToolCall) -> str:
     args = call.arguments
     where = _call_paths(call)
+    name = canonical_tool(call.tool) or call.tool
     messages = {
         "list_files": f"Looking through {where}",
         "find_files": f"Finding files matching {_one_line(str(args.get('glob') or args.get('pattern') or ''), 40)}",
@@ -1284,9 +1323,13 @@ def _activity(call: ToolCall) -> str:
         "run_command": f"Running {_one_line(str(args.get('command') or 'a command'), 60)}",
         "git_status": "Checking what changed",
         "git_diff": "Reviewing the changes",
+        "git_log": "Reading recent commits",
+        "git_show": f"Showing {_one_line(str(args.get('rev') or args.get('commit') or 'HEAD'), 40)}",
         "apply_patch": "Applying the changes",
+        "todo": "Updating the task list",
+        "skill": f"Loading {_one_line(str(args.get('name') or args.get('skill') or 'skills'), 40)}",
     }
-    return messages.get(call.tool, "Working on the next step")
+    return messages.get(name, "Working on the next step")
 
 
 def _friendly_error(error: str) -> str:

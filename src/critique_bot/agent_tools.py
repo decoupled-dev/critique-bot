@@ -34,7 +34,11 @@ ALLOWED_TOOLS = (
     "run_command",
     "git_status",
     "git_diff",
+    "git_log",
+    "git_show",
     "apply_patch",
+    "todo",
+    "skill",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch"})
 
@@ -72,6 +76,7 @@ class TaskState:
     failures_in_row: int = 0
     failed_calls: dict[str, int] = field(default_factory=dict)
     last_path: str = ""
+    todos: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def mutated(self) -> bool:
@@ -110,6 +115,9 @@ class TaskState:
         ) or "none"
         edits = ", ".join(f"{path} x{count}" for path, count in self.edits.items()) or "none"
         command = f"{_one_line(self.last_command, 80)} -> {self.last_exit}" if self.last_command else "none"
+        todos = ", ".join(
+            f"[{item['status']}] {item['content']}" for item in self.todos[:8]
+        ) or "none"
         return fill(
             template,
             task=_one_line(self.task, 600),
@@ -117,6 +125,7 @@ class TaskState:
             reads=reads,
             edits=edits,
             command=command,
+            todos=todos,
             failures=str(self.failures_in_row),
             path=self.last_path or "path/to/file",
         )
@@ -156,7 +165,8 @@ class ToolContext:
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
-    if name not in ALLOWED_TOOLS:
+    canonical = canonical_tool(name)
+    if not canonical:
         hint = _did_you_mean(name)
         return {
             "tool": name,
@@ -164,12 +174,12 @@ def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> di
             "error": "unknown tool" + (f"; did you mean {hint}?" if hint else ""),
             "allowed": list(ALLOWED_TOOLS),
         }
-    args = arguments if isinstance(arguments, dict) else {}
+    args = normalize_args(canonical, arguments if isinstance(arguments, dict) else {})
     try:
-        result = _HANDLERS[name](args, ctx)
+        result = _HANDLERS[canonical](args, ctx)
     except Exception as exc:  # a tool bug must come back as a result, not end the task
-        return {"tool": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    result.setdefault("tool", name)
+        return {"tool": canonical, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    result.setdefault("tool", canonical)
     return result
 
 
@@ -181,10 +191,14 @@ _ALIASES = {
     "glob_files": "find_files",
     "find": "find_files",
     "ls": "list_files",
+    "list": "list_files",
+    "read": "read_files",
     "read_file": "read_files",
     "cat": "read_files",
+    "write": "write_files",
     "write_file": "write_files",
     "create_file": "write_files",
+    "edit": "edit_file",
     "search_replace": "edit_file",
     "multi_edit": "edit_file",
     "str_replace": "edit_file",
@@ -192,11 +206,62 @@ _ALIASES = {
     "shell": "run_command",
     "powershell": "run_command",
     "terminal": "run_command",
+    "todowrite": "todo",
+    "todoread": "todo",
+    "todos": "todo",
+    "patch": "apply_patch",
 }
 
 
+def canonical_tool(name: str) -> str:
+    """The tool that actually runs. OpenCode names map onto these."""
+    key = str(name).strip()
+    if key in ALLOWED_TOOLS:
+        return key
+    return _ALIASES.get(key.lower(), "")
+
+
+def normalize_args(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Accept the argument names OpenCode and similar agents send."""
+    out = dict(args)
+    for src, dest in (
+        ("filePath", "path"),
+        ("file_path", "path"),
+        ("workdir", "cwd"),
+        ("working_directory", "cwd"),
+    ):
+        if dest not in out and src in out:
+            out[dest] = out[src]
+    if tool == "edit_file":
+        for src, dest in (("oldString", "old_string"), ("newString", "new_string"), ("replaceAll", "replace_all")):
+            if dest not in out and src in out:
+                out[dest] = out[src]
+    if tool == "write_files" and "contents" not in out and "content" in out:
+        out["contents"] = out["content"]
+    if tool == "search_code":
+        if "glob" not in out and isinstance(out.get("include"), str):
+            out["glob"] = out["include"]
+        if "case_insensitive" not in out and "caseSensitive" in out:
+            out["case_insensitive"] = not bool(out["caseSensitive"])
+    if tool == "run_command":
+        timeout = out.get("timeout")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > MAX_COMMAND_TIMEOUT:
+            out["timeout"] = float(timeout) / 1000.0
+    if tool == "git_show" and "rev" not in out and "commit" in out:
+        out["rev"] = out["commit"]
+    if tool == "skill" and "name" not in out and "skill" in out:
+        out["name"] = out["skill"]
+    return out
+
+
 def _did_you_mean(name: str) -> str:
-    return _ALIASES.get(str(name).strip().lower(), "")
+    import difflib
+
+    pool = list(ALLOWED_TOOLS) + list(_ALIASES)
+    matches = difflib.get_close_matches(str(name).strip().lower(), [item.lower() for item in pool], n=1, cutoff=0.8)
+    if not matches:
+        return ""
+    return canonical_tool(matches[0]) or matches[0]
 
 
 # --------------------------------------------------------------------------- paths
@@ -1021,7 +1086,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         ctx.state.last_command = command
         ctx.state.last_exit = "timeout" if code is None else f"exit {code}"
     if code is None:
-        body = "\n".join(part for part in (f"timed out after {timeout:.0f}s", out, errs) if part)
+        body = "\n".join(part for part in (f"timed out after {timeout:.0f}s", f"cwd: {cwd}", out, errs) if part)
         hint = ""
         if agent_shell.waiting_for_input(out + "\n" + errs):
             hint = "; the command was waiting for input. Pass a flag such as -y, --yes, or -Force"
@@ -1031,7 +1096,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
             ctx=ctx,
         )
-    parts = [f"exit {code} ({seconds:.1f}s)"]
+    parts = [f"exit {code} ({seconds:.1f}s)", f"cwd: {cwd}"]
     if out:
         parts.append(out)
     if errs:
@@ -1088,6 +1153,141 @@ def is_git_repo(workspace: Path) -> bool:
     return (Path(workspace) / ".git").exists()
 
 
+_REV_RE = re.compile(r"^[A-Za-z0-9_./~^@{}:-]+$")
+_TODO_STATUS = {"pending", "in_progress", "completed", "cancelled"}
+_SKILL_ROOTS = (".bot/skills", ".agents/skills", ".opencode/skills")
+
+
+def _git_log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    try:
+        limit = min(max(int(args.get("limit") or 20), 1), 50)
+    except (TypeError, ValueError):
+        return err("git_log", "limit must be an integer")
+    git_args = ["log", f"-n{limit}", "--date=short", "--pretty=format:%h %ad %s"]
+    raw = args.get("path")
+    if raw:
+        shown = _git_path(ctx, raw)
+        if shown is None:
+            return err("git_log", "path must be a file inside the workspace")
+        git_args.extend(["--", shown])
+    return _git(ctx, git_args, tool="git_log")
+
+
+def _git_show(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    rev = args.get("rev") or "HEAD"
+    if not isinstance(rev, str) or not _REV_RE.fullmatch(rev) or rev.startswith("-"):
+        return err("git_show", "rev must be a commit, branch, or HEAD")
+    git_args = ["show", "--stat", "--format=medium", "--no-color", rev]
+    if args.get("patch"):
+        git_args = ["show", "--format=medium", "--no-color", rev]
+    raw = args.get("path")
+    if raw:
+        shown = _git_path(ctx, raw)
+        if shown is None:
+            return err("git_show", "path must be a file inside the workspace")
+        git_args.extend(["--", shown])
+    return _git(ctx, git_args, tool="git_show")
+
+
+def _git_path(ctx: ToolContext, raw: object) -> str | None:
+    if not isinstance(raw, str) or not raw.strip() or raw.startswith("-") or "\n" in raw:
+        return None
+    path = resolve(ctx.workspace, raw)
+    try:
+        return path.resolve().relative_to(ctx.workspace).as_posix()
+    except ValueError:
+        return None
+
+
+def _todo(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    items = args.get("todos")
+    if items is None:
+        items = args.get("items")
+    if items is None:
+        current = ctx.state.todos if ctx.state is not None else []
+        return ok("todo", _format_todos(current), ctx)
+    if not isinstance(items, list):
+        return err("todo", "todos must be a list of {content, status}")
+    cleaned: list[dict[str, str]] = []
+    in_progress = 0
+    for index, item in enumerate(items[:20]):
+        if isinstance(item, str):
+            item = {"content": item, "status": "pending"}
+        if not isinstance(item, dict):
+            return err("todo", "each todo must be an object or a string")
+        content = str(item.get("content") or item.get("text") or "").strip()
+        if not content:
+            return err("todo", "each todo needs content")
+        status = str(item.get("status") or "pending")
+        if status not in _TODO_STATUS:
+            return err("todo", "status must be pending, in_progress, completed, or cancelled")
+        if status == "in_progress":
+            in_progress += 1
+        cleaned.append({"id": str(item.get("id") or index + 1), "content": content[:200], "status": status})
+    if in_progress > 1:
+        return err("todo", "only one todo can be in_progress")
+    if ctx.state is not None:
+        ctx.state.todos = cleaned
+    return ok("todo", _format_todos(cleaned), ctx)
+
+
+def _format_todos(items: list[dict[str, str]]) -> str:
+    if not items:
+        return "no todos"
+    return "\n".join(f"{item['id']}. [{item['status']}] {item['content']}" for item in items)
+
+
+def _skill(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    found = _discover_skills(ctx.workspace)
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        if not found:
+            return ok("skill", "no skills. Add SKILL.md under .bot/skills/<name>/.", ctx)
+        return ok("skill", "\n".join(f"{item['name']}: {item['description']}" for item in found), ctx)
+    key = name.strip()
+    match = next((item for item in found if item["name"] == key), None)
+    if match is None:
+        names = ", ".join(item["name"] for item in found) or "none"
+        return err("skill", f"unknown skill {key}. Available: {names}")
+    try:
+        text = Path(match["path"]).read_text(encoding="utf-8")
+    except OSError as exc:
+        return err("skill", str(exc))
+    return ok("skill", text, ctx)
+
+
+def _discover_skills(workspace: Path) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for root_rel in _SKILL_ROOTS:
+        root = workspace / root_rel
+        if not root.is_dir():
+            continue
+        for skill_md in sorted(root.glob("*/SKILL.md")):
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            found.append(
+                {
+                    "name": skill_md.parent.name,
+                    "description": _skill_description(text),
+                    "path": str(skill_md),
+                }
+            )
+    return found
+
+
+def _skill_description(text: str) -> str:
+    match = re.search(r"(?m)^description:\s*(.+)$", text)
+    if match:
+        return match.group(1).strip().strip("\"'")[:160]
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("---") and not line.startswith("#"):
+            return line[:160]
+    return ""
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = {
     "list_files": _list_files,
     "find_files": _find_files,
@@ -1099,5 +1299,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "run_command": _run_command,
     "git_status": _git_status,
     "git_diff": _git_diff,
+    "git_log": _git_log,
+    "git_show": _git_show,
     "apply_patch": _apply_patch,
+    "todo": _todo,
+    "skill": _skill,
 }

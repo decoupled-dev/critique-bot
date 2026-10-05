@@ -70,12 +70,12 @@ Look here.
         calls, unclosed = parse_tool_calls(reply)
         self.assertFalse(unclosed)
         self.assertEqual(calls[0].tool, "grep")
-        result = execute_tool("grep", {"pattern": "x"}, workspace=Path("."))
+        result = execute_tool("teleport", {"pattern": "x"}, workspace=Path("."))
         text = format_tool_result(result)
         payload = json.loads(text.split("\n", 1)[1].rsplit("\n", 1)[0])
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["allowed"], list(ALLOWED_TOOLS))
-        self.assertIn("search_code", payload["error"])
+        self.assertIn("unknown tool", payload["error"])
 
     def test_invalid_json_and_unclosed_tag(self) -> None:
         calls, unclosed = parse_tool_calls("<tool_call>\n{not json}\n</tool_call>")
@@ -156,6 +156,10 @@ class CommandArgvTests(unittest.TestCase):
         self.assertIn("LASTEXITCODE", script)
         self.assertIn("UTF8Encoding", script)
         self.assertEqual(command_argv("pwd", platform_name="linux"), ["bash", "-lc", "pwd"])
+        placed = command_argv("Get-Location", platform_name="win32", cwd=Path(r"D:\work\app"))
+        placed_script = base64.b64decode(placed[-1]).decode("utf-16-le")
+        self.assertIn(r"Set-Location -LiteralPath 'D:\work\app'", placed_script)
+        self.assertIn("Get-Location", placed_script)
 
 
 class SeedMessageTests(unittest.TestCase):
@@ -208,6 +212,7 @@ class ToolTests(unittest.TestCase):
             self.assertTrue(result["ok"], result)
             self.assertIn("pong", result["output"])
             self.assertIn("exit 0", result["output"])
+            self.assertIn(f"cwd: {Path(tmp).resolve()}", result["output"])
 
     def test_run_command_returns_powershell_text(self) -> None:
         class Proc:
@@ -452,7 +457,70 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(tidy("\x1b[32mok\x1b[0m\nsame\nsame\nsame"), "ok\nsame\n... previous line repeated 2 more times")
 
     def test_tool_count(self) -> None:
-        self.assertEqual(len(ALLOWED_TOOLS), 11)
+        self.assertEqual(len(ALLOWED_TOOLS), 15)
+
+    def test_opencode_names_run_the_same_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+            state = TaskState(task="edit")
+            edited = execute_tool(
+                "edit",
+                {"filePath": "app.py", "oldString": "VALUE = 1", "newString": "VALUE = 2"},
+                workspace=root,
+                state=state,
+            )
+            self.assertTrue(edited["ok"], edited)
+            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "VALUE = 2\n")
+            found = execute_tool("grep", {"pattern": "VALUE", "include": "*.py"}, workspace=root)
+            self.assertTrue(found["ok"], found)
+            self.assertIn("app.py", found["output"])
+
+    def test_todo_is_repeated_in_state(self) -> None:
+        state = TaskState(task="ship")
+        wrote = execute_tool(
+            "todowrite",
+            {"todos": [{"content": "read the code", "status": "in_progress"}, {"content": "run tests", "status": "pending"}]},
+            workspace=Path("."),
+            state=state,
+        )
+        self.assertTrue(wrote["ok"], wrote)
+        self.assertIn("[in_progress] read the code", wrote["output"])
+        again = execute_tool("todo", {}, workspace=Path("."), state=state)
+        self.assertIn("run tests", again["output"])
+        rendered = state.render("Todos: {todos}")
+        self.assertIn("[in_progress] read the code", rendered)
+
+    def test_skill_lists_and_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / ".bot" / "skills" / "release" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Cut a release\n---\nTag the commit.\n", encoding="utf-8")
+            listed = execute_tool("skill", {}, workspace=root)
+            self.assertIn("release: Cut a release", listed["output"])
+            loaded = execute_tool("skill", {"name": "release"}, workspace=root)
+            self.assertIn("Tag the commit.", loaded["output"])
+
+    def test_git_log_uses_git_not_the_shell(self) -> None:
+        class Proc:
+            returncode = 0
+            stdout = b"abc123 2026-10-05 fix the build\n"
+            stderr = b""
+
+        seen: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            del kwargs
+            seen.append(argv)
+            return Proc()
+
+        result = execute_tool("git_log", {"limit": 5, "path": "src/app.py"}, workspace=Path("."), runner=runner)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("abc123", result["output"])
+        self.assertIn("log", seen[0])
+        self.assertIn("--", seen[0])
+        self.assertIn("src/app.py", seen[0])
 
 
 class LoopTests(unittest.TestCase):
@@ -508,11 +576,11 @@ class LoopTests(unittest.TestCase):
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "keep\n")
 
     def test_failed_code_is_recorded(self) -> None:
-        session = _Scripted(["FAILED"])
+        session = _Scripted(["FAILED", "FAILED: the file was not in the workspace"])
         outcome: list[str] = []
         _loop(session, Path("."), "do the task", max_rounds=4, outcome=outcome)
+        self.assertIn("what failed", session.sent[1].lower())
         self.assertEqual(outcome, ["FAILED"])
-        self.assertEqual(len(session.sent), 1)
 
     def test_seed_is_first_and_task_follows(self) -> None:
         session = _Scripted(["READY", "All set.", "All set.", "All set."])
@@ -524,7 +592,10 @@ class LoopTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("keep\n", encoding="utf-8")
         session = _Scripted(
-            ['<tool_call>\n{"tool": "delete_file", "arguments": {"path": "note.txt"}}', "FAILED"],
+            [
+                '<tool_call>\n{"tool": "delete_file", "arguments": {"path": "note.txt"}}',
+                "FAILED: the delete call was cut off before it ran",
+            ],
             detail={"completion": COMPLETION_IDLE},
         )
         _loop(session, root, "delete it", max_rounds=4)
@@ -587,7 +658,7 @@ class LoopTests(unittest.TestCase):
         body = "\n".join(f"line {i}" for i in range(40)) + "\nreturn total(items)\n"
         (root / "a.txt").write_text(body, encoding="utf-8")
         bad = _edit("a.txt", "return totals(item, extra)", "x")
-        session = _Scripted([bad, bad, bad, "FAILED"])
+        session = _Scripted([bad, bad, bad, "FAILED: old_string was not in a.txt"])
         _loop(session, root, "fix a.txt")
         self.assertIn("failed 2 times", session.sent[2])
         self.assertIn("read the closest region", session.sent[3])
