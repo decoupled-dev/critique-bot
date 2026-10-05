@@ -14,7 +14,9 @@ from critique_bot.agent import (
     format_tool_result,
     parse_tool_calls,
     run_agent_loop,
+    seed_message,
 )
+from critique_bot.agent_shell import Shell
 from critique_bot.agent_tools import TaskState
 from critique_bot.chat_client import COMPLETION_IDLE
 
@@ -154,6 +156,25 @@ class CommandArgvTests(unittest.TestCase):
         self.assertIn("LASTEXITCODE", script)
         self.assertIn("UTF8Encoding", script)
         self.assertEqual(command_argv("pwd", platform_name="linux"), ["bash", "-lc", "pwd"])
+
+
+class SeedMessageTests(unittest.TestCase):
+    def test_shell_leads_the_system_prompt(self) -> None:
+        root = Path(".")
+        powershell = Shell("powershell", "powershell.exe", "Windows PowerShell 5.1 (powershell.exe)")
+        text = seed_message(root, "INSTRUCTIONS", shell=powershell, platform_name="win32")
+        self.assertTrue(text.startswith("SHELL: Windows PowerShell 5.1 (powershell.exe)."))
+        self.assertLess(text.index("SHELL:"), text.index("INSTRUCTIONS"))
+        self.assertLess(text.index("INSTRUCTIONS"), text.index("ENVIRONMENT"))
+        self.assertIn("&& and || do not work", text)
+
+        pwsh = Shell("pwsh", "pwsh.exe", "PowerShell 7 (pwsh.exe)")
+        modern = seed_message(root, "", shell=pwsh, platform_name="win32")
+        self.assertTrue(modern.startswith("SHELL: PowerShell 7 (pwsh.exe)."))
+        self.assertIn("Reply with exactly READY.", modern)
+
+        bash = seed_message(root, "INSTRUCTIONS", shell=Shell("bash", "bash", "bash -lc"), platform_name="linux")
+        self.assertTrue(bash.startswith("SHELL: bash -lc."))
 
 
 class ToolTests(unittest.TestCase):

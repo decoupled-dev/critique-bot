@@ -703,7 +703,10 @@ def seed_message(
         "Each run_command is a new process: cd does not carry over; pass cwd instead. "
         "Its result starts with exit, the code and seconds, then stdout, then stderr."
     )
-    text = (instructions.rstrip() + "\n\n" if instructions.strip() else "") + "\n".join(lines) + "\n"
+    text = agent_shell.shell_preamble(chosen) + "\n\n"
+    if instructions.strip():
+        text += instructions.rstrip() + "\n\n"
+    text += "\n".join(lines) + "\n"
     if notes.strip():
         text += "\nPROJECT NOTES (from .bot/AGENT.md; follow them)\n" + notes.strip() + "\n"
     if not instructions.strip():

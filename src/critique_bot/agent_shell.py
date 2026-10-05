@@ -60,6 +60,24 @@ class Shell:
         return self.kind in {"pwsh", "powershell"}
 
 
+def shell_preamble(shell: Shell) -> str:
+    """The first lines of the system prompt: which shell ``run_command`` actually is."""
+    if shell.kind == "powershell":
+        return (
+            "SHELL: Windows PowerShell 5.1 (powershell.exe). "
+            "run_command uses this shell and no other. "
+            "Chain with ; and test $? or $LASTEXITCODE. && and || do not work. "
+            "Use PowerShell cmdlets, not grep, sed, awk, cat, export, or ls -la."
+        )
+    if shell.kind == "pwsh":
+        return (
+            "SHELL: PowerShell 7 (pwsh.exe). "
+            "run_command uses this shell and no other. "
+            "&& and || work. Use PowerShell cmdlets, not grep, sed, awk, or cat."
+        )
+    return "SHELL: bash -lc. run_command uses this shell and no other."
+
+
 def detect_shell(platform_name: str | None = None, which: Callable[[str], str | None] | None = None) -> Shell:
     plat = platform_name if platform_name is not None else sys.platform
     find = which or shutil.which

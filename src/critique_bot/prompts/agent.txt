@@ -38,7 +38,7 @@ delete_file: removes one file. argument: path.
 
 apply_patch: applies one unified diff. argument: patch. Paths are relative to the workspace. If it fails, read the file again or switch to edit_file.
 
-run_command: one command in the workspace. arguments: command, timeout (seconds, at most 600), cwd. The shell is named in ENVIRONMENT. On Windows PowerShell 5.1, chain with ; and do not use && or ||. Use PowerShell cmdlets (Get-ChildItem, Select-String, Get-Content), not grep, sed, cat, or ls -la. Use the project's interpreter from ENVIRONMENT. Each call is a new process: cd does not carry over, so pass cwd. The result starts with exit, the code, and the seconds, then stdout and stderr; long output keeps the first and last lines. A command that waits for input times out, so pass -y, --yes, or -Force.
+run_command: one command in the workspace. arguments: command, timeout (seconds, at most 600), cwd. The shell for this session is the SHELL line at the start of this message, and again in ENVIRONMENT. On Windows PowerShell 5.1, chain with ; and do not use && or ||. Use PowerShell cmdlets (Get-ChildItem, Select-String, Get-Content), not grep, sed, cat, or ls -la. Use the project's interpreter from ENVIRONMENT. Each call is a new process: cd does not carry over, so pass cwd. The result starts with exit, the code, and the seconds, then stdout and stderr; long output keeps the first and last lines. A command that waits for input times out, so pass -y, --yes, or -Force.
 
 git_status: no arguments. git_diff: arguments path, staged, stat. Use git_diff before you finish when the workspace is a git checkout.
 
