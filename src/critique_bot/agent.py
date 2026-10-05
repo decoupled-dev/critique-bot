@@ -706,7 +706,7 @@ def _parse_block(body: str) -> list[ToolCall]:
     fenced = _FENCE_RE.match(text)
     if fenced:
         text = fenced.group(1).strip()
-    objects = _json_objects(text)
+    objects = _json_objects(_repair_json(_normalize_json_text(text))) or _json_objects(text)
     if not objects:
         try:
             data = _loads_lenient(text)
@@ -751,34 +751,230 @@ def _call_from_data(data: Any) -> ToolCall:
 
 
 def _loads_lenient(text: str) -> Any:
+    cleaned = _normalize_json_text(text)
+    candidates = [cleaned, _TRAILING_COMMA_RE.sub(r"\1", cleaned)]
+    repaired = _repair_json(cleaned)
+    if repaired not in candidates:
+        candidates.append(repaired)
+    extracted = _json_objects(repaired)
+    for blob in extracted:
+        if blob not in candidates:
+            candidates.append(blob)
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("invalid tool JSON", cleaned, 0)
+
+
+def _normalize_json_text(text: str) -> str:
     cleaned = text.strip().lstrip("\ufeff")
-    cleaned = (
+    return (
         cleaned.replace("\u201c", '"')
         .replace("\u201d", '"')
         .replace("\u2018", "'")
         .replace("\u2019", "'")
     )
-    candidates = [cleaned, _TRAILING_COMMA_RE.sub(r"\1", cleaned)]
-    extracted = _json_objects(cleaned)
-    for blob in extracted:
-        if blob not in candidates:
-            candidates.append(blob)
-            candidates.append(_TRAILING_COMMA_RE.sub(r"\1", blob))
-    last_error: json.JSONDecodeError | None = None
-    for candidate in candidates:
-        normalized = (
-            candidate.replace(": True", ": true")
-            .replace(": False", ": false")
-            .replace(": None", ": null")
-        )
-        for blob in (candidate, normalized):
-            try:
-                return json.loads(blob)
-            except json.JSONDecodeError as exc:
-                last_error = exc
-    if last_error is not None:
-        raise last_error
-    raise json.JSONDecodeError("invalid tool JSON", cleaned, 0)
+
+
+def _repair_json(text: str) -> str:
+    """Turn the JSON models actually emit into text json.loads can read.
+
+    The usual breaks are a missing comma, a raw newline inside a string,
+    an unquoted key, and single quotes. Those come back as
+    ``Expecting ',' delimiter``.
+    """
+    source = text
+    out: list[str] = []
+    index = 0
+    length = len(source)
+    stack: list[str] = []
+    after_value = False
+    expect_key = False
+
+    def skip_space(pos: int) -> int:
+        while pos < length and source[pos] in " \t\r\n":
+            pos += 1
+        return pos
+
+    while index < length:
+        char = source[index]
+        if char in " \t\r\n":
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and source[index + 1] == "/":
+            index += 2
+            while index < length and source[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and index + 1 < length and source[index + 1] == "*":
+            index += 2
+            while index + 1 < length and source[index : index + 2] != "*/":
+                index += 1
+            index = min(length, index + 2)
+            continue
+        if char in "\"'":
+            if after_value and stack:
+                out.append(",")
+                expect_key = bool(stack and stack[-1] == "{")
+                after_value = False
+            literal, index = _read_json_string(source, index, char)
+            out.append(literal)
+            if expect_key:
+                nxt = skip_space(index)
+                if nxt < length and source[nxt] != ":":
+                    out.append(":")
+                expect_key = False
+                after_value = False
+            else:
+                after_value = True
+            continue
+        if char in "{[":
+            if after_value and stack:
+                out.append(",")
+            out.append(char)
+            stack.append(char)
+            after_value = False
+            expect_key = char == "{"
+            index += 1
+            continue
+        if char in "}]":
+            while out and out[-1] in " \t\r\n":
+                out.pop()
+            if out and out[-1] == ",":
+                out.pop()
+            out.append(char)
+            if stack:
+                stack.pop()
+            after_value = True
+            expect_key = False
+            index += 1
+            continue
+        if char == ":":
+            out.append(char)
+            after_value = False
+            expect_key = False
+            index += 1
+            continue
+        if char == ",":
+            if not after_value:
+                index += 1
+                continue
+            out.append(char)
+            after_value = False
+            expect_key = bool(stack and stack[-1] == "{")
+            index += 1
+            continue
+        if char.isalpha() or char in "_$":
+            end = index + 1
+            while end < length and (source[end].isalnum() or source[end] in "_$"):
+                end += 1
+            word = source[index:end]
+            nxt = skip_space(end)
+            if after_value and stack:
+                out.append(",")
+                after_value = False
+            if word in {"true", "false", "null"}:
+                out.append(word)
+                after_value = True
+            elif word in {"True", "False", "None", "undefined"}:
+                out.append({"True": "true", "False": "false", "None": "null", "undefined": "null"}[word])
+                after_value = True
+            elif stack and stack[-1] == "{" and nxt < length and source[nxt] == ":":
+                out.append(json.dumps(word))
+                after_value = True
+            else:
+                out.append(json.dumps(word))
+                after_value = True
+            index = end
+            continue
+        if char == "-" or char.isdigit():
+            if after_value and stack:
+                out.append(",")
+            end = index + 1
+            while end < length and source[end] in "0123456789.eE+-":
+                end += 1
+            out.append(source[index:end])
+            after_value = True
+            index = end
+            continue
+        index += 1
+    return _TRAILING_COMMA_RE.sub(r"\1", "".join(out))
+
+
+def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
+    """Read one quoted string, keeping interior quotes and raw newlines."""
+    index += 1
+    length = len(source)
+    chars: list[str] = []
+    while index < length:
+        char = source[index]
+        if char == "\\":
+            if index + 1 >= length:
+                break
+            escaped = source[index + 1]
+            if escaped == "u" and index + 5 < length:
+                try:
+                    chars.append(chr(int(source[index + 2 : index + 6], 16)))
+                    index += 6
+                    continue
+                except ValueError:
+                    pass
+            chars.append(
+                {
+                    "n": "\n",
+                    "t": "\t",
+                    "r": "\r",
+                    '"': '"',
+                    "'": "'",
+                    "\\": "\\",
+                    "/": "/",
+                    "b": "\b",
+                    "f": "\f",
+                }.get(escaped, escaped)
+            )
+            index += 2
+            continue
+        if char == quote and _string_ends(source, index):
+            return json.dumps("".join(chars), ensure_ascii=False), index + 1
+        if char == "\r":
+            index += 1
+            continue
+        chars.append(char)
+        index += 1
+    return json.dumps("".join(chars), ensure_ascii=False), index
+
+
+def _string_ends(source: str, index: int) -> bool:
+    """True when the quote at index closes the string rather than sitting inside it."""
+    pos = index + 1
+    length = len(source)
+    while pos < length and source[pos] in " \t\r\n":
+        pos += 1
+    if pos >= length or source[pos] in ",}]:":
+        return True
+    if source[pos] != '"':
+        return source[pos] in "{[0123456789tfnTFn-"
+    end = pos + 1
+    escaped = False
+    while end < length:
+        char = source[end]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            break
+        end += 1
+    end += 1
+    while end < length and source[end] in " \t\r\n":
+        end += 1
+    return end < length and source[end] == ":"
 
 
 def _json_objects(text: str) -> list[str]:

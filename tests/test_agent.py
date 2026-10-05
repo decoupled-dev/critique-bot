@@ -43,6 +43,32 @@ Look here.
         self.assertTrue(unclosed)
         self.assertEqual(calls, [])
 
+    def test_repairs_model_json(self) -> None:
+        samples = [
+            '<tool_call>\n{"tool": "list_files" "arguments": {"path": "."}}\n</tool_call>',
+            '<tool_call>\n{"tool": "write_files", "arguments": {"path": "README.md", "contents": "Hello\n"}}\n</tool_call>',
+            "<tool_call>\n{tool: 'list_files', arguments: {path: '.'}}\n</tool_call>",
+            '<tool_call>\n{"tool": "edit_file", "arguments": {"path": "a.py", "old_string": "say "hi"", "new_string": "ok"}}\n</tool_call>',
+        ]
+        calls, _unclosed = parse_tool_calls(samples[0])
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].tool, "list_files")
+        self.assertEqual(calls[0].arguments["path"], ".")
+
+        calls, _unclosed = parse_tool_calls(samples[1])
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].arguments["contents"], "Hello\n")
+
+        calls, _unclosed = parse_tool_calls(samples[2])
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].tool, "list_files")
+        self.assertEqual(calls[0].arguments["path"], ".")
+
+        calls, _unclosed = parse_tool_calls(samples[3])
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].arguments["old_string"], 'say "hi"')
+        self.assertEqual(calls[0].arguments["new_string"], "ok")
+
     def test_accepts_name_and_args(self) -> None:
         calls, unclosed = parse_tool_calls(
             '<tool_call>\n{"name": "git_status", "args": {}}\n</tool_call>'
