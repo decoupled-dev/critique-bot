@@ -65,6 +65,14 @@ _UNTAGGED_PLAN_RE = re.compile(
 _MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch"})
 _MIN_PLAN_CHARS = 40
 _QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
+_STATUS_WORDS = {
+    "completed": "COMPLETED",
+    "finished": "FINISHED",
+    "done": "DONE",
+    "failed": "FAILED",
+    "blocked": "BLOCKED",
+}
+_STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
 
 
 @dataclass(frozen=True)
@@ -309,20 +317,22 @@ def run_agent_loop(
     seed: str | None = None,
     read_message: Callable[[], str | None] | None = None,
     emit: Callable[[str], None] | None = None,
+    outcome: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until the model stops calling tools.
 
     When ``seed`` is set, that text is sent first. Each task is sent with a short
     reminder to print tool_call blocks. A reply with no tool_call is sent back
     until one tool has run. A question, a refusal, or a promise is sent back
-    again with no retry cap. DONE, or a reply that no edit is needed, is answered
-    with DONE and that task ends. Any other plain answer after a tool has run
-    ends that task, and the session then waits until the user types another
-    task or exits.
+    again with no retry cap. A final reply of COMPLETED, FINISHED, DONE, FAILED,
+    or BLOCKED ends that task and the command exits when a task was given.
+    Any other plain answer after a tool has run ends that task the same way.
     """
     turns: list[dict[str, str]] = []
     reader = read_message or _read_message
     show = emit or _emit
+    one_shot = bool(first_task.strip())
+    outcome_code = "COMPLETED"
     if seed and seed.strip():
         _seed_session(
             session,
@@ -338,16 +348,16 @@ def run_agent_loop(
     announced = False
     while True:
         if not pending:
+            if one_shot:
+                break
             if not announced:
-                print(
-                    "Agent ready. Type a task, or exit / Ctrl-D to quit.",
-                    file=sys.stderr,
-                )
+                _ui("ready", "type a task, or exit")
                 announced = True
             pending = reader() or ""
             if not pending.strip():
                 break
         task = pending.strip()
+        _ui("task", _one_line(task))
         turns.append({"role": "user", "content": task})
         payload = task_message(task)
         finished = False
@@ -365,17 +375,14 @@ def run_agent_loop(
             detail = getattr(session, "last_detail", None)
             calls, unclosed = parse_tool_calls(reply)
             note = commentary(reply)
-            if note:
-                show(note)
             planned_before = bool(plan) and len(plan) >= _MIN_PLAN_CHARS
             found_plan = _plan_text(reply)
+            status = _status_code(reply)
+            if note and not status and not (found_plan and note.strip() == found_plan.strip()):
+                show(note)
             if found_plan and len(found_plan) >= _MIN_PLAN_CHARS:
                 plan = found_plan
-                print(
-                    f"plan recorded ({len(plan)} chars)",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                _ui("plan", _plan_summary(plan))
             if unclosed or _idle_tool_reply(detail, reply):
                 payload = format_tool_result(
                     {
@@ -398,21 +405,13 @@ def run_agent_loop(
                         found_plan = None
                     else:
                         payload = _plan_ack_message()
-                        print(
-                            "plan already recorded; waiting for the write",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                        _ui("wait", "plan is recorded; send the write")
                         turns.append({"role": "assistant", "content": reply})
                         turns.append({"role": "user", "content": payload})
                         continue
                 else:
                     payload = _plan_ack_message()
-                    print(
-                        "plan recorded; waiting for the edit",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    _ui("wait", "plan recorded; next reply writes")
                     turns.append({"role": "assistant", "content": reply})
                     turns.append({"role": "user", "content": payload})
                     continue
@@ -432,15 +431,18 @@ def run_agent_loop(
                 last_failed = True
                 continue
             if not calls:
+                if status:
+                    turns.append({"role": "assistant", "content": reply})
+                    outcome_code = status
+                    _print_status(status)
+                    finished = True
+                    break
                 if _no_edit_needed(reply):
                     turns.append({"role": "assistant", "content": reply})
                     if not note and reply.strip():
                         show(reply)
-                    print("DONE", file=sys.stderr, flush=True)
-                    if not _exact_done(reply):
-                        turns.append({"role": "user", "content": "DONE"})
-                        with log.loading("Waiting for the assistant..."):
-                            session.send("DONE")
+                    outcome_code = "COMPLETED"
+                    _print_status("COMPLETED")
                     finished = True
                     break
                 stalled = _stalls(reply)
@@ -448,28 +450,22 @@ def run_agent_loop(
                     if not stalled:
                         nudges += 1
                     payload = _recover_message() if tools_ran else _nudge_message()
-                    print(
-                        "model replied without a tool_call; asking again",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    _ui("wait", "no tool call; asking again")
                     turns.append({"role": "assistant", "content": reply})
                     turns.append({"role": "user", "content": payload})
                     continue
                 if recoveries < 2 and last_failed:
                     recoveries += 1
                     payload = _recover_message()
-                    print(
-                        "model stopped early; asking for the next tool_call",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    _ui("wait", "stopped early; asking for the next tool")
                     turns.append({"role": "assistant", "content": reply})
                     turns.append({"role": "user", "content": payload})
                     continue
                 turns.append({"role": "assistant", "content": reply})
                 if not note and reply.strip():
                     show(reply)
+                outcome_code = "COMPLETED"
+                _print_status("COMPLETED")
                 finished = True
                 break
             results: list[dict[str, Any]] = []
@@ -478,6 +474,7 @@ def run_agent_loop(
                     results.append(
                         {"tool": call.tool, "ok": False, "error": call.error}
                     )
+                    _ui("fail", _one_line(call.error or "invalid tool call"))
                     continue
                 blocked = _mutation_error(
                     call.tool,
@@ -486,13 +483,9 @@ def run_agent_loop(
                 )
                 if blocked:
                     results.append({"tool": call.tool, "ok": False, "error": blocked})
-                    print(
-                        f"blocked {call.tool}: plan required first",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    _ui("fail", f"{call.tool}  plan required first")
                     continue
-                _print_call(call)
+                _ui("tool", _call_summary(call))
                 results.append(
                     execute_tool(
                         call.tool,
@@ -503,6 +496,7 @@ def run_agent_loop(
                         max_chars=min(DEFAULT_TOOL_CHARS, max_result_chars),
                     )
                 )
+                _ui_result(results[-1])
                 if results[-1].get("ok"):
                     tools_ran = True
             last_failed = any(not item.get("ok") for item in results)
@@ -517,9 +511,15 @@ def run_agent_loop(
         if not finished:
             message = f"stopped after {max_rounds} tool rounds"
             log.warn(message)
-            print(f"error: {message}", file=sys.stderr)
+            _ui("fail", message)
             turns.append({"role": "assistant", "content": message})
+            outcome_code = "STOPPED"
+            _print_status("STOPPED")
         pending = ""
+        if one_shot:
+            break
+    if outcome is not None:
+        outcome[:] = [outcome_code]
     return turns
 
 
@@ -539,6 +539,7 @@ def run_agent(
 
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
+    outcome = ["COMPLETED"]
     try:
         instructions = load_agent_instructions()
     except OSError as exc:
@@ -558,6 +559,7 @@ def run_agent(
                         max_rounds=max_rounds,
                         max_result_chars=config.max_prompt_chars,
                         seed=seed_message(home.root, instructions),
+                        outcome=outcome,
                     )
                 except Exception:
                     page = getattr(session, "page", None)
@@ -594,7 +596,7 @@ def run_agent(
     write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
     if output_dir is not None:
         write_output(output_dir, body, payload, stem="agent", print_body=False)
-    return 0
+    return 0 if outcome[-1] in _STATUS_OK else 1
 
 
 def _seed_session(
@@ -609,7 +611,7 @@ def _seed_session(
     show: Callable[[str], None],
 ) -> None:
     """Send the tool instructions once. Tool calls in the ack are still run."""
-    print("seeding tool instructions", file=sys.stderr, flush=True)
+    _ui("wait", "loading instructions")
     payload = seed
     turns.append({"role": "user", "content": seed})
     for _ in range(3):
@@ -644,7 +646,7 @@ def _seed_session(
             if blocked:
                 results.append({"tool": call.tool, "ok": False, "error": blocked})
                 continue
-            _print_call(call)
+            _ui("tool", _call_summary(call))
             results.append(
                 execute_tool(
                     call.tool,
@@ -655,6 +657,7 @@ def _seed_session(
                     max_chars=min(DEFAULT_TOOL_CHARS, max_result_chars),
                 )
             )
+            _ui_result(results[-1])
         payload = _cap(
             "\n".join(format_tool_result(item) for item in results),
             max_result_chars,
@@ -809,18 +812,27 @@ def _json_objects(text: str) -> list[str]:
     return found
 
 
-def _exact_done(text: str) -> bool:
+def _status_code(text: str) -> str | None:
+    """Return a finish code when the reply is that word, or ends with it."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
     compact = re.sub(r"[^a-z]+", " ", text.lower()).strip()
-    return compact == "done"
+    if compact in _STATUS_WORDS:
+        return _STATUS_WORDS[compact]
+    if len(lines) > 4:
+        return None
+    last = re.sub(r"[^a-z]+", " ", lines[-1].lower()).strip()
+    return _STATUS_WORDS.get(last)
 
 
 def _no_edit_needed(text: str) -> bool:
     """True when the model says the task needs no further edit, or replies DONE.
 
     That reply ends the task. A promise to keep editing does not, unless the
-    whole reply is DONE.
+    whole reply is a finish code.
     """
-    if _exact_done(text):
+    if _status_code(text) in _STATUS_OK:
         return True
     normalized = text.lower().replace("\u2019", "'").replace("\u2018", "'")
     if any(
@@ -1040,11 +1052,76 @@ def _idle_tool_reply(detail: Any, reply: str) -> bool:
     return unclosed or not calls
 
 
-def _print_call(call: ToolCall) -> None:
-    preview = json.dumps(call.arguments, ensure_ascii=False)
-    if len(preview) > 180:
-        preview = preview[:177] + "..."
-    print(f"tool {call.tool} {preview}", file=sys.stderr, flush=True)
+def _one_line(text: str, limit: int = 120) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
+def _paint(text: str, color: str) -> str:
+    if not sys.stderr.isatty():
+        return text
+    return f"\033[{color}m{text}\033[0m"
+
+
+def _ui(kind: str, message: str) -> None:
+    colors = {
+        "ready": "36",
+        "task": "1",
+        "plan": "33",
+        "wait": "36",
+        "tool": "36",
+        "ok": "32",
+        "fail": "31",
+    }
+    label = _paint(f"{kind:<5}", colors.get(kind, "0"))
+    print(f"  {label}  {_one_line(message)}", file=sys.stderr, flush=True)
+
+
+def _print_status(code: str) -> None:
+    color = "1;32" if code in _STATUS_OK else "1;31"
+    print(file=sys.stderr)
+    print(_paint(code, color), file=sys.stderr, flush=True)
+
+
+def _plan_summary(plan: str) -> str:
+    for line in plan.splitlines():
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("file"):
+            _, _, rest = stripped.partition(":")
+            if rest.strip():
+                return rest.strip()
+    return _one_line(plan, 80)
+
+
+def _call_summary(call: ToolCall) -> str:
+    args = call.arguments
+    if call.tool == "run_command":
+        return f"run_command  {_one_line(str(args.get('command', '')), 80)}"
+    if call.tool == "list_files":
+        return f"list_files  {args.get('path') or '.'}"
+    if call.tool == "search_code":
+        return f"search_code  {_one_line(str(args.get('pattern', '')), 60)}"
+    path = args.get("path")
+    paths = args.get("paths")
+    if not path and isinstance(paths, list) and paths:
+        path = ", ".join(str(item) for item in paths[:3])
+    files = args.get("files")
+    if not path and isinstance(files, list) and files and isinstance(files[0], dict):
+        path = files[0].get("path", "")
+    if path:
+        return f"{call.tool}  {path}"
+    return call.tool
+
+
+def _ui_result(result: dict[str, Any]) -> None:
+    name = str(result.get("tool") or "tool")
+    if result.get("ok"):
+        _ui("ok", name)
+        return
+    _ui("fail", f"{name}  {_one_line(str(result.get('error') or 'failed'), 100)}")
 
 
 def _emit(text: str) -> None:

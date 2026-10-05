@@ -256,6 +256,67 @@ class LoopTests(unittest.TestCase):
         self.assertIn("write_files", session.sent[2])
         self.assertEqual((root / "README.md").read_text(encoding="utf-8"), "Hello\n")
 
+    def test_status_code_finishes_without_a_shell_prompt(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        seen: list[str] = []
+
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+                self._replies = [
+                    '<tool_call>\n{"tool": "list_files", "arguments": {"path": "."}}\n</tool_call>',
+                    "COMPLETED",
+                    "should not run",
+                ]
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return self._replies.pop(0)
+
+        outcome: list[str] = []
+        run_agent_loop(
+            Session(),
+            workspace=root,
+            index_path=None,
+            cache_dir=None,
+            first_task="create README.md",
+            max_rounds=None,
+            max_result_chars=4000,
+            read_message=lambda: seen.append("prompt") or None,
+            emit=lambda _text: None,
+            outcome=outcome,
+        )
+        self.assertEqual(seen, [])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_failed_code_is_recorded(self) -> None:
+        class Session:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.last_detail = None
+
+            def send(self, prompt: str) -> str:
+                self.sent.append(prompt)
+                return "FAILED"
+
+        session = Session()
+        outcome: list[str] = []
+        run_agent_loop(
+            session,
+            workspace=Path("."),
+            index_path=None,
+            cache_dir=None,
+            first_task="do the task",
+            max_rounds=4,
+            max_result_chars=4000,
+            read_message=lambda: None,
+            emit=lambda _text: None,
+            outcome=outcome,
+        )
+        self.assertEqual(outcome, ["FAILED"])
+        self.assertEqual(len(session.sent), 1)
+
     def test_seed_is_first_and_task_follows(self) -> None:
         class Session:
             def __init__(self) -> None:
@@ -446,10 +507,10 @@ class LoopTests(unittest.TestCase):
             read_message=lambda: None,
             emit=lambda _text: None,
         )
-        self.assertEqual(session.sent[-1], "DONE")
-        self.assertNotIn("previous step did not finish", session.sent[-1])
+        self.assertNotIn("DONE", session.sent)
+        self.assertNotIn("COMPLETED", session.sent)
         self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
-        self.assertEqual(len(session._replies), 1)
+        self.assertEqual(len(session._replies), 2)
 
     def test_done_after_a_failed_edit_ends(self) -> None:
         root = Path(tempfile.mkdtemp())
