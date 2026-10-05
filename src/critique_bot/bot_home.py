@@ -1,4 +1,4 @@
-"""``.bot`` folder for the agent: settings, cache, sessions, and the code index."""
+"""``.bot`` folder for the agent: settings, notes, cache, sessions, and the code index."""
 
 from __future__ import annotations
 
@@ -11,8 +11,22 @@ from critique_bot.code_index import IndexStats, rebuild_index
 
 BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
+NOTES_NAME = "AGENT.md"
 _GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/")
 _LOCAL_GITIGNORE = "cache/\nsessions/\n"
+NOTES_TEMPLATE = """# Project notes for bot-agent
+
+Lines below the marker are sent to the chat at the start of every session,
+like CLAUDE.md or .cursorrules. Nothing is sent while the space below is
+empty. Keep the notes short and specific, for example:
+
+- Test command: python -m unittest discover -s tests
+- Kotlin uses 4-space indent; do not reformat files you did not change.
+- Never edit files under generated/.
+
+<!-- notes start -->
+"""
+_NOTES_MARKER = "<!-- notes start -->"
 
 
 class BotHomeError(RuntimeError):
@@ -29,6 +43,10 @@ class BotHome:
     index_path: Path
     settings: dict
 
+    @property
+    def notes_path(self) -> Path:
+        return self.bot_dir / NOTES_NAME
+
     def config_file(self) -> Path | None:
         raw = self.settings.get("config")
         if not raw or not isinstance(raw, str):
@@ -37,6 +55,17 @@ class BotHome:
         if not path.is_absolute():
             path = self.root / path
         return path
+
+    def project_notes(self) -> str:
+        """Text after the marker in ``.bot/AGENT.md``, or the whole file without one."""
+        try:
+            text = self.notes_path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        if _NOTES_MARKER in text:
+            text = text.split(_NOTES_MARKER, 1)[1]
+        return text.strip()
+
 
 def find_bot_home(start: Path) -> BotHome | None:
     """Walk upward from ``start`` until a ``.bot/settings.json`` exists."""
@@ -51,10 +80,11 @@ def find_bot_home(start: Path) -> BotHome | None:
 
 
 def init_bot_home(workspace: Path) -> BotHome:
-    """Create ``.bot`` in ``workspace``, then rebuild the symbol index.
+    """Create ``.bot`` in ``workspace``, then rebuild the code index.
 
-    An existing ``settings.json`` is left as it is. Missing directories are
-    created. ``config.json`` in the workspace is recorded only on first init.
+    Existing ``settings.json`` and ``AGENT.md`` are left as they are. Missing
+    directories are created. ``config.json`` in the workspace is recorded only
+    on first init.
     """
     root = Path(workspace).resolve()
     if not root.is_dir():
@@ -71,13 +101,14 @@ def init_bot_home(workspace: Path) -> BotHome:
         config_json = root / "config.json"
         if config_json.is_file():
             settings["config"] = "config.json"
-        settings_path.write_text(
-            json.dumps(settings, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
         log.info(f"wrote {settings_path}")
     else:
         log.info(f"keeping existing {settings_path}")
+    notes_path = bot_dir / NOTES_NAME
+    if not notes_path.exists():
+        notes_path.write_text(NOTES_TEMPLATE, encoding="utf-8")
+        log.info(f"wrote {notes_path}")
     _append_gitignore(root)
     home = _load(root, settings_path)
     stats = rebuild_index(root, home.index_path)

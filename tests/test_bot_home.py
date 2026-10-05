@@ -26,6 +26,13 @@ class BotHomeTests(unittest.TestCase):
             self.assertIn(".bot/cache/", ignore)
             self.assertIn(".bot/sessions/", ignore)
             self.assertTrue(home.index_path.is_file())
+            self.assertTrue(home.notes_path.is_file())
+            self.assertEqual(home.project_notes(), "")
+            with home.notes_path.open("a", encoding="utf-8") as notes:
+                notes.write("\nRun tests with: gradlew.bat test\n")
+            self.assertEqual(home.project_notes(), "Run tests with: gradlew.bat test")
+            init_bot_home(root)
+            self.assertIn("gradlew.bat", home.project_notes())
 
     def test_second_init_keeps_settings_and_gitignore_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

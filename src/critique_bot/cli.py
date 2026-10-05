@@ -561,6 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  bot-agent init\n"
             "  bot-agent\n"
             "  bot-agent \"update the test cases\"\n"
+            "  bot-agent undo    (restore the files the last task changed)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1133,6 +1134,16 @@ def _main_agent(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if words == ["undo"]:
+        from critique_bot.agent_edit import undo_last
+
+        restored = undo_last(home.cache_dir, home.root)
+        if not restored:
+            print("nothing to undo", file=sys.stderr)
+            return 1
+        for path in restored:
+            print(f"restored {path}")
+        return 0
     config_path = Path(args.config) if args.config else home.config_file()
     if config_path is None or not config_path.is_file():
         if just_initialized:
