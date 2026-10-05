@@ -99,6 +99,49 @@ Later tasks from the same folder, or from any other folder after `bot-agent init
 bot-agent "update the test cases"
 ```
 
+## 6. Tune a project
+
+### Project notes
+
+`bot-agent init` writes `.bot\AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every session, the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
+
+```markdown
+<!-- notes start -->
+Build with: .\gradlew.bat assembleDebug
+Test with: .\gradlew.bat testDebugUnitTest
+Kotlin only; do not add Java files.
+```
+
+### Settings
+
+`.bot\settings.json` takes these optional keys:
+
+| Key | Effect |
+| --- | --- |
+| `check_command` | Runs after the model reports COMPLETED and at least one file changed. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. Example: `".\\gradlew.bat testDebugUnitTest"`. |
+| `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller. Values under 4000 are ignored. |
+| `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first turn then sends only the environment and project notes. |
+
+### Use a ChatGPT Project for the instructions
+
+The tool protocol is long. Sending it as the first message works, but the model can lose track of it in a long chat. A ChatGPT Project keeps it pinned:
+
+1. In chatgpt.com, create a Project and paste the `SYSTEM` section of `prompts\agent.txt` into the Project's instructions.
+2. Point `chat_url` in `config.json` at that Project.
+3. Set `"seed_instructions": false` in `.bot\settings.json`.
+
+### PowerShell
+
+`run_command` uses PowerShell 7 (`pwsh.exe`) when it is installed, and Windows PowerShell 5.1 otherwise. PowerShell 7 is recommended: it accepts `&&` and `||`, which models write often. On 5.1, a command that uses `&&`, `export`, `grep`, or other bash syntax is not run, and the model is told the PowerShell form to use instead. Install it with:
+
+```powershell
+winget install --id Microsoft.PowerShell
+```
+
+### Undo
+
+Before a task changes a file for the first time, `bot-agent` saves a copy under `.bot\cache\undo\`. `bot-agent undo` restores the files changed by the most recent task and deletes the files it created. Run it again to step back one more task. The last 20 tasks are kept.
+
 ## What stays where it is
 
 | Path | Role |
