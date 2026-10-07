@@ -63,6 +63,15 @@ _EDIT_TASK_RE = re.compile(
     r"replace|edit|modify|insert|append|move|convert|migrate|bump)\b",
     re.IGNORECASE,
 )
+_ANSWER_TASK_RE = re.compile(
+    r"(?is)^(?:please\s+|can you\s+|could you\s+|would you\s+)?"
+    r"(?:what|why|how|who|when|where|which|explain|describe|summarize|summarise|"
+    r"tell me|define|compare|is|are|does|do|can|could|should|would|what's|whats)\b"
+)
+_PROMISE_START_RE = re.compile(
+    r"(?i)^(i'll|i will|let me|next i|i'm going to|i am going to)\s+"
+    r"(look|read|check|search|edit|update|fix|open|find|run|start|try|use|inspect|review)\b"
+)
 _SECTION_RE = re.compile(r"^<<<([A-Z_]+)>>>\s*$", re.MULTILINE)
 _QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
 _STATUS_WORDS = {
@@ -95,10 +104,16 @@ _FALLBACKS = {
         '{"tool": "read_files", "arguments": {"path": "{path}"}}\n'
         "</tool_call>"
     ),
+    "ANSWER": (
+        "The task is a question. Reply with the answer in words and no tool_call when you "
+        "already know it or a tool result above shows it. If you still need a file or a command, "
+        "send one tool_call. Do not ask what to change."
+    ),
     "STATE": (
         "STATE step {step}\nTask: {task}\nRead: {reads}\nChanged: {edits}\n"
         "Last command: {command}\n"
-        "Next: the next tool_call, or COMPLETED. FAILED or BLOCKED must say what failed and why."
+        "Next: the next tool_call, or the answer when the task is only a question, or COMPLETED. "
+        "FAILED or BLOCKED must say what failed and why."
     ),
     "PLAN_NOTED": "Plan noted. Send the tool_call for its first step now, with no other words.",
     "NOTHING_CHANGED": (
@@ -214,6 +229,22 @@ def _bare_json_calls(text: str) -> list[ToolCall]:
 
 def commentary(text: str) -> str:
     return _BLOCK_RE.sub("", text).strip()
+
+
+def _answer_text(text: str) -> str:
+    """The words the user should see, without a trailing COMPLETED or DONE."""
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return ""
+    last = re.sub(r"[^a-z]+", " ", lines[-1].lower()).strip()
+    if last in _STATUS_WORDS:
+        lines = lines[:-1]
+    body = "\n".join(lines).strip()
+    if not body or body.upper() in {"READY", *_STATUS_WORDS.values()}:
+        return ""
+    return body
 
 
 def format_tool_result(result: dict[str, Any]) -> str:
@@ -634,6 +665,30 @@ def _stalls(text: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def _asks_user(text: str) -> bool:
+    normalized = _normalized(text)
+    return any(marker in normalized for marker in _QUESTION_MARKERS)
+
+
+def _only_promises(text: str) -> bool:
+    """True when the reply only says it will go look, and has not answered yet."""
+    return bool(_PROMISE_START_RE.match(_normalized(text).strip()))
+
+
+def _answer_only(task: str) -> bool:
+    """True when the user asked a question and did not ask for a file change.
+
+    A question that also says to fix or add something is still a task: the
+    answer and the tool calls belong in the same reply.
+    """
+    text = " ".join(task.split())
+    if not text or _asks_for_change(text):
+        return False
+    if text.endswith("?"):
+        return True
+    return bool(_ANSWER_TASK_RE.match(text))
+
+
 def _plan_text(reply: str) -> str | None:
     parts = [part.strip() for part in _PLAN_RE.findall(reply)]
     if parts:
@@ -834,10 +889,13 @@ class _TaskRun:
         note = commentary(reply)
         status = _status_code(reply)
         plan = _plan_text(reply)
-        if note and not status and not calls:
-            self.show(plan if plan else note)
-        elif note and calls and not plan:
-            self.show(note)
+        shown = _answer_text(note)
+        if calls and shown:
+            self.show(shown)
+        elif shown and not status:
+            self.show(plan if plan else shown)
+        elif shown and status in _STATUS_OK:
+            self.show(shown)
         if unclosed or _idle_tool_reply(detail, reply):
             self.truncations += 1
             if self.truncations > MAX_TRUNCATIONS:
@@ -864,6 +922,17 @@ class _TaskRun:
             return self._finish(status, reply=reply)
         if _no_edit_needed(reply):
             return self._finish("COMPLETED", unchanged_ok=True)
+        if _answer_only(self.task):
+            if _refuses(reply) or _asks_user(reply) or _only_promises(reply):
+                self.refusals += 1
+                if self.refusals > MAX_REFUSALS:
+                    return self._end(
+                        "FAILED", f"the chat model stopped working on the task: {_one_line(reply, 160)}"
+                    )
+                _ui("note", "Still working on it.")
+                self._send_message("ANSWER")
+                return None
+            return self._finish("COMPLETED")
         if plan and self.plan_notes < 2:
             self.plan_notes += 1
             _ui("note", "About to make that change.")
@@ -1043,8 +1112,10 @@ def run_agent_loop(
     """Talk to ``session.send`` until each task reaches a finish code.
 
     ``seed`` is sent first. Each task gets fresh working memory and an undo
-    checkpoint. COMPLETED, FINISHED, DONE, FAILED, BLOCKED, or a plain answer
-    after a tool has run ends that task; the same chat waits for the next one.
+    checkpoint. COMPLETED, FINISHED, DONE, FAILED, BLOCKED, a direct answer to a
+    question, or a plain answer after a tool has run ends that task; the same
+    chat waits for the next one. An answer with tool_call blocks is shown and
+    the blocks still run.
     """
     turns: list[dict[str, str]] = []
     reader = read_message or _read_message

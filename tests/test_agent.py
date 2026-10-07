@@ -634,6 +634,67 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(session._replies, [])
         self.assertIn('"path": "note.txt"', session.sent[2])
 
+    def test_a_question_is_answered_without_a_tool_call(self) -> None:
+        shown: list[str] = []
+        session = _Scripted(["2 + 2 is 4."])
+        outcome: list[str] = []
+        _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", outcome=outcome, emit=shown.append)
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(len(session.sent), 1)
+        self.assertIn("2 + 2 is 4", shown[0])
+
+    def test_a_question_mark_in_the_answer_still_finishes(self) -> None:
+        session = _Scripted(["It multiplies price by the rate. Should the rate be a percent?"])
+        outcome: list[str] = []
+        _loop(session, Path(tempfile.mkdtemp()), "how does the discount work?", outcome=outcome)
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(len(session.sent), 1)
+
+    def test_a_promise_to_look_asks_for_the_answer(self) -> None:
+        session = _Scripted(["Let me read the file.", "It says keep."])
+        outcome: list[str] = []
+        _loop(session, Path(tempfile.mkdtemp()), "what does note.txt say?", outcome=outcome)
+        self.assertIn("answer in words", session.sent[1].lower())
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_a_question_can_read_and_then_answer(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("keep\n", encoding="utf-8")
+        session = _Scripted(
+            [
+                _call("read_files", path="note.txt"),
+                "It says keep. Should I stop there?",
+            ]
+        )
+        outcome: list[str] = []
+        _loop(session, root, "what does note.txt say?", outcome=outcome)
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(len(session.sent), 2)
+        self.assertIn("keep", session.sent[1])
+
+    def test_answer_and_edit_in_one_reply_both_happen(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        shown: list[str] = []
+        session = _Scripted(
+            [
+                "note.txt said one. It now says two.\n" + _edit("note.txt", "one", "two"),
+                "COMPLETED",
+            ]
+        )
+        outcome: list[str] = []
+        _loop(
+            session,
+            root,
+            "what did note.txt say? also change one to two",
+            outcome=outcome,
+            emit=shown.append,
+        )
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+        self.assertTrue(any("said one" in item for item in shown))
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertNotIn("No tool_call", session.sent[1])
+
     def test_question_after_a_read_is_sent_back_until_a_tool(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
