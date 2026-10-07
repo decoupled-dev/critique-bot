@@ -53,7 +53,7 @@ class AgentCliTests(unittest.TestCase):
                         main(["--config", str(config), "--mode", "agent", "--repo-dir", str(root), "init"]),
                         0,
                     )
-                self.assertEqual(run.call_args.args[2], "")
+                run.assert_not_called()
                 with patch("critique_bot.agent.run_agent", return_value=0) as run:
                     self.assertEqual(
                         main(["--mode", "agent", "--repo-dir", str(root)]),

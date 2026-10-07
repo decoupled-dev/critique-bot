@@ -396,8 +396,9 @@ def _repair_json(text: str) -> str:
     """Turn the JSON models actually emit into text json.loads can read.
 
     The usual breaks are a missing comma, a raw newline inside a string,
-    an unquoted key, and single quotes. Those come back as
-    ``Expecting ',' delimiter``.
+    an unquoted key, single quotes, and a quote inside a string that the
+    model did not escape (``name = "test-app"``). Those come back as
+    ``Expecting ',' delimiter`` or ``Expecting value``.
     """
     source = text
     out: list[str] = []
@@ -434,7 +435,7 @@ def _repair_json(text: str) -> str:
                 out.append(",")
                 expect_key = bool(stack and stack[-1] == "{")
                 after_value = False
-            literal, index = _read_json_string(source, index, char)
+            literal, index = _read_json_string(source, index, char, key=expect_key)
             out.append(literal)
             if expect_key:
                 nxt = skip_space(index)
@@ -525,7 +526,7 @@ _JSON_STRING_ESCAPES = {
 }
 
 
-def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
+def _read_json_string(source: str, index: int, quote: str, *, key: bool = False) -> tuple[str, int]:
     """Read one quoted string, keeping interior quotes and raw newlines."""
     index += 1
     length = len(source)
@@ -558,7 +559,7 @@ def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
                 chars.append(escaped)
             index += 2
             continue
-        if char == quote and _string_ends(source, index):
+        if char == quote and _string_ends(source, index, quote, key=key):
             return json.dumps("".join(chars), ensure_ascii=False), index + 1
         if char == "\r":
             index += 1
@@ -568,16 +569,29 @@ def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
     return json.dumps("".join(chars), ensure_ascii=False), index
 
 
-def _string_ends(source: str, index: int) -> bool:
-    """True when the quote at index closes the string rather than sitting inside it."""
+def _string_ends(source: str, index: int, quote: str, *, key: bool) -> bool:
+    """True when the quote at index closes the string rather than sitting inside it.
+
+    A value may contain source text such as ``name = "test-app"`` or
+    ``include(":app")``. A following letter, digit, or colon is that text.
+    The quote closes the value when the next token continues the JSON
+    (``,``, ``}``, ``]``) or is the next object key.
+    """
     pos = index + 1
     length = len(source)
     while pos < length and source[pos] in " \t\r\n":
         pos += 1
-    if pos >= length or source[pos] in ",}]:":
+    if pos >= length:
         return True
-    if source[pos] != '"':
-        return source[pos] in "{[0123456789tfnTFn-"
+    nxt = source[pos]
+    if nxt == ",":
+        return True
+    if nxt in "}]":
+        return _closer_is_json(source, pos)
+    if nxt == ":":
+        return key
+    if nxt != quote:
+        return (not key) and _json_value_at(source, pos)
     end = pos + 1
     escaped = False
     while end < length:
@@ -586,13 +600,50 @@ def _string_ends(source: str, index: int) -> bool:
             escaped = False
         elif char == "\\":
             escaped = True
-        elif char == '"':
+        elif char == quote:
             break
         end += 1
     end += 1
     while end < length and source[end] in " \t\r\n":
         end += 1
     return end < length and source[end] == ":"
+
+
+def _closer_is_json(source: str, pos: int) -> bool:
+    """True when a ``}`` or ``]`` after a quote closes JSON, not source text.
+
+    ``text = "Hello" }`` is Kotlin. The brace is JSON only when what follows
+    it continues the tool call (a comma, another closer, or the end).
+    """
+    index = pos
+    length = len(source)
+    while index < length and source[index] in "}]":
+        index += 1
+    while index < length and source[index] in " \t\r\n":
+        index += 1
+    if index >= length:
+        return True
+    char = source[index]
+    if char in ",:\"'{[":
+        return True
+    if char.isdigit() or char == "-":
+        return True
+    for word in ("true", "false", "null"):
+        if source.startswith(word, index):
+            return True
+    return False
+
+
+def _json_value_at(source: str, pos: int) -> bool:
+    """True when ``source[pos:]`` is a JSON value that can follow a string."""
+    if source[pos] in "{[":
+        return True
+    for word in ("true", "false", "null"):
+        if not source.startswith(word, pos):
+            continue
+        after = pos + len(word)
+        return after >= len(source) or source[after] in ",}] \t\r\n"
+    return False
 
 
 def _json_objects(text: str) -> list[str]:
@@ -685,7 +736,8 @@ def _no_edit_needed(text: str) -> bool:
 
 _REFUSAL_MARKERS = (
     "i can't", "i cannot", "unable", "not able", "aren't available", "are not available",
-    "not available", "isn't available", "not exposed", "no tool", "no repository",
+    "not available", "isn't available", "not exposed", "not expose", "tool interface",
+    "no tool", "no repository",
     "file-operation", "file operation", "don't have", "do not have", "i won't", "i will not",
 )
 _QUESTION_MARKERS = (
@@ -968,6 +1020,8 @@ class _TaskRun:
             if self.state.failures_in_row >= MAX_FAILED_ROUNDS:
                 return self._end("BLOCKED", f"{MAX_FAILED_ROUNDS} tool rounds in a row failed")
             return None
+        if status in {"FAILED", "BLOCKED"} and _refuses(reply):
+            return self._refuse(reply)
         if status:
             return self._finish(status, reply=reply)
         if _no_edit_needed(reply):
@@ -991,12 +1045,7 @@ class _TaskRun:
         if _stalls(reply):
             if self.state.mutated and not self.last_failed and not _refuses(reply):
                 return self._finish("COMPLETED")
-            self.refusals += 1
-            if self.refusals > MAX_REFUSALS:
-                return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
-            _ui("note", "Still working on it.")
-            self._send_message("RECOVER" if self.tools_ran else "NUDGE")
-            return None
+            return self._refuse(reply)
         if not self.tools_ran and self.nudges < 2:
             self.nudges += 1
             _ui("note", "Still working on it.")
@@ -1008,6 +1057,15 @@ class _TaskRun:
             self._send_message("RECOVER")
             return None
         return self._finish("COMPLETED")
+
+    def _refuse(self, reply: str) -> str | None:
+        """Send a refusal back. FAILED/BLOCKED does not finish the task when the model only claims the tools are missing."""
+        self.refusals += 1
+        if self.refusals > MAX_REFUSALS:
+            return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
+        _ui("note", "Still working on it.")
+        self._send_message("RECOVER" if self.tools_ran else "NUDGE")
+        return None
 
     def _run_calls(self, calls: list[ToolCall]) -> None:
         results: list[dict[str, Any]] = []
@@ -1400,7 +1458,21 @@ def run_agent(
 
                         save_failure(page, home.sessions_dir)
                     raise
-    except (BrowserError, ChatError) as exc:
+    except ChatError as exc:
+        if not headed and "Cloudflare" in str(exc):
+            _ui("note", "The headless window was blocked. Opening a visible browser.")
+            return run_agent(
+                config,
+                home,
+                task,
+                max_rounds=max_rounds,
+                output_dir=output_dir,
+                headed=True,
+            )
+        log.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except BrowserError as exc:
         log.error(str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 1

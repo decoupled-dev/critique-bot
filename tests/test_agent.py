@@ -126,6 +126,35 @@ Look here.
         calls, _ = parse_tool_calls(samples[3])
         self.assertEqual(calls[0].arguments["old_string"], 'say "hi"')
 
+    def test_unescaped_quotes_in_source_text_are_kept(self) -> None:
+        reply = (
+            "<tool_call>\n"
+            '{"tool":"write_files","arguments":{"path":"settings.gradle.kts","contents":'
+            '"rootProject.name = "test-app"\\ninclude(":app")\\n"}}\n'
+            "</tool_call>"
+        )
+        calls, unclosed = parse_tool_calls(reply)
+        self.assertFalse(unclosed)
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(
+            calls[0].arguments["contents"],
+            'rootProject.name = "test-app"\ninclude(":app")\n',
+        )
+
+    def test_a_quote_before_a_brace_stays_inside_the_string(self) -> None:
+        reply = (
+            "<tool_call>\n"
+            '{"tool":"write_files","arguments":{"path":"MainActivity.kt","contents":'
+            '"setContentView(TextView(this).apply { text = "Hello" })\\n"}}\n'
+            "</tool_call>"
+        )
+        calls, _ = parse_tool_calls(reply)
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(
+            calls[0].arguments["contents"],
+            'setContentView(TextView(this).apply { text = "Hello" })\n',
+        )
+
     def test_windows_path_keeps_the_backslash(self) -> None:
         reply = (
             "<tool_call>\n"
@@ -679,6 +708,20 @@ class LoopTests(unittest.TestCase):
         self.assertIn("No file has changed", session.sent[2])
         self.assertEqual(outcome, ["DONE"])
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "keep\n")
+
+    def test_failed_refusal_is_sent_back(self) -> None:
+        session = _Scripted(
+            [
+                "BLOCKED — the repository tool interface does not expose run_command.",
+                _call("list_files", path="."),
+                "COMPLETED",
+                "COMPLETED",
+            ]
+        )
+        outcome: list[str] = []
+        _loop(session, Path(tempfile.mkdtemp()), "create hello.txt", outcome=outcome)
+        self.assertIn("list_files", session.sent[1])
+        self.assertEqual(outcome, ["COMPLETED"])
 
     def test_failed_code_is_recorded(self) -> None:
         session = _Scripted(["FAILED", "FAILED: the file was not in the workspace"])

@@ -1366,6 +1366,28 @@ def _wait_for_reply(
     )
 
 
+def _raise_if_cloudflare(page: Page, prompt_selector: str) -> None:
+    """Fail quickly when a headless window is stuck on a Cloudflare challenge.
+
+    A challenge that clears on its own is left alone. One that is still up
+    after a short wait is reported so the caller can open a visible window.
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    from critique_bot.browser import page_block_hint
+
+    hint = page_block_hint(page)
+    if "Cloudflare" not in hint:
+        return
+    try:
+        page.locator(prompt_selector).first.wait_for(state="visible", timeout=15_000)
+    except PlaywrightTimeoutError:
+        raise ChatError(
+            "Cloudflare blocked the headless browser. Opening a visible window is required."
+        )
+    log.info("Cloudflare challenge cleared; the chat box is visible")
+
+
 def prepare_chat(page: Page, config: BotConfig) -> None:
     from critique_bot.browser import BrowserError, describe_page, navigate, warn_if_login_page
 
@@ -1394,6 +1416,7 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
         raise ChatError(str(exc)) from exc
 
     warn_if_login_page(page)
+    _raise_if_cloudflare(page, selectors.prompt_input)
     frames = list(page.frames)
     log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
 

@@ -1114,7 +1114,6 @@ def _main_agent(args: argparse.Namespace) -> int:
 
     workspace = Path(args.repo_dir).resolve()
     words = [part for part in (args.paths or []) if part]
-    just_initialized = False
     if words == ["init"]:
         if args.prompt or args.prompt_file:
             return _config_error(ConfigError("init does not take a prompt"))
@@ -1122,8 +1121,14 @@ def _main_agent(args: argparse.Namespace) -> int:
             init_bot_home(workspace)
         except BotHomeError as exc:
             return _config_error(ConfigError(str(exc)))
-        words = []
-        just_initialized = True
+        home = find_bot_home(workspace)
+        config_path = Path(args.config) if args.config else (home.config_file() if home else None)
+        if config_path is None or not config_path.is_file():
+            print(
+                "Initialized. Add config.json, then run bot-agent.",
+                file=sys.stderr,
+            )
+        return 0
     if words and words[0] == "init":
         return _config_error(ConfigError("init does not take extra arguments"))
 
@@ -1146,12 +1151,6 @@ def _main_agent(args: argparse.Namespace) -> int:
         return 0
     config_path = Path(args.config) if args.config else home.config_file()
     if config_path is None or not config_path.is_file():
-        if just_initialized:
-            print(
-                "Initialized. Add config.json, then run bot-agent.",
-                file=sys.stderr,
-            )
-            return 0
         return _config_error(
             ConfigError(
                 "no Edge config. Place config.json in the repo and run "

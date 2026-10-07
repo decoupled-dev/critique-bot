@@ -174,7 +174,116 @@ def environment(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.update(QUIET_ENV)
     if extra:
         env.update(extra)
+    _prefer_compiler(env)
+    _prefer_gradle(env)
+    sdk = android_sdk(env, scan=True)
+    if sdk and not str(env.get("ANDROID_HOME") or "").strip():
+        env["ANDROID_HOME"] = sdk
+    if sdk and not str(env.get("ANDROID_SDK_ROOT") or "").strip():
+        env["ANDROID_SDK_ROOT"] = sdk
     return env
+
+
+def _javac_name(platform_name: str) -> str:
+    return "javac.exe" if platform_name == "win32" else "javac"
+
+
+def _has_javac(home: Path, platform_name: str) -> bool:
+    return (home / "bin" / _javac_name(platform_name)).is_file()
+
+
+def compiler_home(
+    environ: dict[str, str] | None = None,
+    platform_name: str | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> Path | None:
+    """A JDK root that contains javac.
+
+    ``JAVA_HOME`` wins when it already has a compiler. A home that exists but
+    has no javac is a JRE, so a compiler found on PATH or under the usual JDK
+    folders is used instead.
+    """
+    plat = platform_name if platform_name is not None else sys.platform
+    env = os.environ if environ is None else environ
+    find = which or shutil.which
+    raw = str(env.get("JAVA_HOME") or "").strip()
+    if raw:
+        home = Path(raw)
+        if _has_javac(home, plat):
+            return home
+        if not home.is_dir():
+            return None
+    found = find(_javac_name(plat))
+    if found:
+        binary = Path(found)
+        if binary.parent.name.lower() == "bin" and _has_javac(binary.parent.parent, plat):
+            return binary.parent.parent
+    if which is not None:
+        return None
+    roots: list[Path] = []
+    if plat != "win32":
+        roots.append(Path("/usr/lib/jvm"))
+    roots.append(Path.home() / ".gradle" / "jdks")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for child in root.iterdir():
+            if _has_javac(child, plat):
+                return child
+            if not child.is_dir():
+                continue
+            for nested in child.iterdir():
+                if _has_javac(nested, plat):
+                    return nested
+    return None
+
+
+def cached_gradle() -> Path | None:
+    """An unpacked Gradle binary from a previous wrapper download, if one exists."""
+    root = Path.home() / ".gradle" / "wrapper" / "dists"
+    if not root.is_dir():
+        return None
+    found = [path for path in root.glob("gradle-*-bin/*/gradle-*/bin/gradle") if path.is_file() and os.access(path, os.X_OK)]
+    if not found:
+        return None
+    return max(found, key=lambda path: path.stat().st_mtime)
+
+
+def _prefer_gradle(env: dict[str, str]) -> None:
+    """Put a cached Gradle on PATH when the command name is not already installed."""
+    if shutil.which("gradle", path=env.get("PATH")):
+        return
+    binary = cached_gradle()
+    if binary is None:
+        return
+    env["PATH"] = str(binary.parent) + os.pathsep + env.get("PATH", "")
+
+
+def android_sdk(environ: dict[str, str], *, scan: bool) -> str:
+    """The Android SDK path. A scan looks in the usual home folder when unset."""
+    for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        raw = str(environ.get(key) or "").strip()
+        if raw:
+            return raw
+    if not scan:
+        return ""
+    for candidate in (Path.home() / "Android" / "Sdk", Path.home() / "Android" / "sdk"):
+        if (candidate / "platforms").is_dir():
+            return str(candidate)
+    return ""
+
+
+def _prefer_compiler(env: dict[str, str], platform_name: str | None = None) -> None:
+    """Point JAVA_HOME at a JDK when the current one cannot compile."""
+    plat = platform_name if platform_name is not None else sys.platform
+    raw = str(env.get("JAVA_HOME") or "").strip()
+    if raw and not Path(raw).is_dir():
+        return
+    if raw and _has_javac(Path(raw), plat):
+        return
+    home = compiler_home(env, plat)
+    if home is not None:
+        env["JAVA_HOME"] = str(home)
 
 
 def adjust_command(command: str) -> str:
@@ -225,16 +334,33 @@ def tool_hints(
         if not wrapper:
             hint += " (no project wrapper; use this)"
         hints.append(hint)
+    elif which is None:
+        cached = cached_gradle()
+        if cached is not None:
+            hints.append(
+                f"gradle binary: {cached} (not on PATH; commands can run gradle. "
+                "Use it to create the wrapper. Do not download another copy)"
+            )
+        else:
+            hints.append("gradle on PATH: not installed")
     else:
         hints.append("gradle on PATH: not installed")
     java_home = str(env.get("JAVA_HOME") or "").strip()
-    if java_home:
+    compiler = compiler_home(env, plat, which)
+    if java_home and compiler is not None and not _has_javac(Path(java_home), plat):
+        hints.append(
+            f"java: JAVA_HOME={compiler} "
+            f"(JAVA_HOME={java_home} has no javac; commands use this JDK)"
+        )
+    elif java_home:
         hints.append(f"java: JAVA_HOME={java_home}")
+    elif compiler is not None:
+        hints.append(f"java: JAVA_HOME={compiler}")
     else:
         java_names = ("java.exe", "java") if plat == "win32" else ("java",)
         java_path = _which_first(find, java_names)
         hints.append(f"java: {java_path}" if java_path else "java: not installed")
-    sdk = str(env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT") or "").strip()
+    sdk = android_sdk(env, scan=environ is None)
     hints.append(f"android sdk: {sdk}" if sdk else "android sdk: not set")
     if _is_android_project(root):
         hints.append(
