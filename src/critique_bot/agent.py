@@ -1468,9 +1468,7 @@ def _cap(text: str, limit: int) -> str:
 
 
 def _paint(text: str, color: str) -> str:
-    if not sys.stderr.isatty():
-        return text
-    return f"\033[{color}m{text}\033[0m"
+    return log.paint(text, color, file=sys.stderr)
 
 
 def _present_text(text: str) -> str:
@@ -1567,7 +1565,7 @@ def _emit(text: str) -> None:
     visible = _present_text(text)
     if not visible:
         return
-    log.print_safe(visible, flush=True)
+    log.print_safe(log.paint(visible, log.MODEL_COLOR), flush=True)
     log.print_safe(flush=True)
 
 

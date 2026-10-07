@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import sys
 import threading
 import traceback
@@ -8,6 +9,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, TextIO
+
+# Magenta, unused by status lines (yellow / cyan / green / red).
+MODEL_COLOR = "35"
 
 _enabled = False
 _spinner_lock = threading.Lock()
@@ -31,6 +35,24 @@ def configure_stdio() -> None:
                 stream.reconfigure(errors="replace")
             except (AttributeError, OSError, ValueError):
                 pass
+
+
+def paint(text: str, color: str, *, file: TextIO | None = None) -> str:
+    """Wrap text in ANSI color when the destination is a terminal.
+
+    ``NO_COLOR`` and a non-tty (pipes, tests, redirected files) leave the
+    text unchanged so captured output stays plain.
+    """
+    if os.environ.get("NO_COLOR"):
+        return text
+    target = sys.stdout if file is None else file
+    try:
+        is_tty = bool(target.isatty())
+    except Exception:
+        is_tty = False
+    if not is_tty:
+        return text
+    return f"\033[{color}m{text}\033[0m"
 
 
 def print_safe(*args: Any, file: TextIO | None = None, **kwargs: Any) -> None:

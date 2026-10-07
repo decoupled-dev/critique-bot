@@ -36,7 +36,7 @@ def write_output(
         )
     )
     if print_body:
-        log.print_safe(body, flush=True)
+        log.print_safe(log.paint(body, log.MODEL_COLOR), flush=True)
 
 
 def write_review(

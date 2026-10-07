@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -150,6 +151,27 @@ class LogHelperTests(unittest.TestCase):
             sys.stderr = original_err
             wrapper.close()
         self.assertIn(b"non", data)
+
+
+class PaintTests(unittest.TestCase):
+    def test_plain_when_not_a_tty(self) -> None:
+        buf = io.StringIO()
+        self.assertEqual(log.paint("hello", log.MODEL_COLOR, file=buf), "hello")
+
+    def test_color_when_tty(self) -> None:
+        buf = io.StringIO()
+        buf.isatty = lambda: True  # type: ignore[method-assign]
+        env = os.environ.copy()
+        env.pop("NO_COLOR", None)
+        with patch.dict(os.environ, env, clear=True):
+            painted = log.paint("hello", log.MODEL_COLOR, file=buf)
+        self.assertEqual(painted, f"\033[{log.MODEL_COLOR}mhello\033[0m")
+
+    def test_no_color_env_disables(self) -> None:
+        buf = io.StringIO()
+        buf.isatty = lambda: True  # type: ignore[method-assign]
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            self.assertEqual(log.paint("hello", "35", file=buf), "hello")
 
 
 if __name__ == "__main__":

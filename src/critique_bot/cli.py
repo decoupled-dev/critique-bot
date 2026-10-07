@@ -429,7 +429,7 @@ _CHAT_HELP = (
 
 
 def _print_assistant(reply: str) -> None:
-    log.print_safe(reply, flush=True)
+    log.print_safe(log.paint(reply, log.MODEL_COLOR), flush=True)
     log.print_safe(flush=True)
 
 
@@ -924,7 +924,7 @@ def _main_submit(argv: list[str]) -> int:
         print(f"error: {message}", file=sys.stderr)
         return 1
     if body_path.is_file():
-        log.print_safe(body_path.read_text(encoding="utf-8"), flush=True)
+        log.print_safe(log.paint(body_path.read_text(encoding="utf-8"), log.MODEL_COLOR), flush=True)
     log.info(
         f"job {job_id} copied to {output_dir} "
         f"({status.stem}.md)"
