@@ -73,6 +73,9 @@ class Selectors:
     model_option: str = ""
     send_button: str = ""
     stop_button: str = ""
+    #: Optional "Continue generating" control. When set and shown after a
+    #: reply ends, it is clicked once and the rest is merged into the reply.
+    continue_button: str = ""
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,7 @@ def load_config(
         model_option=_clean(selectors_raw.get("model_option")),
         send_button=_clean(selectors_raw.get("send_button")),
         stop_button=_clean(selectors_raw.get("stop_button")),
+        continue_button=_clean(selectors_raw.get("continue_button")),
     )
 
     url = os.environ.get(ENV_CHAT_URL) or _clean(raw.get("url"))

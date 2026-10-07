@@ -121,6 +121,9 @@ def load_changed_files(
         if looks_binary_path(path) or skip_file_context(path):
             continue
         full = repo / path
+        if not _inside_checkout(repo, path):
+            log.info(f"skipping {path}: a symbolic link or a path outside the checkout")
+            continue
         if not full.is_file():
             log.info(f"skipping {path}: not in the checkout (deleted or missing)")
             continue
@@ -135,6 +138,25 @@ def load_changed_files(
         f"({len(ordered)} reviewable path(s) in the patch)"
     )
     return loaded
+
+
+def _inside_checkout(repo: Path, path: str) -> bool:
+    """False for a symlink anywhere on the path, ``..``, or an absolute path.
+
+    The patch names the files, so a crafted MR could otherwise make the job
+    read (and send to the model) a file outside the repository.
+    """
+    parts = Path(path).parts
+    if not parts or Path(path).is_absolute() or ".." in parts:
+        return False
+    current = Path(repo)
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+    real_repo = os.path.normcase(os.path.realpath(repo))
+    real_file = os.path.normcase(os.path.realpath(repo / path))
+    return real_file.startswith(real_repo.rstrip("\\/") + os.sep)
 
 
 def _ensure_review_commits(repo: Path, refs: dict[str, str], *, git_run) -> None:

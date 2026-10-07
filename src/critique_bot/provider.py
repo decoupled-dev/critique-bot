@@ -6,6 +6,8 @@ The session is ``send(prompt) -> reply`` against a web chat page in Edge.
 
 from __future__ import annotations
 
+import re
+import urllib.parse
 from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
@@ -28,6 +30,14 @@ class ChatSession:
 
     def send(self, prompt: str) -> str:
         raise NotImplementedError
+
+    def new_chat(self) -> bool:
+        """Start a fresh conversation for the next send. False when this session cannot."""
+        return False
+
+    def stop_generation(self) -> bool:
+        """Stop a reply the page is still writing. True when one was running."""
+        return False
 
     def close(self) -> None:
         return None
@@ -93,6 +103,50 @@ def _job_config(config: BotConfig, model: str | None) -> BotConfig:
     if model:
         return replace(config, model=model)
     return config
+
+
+_CONVERSATION_RE = re.compile(r"^(.*?)/c/[^/]+/?$")
+
+
+def fresh_chat_url(url: str) -> str:
+    """The URL of an empty chat for ``url``: a conversation link loses its ``/c/<id>``.
+
+    ``https://chatgpt.com/c/abc`` -> ``https://chatgpt.com/``;
+    ``https://chatgpt.com/g/g-x/c/abc`` -> ``https://chatgpt.com/g/g-x`` (the GPT or project stays).
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    match = _CONVERSATION_RE.match(parts.path)
+    if not match:
+        return url
+    path = match.group(1) or "/"
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
+def _open_new_chat(page: Any, config: BotConfig) -> bool:
+    """Load the configured chat URL as an empty conversation (never a saved ``/c/<id>`` one).
+
+    The next send runs ``prepare_chat`` again, so the model is selected anew.
+    """
+    if page is None:
+        return False
+    url = fresh_chat_url(config.url)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=config.timeout_ms)
+    except Exception as exc:
+        log.warn(f"could not open a new chat at {url}: {exc}")
+        return False
+    return True
+
+
+def _stop_page_generation(page: Any, config: BotConfig) -> bool:
+    if page is None:
+        return False
+    from critique_bot.chat_client import stop_generation
+
+    return stop_generation(page, config.selectors)
 
 
 class BrowserProvider(ChatProvider):
@@ -195,6 +249,15 @@ class PageBrowserSession(ChatSession):
         finally:
             self.last_detail = detail
 
+    def new_chat(self) -> bool:
+        if not _open_new_chat(self.page, self._config):
+            return False
+        self._prepared = False
+        return True
+
+    def stop_generation(self) -> bool:
+        return _stop_page_generation(self.page, self._config)
+
     def close(self) -> None:
         from critique_bot import log
 
@@ -231,6 +294,15 @@ class CdpBrowserSession(ChatSession):
         finally:
             self._cm = None
             self.page = None
+
+    def new_chat(self) -> bool:
+        if not _open_new_chat(self.page, self._config):
+            return False
+        self._prepared = False
+        return True
+
+    def stop_generation(self) -> bool:
+        return _stop_page_generation(self.page, self._config)
 
     def send(self, prompt: str) -> str:
         from critique_bot.chat_client import prepare_chat, send_turn

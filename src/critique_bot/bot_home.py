@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,9 +120,11 @@ def init_bot_home(workspace: Path) -> BotHome:
     cache_dir = bot_dir / "cache"
     sessions_dir = bot_dir / "sessions"
     settings_path = bot_dir / SETTINGS_NAME
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    (bot_dir / ".gitignore").write_text(_LOCAL_GITIGNORE, encoding="utf-8")
+    for private in (bot_dir, cache_dir, cache_dir / "undo", sessions_dir):
+        _private_dir(private)
+    local_ignore = bot_dir / ".gitignore"
+    if not local_ignore.exists():
+        local_ignore.write_text(_LOCAL_GITIGNORE, encoding="utf-8")
     if not settings_path.exists():
         settings: dict = {}
         config_json = root / "config.json"
@@ -161,12 +165,41 @@ def _load(root: Path, settings_path: Path) -> BotHome:
 
 
 def update_settings(home: BotHome, **values: object) -> None:
-    """Merge ``values`` into ``.bot/settings.json`` and keep ``home.settings`` in step."""
+    """Merge ``values`` into ``.bot/settings.json`` and keep ``home.settings`` in step.
+
+    The file is written to a temp file and moved into place, so a crash or
+    Ctrl+C never leaves half a JSON file behind.
+    """
     home.settings.update(values)
-    home.settings_path.write_text(
-        json.dumps(home.settings, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_text(home.settings_path, json.dumps(home.settings, indent=2) + "\n")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        try:
+            os.chmod(tmp, path.stat().st_mode & 0o777)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _private_dir(path: Path) -> None:
+    """Create ``path``; on POSIX only the owner can read it (transcripts, undo copies)."""
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            log.warn(f"could not restrict {path}: {exc}")
 
 
 def _append_gitignore(workspace: Path) -> None:
@@ -174,15 +207,22 @@ def _append_gitignore(workspace: Path) -> None:
     if not path.is_file():
         return
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except OSError as exc:
         raise BotHomeError(f"could not read {path}: {exc}") from exc
-    present = set(text.splitlines())
+    text = raw.decode("utf-8", errors="surrogateescape")
+    present = {line.strip() for line in text.splitlines()}
     missing = [line for line in _GITIGNORE_LINES if line not in present]
     if not missing:
         return
-    suffix = "" if text.endswith("\n") or text == "" else "\n"
-    path.write_text(text + suffix + "\n".join(missing) + "\n", encoding="utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    suffix = "" if text == "" or text.endswith(("\n", "\r")) else newline
+    addition = suffix + newline.join(missing) + newline
+    try:
+        with path.open("ab") as handle:
+            handle.write(addition.encode("utf-8"))
+    except OSError as exc:
+        raise BotHomeError(f"could not update {path}: {exc}") from exc
     log.info(f"updated {path}")
 
 

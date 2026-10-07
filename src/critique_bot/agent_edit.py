@@ -33,6 +33,9 @@ class TextFile:
     eol: str
     bom: bool
     encoding: str
+    # The terminator of each line as found on disk (``\r\n``, ``\n`` or ``\r``).
+    # None when the file was not loaded from disk.
+    endings: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -61,51 +64,114 @@ def file_version(path: Path) -> str:
     return hashlib.sha1(raw).hexdigest()[:8]
 
 
+_EOL_RE = re.compile(r"\r\n|\r|\n")
+
+
 def load_text(path: Path) -> TextFile:
-    """Read a text file and remember how it was encoded."""
+    """Read a text file and remember how it was encoded.
+
+    UTF-8 first, then the locale encoding when it round-trips the bytes, then
+    latin-1, which maps every byte to one character, so saving the text back
+    never loses a byte the edit did not touch.
+    """
     data = Path(path).read_bytes()
     bom = data.startswith(b"\xef\xbb\xbf")
     if bom:
         data = data[3:]
-    encoding = "utf-8"
+    text, encoding = _decode(data)
+    endings = _EOL_RE.findall(text)
+    crlf = endings.count("\r\n")
+    lf = endings.count("\n")
+    cr = endings.count("\r")
+    eol = "\r\n" if crlf > lf and crlf >= cr else ("\r" if cr > lf and cr > crlf else "\n")
+    normalized = _EOL_RE.sub("\n", text)
+    return TextFile(text=normalized, eol=eol, bom=bom, encoding=encoding, endings=endings)
+
+
+def _decode(data: bytes) -> tuple[str, str]:
     try:
-        text = data.decode("utf-8")
+        return data.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
-        fallback = locale.getpreferredencoding(False) or "cp1252"
+        pass
+    fallback = locale.getpreferredencoding(False) or ""
+    if fallback and fallback.replace("-", "").lower() not in {"utf8", "latin1", "iso88591"}:
         try:
             text = data.decode(fallback)
-            encoding = fallback
-        except (UnicodeDecodeError, LookupError):
-            text = data.decode("utf-8", "replace")
-    crlf = text.count("\r\n")
-    lf = text.count("\n") - crlf
-    eol = "\r\n" if crlf > lf else "\n"
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    return TextFile(text=normalized, eol=eol, bom=bom, encoding=encoding)
+            if text.encode(fallback) == data:
+                return text, fallback
+        except (UnicodeError, LookupError):
+            pass
+    return data.decode("latin-1"), "latin-1"
 
 
 def save_text(path: Path, text: str, like: TextFile | None = None) -> None:
-    """Write ``text`` with the line endings and encoding of ``like``, atomically."""
+    """Write ``text`` with the line endings and encoding of ``like``, atomically.
+
+    Lines that did not change keep the terminator they had on disk; new lines
+    use the file's dominant one. Raises ValueError when the new text holds a
+    character the file's encoding cannot store.
+    """
     eol = like.eol if like is not None else "\n"
     encoding = like.encoding if like is not None else "utf-8"
-    body = text.replace("\r\n", "\n").replace("\r", "\n")
-    if eol != "\n":
-        body = body.replace("\n", eol)
-    payload = body.encode(encoding, "replace")
+    body = _EOL_RE.sub("\n", text)
+    body = _join_lines(body, like, eol)
+    try:
+        payload = body.encode(encoding)
+    except UnicodeEncodeError as exc:
+        bad = body[exc.start : exc.end]
+        raise ValueError(
+            f"the file is stored as {encoding} and cannot hold {bad!r}; "
+            "use characters that encoding supports (for example ASCII escapes)"
+        ) from None
     if like is not None and like.bom:
         payload = b"\xef\xbb\xbf" + payload
     atomic_write_bytes(Path(path), payload)
 
 
+def _join_lines(body: str, like: TextFile | None, eol: str) -> str:
+    endings = like.endings if like is not None else None
+    if not endings or all(item == eol for item in endings):
+        return body.replace("\n", eol) if eol != "\n" else body
+    old_lines = like.text.split("\n")  # type: ignore[union-attr]
+    new_lines = body.split("\n")
+    chosen = [eol] * (len(new_lines) - 1)
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    for tag, i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            continue
+        for offset in range(j2 - j1):
+            old_index = i1 + offset
+            new_index = j1 + offset
+            if new_index < len(chosen) and old_index < len(endings):
+                chosen[new_index] = endings[old_index]
+    out: list[str] = []
+    for index, line in enumerate(new_lines):
+        out.append(line)
+        if index < len(chosen):
+            out.append(chosen[index])
+    return "".join(out)
+
+
 def atomic_write_bytes(target: Path, payload: bytes) -> None:
-    """Write through a temp file and ``os.replace`` so a reader never sees half a file."""
+    """Write through a temp file and ``os.replace`` so a reader never sees half a file.
+
+    A symbolic link is written through to the file it points at, not replaced.
+    A new file gets the usual permissions for new files (0666 minus umask).
+    """
+    target = Path(target)
+    if target.is_symlink():
+        target = Path(os.path.realpath(target))
     target.parent.mkdir(parents=True, exist_ok=True)
+    existed = target.exists()
     handle, temp_name = tempfile.mkstemp(prefix=".bot-", suffix=".tmp", dir=str(target.parent))
     try:
         with os.fdopen(handle, "wb") as temp:
             temp.write(payload)
         try:
-            shutil.copymode(target, temp_name)
+            if existed:
+                shutil.copymode(target, temp_name)
+            else:
+                os.chmod(temp_name, 0o666 & ~_umask())
         except OSError:
             pass
         _replace_with_retry(temp_name, target)
@@ -115,6 +181,14 @@ def atomic_write_bytes(target: Path, payload: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def _umask() -> int:
+    if os.name == "nt":
+        return 0
+    current = os.umask(0)
+    os.umask(current)
+    return current
 
 
 def _replace_with_retry(source: str, target: Path) -> None:
@@ -432,8 +506,32 @@ def _brace_balance(text: str) -> int:
     return depth
 
 
+_TASK_COUNTER = [0]
+
+
+def _task_stamp(root: Path) -> str:
+    """A folder name that sorts after every earlier task, even within one second."""
+    _TASK_COUNTER[0] += 1
+    now = time.time_ns()
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now // 1_000_000_000))
+    name = f"{stamp}.{now % 1_000_000_000:09d}-{_TASK_COUNTER[0] % 10_000:04d}"
+    try:
+        latest = max((item.name for item in root.iterdir() if item.is_dir()), default="")
+    except OSError:
+        latest = ""
+    if latest and name <= latest:
+        name = latest + "+"
+    return name
+
+
 class Checkpoints:
-    """Pre-edit copies under ``.bot/cache/undo/<task>/``, newest task last."""
+    """Pre-edit copies under ``.bot/cache/undo/<task>/``, newest task last.
+
+    Each step folder holds ``path.txt`` (workspace-relative, or absolute for a
+    file outside the workspace that the user approved), ``before`` (absent
+    when the file did not exist), and ``dirs.txt`` (folders that did not
+    exist yet, removed again on undo when empty).
+    """
 
     def __init__(self, cache_dir: Path | None, workspace: Path) -> None:
         self.workspace = Path(workspace).resolve()
@@ -445,8 +543,8 @@ class Checkpoints:
     def start_task(self) -> None:
         if self.root is None:
             return
-        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"-{time.monotonic_ns() % 10_000:04d}"
-        self.task_dir = self.root / stamp
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.task_dir = self.root / _task_stamp(self.root)
         self._step = 0
         self._saved = set()
 
@@ -468,7 +566,7 @@ class Checkpoints:
             rel = marker.read_text(encoding="utf-8").strip()
             if not rel:
                 continue
-            target = self.workspace / rel
+            target = _checkpoint_target(self.workspace, rel)
             before_path = step / "before"
             before = load_text(before_path).text if before_path.is_file() else ""
             after = load_text(target).text if target.is_file() else ""
@@ -478,14 +576,20 @@ class Checkpoints:
         return "\n".join(chunks)
 
     def save(self, path: Path) -> None:
-        """Copy ``path`` before its first change in this task."""
+        """Copy ``path`` before its first change in this task.
+
+        A path outside the workspace is saved by its absolute path, so undo
+        covers it too (the tool only gets there after the user approved it).
+        """
         if self.task_dir is None:
             return
-        target = Path(path).resolve()
+        target = Path(os.path.abspath(path))
+        if target.is_symlink():
+            target = Path(os.path.realpath(target))
         try:
             rel = target.relative_to(self.workspace).as_posix()
         except ValueError:
-            return
+            rel = str(target)
         if rel in self._saved:
             return
         self._saved.add(rel)
@@ -495,6 +599,14 @@ class Checkpoints:
         (folder / "path.txt").write_text(rel + "\n", encoding="utf-8")
         if target.is_file():
             shutil.copy2(target, folder / "before")
+        else:
+            missing: list[str] = []
+            parent = target.parent
+            while not parent.exists() and parent != parent.parent:
+                missing.append(str(parent))
+                parent = parent.parent
+            if missing:
+                (folder / "dirs.txt").write_text("\n".join(missing) + "\n", encoding="utf-8")
         self._prune()
 
     def _prune(self, keep: int = 20) -> None:
@@ -502,11 +614,24 @@ class Checkpoints:
             return
         tasks = sorted(item for item in self.root.iterdir() if item.is_dir())
         for stale in tasks[:-keep]:
+            if stale == self.task_dir:
+                continue
             shutil.rmtree(stale, ignore_errors=True)
 
 
+def _checkpoint_target(workspace: Path, rel: str) -> Path:
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        return candidate
+    return Path(workspace) / rel
+
+
 def undo_last(cache_dir: Path, workspace: Path) -> list[str]:
-    """Restore the files touched by the most recent task. Returns the paths."""
+    """Restore the files touched by the most recent task. Returns the paths.
+
+    Files are restored atomically, files the task created are removed, and so
+    are the folders created for them when they are empty again.
+    """
     root = Path(cache_dir) / "undo"
     if not root.is_dir():
         return []
@@ -515,6 +640,7 @@ def undo_last(cache_dir: Path, workspace: Path) -> list[str]:
         return []
     task = tasks[-1]
     restored: list[str] = []
+    created_dirs: list[Path] = []
     for step in sorted(item for item in task.iterdir() if item.is_dir()):
         marker = step / "path.txt"
         if not marker.is_file():
@@ -522,13 +648,24 @@ def undo_last(cache_dir: Path, workspace: Path) -> list[str]:
         rel = marker.read_text(encoding="utf-8").strip()
         if not rel:
             continue
-        target = Path(workspace) / rel
+        target = _checkpoint_target(Path(workspace), rel)
         before = step / "before"
         if before.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(before, target)
-        elif target.is_file():
+            atomic_write_bytes(target, before.read_bytes())
+            try:
+                shutil.copystat(before, target)
+            except OSError:
+                pass
+        elif target.is_file() or target.is_symlink():
             target.unlink()
+        dirs = step / "dirs.txt"
+        if dirs.is_file():
+            created_dirs.extend(Path(line) for line in dirs.read_text(encoding="utf-8").splitlines() if line.strip())
         restored.append(rel)
+    for folder in sorted(set(created_dirs), key=lambda item: -len(item.parts)):
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
     shutil.rmtree(task, ignore_errors=True)
     return restored

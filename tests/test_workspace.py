@@ -245,6 +245,19 @@ class LoadChangedFilesTests(unittest.TestCase):
         loaded = load_changed_files(self.folder, "".join(chunks), self.limits)
         self.assertEqual([item.name for item in loaded], [f"f{i}.py" for i in range(10)])
 
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_skips_symlinks_and_paths_outside_the_checkout(self) -> None:
+        outside = Path(tempfile.mkdtemp())
+        (outside / "secret.py").write_text("TOKEN = 'x'\n", encoding="utf-8")
+        (self.folder / "link.py").symlink_to(outside / "secret.py")
+        (self.folder / "linkdir").symlink_to(outside, target_is_directory=True)
+        (self.folder / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        chunks = []
+        for name in ("link.py", "linkdir/secret.py", "../" + outside.name + "/secret.py", "ok.py"):
+            chunks.append(f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1 +1,2 @@\n x\n+y\n")
+        loaded = load_changed_files(self.folder, "".join(chunks), self.limits)
+        self.assertEqual([item.name for item in loaded], ["ok.py"])
+
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     env = os.environ.copy()

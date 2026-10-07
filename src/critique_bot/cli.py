@@ -562,6 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit\n"
             "  crit \"update the test cases\"\n"
             "  crit undo    (restore the files the last task changed)\n"
+            "  crit --yes \"fix the build\"   (no approval prompts)\n"
             "\n"
             "The first crit in a folder creates .bot, asks which text style\n"
             "looks right, then asks to sign in and opens Edge.\n"
@@ -666,6 +667,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="optional cap on agent tool rounds; omit to run until the model stops",
+    )
+    parser.add_argument(
+        "--yes",
+        "--auto",
+        dest="auto_approve",
+        action="store_true",
+        help=(
+            "agent mode: run edits, commands, and fetches without asking "
+            '(same as "permissions": "auto" in .bot/settings.json)'
+        ),
     )
     parser.add_argument(
         "--logs",
@@ -1229,6 +1240,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         max_rounds=rounds,
         output_dir=output_dir,
         headed=bool(args.headed),
+        approve_mode="auto" if getattr(args, "auto_approve", False) else None,
     )
 
 

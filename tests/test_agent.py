@@ -50,6 +50,8 @@ def _loop(session, root: Path, task: str, **kwargs):
     kwargs.setdefault("max_result_chars", 8000)
     kwargs.setdefault("read_message", lambda: None)
     kwargs.setdefault("emit", lambda _text: None)
+    kwargs.setdefault("approve_mode", "auto")
+    kwargs.setdefault("ask_user", lambda _question: None)
     return run_agent_loop(
         session,
         workspace=root,
@@ -233,25 +235,31 @@ Look here.
 
 class CommandArgvTests(unittest.TestCase):
     def test_powershell_and_bash(self) -> None:
+        import re
+
+        def embedded(argv: list[str]) -> tuple[str, str]:
+            script = base64.b64decode(argv[-1]).decode("utf-16-le")
+            command = re.search(r"FromBase64String\('([^']*)'\)", script)
+            return script, base64.b64decode(command.group(1)).decode("utf-8") if command else ""
+
         windows = command_argv("Get-Location", platform_name="win32")
-        self.assertIn(windows[0], {"powershell.exe", "pwsh.exe"})
-        self.assertEqual(windows[1:4], ["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        script = base64.b64decode(windows[-1]).decode("utf-16-le")
-        self.assertIn("Get-Location", script)
+        self.assertTrue(windows[0].lower().endswith(("powershell.exe", "pwsh.exe")))
+        self.assertEqual(windows[1:7], ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
+        script, command = embedded(windows)
+        self.assertEqual(command, "Get-Location")
         self.assertIn("LASTEXITCODE", script)
         self.assertIn("UTF8Encoding", script)
-        self.assertEqual(command_argv("pwd", platform_name="linux"), ["bash", "-lc", "pwd"])
+        bash = Shell("bash", "/bin/bash", "bash")
+        self.assertEqual(shell_command_argv("pwd", shell=bash), ["/bin/bash", "-c", "pwd"])
         legacy = Shell("powershell", "powershell.exe", "Windows PowerShell 5.1 (powershell.exe)")
-        encoded = shell_command_argv("gradlew.bat tasks", platform_name="win32", shell=legacy)
-        script = base64.b64decode(encoded[-1]).decode("utf-16-le")
-        self.assertIn("if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }", script)
-        self.assertNotIn("$LASTEXITCODE -ne 0", script)
-        self.assertIn("if (-not $?) { exit 1 }", script)
+        script, _ = embedded(shell_command_argv("gradlew.bat tasks", platform_name="win32", shell=legacy))
+        self.assertIn("$global:LASTEXITCODE = $null", script)
         self.assertIn("$PSNativeCommandUseErrorActionPreference = $false", script)
+        self.assertNotIn("$ErrorActionPreference = 'Stop'", script)
         placed = command_argv("Get-Location", platform_name="win32", cwd=Path(r"D:\work\app"))
-        placed_script = base64.b64decode(placed[-1]).decode("utf-16-le")
-        self.assertIn(r"Set-Location -LiteralPath 'D:\work\app'", placed_script)
-        self.assertIn("Get-Location", placed_script)
+        _, placed_command = embedded(placed)
+        self.assertIn(r"Set-Location -LiteralPath 'D:\work\app'", placed_command)
+        self.assertIn("Get-Location", placed_command)
 
 
 class SeedMessageTests(unittest.TestCase):
@@ -262,7 +270,10 @@ class SeedMessageTests(unittest.TestCase):
         self.assertTrue(text.startswith("SHELL: Windows PowerShell 5.1 (powershell.exe)."))
         self.assertLess(text.index("SHELL:"), text.index("INSTRUCTIONS"))
         self.assertLess(text.index("INSTRUCTIONS"), text.index("ENVIRONMENT"))
-        self.assertIn("&& and || do not work", text)
+        self.assertIn("a top-level && or || is converted for you", text)
+        self.assertNotIn("do not work", text)
+        self.assertNotIn("does not carry over", text)
+        self.assertIn("cd persists", text)
 
         pwsh = Shell("pwsh", "pwsh.exe", "PowerShell 7 (pwsh.exe)")
         modern = seed_message(root, "", shell=pwsh, platform_name="win32")
@@ -572,7 +583,8 @@ class ToolTests(unittest.TestCase):
 
         legacy = Shell("powershell", "powershell.exe", "Windows PowerShell 5.1")
         modern = Shell("pwsh", "pwsh.exe", "PowerShell 7")
-        self.assertIn("&&", lint_command("npm ci && npm test", legacy) or "")
+        self.assertIsNone(lint_command("npm ci && npm test", legacy, {}))  # rewritten when it runs
+        self.assertIn("&&", lint_command("if ($x) { npm ci && npm test }", legacy, {}) or "")
         self.assertIsNone(lint_command("npm ci && npm test", modern))
         self.assertIn("export", lint_command("export FOO=1", legacy) or "")
         self.assertIn("Select-String", lint_command("git log | grep fix", legacy) or "")
@@ -591,7 +603,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(tidy("\x1b[32mok\x1b[0m\nsame\nsame\nsame"), "ok\nsame\n... previous line repeated 2 more times")
 
     def test_tool_count(self) -> None:
-        self.assertEqual(len(ALLOWED_TOOLS), 16)
+        self.assertEqual(len(ALLOWED_TOOLS), 21)
 
     def test_opencode_names_run_the_same_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -738,10 +750,13 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(outcome, ["FAILED"])
 
     def test_seed_is_first_and_task_follows(self) -> None:
+        # The instructions ride in front of the first task: one round trip, not two.
         session = _Scripted(["READY", "All set.", "All set.", "All set."])
-        _loop(session, Path("."), "update the test cases", max_rounds=3, seed="INSTRUCTIONS")
-        self.assertEqual(session.sent[0], "INSTRUCTIONS")
-        self.assertIn("update the test cases", session.sent[1])
+        _loop(session, Path("."), "update the test cases", max_rounds=3, seed="INSTRUCTIONS\n\nReply with exactly READY.")
+        self.assertTrue(session.sent[0].startswith("INSTRUCTIONS"))
+        self.assertNotIn("READY", session.sent[0])
+        self.assertIn("update the test cases", session.sent[0])
+        self.assertIn("No tool_call block was found", session.sent[1])
 
     def test_unclosed_tool_call_is_not_executed(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -970,6 +985,728 @@ class ReplayTests(unittest.TestCase):
         self.assertIn("emits <tool_call> blocks", readme.read_text(encoding="utf-8"))
         self.assertNotIn("cut off", session.sent[1])
         self.assertEqual(outcome, ["COMPLETED"])
+
+
+class _Restartable(_Scripted):
+    """A scripted chat that can open a new conversation, like the browser session."""
+
+    def __init__(self, replies: list[str], detail: dict | None = None) -> None:
+        super().__init__(replies, detail)
+        self.chat_starts: list[int] = []
+
+    def new_chat(self) -> bool:
+        self.chat_starts.append(len(self.sent))
+        return True
+
+
+class _Raising(_Scripted):
+    """Replies may be exceptions, raised in place of a reply."""
+
+    def send(self, prompt: str) -> str:
+        self.sent.append(prompt)
+        reply = self._replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+class _Proc:
+    def __init__(self, code: int, out: bytes = b"") -> None:
+        self.returncode = code
+        self.stdout = out
+        self.stderr = b""
+
+
+class RobustParserTests(unittest.TestCase):
+    def test_unescaped_quotes_and_newlines_in_long_content(self) -> None:
+        reply = (
+            '<tool_call>\n{"tool":"write_files","arguments":{"path":"a.py","contents":"'
+            'print("a", "b")\nname = "x"\nif x: print("y")\n"}}\n</tool_call>'
+        )
+        calls, _ = parse_tool_calls(reply)
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].arguments["contents"], 'print("a", "b")\nname = "x"\nif x: print("y")\n')
+        edit = '<tool_call>{"tool":"edit_file","arguments":{"path":"a.py","old_string":"f("x")","new_string":"f("y", 2)"}}</tool_call>'
+        calls, _ = parse_tool_calls(edit)
+        self.assertEqual(calls[0].arguments, {"path": "a.py", "old_string": 'f("x")', "new_string": 'f("y", 2)'})
+
+    def test_raw_windows_paths_keep_their_backslashes(self) -> None:
+        calls, _ = parse_tool_calls('<tool_call>{"tool":"run_command","arguments":{"command":"C:\\new\\tools\\run.exe --x"}}</tool_call>')
+        self.assertEqual(calls[0].arguments["command"], "C:\\new\\tools\\run.exe --x")
+        calls, _ = parse_tool_calls('<tool_call>{"tool":"run_command","arguments":{"command":".\\gradlew.bat test"}}</tool_call>')
+        self.assertEqual(calls[0].arguments["command"], ".\\gradlew.bat test")
+        escaped, _ = parse_tool_calls('<tool_call>{"tool":"read_files","arguments":{"path":"C:\\\\new\\\\a.txt"}}</tool_call>')
+        self.assertEqual(escaped[0].arguments["path"], "C:\\new\\a.txt")
+
+    def test_triple_quoted_and_template_strings(self) -> None:
+        reply = '<tool_call>\n{"tool":"write_files","arguments":{"path":"a.py","contents":"""def f():\n    return "x"\n"""}}\n</tool_call>'
+        calls, _ = parse_tool_calls(reply)
+        self.assertEqual(calls[0].arguments["contents"], 'def f():\n    return "x"\n')
+        reply = '<tool_call>{"tool":"write_files","arguments":{"path":"a.js","contents":`const s = "q";\n`}}</tool_call>'
+        calls, _ = parse_tool_calls(reply)
+        self.assertEqual(calls[0].arguments["contents"], 'const s = "q";\n')
+
+    def test_trailing_prose_and_missing_closing_braces(self) -> None:
+        calls, _ = parse_tool_calls('<tool_call>\n{"tool":"read_files","arguments":{"path":"a.py"}} I will read it now.\n</tool_call>')
+        self.assertEqual(calls[0].arguments, {"path": "a.py"})
+        calls, _ = parse_tool_calls('<tool_call>\n{"tool":"read_files","arguments":{"path":"a.py"}\n</tool_call>')
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(calls[0].arguments, {"path": "a.py"})
+
+    def test_other_call_shapes(self) -> None:
+        shapes = [
+            '{"tool":"read_files","arguments":"{\\"path\\": \\"a.py\\"}"}',
+            '{"tool":"read_files","path":"a.py"}',
+            '{"type":"function","function":{"name":"read_files","arguments":"{\\"path\\":\\"a.py\\"}"}}',
+            '{"name":"read_files","parameters":{"path":"a.py"}}',
+            '{"name":"read_files","input":{"path":"a.py"}}',
+            '{"tool":"functions.read_files","arguments":{"path":"a.py"}}',
+        ]
+        for shape in shapes:
+            calls, _ = parse_tool_calls("<tool_call>\n" + shape + "\n</tool_call>")
+            self.assertEqual([(c.tool, c.arguments, c.error) for c in calls], [("read_files", {"path": "a.py"}, None)], shape)
+        many = [
+            '[{"tool":"read_files","arguments":{"path":"a.py"}},{"tool":"git_status","arguments":{}}]',
+            '{"tool_calls":[{"function":{"name":"read_files","arguments":{"path":"a.py"}}},{"name":"git_status"}]}',
+        ]
+        for shape in many:
+            calls, _ = parse_tool_calls("<tool_call>\n" + shape + "\n</tool_call>")
+            self.assertEqual([c.tool for c in calls], ["read_files", "git_status"], shape)
+        skill, _ = parse_tool_calls('<tool_call>{"tool":"skill","name":"release"}</tool_call>')
+        self.assertEqual(skill[0].arguments, {"name": "release"})
+
+    def test_xml_style_blocks(self) -> None:
+        for reply in (
+            '<tool_call name="read_files">{"path": "a.py"}</tool_call>',
+            "<tool_call>\n<name>read_files</name>\n<arguments>{\"path\": \"a.py\"}</arguments>\n</tool_call>",
+            '<tool_use>{"tool": "read_files", "arguments": {"path": "a.py"}}</tool_use>',
+            '<function_call name="read_files">\n```json\n{"path": "a.py"}\n```\n</function_call>',
+        ):
+            calls, unclosed = parse_tool_calls(reply)
+            self.assertFalse(unclosed)
+            self.assertEqual([(c.tool, c.arguments) for c in calls], [("read_files", {"path": "a.py"})], reply)
+        self.assertNotIn("read_files", commentary('Reading.\n<tool_call name="read_files">{"path": "a.py"}</tool_call>'))
+
+    def test_copy_and_edit_chrome_inside_a_block(self) -> None:
+        reply = '<tool_call>\njson\nCopy\nEdit\n{"tool":"read_files","arguments":{"path":"a.py"}}\n</tool_call>'
+        calls, _ = parse_tool_calls(reply)
+        self.assertEqual(calls[0].arguments, {"path": "a.py"})
+
+    def test_a_block_missing_only_its_closing_tag_runs_when_the_reply_finished(self) -> None:
+        reply = '<tool_call>\n{"tool": "git_status", "arguments": {}}'
+        self.assertEqual(parse_tool_calls(reply), ([], True))
+        calls, unclosed = parse_tool_calls(reply, complete=True)
+        self.assertFalse(unclosed)
+        self.assertEqual(calls[0].tool, "git_status")
+        cut = '<tool_call>\n{"tool": "write_files", "arguments": {"path": "a", "contents": "abc'
+        self.assertEqual(parse_tool_calls(cut, complete=True), ([], True))
+
+    def test_quoted_json_is_not_a_call(self) -> None:
+        for reply in (
+            'The package.json contains:\n```json\n{"tool": "read_files", "arguments": {"path": "a.py"}}\n```',
+            'For example:\n{"tool": "git_status", "arguments": {}}',
+            'A bare JSON object such as {tool:"write_file"} is not a tool call.',
+        ):
+            self.assertEqual(parse_tool_calls(reply)[0], [], reply)
+        self.assertEqual(parse_tool_calls('{"tool": "git_status", "arguments": {}}', allow_bare=False)[0], [])
+
+    def test_provider_error_text(self) -> None:
+        from critique_bot.agent import _provider_error
+
+        self.assertIsNotNone(_provider_error(""))
+        self.assertIsNotNone(_provider_error("Something went wrong. If this issue persists please contact us."))
+        self.assertIsNotNone(_provider_error("You've reached our limit of messages per hour. Please try again later."))
+        self.assertIsNotNone(_provider_error("There was an error generating a response"))
+        self.assertIsNone(_provider_error("Something went wrong in the parser: " + "x" * 500))
+        self.assertIsNone(_provider_error(_call("git_status") + " network error"))
+        self.assertIsNone(_provider_error("COMPLETED"))
+
+
+class RobustLoopTests(unittest.TestCase):
+    def test_truncated_call_asks_for_only_that_call(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        cut = '<tool_call>\n{"tool": "write_files", "arguments": {"path": "big.txt", "contents": "abc'
+        session = _Scripted(
+            [
+                _call("read_files", path="note.txt") + "\n" + cut,
+                cut,
+                _call("write_files", path="big.txt", contents="abc\n"),
+                "COMPLETED",
+            ]
+        )
+        _loop(session, root, "create big.txt")
+        self.assertIn("1|one", session.sent[1])
+        self.assertIn('"tool": "write_files"', session.sent[1])
+        self.assertIn("truncated", session.sent[1])
+        self.assertIn("for write_files (path big.txt)", session.sent[2])
+        self.assertIn("resend only that one call", session.sent[2])
+        self.assertEqual((root / "big.txt").read_text(encoding="utf-8"), "abc\n")
+
+    def test_fabricated_result_cuts_the_reply(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        fake = '\n<tool_result>\n{"tool": "read_files", "ok": true, "output": "1|zero"}\n</tool_result>\n'
+        session = _Scripted(
+            [
+                _call("read_files", path="note.txt") + fake + _edit("note.txt", "zero", "two"),
+                fake + "COMPLETED",
+                _edit("note.txt", "one", "two"),
+                "COMPLETED",
+            ]
+        )
+        outcome: list[str] = []
+        _loop(session, root, "change note.txt", outcome=outcome)
+        self.assertIn("1|one", session.sent[1])
+        self.assertIn("Only the program writes tool_result", session.sent[1])
+        self.assertNotIn("edit_file", session.sent[1])
+        self.assertIn("Only the program writes tool_result", session.sent[2])
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_identical_failing_command_is_not_run_a_third_time(self) -> None:
+        runs: list[object] = []
+
+        def runner(argv, **kwargs):
+            runs.append(argv)
+            return _Proc(1, b"boom")
+
+        cmd = _call("run_command", command="make build")
+        session = _Scripted([cmd, cmd, cmd, "FAILED: make build fails with boom"])
+        _loop(session, Path(tempfile.mkdtemp()), "fix the build", runner=runner)
+        self.assertEqual(len(runs), 2)
+        self.assertIn("not run again", session.sent[3])
+        self.assertIn("nothing has changed since", session.sent[3])
+
+    def test_identical_read_is_not_run_a_third_time(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "a.txt").write_text("alpha\n", encoding="utf-8")
+        read = _call("read_files", path="a.txt")
+        session = _Scripted([read, read, read + _call("list_files", path="."), "It says alpha."])
+        _loop(session, root, "look at a.txt and summarise it")
+        self.assertIn("not run again: this exact call already ran 2 times", session.sent[3])
+        self.assertIn("a.txt", session.sent[3])
+
+    def test_a_loop_of_identical_successful_calls_is_broken(self) -> None:
+        runs: list[object] = []
+
+        def runner(argv, **kwargs):
+            runs.append(argv)
+            return _Proc(0, b"hi")
+
+        cmd = _call("run_command", command="echo hi")
+        session = _Scripted([cmd, cmd, cmd, "COMPLETED"])
+        _loop(session, Path(tempfile.mkdtemp()), "run echo", runner=runner)
+        self.assertEqual(len(runs), 2)
+        self.assertIn("same tool calls 3 times", session.sent[3])
+
+    def test_check_reruns_every_time_and_fails_only_after_the_cap(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED", "COMPLETED", "COMPLETED"])
+        outcome: list[str] = []
+        _loop(session, root, "change note.txt", outcome=outcome, check_command="echo run >> runs.log; false")
+        self.assertEqual((root / "runs.log").read_text(encoding="utf-8").count("run"), 3)
+        self.assertEqual(outcome, ["FAILED"])
+        self.assertEqual(len(session.sent), 4)
+
+    def test_check_runs_in_the_workspace_and_keeps_the_session_cwd(self) -> None:
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp()).resolve()
+        (root / "sub").mkdir()
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_call("run_command", command="cd sub"), _edit("note.txt", "one", "two"), "COMPLETED"])
+        outcome: list[str] = []
+        shell_session = agent._open_shell_session(root, agent.agent_shell.detect_shell(), None)
+        if shell_session is None:
+            self.skipTest("no persistent shell session")
+        self.addCleanup(shell_session.close)
+        _loop(session, root, "change note.txt", outcome=outcome, check_command="pwd > where.txt",
+              session_shell=shell_session)
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertTrue((root / "where.txt").is_file())
+        self.assertFalse((root / "sub" / "where.txt").exists())
+        self.assertEqual(Path(shell_session.cwd).resolve(), root / "sub")
+
+    def test_check_uses_the_check_timeout(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        seen: list[dict] = []
+        real = agent._execute
+
+        def spy(name, arguments, ctx):
+            if name == "run_command":
+                seen.append(dict(arguments))
+            return real(name, arguments, ctx)
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        with mock.patch.object(agent, "_execute", spy):
+            _loop(_Scripted([_edit("note.txt", "one", "two"), "COMPLETED"]), root, "change note.txt", check_command="true")
+            self.assertEqual(seen[-1]["timeout"], 600)
+            (root / "note.txt").write_text("one\n", encoding="utf-8")
+            _loop(
+                _Scripted([_edit("note.txt", "one", "two"), "COMPLETED"]),
+                root,
+                "change note.txt",
+                check_command="true",
+                settings={"check_timeout": 900},
+            )
+            self.assertEqual(seen[-1]["timeout"], 900)
+
+    def test_verify_is_asked_once_when_tests_exist(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "tests").mkdir()
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED", "COMPLETED"])
+        outcome: list[str] = []
+        _loop(session, root, "change note.txt", outcome=outcome)
+        self.assertIn("ran nothing to check them", session.sent[2])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_seed_runs_only_read_only_calls_under_any_name(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        session = _Scripted(
+            [
+                _call("write_file", path="x.txt", contents="x")
+                + _call("create_file", path="y.txt", contents="y")
+                + _call("bash", command="touch z.txt")
+                + _call("list_files", path="."),
+                "READY",
+                "2 + 2 is 4.",
+            ]
+        )
+        _loop(session, root, "what is 2 + 2?", seed="INSTRUCTIONS", seed_first=True)
+        self.assertEqual(session.sent[0], "INSTRUCTIONS")
+        for name in ("x.txt", "y.txt", "z.txt"):
+            self.assertFalse((root / name).exists(), name)
+        self.assertEqual(session.sent[1].count("no task yet"), 3)
+        self.assertIn('"tool": "list_files", "ok": true', session.sent[1])
+
+    def test_json_quoted_in_an_answer_is_not_run(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        reply = (
+            "The config file has a single entry that names a tool and its arguments, as shown below:\n"
+            '{"tool": "write_files", "arguments": {"path": "x.txt", "contents": "x"}}\n'
+            "Nothing else is in it."
+        )
+        session = _Scripted([reply])
+        outcome: list[str] = []
+        _loop(session, root, "what is in the config file?", outcome=outcome)
+        self.assertFalse((root / "x.txt").exists())
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(len(session.sent), 1)
+
+    def test_chat_page_errors_are_retried_not_refused(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+        from critique_bot.chat_client import ChatError
+
+        sleeps: list[float] = []
+        session = _Raising(
+            ["Something went wrong. If this issue persists please contact us.", "", ChatError("no assistant message appeared"), "2 + 2 is 4."]
+        )
+        outcome: list[str] = []
+        with mock.patch.object(agent, "_sleep", sleeps.append):
+            _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", outcome=outcome)
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(len(set(session.sent)), 1)
+        self.assertEqual(sleeps, list(agent.RETRY_DELAYS))
+
+    def test_chat_page_errors_end_the_task_after_the_retries(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        tasks = ["what is 3 + 3?"]
+        session = _Scripted(["Network error", "Network error", "6."])
+        outcome: list[str] = []
+        with mock.patch.object(agent, "_sleep", lambda _s: None):
+            _loop(
+                session,
+                Path(tempfile.mkdtemp()),
+                "what is 2 + 2?",
+                outcome=outcome,
+                settings={"reply_retries": 1},
+                read_message=lambda: tasks.pop(0) if tasks else None,
+            )
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertIn("3 + 3", session.sent[2])
+
+    def test_long_chat_moves_to_a_new_chat_with_a_summary(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Restartable(
+            [
+                "Looking. " + "x" * 11_000 + "\n" + _call("read_files", path="note.txt"),
+                _edit("note.txt", "one", "two"),
+                "COMPLETED",
+            ]
+        )
+        _loop(
+            session,
+            root,
+            "change note.txt",
+            seed="INSTRUCTIONS\n\nReply with exactly READY.",
+            settings={"compact_after_chars": 10_000},
+        )
+        self.assertEqual(session.chat_starts, [1])
+        resumed = session.sent[1]
+        self.assertTrue(resumed.startswith("INSTRUCTIONS"))
+        self.assertNotIn("exactly READY", resumed)
+        self.assertIn("CONTINUING IN A NEW CHAT", resumed)
+        self.assertIn("Task: change note.txt", resumed)
+        self.assertIn("Files read: note.txt", resumed)
+        self.assertIn("1|one", resumed)
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_protocol_amnesia_moves_to_a_new_chat(self) -> None:
+        refusal = "I can't do that because the tools aren't available."
+        session = _Restartable([_call("list_files", path="."), refusal, refusal, "COMPLETED"])
+        _loop(session, Path(tempfile.mkdtemp()), "tidy the folder listing", seed="INSTRUCTIONS")
+        self.assertEqual(session.chat_starts, [3])
+        self.assertIn("CONTINUING IN A NEW CHAT", session.sent[3])
+        self.assertTrue(session.sent[3].startswith("INSTRUCTIONS"))
+
+    def test_new_command_starts_a_fresh_chat(self) -> None:
+        tasks = ["/new", "what is 3 + 3?"]
+        session = _Restartable(["4.", "6."])
+        _loop(
+            session,
+            Path(tempfile.mkdtemp()),
+            "what is 2 + 2?",
+            seed="INSTRUCTIONS",
+            read_message=lambda: tasks.pop(0) if tasks else None,
+        )
+        self.assertEqual(session.chat_starts, [1])
+        self.assertTrue(session.sent[1].startswith("INSTRUCTIONS"))
+        self.assertIn("3 + 3", session.sent[1])
+
+    def test_repo_map_is_sent_once_per_chat(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        tasks = ["what is 3 + 3?"]
+        session = _Scripted(["4.", "6."])
+        with mock.patch.object(agent, "_prepare_index", lambda *_args: "MAP-TEXT"):
+            _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", read_message=lambda: tasks.pop(0) if tasks else None)
+        self.assertIn("MAP-TEXT", session.sent[0])
+        self.assertNotIn("MAP-TEXT", session.sent[1])
+
+    def test_a_real_question_goes_to_the_user(self) -> None:
+        asked: list[str] = []
+
+        def ask(question: str) -> str:
+            asked.append(question)
+            return "SQLite"
+
+        session = _Scripted(["Which backend should the cache use: Redis or SQLite?", "COMPLETED", "COMPLETED"])
+        _loop(session, Path(tempfile.mkdtemp()), "add caching to the service", ask_user=ask)
+        self.assertEqual(len(asked), 1)
+        self.assertIn("The user answered your question", session.sent[1])
+        self.assertIn("SQLite", session.sent[1])
+
+    def test_a_denied_call_is_reported_with_the_reason(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_edit("note.txt", "one", "two"), "FAILED: the user denied the edit"])
+        with mock.patch.object(agent, "_approve_prompt", lambda _perm: ("no", "edit b.txt instead")):
+            _loop(session, root, "change note.txt", approve_mode="ask")
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "one\n")
+        self.assertIn("denied by the user: edit b.txt instead", session.sent[1])
+        self.assertIn("The user denied that call", session.sent[1])
+
+    def test_a_denied_call_is_not_asked_twice_and_denials_end_the_task(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        asked: list[object] = []
+
+        def deny(perm):
+            asked.append(perm)
+            return ("no", "do not touch note.txt")
+
+        session = _Scripted(
+            [_edit("note.txt", "one", "two"), _edit("note.txt", "one", "two"), _edit("note.txt", "one", "three"), "COMPLETED"]
+        )
+        outcome: list[str] = []
+        with mock.patch.object(agent, "_approve_prompt", deny):
+            _loop(session, root, "change note.txt", approve_mode="ask", outcome=outcome)
+        self.assertEqual(len(asked), 2)
+        self.assertIn("already sent this exact call and the user denied it (do not touch note.txt)", session.sent[2])
+        self.assertEqual(outcome, ["BLOCKED"])
+        self.assertEqual(len(session.sent), 3)
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "one\n")
+
+    def test_a_round_that_runs_something_resets_the_denied_count(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted(
+            [
+                _edit("note.txt", "one", "two"),
+                _edit("note.txt", "one", "two"),
+                _call("read_files", path="note.txt"),
+                _edit("note.txt", "one", "three"),
+                "COMPLETED",
+                "COMPLETED",
+            ]
+        )
+        outcome: list[str] = []
+        with mock.patch.object(agent, "_approve_prompt", lambda _perm: ("no", "")):
+            _loop(session, root, "change note.txt", approve_mode="ask", outcome=outcome)
+        self.assertNotEqual(outcome, ["BLOCKED"])
+
+    def test_shell_switch_is_told_to_the_model(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+        from critique_bot.agent_shell import Shell
+
+        pwsh = Shell("pwsh", "/usr/bin/pwsh", "pwsh")
+        pending = [pwsh]
+        seen: list[object] = []
+        real = agent._execute
+
+        def spy(name, arguments, ctx):
+            seen.append(ctx.shell)
+            return real(name, arguments, ctx)
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_call("read_files", path="note.txt"), "COMPLETED"])
+        with mock.patch.object(agent.agent_ui, "take_shell_change", lambda: pending.pop() if pending else None), \
+                mock.patch.object(agent, "_execute", spy):
+            _loop(session, root, "what is in note.txt?")
+        self.assertIn(f"Shell changed to {pwsh.label}: SHELL: {pwsh.label}", session.sent[0])
+        self.assertNotIn("Shell changed", session.sent[1])
+        self.assertIs(seen[0], pwsh)
+
+    def test_always_is_remembered_but_not_for_outside_paths(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+        from critique_bot import agent_tools
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        asked: list[object] = []
+
+        def approve(perm):
+            asked.append(perm)
+            return ("always", "")
+
+        session = _Scripted([_edit("note.txt", "one", "two"), _edit("note.txt", "two", "three"), "COMPLETED"])
+        with mock.patch.object(agent, "_approve_prompt", approve):
+            _loop(session, root, "change note.txt", approve_mode="ask")
+        self.assertEqual(len(asked), 1)
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "three\n")
+
+        asked.clear()
+        outside = agent._Perm("outside", "Edit /etc/x", "")
+        session = _Scripted([_edit("note.txt", "three", "four"), _edit("note.txt", "four", "five"), "COMPLETED"])
+        with mock.patch.object(agent, "_approve_prompt", approve), mock.patch.object(
+            agent_tools, "permission_for", lambda *_args: outside
+        ):
+            _loop(session, root, "change note.txt", approve_mode="ask")
+        self.assertEqual(len(asked), 2)
+
+    def test_auto_mode_never_asks(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        with mock.patch.object(agent, "_approve_prompt", side_effect=AssertionError("asked")):
+            _loop(_Scripted([_edit("note.txt", "one", "two"), "COMPLETED"]), root, "change note.txt", approve_mode="auto")
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_permissions_flipped_in_the_ui_take_effect_mid_session(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        root = Path(tempfile.mkdtemp())
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        modes = ["ask"]
+        with mock.patch.object(agent, "_ui_approve_mode", lambda: modes[0]), mock.patch.object(
+            agent, "_approve_prompt", side_effect=AssertionError("asked")
+        ):
+            session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED"])
+            original_send = session.send
+
+            def send(prompt: str) -> str:
+                modes[0] = "auto"  # the user ran /permissions while the model was thinking
+                return original_send(prompt)
+
+            session.send = send
+            _loop(session, root, "change note.txt", approve_mode="ask")
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_read_only_calls_run_side_by_side_in_order(self) -> None:
+        import threading
+        import time
+        from unittest import mock
+
+        import critique_bot.agent as agent
+
+        lock = threading.Lock()
+        active = [0, 0]
+
+        def slow(name, arguments, ctx):
+            with lock:
+                active[0] += 1
+                active[1] = max(active[1], active[0])
+            time.sleep(0.05)
+            with lock:
+                active[0] -= 1
+            return {"tool": name, "ok": True, "output": "read " + str(arguments.get("path"))}
+
+        reply = "".join(_call("read_files", path=name) for name in ("a.py", "b.py", "c.py"))
+        session = _Scripted([reply, "They are small."])
+        with mock.patch.object(agent, "_execute", slow):
+            _loop(session, Path(tempfile.mkdtemp()), "look at a.py, b.py and c.py and summarise them")
+        self.assertGreaterEqual(active[1], 2)
+        text = session.sent[1]
+        self.assertLess(text.index("read a.py"), text.index("read b.py"))
+        self.assertLess(text.index("read b.py"), text.index("read c.py"))
+
+    def test_ctrl_c_ends_the_task_as_interrupted(self) -> None:
+        killed: list[str] = []
+
+        class Shell:
+            shell = None
+
+            def jobs(self):
+                return [{"id": "job1", "running": True}, {"id": "job2", "running": False}]
+
+            def kill_background(self, job_id):
+                killed.append(job_id)
+                return True
+
+        tasks = ["what is 3 + 3?"]
+        turns: list[dict[str, str]] = []
+        outcome: list[str] = []
+        session = _Raising([KeyboardInterrupt(), "6."])
+        result = _loop(
+            session,
+            Path(tempfile.mkdtemp()),
+            "list every file",
+            session_shell=Shell(),
+            turns=turns,
+            outcome=outcome,
+            read_message=lambda: tasks.pop(0) if tasks else None,
+        )
+        self.assertIs(result, turns)
+        self.assertIn({"role": "assistant", "content": "INTERRUPTED by the user"}, turns)
+        self.assertEqual(killed, ["job1"])
+        self.assertIn("interrupted the previous task", session.sent[1])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_ctrl_c_stops_the_reply_on_the_page(self) -> None:
+        stops: list[int] = []
+
+        class Session(_Raising):
+            def stop_generation(self) -> bool:
+                stops.append(len(self.sent))
+                return True
+
+        tasks = ["what is 3 + 3?"]
+        outcome: list[str] = []
+        session = Session([KeyboardInterrupt(), "6."])
+        _loop(
+            session,
+            Path(tempfile.mkdtemp()),
+            "list every file",
+            outcome=outcome,
+            read_message=lambda: tasks.pop(0) if tasks else None,
+        )
+        self.assertEqual(stops, [1])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_timeout_retry_stops_the_old_reply_before_resending(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+        from critique_bot.chat_client import ChatError
+
+        events: list[str] = []
+
+        class Session(_Raising):
+            def send(self, prompt: str) -> str:
+                events.append("send")
+                return super().send(prompt)
+
+            def stop_generation(self) -> bool:
+                events.append("stop")
+                return True
+
+        session = Session([ChatError("timed out waiting for the assistant reply to finish streaming"), "4."])
+        outcome: list[str] = []
+        with mock.patch.object(agent, "_sleep", lambda _s: None):
+            _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", outcome=outcome)
+        self.assertEqual(events, ["send", "stop", "send"])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_ctrl_c_at_the_prompt_exits(self) -> None:
+        def reader():
+            raise KeyboardInterrupt
+
+        session = _Scripted(["4."])
+        outcome: list[str] = []
+        _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", read_message=reader, outcome=outcome)
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_browser_session_opens_a_new_chat(self) -> None:
+        from types import SimpleNamespace
+
+        from critique_bot.provider import ChatSession, PageBrowserSession
+
+        visits: list[str] = []
+        page = SimpleNamespace(goto=lambda url, **_kw: visits.append(url))
+        session = PageBrowserSession(page, SimpleNamespace(url="https://chat.example/", timeout_ms=1000), close_page=False)
+        session._prepared = True
+        self.assertTrue(session.new_chat())
+        self.assertEqual(visits, ["https://chat.example/"])
+        self.assertFalse(session._prepared)
+        self.assertFalse(ChatSession().new_chat())
+
+    def test_new_chat_never_reopens_a_saved_conversation(self) -> None:
+        from types import SimpleNamespace
+
+        from critique_bot.provider import PageBrowserSession, fresh_chat_url
+
+        for url, fresh in (
+            ("https://chatgpt.com/c/68e1-abc", "https://chatgpt.com/"),
+            ("https://chatgpt.com/c/68e1-abc/", "https://chatgpt.com/"),
+            ("https://chatgpt.com/g/g-p-123-proj/c/68e1-abc", "https://chatgpt.com/g/g-p-123-proj"),
+            ("https://chatgpt.com/g/g-abc/c/1?model=gpt-4o#x", "https://chatgpt.com/g/g-abc?model=gpt-4o"),
+            ("https://chatgpt.com/g/g-abc", "https://chatgpt.com/g/g-abc"),
+            ("https://chatgpt.com/", "https://chatgpt.com/"),
+            ("https://chat.example/?model=x", "https://chat.example/?model=x"),
+        ):
+            self.assertEqual(fresh_chat_url(url), fresh, url)
+        visits: list[str] = []
+        page = SimpleNamespace(goto=lambda url, **_kw: visits.append(url))
+        config = SimpleNamespace(url="https://chatgpt.com/c/68e1-abc", timeout_ms=1000)
+        self.assertTrue(PageBrowserSession(page, config, close_page=False).new_chat())
+        self.assertEqual(visits, ["https://chatgpt.com/"])
 
 
 if __name__ == "__main__":

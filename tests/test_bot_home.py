@@ -77,3 +77,50 @@ class BotHomeTests(unittest.TestCase):
             "pytest -q",
         )
         self.assertIsNone(resolve_check_command({}, "Build with: make"))
+
+
+class BotHomeHardeningTests(unittest.TestCase):
+    def test_local_gitignore_is_written_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_bot_home(root)
+            ignore = root / ".bot" / ".gitignore"
+            ignore.write_text("cache/\nsessions/\nmine/\n", encoding="utf-8")
+            init_bot_home(root)
+            self.assertIn("mine/", ignore.read_text(encoding="utf-8"))
+
+    @unittest.skipIf(__import__("os").name == "nt", "POSIX permissions")
+    def test_private_dirs_are_owner_only(self) -> None:
+        import os
+        import stat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_bot_home(root)
+            for rel in (".bot/sessions", ".bot/cache", ".bot/cache/undo"):
+                mode = stat.S_IMODE(os.stat(root / rel).st_mode)
+                self.assertEqual(mode, 0o700, rel)
+
+    def test_append_gitignore_keeps_crlf_and_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = b"# caf\xc3\xa9\r\nnode_modules/\r\n"
+            (root / ".gitignore").write_bytes(original)
+            init_bot_home(root)
+            data = (root / ".gitignore").read_bytes()
+            self.assertTrue(data.startswith(original))
+            self.assertIn(b".bot/cache/\r\n", data)
+            self.assertNotIn(b"\n.bot", data.replace(b"\r\n", b""))
+
+    def test_update_settings_is_atomic_and_merges(self) -> None:
+        from critique_bot.bot_home import update_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = init_bot_home(root)
+            update_settings(home, theme="light", permissions="auto")
+            stored = json.loads(home.settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["theme"], "light")
+            self.assertEqual(stored["permissions"], "auto")
+            leftovers = [p.name for p in home.bot_dir.iterdir() if p.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [])

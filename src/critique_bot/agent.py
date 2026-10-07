@@ -9,16 +9,20 @@ lives in ``prompts/agent.txt``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sys
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_edit, agent_shell, code_graph, code_index, log
+from critique_bot import agent_edit, agent_shell, agent_tools, code_graph, code_index, log
 from critique_bot.agent_tools import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
@@ -33,7 +37,7 @@ from critique_bot.agent_tools import (
 )
 from critique_bot.agent_tools import execute as _execute
 from critique_bot.bot_home import BotHome, resolve_check_command
-from critique_bot.chat_client import COMPLETION_IDLE
+from critique_bot.chat_client import COMPLETION_IDLE, ChatError
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
 
@@ -48,20 +52,53 @@ __all__ = [
     "run_agent_loop",
 ]
 
-_OPEN_RE = re.compile(r"<tool_call>", re.IGNORECASE)
-_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
+# The canonical tag is <tool_call>. Models also print <tool_use>,
+# <function_call>, and <tool_call name="read_files"> with the arguments as
+# the body; all of them are read the same way.
+_CALL_TAGS = r"(?:tool_call|tool_use|function_call|toolcall)"
+_OPEN_RE = re.compile(r"<\s*" + _CALL_TAGS + r"\b[^>]*>", re.IGNORECASE)
+_BLOCK_RE = re.compile(
+    r"<\s*(" + _CALL_TAGS + r")\b([^>]*)>\s*(.*?)\s*<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
+)
 _CLOSED_TOOL_MARKUP_RE = re.compile(
-    r"<\s*tool_call\b[^>]*>.*?<\s*/\s*tool_call\s*>"
-    r"|<\s*tool_result\b[^>]*>.*?<\s*/\s*tool_result\s*>",
+    r"<\s*(" + _CALL_TAGS + r"|tool_result)\b[^>]*>.*?<\s*/\s*\1\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-_TOOL_TAG_RE = re.compile(r"<\s*/?\s*tool_(?:call|result)\b[^>]*>", re.IGNORECASE)
-_UNCLOSED_TOOL_RE = re.compile(r"<\s*tool_(?:call|result)\b[^>]*>[\s\S]*\Z", re.IGNORECASE)
+_TOOL_TAG_RE = re.compile(r"<\s*/?\s*(?:" + _CALL_TAGS + r"|tool_result)\b[^>]*>", re.IGNORECASE)
+_UNCLOSED_TOOL_RE = re.compile(r"<\s*(?:" + _CALL_TAGS + r"|tool_result)\b[^>]*>[\s\S]*\Z", re.IGNORECASE)
+_RESULT_OPEN_RE = re.compile(r"<\s*tool_result\b[^>]*>", re.IGNORECASE)
+# A result written out as bare JSON: {"tool": "read_files", "ok": true, ...}
+_BARE_RESULT_RE = re.compile(r"""\{\s*["']?tool["']?\s*:\s*["'][^"'\n]*["']\s*,\s*["']?ok["']?\s*:""")
+_ATTR_RE = re.compile(r"""\b(name|tool|function)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_INNER_NAME_RE = re.compile(
+    r"<\s*(?:name|tool|tool_name|function)\s*>\s*([\w.\-]+)\s*<\s*/\s*(?:name|tool|tool_name|function)\s*>",
+    re.IGNORECASE,
+)
+_INNER_ARGS_RE = re.compile(
+    r"<\s*(arguments|args|parameters|input)\s*>\s*(.*?)\s*<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_TAIL_TOOL_RE = re.compile(r"""["']?(?:tool|name)["']?\s*:\s*["']([\w.\-]+)["']""")
+_TAIL_PATH_RE = re.compile(r"""["']?(?:path|filePath|file_path)["']?\s*:\s*["']([^"'\n]{1,160})["']""")
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*)\n```$", re.DOTALL)
 _FENCED_JSON_RE = re.compile(
-    r"```(?:json|tool|tool_call)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
+    r"```(?:json|jsonc|json5|tool|tool_call)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
 )
-_CHROME_LINES = frozenset({"json", "copy", "copy code", "code", "tool", "tool_call", "javascript"})
+# The label and buttons a chat page draws on a code block ("json", "Copy code", "Edit").
+_CHROME_LINES = frozenset(
+    {
+        "json", "jsonc", "json5", "copy", "copy code", "code", "edit", "run", "tool", "tool_call",
+        "javascript", "js", "xml", "html", "text", "plaintext", "python", "bash", "sh", "shell",
+        "powershell", "ps1", "copied!", "copied",
+    }
+)
+# Words just before a JSON object that mean it is quoted, not a call.
+_QUOTED_CONTEXT_RE = re.compile(
+    r"(?i)(\b[\w./\\-]+\.(?:json|jsonc|json5|ya?ml|toml|txt|md|log|cfg|conf|ini)\b"
+    r"|for example|e\.g\.|such as|\bexample\b|contents? of|the file (?:contains|has|is|looks|reads)"
+    r"|currently (?:contains|has|reads)|looks like|is not a tool call|<\s*tool_result)"
+)
+# A Windows path written with single backslashes: C:\new\tools, .\src\app.py
+_RAW_WIN_PATH_RE = re.compile(r"""(?:\b[A-Za-z]:|(?<![\w\\])\.{1,2})\\(?![\\"'/])""")
 _BARE_TOOL_KEY_RE = re.compile(
     r"""(?:"tool"|'tool'|"name"|'name'|(?<![A-Za-z0-9_$])(?:tool|name)\s*:)"""
 )
@@ -95,10 +132,56 @@ _STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
 _FAIL_HEAD = re.compile(r"^(FAILED|BLOCKED)\b\s*[:\-—]?\s*(.*)$")
 MAX_REFUSALS = 3
 MAX_FAILED_ROUNDS = 8
+#: Replies in a row whose every call the user denied end the task as BLOCKED.
+MAX_DENIED_ROUNDS = 3
 MAX_TRUNCATIONS = 4
 MAX_CHECK_CYCLES = 2
+MAX_USER_QUESTIONS = 2
+#: An identical read-only call at the same disk version is not run a third time.
+MAX_SAME_CALL = 2
+#: The same set of calls in this many replies in a row is a loop.
+LOOP_REPLIES = 3
+#: Protocol violations in a row that make the chat start over.
+AMNESIA_VIOLATIONS = 2
+DEFAULT_CHECK_TIMEOUT = 600
+DEFAULT_COMPACT_AFTER_CHARS = 300_000
+DEFAULT_REPLY_RETRIES = 3
+#: Seconds between resends when the chat page shows an error instead of a reply.
+RETRY_DELAYS = (5.0, 15.0, 45.0)
+PARALLEL_WORKERS = 4
 _REVIEW_LINES = 80
 REPO_MAP_CHARS = 2_500
+READY_LINE = "Reply with exactly READY."
+#: Read-only tools that may run side by side within one reply.
+_PARALLEL_SAFE = frozenset(
+    {"list_files", "find_files", "read_files", "search_code", "git_status", "git_diff", "git_log", "git_show"}
+)
+_READ_ONLY_FALLBACK = frozenset(
+    _PARALLEL_SAFE | {"skill", "code_graph", "todo", "command_output", "ask_user", "web_fetch"}
+)
+#: Tools whose result changes over time, so repeating them is not a loop.
+_POLLING = frozenset({"command_output", "ask_user"})
+#: Error text the chat page shows in place of a reply.
+_PROVIDER_ERROR_RE = re.compile(
+    r"(?i)(something went wrong|network error|there was an error generating|"
+    r"an error occurred|error in (?:the )?message stream|you'?ve reached (?:our|the|your)|"
+    r"unusual activity|too many requests|rate limit|conversation not found|"
+    r"request timed out|load failed|failed to fetch|please try again later|"
+    r"hmm\.\.\.\s*something seems to have gone wrong)"
+)
+_PROVIDER_ERROR_MAX = 400
+_PERMISSION_MARKERS = (
+    "may i", "can i proceed", "should i proceed", "should i go ahead", "shall i proceed",
+    "is it ok", "is that ok", "okay to", "ok to proceed", "permission", "confirm", "approve",
+)
+_TEST_MARKERS = (
+    "tests", "test", "__tests__", "spec", "pytest.ini", "tox.ini", "package.json", "gradlew",
+    "gradlew.bat", "build.gradle", "build.gradle.kts", "pom.xml", "Cargo.toml", "go.mod", "Makefile",
+    "CMakeLists.txt", "setup.py", "pyproject.toml",
+)
+
+# Overridable in tests so a retry does not really sleep.
+_sleep = time.sleep
 
 _FALLBACKS = {
     "TASK_PREFIX": "Print tool_call blocks to act. Do not refuse.",
@@ -142,6 +225,32 @@ _FALLBACKS = {
         "Start with FAILED or BLOCKED, then one or two sentences. "
         "Send a tool_call instead if you can still fix it."
     ),
+    "TRUNCATED": (
+        "Your last reply was truncated (cut off) inside a tool_call{call}, so that call did not run. "
+        "Continue from there: resend only that one call, complete, and nothing before it. "
+        "If it writes a long file, split it: write_files with the first part, then edit_file to add the rest."
+    ),
+    "FABRICATED": (
+        "Your reply contained a tool_result. Only the program writes tool_result blocks; you never do. "
+        "Everything from that point on was ignored. The real results of the calls before it are above."
+    ),
+    "LOOP": (
+        "You sent the same tool calls {count} times in a row. They were not run again: the results are above. "
+        "Use them and take a different next step, or finish."
+    ),
+    "VERIFY": (
+        "You changed files but ran nothing to check them. Run the relevant tests or build with run_command now. "
+        "If there is truly nothing to run, reply COMPLETED again."
+    ),
+    "DENIED": (
+        "The user denied that call, so it did not run. Do not send it again unchanged. "
+        "Change the approach, or use ask_user if you need the user's decision."
+    ),
+    "USER_ANSWER": "The user answered your question:\n{answer}\nContinue the task.",
+    "RESUME": (
+        "CONTINUING IN A NEW CHAT. The previous chat grew long, so this is a fresh one. "
+        "The rules above apply. Summary of the work so far:"
+    ),
 }
 
 
@@ -184,38 +293,54 @@ def execute_tool(
 # --------------------------------------------------------------------------- parsing
 
 
-def parse_tool_calls(text: str) -> tuple[list[ToolCall], bool]:
+def parse_tool_calls(
+    text: str, *, complete: bool = False, allow_bare: bool = True
+) -> tuple[list[ToolCall], bool]:
     """Parse tool calls. The bool is True only when the reply has an open tag and no call.
 
     Complete blocks always run. Text left after them is checked for a
     dangling ``<tool_call>``: one followed by JSON means a block was cut off;
-    a bare tag (page rendering often leaves one) is ignored. A reply with no
-    tags at all is searched for fenced or bare JSON objects naming a tool.
+    a bare tag (page rendering often leaves one) is ignored. When the page
+    said the reply finished (``complete``), a dangling block whose JSON is
+    whole only lost its closing tag, and it runs.
+
+    A reply with no tags is searched for fenced or bare JSON objects naming a
+    tool, unless ``allow_bare`` is False. JSON introduced as a quote ("the
+    file contains", "for example", a ``.json`` file name) is not a call.
     """
     calls: list[ToolCall] = []
     for match in _BLOCK_RE.finditer(text):
-        calls.extend(_parse_block(match.group(1)))
+        calls.extend(_parse_tagged(match.group(2), match.group(3)))
     rest = _BLOCK_RE.sub("", text)
     dangling = _OPEN_RE.search(rest)
     if dangling is not None:
         tail = rest[dangling.end() :]
+        if complete:
+            recovered = _whole_tail_calls(_TOOL_TAG_RE.sub("", tail))
+            if recovered:
+                return calls + recovered, False
         if not calls:
             return [], True
         if "{" in tail:
+            name = _cut_call_name(tail)
             calls.append(
                 ToolCall(
-                    tool="",
+                    tool=name,
                     arguments={},
                     error=(
-                        "a later tool_call was cut off; complete calls in this reply "
-                        "were run; resend only the unfinished block"
+                        "this tool_call was truncated (cut off) before it closed and did not run; "
+                        "the complete calls before it ran. Resend only this call, complete"
                     ),
                 )
             )
         return calls, False
     if calls:
         return calls, False
+    if not allow_bare:
+        return [], False
     for match in _FENCED_JSON_RE.finditer(text):
+        if _looks_quoted(text, match.start()):
+            continue
         for call in _parse_block(match.group(1)):
             if call.tool and not call.error:
                 calls.append(call)
@@ -224,17 +349,105 @@ def parse_tool_calls(text: str) -> tuple[list[ToolCall], bool]:
     return _bare_json_calls(text), False
 
 
+def _parse_tagged(attrs: str, body: str) -> list[ToolCall]:
+    """One block. ``<tool_call name="x">{args}</tool_call>`` and inner XML tags are accepted."""
+    attr = _ATTR_RE.search(attrs or "")
+    inner_name = _INNER_NAME_RE.search(body)
+    name = attr.group(2) if attr else (inner_name.group(1) if inner_name else "")
+    if not name:
+        return _parse_block(body)
+    inner_args = _INNER_ARGS_RE.search(body)
+    raw = inner_args.group(2) if inner_args else (body if not inner_name else "")
+    raw = _strip_chrome(raw.strip())
+    fenced = _FENCE_RE.match(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+    if not raw.strip():
+        return [_call_from_data({"tool": name, "arguments": {}})]
+    try:
+        data = _loads_lenient(raw)
+    except json.JSONDecodeError as exc:
+        return [ToolCall(tool=name, arguments={}, error=f"invalid tool JSON: {exc}")]
+    if isinstance(data, dict) and any(key in data for key in ("tool", "name", "function")):
+        return _calls_from_data(data)
+    return [_call_from_data({"tool": name, "arguments": data})]
+
+
+def _whole_tail_calls(tail: str) -> list[ToolCall]:
+    """Calls in a block that lost only its closing tag: whole JSON, nothing cut."""
+    stripped = _strip_chrome(tail.strip()).rstrip("`").rstrip()
+    if not stripped.endswith("}"):
+        return []
+    blobs = _json_objects(stripped)
+    if not blobs or not stripped.endswith(blobs[-1]):
+        return []
+    calls: list[ToolCall] = []
+    for blob in blobs:
+        try:
+            found = _calls_from_data(_loads_lenient(blob))
+        except json.JSONDecodeError:
+            return []
+        if any(call.error or not canonical_tool(call.tool) for call in found):
+            return []
+        calls.extend(found)
+    return calls
+
+
+def _cut_call_name(tail: str) -> str:
+    match = _TAIL_TOOL_RE.search(tail)
+    return match.group(1) if match else ""
+
+
+def _cut_call_label(tail: str) -> str:
+    """`` for write_files (path a.py)`` from the text of a cut-off block."""
+    name = _cut_call_name(tail)
+    if not name:
+        return ""
+    path = _TAIL_PATH_RE.search(tail)
+    return f" for {name}" + (f" (path {path.group(1)})" if path else "")
+
+
+def _looks_quoted(text: str, start: int) -> bool:
+    """True when the words just before ``start`` introduce a quote, not a call."""
+    lines = [
+        line.strip()
+        for line in text[:start].splitlines()
+        if line.strip() and line.strip().lower() not in _CHROME_LINES and not line.strip().startswith("```")
+    ]
+    context = " ".join(lines[-2:])
+    return bool(context and _QUOTED_CONTEXT_RE.search(context))
+
+
+def _cut_fabricated(reply: str) -> tuple[str, bool]:
+    """Cut the reply at the first tool_result the model wrote itself.
+
+    Only the program writes results. A result inside a tool_call block (an
+    edit that mentions the tag) is file text and stays.
+    """
+    spans = [match.span() for match in _BLOCK_RE.finditer(reply)]
+    starts = [match.start() for match in _RESULT_OPEN_RE.finditer(reply)]
+    starts += [match.start() for match in _BARE_RESULT_RE.finditer(reply)]
+    for start in sorted(starts):
+        if any(begin <= start < end for begin, end in spans):
+            continue
+        return reply[:start].rstrip(), True
+    return reply, False
+
+
 def _bare_json_calls(text: str) -> list[ToolCall]:
     """JSON objects naming a known tool, including ``{tool:"write_file", ...}``."""
     calls: list[ToolCall] = []
     for blob in _bare_tool_blobs(text):
+        position = text.find(blob)
+        if position >= 0 and _looks_quoted(text, position):
+            continue
         try:
             data = _loads_lenient(blob)
         except json.JSONDecodeError:
             continue
-        call = _call_from_data(data)
-        if not call.error and canonical_tool(call.tool):
-            calls.append(call)
+        for call in _calls_from_data(data):
+            if not call.error and canonical_tool(call.tool):
+                calls.append(call)
     return calls
 
 
@@ -248,8 +461,7 @@ def _bare_tool_blobs(text: str) -> list[str]:
             data = _loads_lenient(blob)
         except json.JSONDecodeError:
             continue
-        call = _call_from_data(data)
-        if not call.error and canonical_tool(call.tool):
+        if any(not call.error and canonical_tool(call.tool) for call in _calls_from_data(data)):
             blobs.append(blob)
     return blobs
 
@@ -314,19 +526,30 @@ def _strip_chrome(text: str) -> str:
     return "\n".join(lines)
 
 
+_TRAILING_PROSE_RE = re.compile(r"[}\]]\s*([A-Za-z][^{}\[\]\"`]*)\Z")
+
+
+def _drop_trailing_prose(text: str) -> str:
+    """``{...} I will read it now.`` -> ``{...}``. A JSON value never ends in a sentence."""
+    match = _TRAILING_PROSE_RE.search(text)
+    if match and " " in match.group(1).strip():
+        return text[: match.start(1)].rstrip()
+    return text
+
+
 def _parse_block(body: str) -> list[ToolCall]:
     text = body.strip()
     fenced = _FENCE_RE.match(text)
     if fenced:
         text = fenced.group(1).strip()
-    text = _strip_chrome(text)
+    text = _drop_trailing_prose(_strip_chrome(text))
     objects = _json_objects(_repair_json(_normalize_json_text(text))) or _json_objects(text)
     if not objects:
         try:
             data = _loads_lenient(text)
         except json.JSONDecodeError as exc:
             return [ToolCall(tool="", arguments={}, error=f"invalid tool JSON: {exc}")]
-        return [_call_from_data(data)]
+        return _calls_from_data(data)
     calls: list[ToolCall] = []
     for blob in objects:
         try:
@@ -334,39 +557,93 @@ def _parse_block(body: str) -> list[ToolCall]:
         except json.JSONDecodeError as exc:
             calls.append(ToolCall(tool="", arguments={}, error=f"invalid tool JSON: {exc}"))
             continue
-        calls.append(_call_from_data(data))
+        calls.extend(_calls_from_data(data))
     return calls
+
+
+_NAME_KEYS = ("tool", "name", "tool_name", "recipient_name")
+_ARG_KEYS = ("arguments", "args", "parameters", "params", "input", "tool_input")
+_LIST_KEYS = ("tool_calls", "calls", "tool_uses", "actions")
+_WRAPPER_TYPES = {"function", "tool", "tool_call", "tool_use", "function_call"}
+
+
+def _calls_from_data(data: Any) -> list[ToolCall]:
+    """Calls from one parsed value: an array of calls, ``{"tool_calls": [...]}``,
+    the OpenAI ``{"function": {"name", "arguments"}}`` shape, or one call."""
+    if isinstance(data, list):
+        calls = [call for item in data for call in _calls_from_data(item)]
+        return calls or [ToolCall(tool="", arguments={}, error="tool call must be a JSON object")]
+    if isinstance(data, dict):
+        named = any(isinstance(data.get(key), str) for key in _NAME_KEYS)
+        if not named:
+            for key in _LIST_KEYS:
+                if isinstance(data.get(key), list):
+                    return _calls_from_data(data[key])
+            function = data.get("function")
+            if isinstance(function, dict):
+                return [_call_from_data(function)]
+            if isinstance(function, str):
+                data = {**data, "tool": function}
+                data.pop("function", None)
+            tool = data.get("tool")
+            if isinstance(tool, dict):
+                return [_call_from_data(tool)]
+    return [_call_from_data(data)]
 
 
 def _call_from_data(data: Any) -> ToolCall:
     if not isinstance(data, dict):
         return ToolCall(tool="", arguments={}, error="tool call must be a JSON object")
-    name = data.get("tool", data.get("name"))
+    name: Any = None
+    name_key = ""
+    for key in _NAME_KEYS:
+        if isinstance(data.get(key), str) and data[key].strip():
+            name, name_key = data[key], key
+            break
     if not isinstance(name, str) or not name.strip():
         return ToolCall(tool="", arguments={}, error="tool call needs a tool name")
-    if "arguments" in data:
-        arguments = data.get("arguments")
-    elif "args" in data:
-        arguments = data.get("args", {})
+    raw_name = name
+    name = re.sub(r"^(?:functions|tools|tool)\.", "", name.strip())
+    if "ok" in data and ("output" in data or "error" in data) and not any(key in data for key in _ARG_KEYS):
+        return ToolCall(
+            tool=name, arguments={}, error="that is a tool_result; only the program writes results"
+        )
+    arg_key = next((key for key in _ARG_KEYS if key in data), None)
+    if arg_key is not None:
+        arguments = data.get(arg_key)
     else:
-        arguments = {key: value for key, value in data.items() if key not in {"tool", "name"}}
+        arguments = {
+            key: value
+            for key, value in data.items()
+            if key != name_key
+            and not (key in _NAME_KEYS and value == raw_name)
+            and not (key == "type" and str(value).lower() in _WRAPPER_TYPES)
+            and key not in {"function"}
+        }
     if arguments is None:
         arguments = {}
     if isinstance(arguments, str):
-        try:
-            arguments = _loads_lenient(arguments)
-        except json.JSONDecodeError as exc:
-            return ToolCall(tool=name.strip(), arguments={}, error=f"arguments must be a JSON object: {exc}")
+        if not arguments.strip():
+            arguments = {}
+        else:
+            try:
+                arguments = _loads_lenient(arguments)
+            except json.JSONDecodeError as exc:
+                return ToolCall(tool=name, arguments={}, error=f"arguments must be a JSON object: {exc}")
     if not isinstance(arguments, dict):
-        return ToolCall(tool=name.strip(), arguments={}, error="arguments must be a JSON object")
-    return ToolCall(tool=name.strip(), arguments=arguments)
+        return ToolCall(tool=name, arguments={}, error="arguments must be a JSON object")
+    return ToolCall(tool=name, arguments=arguments)
 
 
 def _loads_lenient(text: str) -> Any:
     cleaned = _normalize_json_text(text)
     candidates = [cleaned, _TRAILING_COMMA_RE.sub(r"\1", cleaned)]
     repaired = _repair_json(cleaned)
-    if repaired not in candidates:
+    if _RAW_WIN_PATH_RE.search(cleaned):
+        # C:\new\tools is valid JSON with a newline and a tab in it. The
+        # repair keeps those backslashes, so it goes first.
+        candidates.insert(0, repaired)
+    elif repaired not in candidates:
         candidates.append(repaired)
     for blob in _json_objects(repaired):
         if blob not in candidates:
@@ -430,12 +707,37 @@ def _repair_json(text: str) -> str:
                 index += 1
             index = min(length, index + 2)
             continue
+        triple = source[index : index + 3]
+        if triple in ('"""', "'''") or char == "`":
+            # Python triple quotes or a JS template string: raw text to the closer.
+            closer = triple if triple in ('"""', "'''") else ("```" if triple == "```" else "`")
+            start = index + len(closer)
+            end = source.find(closer, start)
+            if end < 0:
+                end = length
+            if after_value and stack:
+                out.append(",")
+            body = source[start:end]
+            if closer == "```" and "\n" in body:
+                first, rest = body.split("\n", 1)
+                if first.strip().isalnum() or not first.strip():
+                    body = rest
+            out.append(json.dumps(body.replace("\r\n", "\n"), ensure_ascii=False))
+            index = min(length, end + len(closer))
+            if expect_key:
+                expect_key = False
+                after_value = False
+            else:
+                after_value = True
+            continue
         if char in "\"'":
             if after_value and stack:
                 out.append(",")
                 expect_key = bool(stack and stack[-1] == "{")
                 after_value = False
-            literal, index = _read_json_string(source, index, char, key=expect_key)
+            literal, index = _read_json_string(
+                source, index, char, key=expect_key, container=stack[-1] if stack else ""
+            )
             out.append(literal)
             if expect_key:
                 nxt = skip_space(index)
@@ -510,6 +812,11 @@ def _repair_json(text: str) -> str:
             index = end
             continue
         index += 1
+    # A reply that ends before its last braces: close what is still open.
+    while out and out[-1] in " \t\r\n,:":
+        out.pop()
+    for opener in reversed(stack):
+        out.append("}" if opener == "{" else "]")
     return _TRAILING_COMMA_RE.sub(r"\1", "".join(out))
 
 
@@ -526,17 +833,43 @@ _JSON_STRING_ESCAPES = {
 }
 
 
-def _read_json_string(source: str, index: int, quote: str, *, key: bool = False) -> tuple[str, int]:
+_PATH_LEAD = frozenset(" \t\"'=(,;[{")
+
+
+def _raw_path_start(chars: list[str]) -> bool:
+    """True when the text so far ends in ``C:`` or ``.``/``..`` that starts a path."""
+    if len(chars) >= 2 and chars[-1] == ":" and chars[-2].isalpha():
+        return len(chars) == 2 or chars[-3] in _PATH_LEAD
+    if chars and chars[-1] == ".":
+        before = chars[:-1]
+        if before and before[-1] == ".":
+            before = before[:-1]
+        return not before or before[-1] in _PATH_LEAD
+    return False
+
+
+def _read_json_string(
+    source: str, index: int, quote: str, *, key: bool = False, container: str = ""
+) -> tuple[str, int]:
     """Read one quoted string, keeping interior quotes and raw newlines."""
     index += 1
     length = len(source)
     chars: list[str] = []
+    raw_paths = False
     while index < length:
         char = source[index]
         if char == "\\":
             if index + 1 >= length:
                 break
             escaped = source[index + 1]
+            if not raw_paths and escaped not in "\\\"'" and _raw_path_start(chars):
+                # C:\new\tools written without doubled backslashes: from here
+                # on a backslash is part of the path, not an escape.
+                raw_paths = True
+            if raw_paths and escaped not in "\\\"'":
+                chars.append("\\")
+                index += 1
+                continue
             if escaped == "u" and index + 5 < length:
                 try:
                     chars.append(chr(int(source[index + 2 : index + 6], 16)))
@@ -559,7 +892,7 @@ def _read_json_string(source: str, index: int, quote: str, *, key: bool = False)
                 chars.append(escaped)
             index += 2
             continue
-        if char == quote and _string_ends(source, index, quote, key=key):
+        if char == quote and _string_ends(source, index, quote, key=key, container=container):
             return json.dumps("".join(chars), ensure_ascii=False), index + 1
         if char == "\r":
             index += 1
@@ -569,13 +902,15 @@ def _read_json_string(source: str, index: int, quote: str, *, key: bool = False)
     return json.dumps("".join(chars), ensure_ascii=False), index
 
 
-def _string_ends(source: str, index: int, quote: str, *, key: bool) -> bool:
+def _string_ends(source: str, index: int, quote: str, *, key: bool, container: str = "") -> bool:
     """True when the quote at index closes the string rather than sitting inside it.
 
     A value may contain source text such as ``name = "test-app"`` or
     ``include(":app")``. A following letter, digit, or colon is that text.
     The quote closes the value when the next token continues the JSON
-    (``,``, ``}``, ``]``) or is the next object key.
+    (``,``, ``}``, ``]``) or is the next object key. Inside an object, a
+    comma closes the value only when a key follows it, so source text such
+    as ``print("a", "b")`` stays in the string.
     """
     pos = index + 1
     length = len(source)
@@ -585,7 +920,9 @@ def _string_ends(source: str, index: int, quote: str, *, key: bool) -> bool:
         return True
     nxt = source[pos]
     if nxt == ",":
-        return True
+        if key or container != "{":
+            return True
+        return _key_follows(source, pos + 1)
     if nxt in "}]":
         return _closer_is_json(source, pos)
     if nxt == ":":
@@ -607,6 +944,29 @@ def _string_ends(source: str, index: int, quote: str, *, key: bool) -> bool:
     while end < length and source[end] in " \t\r\n":
         end += 1
     return end < length and source[end] == ":"
+
+
+def _key_follows(source: str, pos: int) -> bool:
+    """True when ``source[pos:]`` starts with an object key and its colon (or the object ends)."""
+    length = len(source)
+    while pos < length and source[pos] in " \t\r\n":
+        pos += 1
+    if pos >= length or source[pos] in "}]":
+        return True
+    char = source[pos]
+    if char in "\"'":
+        end = source.find(char, pos + 1)
+        if end < 0 or "\n" in source[pos + 1 : end]:
+            return False
+        pos = end + 1
+    elif char.isalpha() or char in "_$":
+        while pos < length and (source[pos].isalnum() or source[pos] in "_$"):
+            pos += 1
+    else:
+        return False
+    while pos < length and source[pos] in " \t":
+        pos += 1
+    return pos < length and source[pos] == ":"
 
 
 def _closer_is_json(source: str, pos: int) -> bool:
@@ -809,6 +1169,72 @@ def _asks_for_change(task: str) -> bool:
     return bool(_EDIT_TASK_RE.search(task))
 
 
+def _provider_error(reply: str) -> str | None:
+    """The chat page's own error text (or nothing) in place of a model reply."""
+    text = (reply or "").strip()
+    if not text:
+        return "the chat page returned an empty reply"
+    if len(text) > _PROVIDER_ERROR_MAX or _OPEN_RE.search(text):
+        return None
+    match = _PROVIDER_ERROR_RE.search(text)
+    if match is None:
+        return None
+    return f"the chat page said: {_one_line(text, 120)}"
+
+
+def _real_question(reply: str) -> str:
+    """The question when a reply genuinely asks the user something, else "".
+
+    Questions that only stall (what should I change, shall I proceed, may I)
+    and refusals are not real questions: the task already says what to do.
+    """
+    text = _hide_tool_markup(reply).strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or not lines[-1].endswith("?") or len(text) > 1_500:
+        return ""
+    normalized = _normalized(text)
+    if _refuses(text) or any(marker in normalized for marker in _QUESTION_MARKERS + _PERMISSION_MARKERS):
+        return ""
+    return text
+
+
+def _diffstat(diff: str) -> str:
+    """``a.py +3 -1, b.py +10 -0`` from a unified diff."""
+    counts: dict[str, list[int]] = {}
+    current = ""
+    old = ""
+    lines = diff.splitlines()
+    for number, line in enumerate(lines):
+        header = number + 1 < len(lines) and lines[number + 1].startswith("+++ ")
+        if line.startswith("--- ") and header:
+            old = re.sub(r"^--- (?:a/)?", "", line).strip()
+            current = ""
+        elif line.startswith("+++ ") and number > 0 and lines[number - 1].startswith("--- "):
+            current = re.sub(r"^\+\+\+ (?:b/)?", "", line).strip()
+            if current == "/dev/null":
+                current = old if old != "/dev/null" else ""
+            if current:
+                counts.setdefault(current, [0, 0])
+        elif current and line.startswith("+"):
+            counts[current][0] += 1
+        elif current and line.startswith("-"):
+            counts[current][1] += 1
+    return ", ".join(f"{path} +{add} -{rem}" for path, (add, rem) in counts.items())
+
+
+def _has_checks(workspace: Path) -> bool:
+    """True when the workspace has tests or a build the model could run."""
+    try:
+        return any((workspace / marker).exists() for marker in _TEST_MARKERS)
+    except OSError:
+        return False
+
+
+def _call_key(call: ToolCall) -> str:
+    name = canonical_tool(call.tool) or call.tool
+    return name + ":" + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+
 def _keywords(task: str) -> list[str]:
     words: list[str] = []
     for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.\-/]{2,}", task):
@@ -875,6 +1301,8 @@ def seed_message(
     shell: agent_shell.Shell | None = None,
     notes: str = "",
     platform_name: str | None = None,
+    persistent_cwd: bool = True,
+    available: dict[str, agent_shell.Shell] | None = None,
 ) -> str:
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
@@ -883,28 +1311,34 @@ def seed_message(
         f"shell: {chosen.label}",
         f"workspace: {workspace}",
     ]
-    if chosen.kind == "powershell":
-        lines.append("run_command is Windows PowerShell 5.1: chain with ; and test $? or $LASTEXITCODE. && and || do not work.")
-    elif chosen.kind == "pwsh":
-        lines.append("run_command is PowerShell 7: && and || work. Use PowerShell cmdlets, not Unix tools.")
-    else:
-        lines.append("run_command is bash -lc.")
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
     lines.append(code_graph.hint(workspace))
-    lines.append(
-        "Each run_command is a new process whose starting folder is the workspace above, "
-        "not C:\\ and not the user profile. cd does not carry over; pass cwd to use another folder. "
-        "Its result starts with exit, the code and seconds, then cwd, then stdout, then stderr."
-    )
-    text = agent_shell.shell_preamble(chosen) + "\n\n"
+    if persistent_cwd:
+        lines.append(
+            "run_command starts in the workspace above. cd persists between run_command calls, "
+            "as in a terminal; a result shows cwd when it changed. "
+            "The result starts with exit, the code and seconds, then stdout, then stderr."
+        )
+    else:
+        lines.append(
+            "Each run_command is a new process whose starting folder is the workspace above, "
+            "not C:\\ and not the user profile; pass cwd to start somewhere else. "
+            "Its result starts with exit, the code and seconds, then cwd, then stdout, then stderr."
+        )
+    text = agent_shell.shell_preamble(chosen, available) + "\n\n"
     if instructions.strip():
         text += instructions.rstrip() + "\n\n"
     text += "\n".join(lines) + "\n"
     if notes.strip():
         text += "\nPROJECT NOTES (from .bot/AGENT.md; follow them)\n" + notes.strip() + "\n"
-    if not instructions.strip():
-        text += "\nReply with exactly READY.\n"
+    if READY_LINE not in text:
+        text += "\n" + READY_LINE + "\n"
     return text
+
+
+def _without_ready(seed: str) -> str:
+    """The seed for a message that also carries the task: no READY handshake."""
+    return re.sub(r"\n*[^\n]*\bexactly READY\b[^\n]*", "", seed).strip()
 
 
 def _agent_prompt_path() -> Path:
@@ -927,12 +1361,152 @@ def _agent_prompt_path() -> Path:
 # --------------------------------------------------------------------------- the loop
 
 
+@dataclass
+class _Perm:
+    """Stand-in for agent_tools.Permission when that is not available."""
+
+    kind: str = "read"
+    summary: str = ""
+    key: str = ""
+    detail: str = ""
+
+
+class _ProviderFailed(RuntimeError):
+    """The chat page kept showing an error instead of a reply."""
+
+
+def _tool_context(**values: Any) -> ToolContext:
+    """A ToolContext with only the fields this version of agent_tools has."""
+    names = {item.name for item in dataclasses.fields(ToolContext)}
+    return ToolContext(**{key: value for key, value in values.items() if key in names})
+
+
+def _int_setting(settings: dict[str, Any], key: str, default: int, minimum: int) -> int:
+    raw = settings.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < minimum:
+        return default
+    return int(raw)
+
+
+def _ui_approve_mode() -> str:
+    """The approval mode the terminal UI holds now, or "" when there is no UI."""
+    getter = getattr(globals().get("agent_ui"), "approve_mode", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter() or "")
+    except Exception:
+        return ""
+
+
+def _read_only_tools() -> frozenset[str]:
+    return getattr(agent_tools, "READ_ONLY", None) or _READ_ONLY_FALLBACK
+
+
+def _stop_reply(session: Any) -> None:
+    """Ask the chat page to stop a reply it is still writing. Best effort."""
+    stop = getattr(session, "stop_generation", None)
+    if not callable(stop):
+        return
+    try:
+        stop()
+    except Exception as exc:  # the next send waits for (or stops) it again
+        log.debug(f"stopping the reply failed: {exc}")
+
+
+class _Chat:
+    """The open conversation: sends with retries, tracks its size, starts over when asked.
+
+    A web chat slows down and forgets the protocol as it grows. Past
+    ``compact_after`` characters, or after the model breaks the protocol
+    ``AMNESIA_VIOLATIONS`` times in a row, the next message goes to a new
+    chat with the instructions and a summary in front of it.
+    """
+
+    def __init__(
+        self,
+        session: Any,
+        *,
+        seed: str = "",
+        retries: int = DEFAULT_REPLY_RETRIES,
+        compact_after: int = DEFAULT_COMPACT_AFTER_CHARS,
+    ) -> None:
+        self.session = session
+        self.seed = (seed or "").strip()
+        self.retries = max(0, retries)
+        self.compact_after = compact_after
+        self.chars = 0
+        self.violations = 0
+        self.map_sent = False
+        #: Sent ahead of the next message: the instructions, in a fresh chat.
+        self.prefix = ""
+        self.can_restart = callable(getattr(session, "new_chat", None))
+        #: "task -> outcome" for each task in this session, for the summary.
+        self.history: list[str] = []
+
+    @property
+    def last_detail(self) -> Any:
+        return getattr(self.session, "last_detail", None)
+
+    def send(self, payload: str) -> str:
+        if self.prefix:
+            payload = self.prefix + "\n\n" + payload
+            self.prefix = ""
+        attempt = 0
+        while True:
+            _waiting(True)
+            try:
+                reply = self.session.send(payload)
+                problem = _provider_error(reply)
+            except ChatError as exc:
+                reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
+            finally:
+                _waiting(False)
+            self.chars += len(payload) + len(reply or "")
+            if problem is None:
+                return reply
+            if attempt >= self.retries:
+                raise _ProviderFailed(problem)
+            delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+            attempt += 1
+            _ui("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
+            # A timed-out reply may still be streaming; resending over it
+            # duplicates the message and crosses the two answers.
+            _stop_reply(self.session)
+            _sleep(delay)
+
+    def too_long(self) -> bool:
+        return self.can_restart and self.chars > self.compact_after
+
+    def wants_restart(self) -> bool:
+        return self.can_restart and (self.too_long() or self.violations >= AMNESIA_VIOLATIONS)
+
+    def restart(self, reason: str) -> bool:
+        """Open a new conversation. The instructions go in front of the next message."""
+        if not self.can_restart:
+            return False
+        try:
+            started = self.session.new_chat()
+        except Exception as exc:  # the old chat still works; keep using it
+            log.warn(f"could not open a new chat: {exc}")
+            started = False
+        if started is False:
+            self.can_restart = False
+            return False
+        _ui("note", f"Starting a new chat: {reason}.")
+        self.chars = 0
+        self.violations = 0
+        self.map_sent = False
+        self.prefix = _without_ready(self.seed) if self.seed else ""
+        return True
+
+
 class _TaskRun:
     """One task on an open chat: send, parse, run tools, repeat until a finish."""
 
     def __init__(
         self,
-        session: Any,
+        chat: _Chat,
         task: str,
         *,
         ctx: ToolContext,
@@ -942,8 +1516,13 @@ class _TaskRun:
         max_rounds: int | None,
         max_result_chars: int,
         check_command: str | None,
+        check_timeout: float = DEFAULT_CHECK_TIMEOUT,
+        approve_mode: str = "ask",
+        always: set[str] | None = None,
+        ask: Callable[[str], str | None] | None = None,
+        ui_mode_at_start: str | None = None,
     ) -> None:
-        self.session = session
+        self.chat = chat
         self.task = task
         self.ctx = ctx
         self.state = ctx.state or TaskState(task=task)
@@ -953,6 +1532,11 @@ class _TaskRun:
         self.max_rounds = max_rounds
         self.max_result_chars = max_result_chars
         self.check_command = (check_command or "").strip() or None
+        self.check_timeout = check_timeout
+        self.approve_mode = approve_mode
+        self.ui_mode_at_start = ui_mode_at_start if ui_mode_at_start is not None else _ui_approve_mode()
+        self.always = always if always is not None else set()
+        self.ask = ask
         self.tools_ran = False
         self.last_failed = False
         self.nudges = 0
@@ -964,8 +1548,21 @@ class _TaskRun:
         self.check_passed = False
         self.nothing_nudged = False
         self.reason_asked = False
+        self.verify_asked = False
+        self.verified = True
+        self.questions = 0
         self.reviewed = False
         self.payload = ""
+        #: Bumped by each successful change, so a repeat can be told from a retry.
+        self.world = 0
+        self.history: dict[str, dict[str, Any]] = {}
+        self.signatures: list[tuple[str, ...]] = []
+        self.findings: list[str] = []
+        self.last_output = ""
+        #: Calls the user denied in this task (call key -> reason); the same call is not asked twice.
+        self.denials: dict[str, str] = {}
+        self.denied_rounds = 0
+        self.denied_reason = ""
 
     def _present(self, text: str) -> None:
         visible = _present_text(text)
@@ -977,56 +1574,83 @@ class _TaskRun:
         rounds = 0
         while self.max_rounds is None or rounds < self.max_rounds:
             rounds += 1
-            with log.loading("Thinking..."):
-                reply = self.session.send(self.payload)
+            if self.chat.wants_restart():
+                reason = (
+                    "the chat grew long" if self.chat.too_long() else "the model lost track of the instructions"
+                )
+                if self.chat.restart(reason):
+                    self.payload = self._resume_text() + "\n\n" + self.payload
+            self._note_shell_change()
+            try:
+                reply = self.chat.send(self.payload)
+            except _ProviderFailed as exc:
+                return self._end("FAILED", str(exc))
             self.turns.append({"role": "assistant", "content": reply})
             code = self._handle(reply)
             if code is not None:
                 return code
         return self._end("STOPPED", f"stopped after {self.max_rounds} tool rounds")
 
-    def _handle(self, reply: str) -> str | None:
-        detail = getattr(self.session, "last_detail", None)
-        calls, unclosed = parse_tool_calls(reply)
+    def _handle(self, raw_reply: str) -> str | None:
+        detail = self.chat.last_detail
+        reply, fabricated = _cut_fabricated(raw_reply)
+        complete = isinstance(detail, dict) and detail.get("complete") is True
+        answer_task = _answer_only(self.task)
+        calls, unclosed = parse_tool_calls(reply, complete=complete)
         note = commentary(reply)
+        if calls and not _OPEN_RE.search(reply) and answer_task and len(note) > 80:
+            # JSON quoted inside an answer, not a call.
+            calls = []
         status = _status_code(reply)
         plan = _plan_text(reply)
         shown = _answer_text(note)
+        if note:
+            self.findings = (self.findings + [_one_line(note, 300)])[-4:]
         if calls and shown:
             self._present(shown)
         elif shown and not status:
             self._present(plan if plan else shown)
         elif shown and status in _STATUS_OK:
             self._present(shown)
+        if fabricated:
+            self.chat.violations += 1
+            _ui("note", "The reply made up a tool result. Only real results are used.")
         if unclosed or _idle_tool_reply(detail, reply):
             self.truncations += 1
             if self.truncations > MAX_TRUNCATIONS:
                 return self._end("FAILED", "the reply was cut off before it finished")
-            self._send_results(
-                [
-                    {
-                        "tool": "",
-                        "ok": False,
-                        "error": "reply was truncated before the tool call closed; resend complete tool_call blocks",
-                    }
-                ]
-            )
+            _ui("note", "The reply was cut off. Asking for the rest.")
+            dangling = _OPEN_RE.search(_BLOCK_RE.sub("", reply))
+            label = _cut_call_label(_BLOCK_RE.sub("", reply)[dangling.end() :]) if dangling else ""
+            self._send_message("TRUNCATED", call=label)
             self.last_failed = True
             return None
         if calls:
             self.refusals = 0
             self.plan_notes = 0
-            self._run_calls(calls)
+            if all(call.error for call in calls):
+                self.chat.violations += 1
+            elif not fabricated:
+                self.chat.violations = 0
+            self._run_calls(calls, extra=self.sections["FABRICATED"] if fabricated else "")
             if self.state.failures_in_row >= MAX_FAILED_ROUNDS:
                 return self._end("BLOCKED", f"{MAX_FAILED_ROUNDS} tool rounds in a row failed")
+            if self.denied_rounds >= MAX_DENIED_ROUNDS:
+                why = f": {self.denied_reason}" if self.denied_reason else ""
+                return self._end("BLOCKED", f"the user denied the tool calls of {self.denied_rounds} replies in a row{why}")
+            return None
+        if fabricated and not status:
+            self._send_message("FABRICATED")
+            self.last_failed = True
             return None
         if status in {"FAILED", "BLOCKED"} and _refuses(reply):
             return self._refuse(reply)
         if status:
+            self.chat.violations = 0
             return self._finish(status, reply=reply)
         if _no_edit_needed(reply):
             return self._finish("COMPLETED", unchanged_ok=True)
-        if _answer_only(self.task):
+        if answer_task:
             if _refuses(reply) or _asks_user(reply) or _only_promises(reply):
                 self.refusals += 1
                 if self.refusals > MAX_REFUSALS:
@@ -1036,23 +1660,35 @@ class _TaskRun:
                 _ui("note", "Still working on it.")
                 self._send_message("ANSWER")
                 return None
+            self.chat.violations = 0
             return self._finish("COMPLETED")
         if plan and self.plan_notes < 2:
             self.plan_notes += 1
             _ui("note", "About to make that change.")
             self._send_message("PLAN_NOTED")
             return None
+        question = _real_question(reply)
+        if question and self.ask is not None and self.questions < MAX_USER_QUESTIONS:
+            self.questions += 1
+            answer = (self.ask(question) or "").strip()
+            if answer:
+                self.chat.violations = 0
+                self._send_message("USER_ANSWER", answer=answer)
+                return None
         if _stalls(reply):
             if self.state.mutated and not self.last_failed and not _refuses(reply):
                 return self._finish("COMPLETED")
             return self._refuse(reply)
         if not self.tools_ran and self.nudges < 2:
             self.nudges += 1
+            if reply.strip().upper() != "READY":
+                self.chat.violations += 1
             _ui("note", "Still working on it.")
             self._send_message("NUDGE")
             return None
         if self.last_failed and self.recoveries < 2:
             self.recoveries += 1
+            self.chat.violations += 1
             _ui("note", "Picking up where it left off.")
             self._send_message("RECOVER")
             return None
@@ -1061,38 +1697,236 @@ class _TaskRun:
     def _refuse(self, reply: str) -> str | None:
         """Send a refusal back. FAILED/BLOCKED does not finish the task when the model only claims the tools are missing."""
         self.refusals += 1
+        self.chat.violations += 1
         if self.refusals > MAX_REFUSALS:
             return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
         _ui("note", "Still working on it.")
         self._send_message("RECOVER" if self.tools_ran else "NUDGE")
         return None
 
-    def _run_calls(self, calls: list[ToolCall]) -> None:
-        results: list[dict[str, Any]] = []
-        for call in calls:
+    # ----------------------------------------------------------------- running calls
+
+    def _run_calls(self, calls: list[ToolCall], *, extra: str = "") -> None:
+        """Run one reply's calls in order. Neighbouring read-only calls run side by side."""
+        signature = tuple(_call_key(call) for call in calls if not call.error)
+        extras = [extra] if extra else []
+        if self._is_loop(signature) and all((self.history.get(key) or {}).get("ok") for key in signature):
+            self.chat.violations += 1
+            _ui("note", "The same calls came back again. Not running them.")
+            results = [
+                {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": "not run: the same calls as your previous replies"}
+                for call in calls
+            ]
+            self.state.step += 1
+            self._send_results(results, extra="\n\n".join(extras + [fill(self.sections["LOOP"], count=str(LOOP_REPLIES))]))
+            return
+        slots: list[dict[str, Any] | None] = [None] * len(calls)
+        batch: list[tuple[int, ToolCall]] = []
+
+        def flush() -> None:
+            if len(batch) == 1:
+                index, call = batch[0]
+                slots[index] = self._execute_one(call)
+            elif batch:
+                for _, call in batch:
+                    _tool_start(call)
+                with ThreadPoolExecutor(max_workers=min(PARALLEL_WORKERS, len(batch))) as pool:
+                    futures = [
+                        (index, call, pool.submit(_execute, call.tool, call.arguments, self.ctx))
+                        for index, call in batch
+                    ]
+                    for index, call, future in futures:
+                        result = future.result()
+                        _tool_done(call, result)
+                        self._record(call, result)
+                        slots[index] = result
+            batch.clear()
+
+        denied = False
+        for index, call in enumerate(calls):
             if call.error:
-                results.append({"tool": call.tool, "ok": False, "error": call.error})
+                flush()
+                slots[index] = {"tool": call.tool, "ok": False, "error": call.error}
                 _ui("bad", _friendly_error(call.error))
                 continue
-            _ui("work", _activity(call))
-            result = _execute(call.tool, call.arguments, self.ctx)
-            if result.get("ok"):
-                self.tools_ran = True
-                if canonical_tool(call.tool) in MUTATING:
-                    self.check_passed = False
-            else:
-                self._note_failure(call, result)
-            _ui_result(result)
-            results.append(result)
+            repeat = self._repeat_result(call)
+            if repeat is not None:
+                flush()
+                _tool_start(call)
+                _tool_done(call, repeat)
+                slots[index] = repeat
+                continue
+            perm = self._permission(call)
+            kind = getattr(perm, "kind", "read") or "read"
+            if kind == "read" and canonical_tool(call.tool) in _PARALLEL_SAFE:
+                batch.append((index, call))
+                continue
+            flush()
+            key = _call_key(call)
+            if key in self.denials:
+                # Asked and denied already in this task: do not ask the user again.
+                reason = self.denials[key]
+                denied = True
+                error = (
+                    "not run: you already sent this exact call and the user denied it"
+                    + (f" ({reason})" if reason else "")
+                    + ". Do not send it again; change the approach or use ask_user"
+                )
+                result = {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": error, "denied": True}
+                _tool_start(call)
+                _tool_done(call, result)
+                slots[index] = result
+                continue
+            allowed, reason = self._approved(perm)
+            if not allowed:
+                denied = True
+                self.denials[key] = reason
+                if reason:
+                    self.denied_reason = reason
+                error = "denied by the user" + (f": {reason}" if reason else "")
+                result = {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": error, "denied": True}
+                _tool_done(call, result)
+                slots[index] = result
+                continue
+            slots[index] = self._execute_one(call)
+        flush()
+        results = [item for item in slots if item is not None]
         self.state.step += 1
-        self.last_failed = any(not item.get("ok") for item in results)
+        counted = [item for item in results if not item.get("denied")]
+        self.denied_rounds = self.denied_rounds + 1 if denied and not counted else 0
+        self.last_failed = any(not item.get("ok") for item in counted)
         if not self.last_failed:
             self.recoveries = 0
-        if results and all(not item.get("ok") for item in results):
+        if counted and all(not item.get("ok") for item in counted):
             self.state.failures_in_row += 1
-        else:
+        elif counted:
             self.state.failures_in_row = 0
-        self._send_results(results)
+        if denied:
+            extras.append(self.sections["DENIED"])
+        self._send_results(results, extra="\n\n".join(extras))
+
+    def _execute_one(self, call: ToolCall) -> dict[str, Any]:
+        _tool_start(call)
+        result = _execute(call.tool, call.arguments, self.ctx)
+        _tool_done(call, result)
+        self._record(call, result)
+        return result
+
+    def _permission(self, call: ToolCall) -> Any:
+        name = canonical_tool(call.tool)
+        check = getattr(agent_tools, "permission_for", None)
+        if check is None or not name:
+            return _Perm("read", _activity(call), "")
+        try:
+            return check(name, call.arguments, self.ctx)
+        except Exception as exc:  # a broken check must not let an edit through unasked
+            log.debug(f"permission check failed for {name}: {exc}")
+            if name in _read_only_tools():
+                return _Perm("read", _activity(call), "")
+            return _Perm("command" if name == "run_command" else "edit", _activity(call), "")
+
+    def _approved(self, perm: Any) -> tuple[bool, str]:
+        """Ask the user unless the call only reads, approvals are off, or it was always-allowed."""
+        kind = getattr(perm, "kind", "read") or "read"
+        if kind == "read" or self._approve_mode() == "auto":
+            return True, ""
+        key = getattr(perm, "key", "") or ""
+        rememberable = bool(key) and kind != "outside"
+        if rememberable and key in self.always:
+            return True, ""
+        decision, reason = _approve_prompt(perm)
+        if decision == "always":
+            if rememberable:
+                self.always.add(key)
+            return True, ""
+        if decision == "yes":
+            return True, ""
+        return False, (reason or "").strip()
+
+    def _approve_mode(self) -> str:
+        """The mode now. /permissions in the UI can flip it mid-session; that change wins."""
+        live = _ui_approve_mode()
+        if live in {"ask", "auto"} and live != self.ui_mode_at_start:
+            return live
+        return self.approve_mode
+
+    def _record(self, call: ToolCall, result: dict[str, Any]) -> None:
+        """Remember what this call did, so an identical repeat can be answered without running it."""
+        name = canonical_tool(call.tool) or call.tool
+        ok = bool(result.get("ok"))
+        if name == "run_command":
+            self.verified = True
+            self.last_output = str(result.get("output") or result.get("error") or "")[-1_500:]
+        if ok:
+            self.tools_ran = True
+            if name in MUTATING:
+                self.check_passed = False
+                self.verified = False
+            if name not in _read_only_tools():
+                self.world += 1
+        else:
+            self._note_failure(call, result)
+        key = _call_key(call)
+        previous = self.history.get(key)
+        same = previous is not None and previous["world"] == self.world and previous["ok"] == ok
+        self.history[key] = {
+            "world": self.world,
+            "ok": ok,
+            "count": previous["count"] + 1 if same else 1,
+            "fails": (previous["fails"] + 1 if same else 1) if not ok else 0,
+            "step": self.state.step,
+            "error": str(result.get("error") or ""),
+            "output": str(result.get("output") or ""),
+        }
+
+    def _repeat_result(self, call: ToolCall) -> dict[str, Any] | None:
+        """The answer to an identical call made when nothing has changed since, or None to run it.
+
+        A failed call is not run again (a command gets one retry); a
+        read-only call is not run a third time.
+        """
+        record = self.history.get(_call_key(call))
+        if record is None or record["world"] != self.world:
+            return None
+        name = canonical_tool(call.tool) or call.tool
+        if not record["ok"]:
+            if record["fails"] < (2 if name == "run_command" else 1):
+                return None
+            record["fails"] += 1
+            result: dict[str, Any] = {
+                "tool": name,
+                "ok": False,
+                "error": (
+                    f"{record['error'] or 'tool failed'}; not run again: this exact call already failed "
+                    f"at step {record['step']} and nothing has changed since. Change the arguments or take another approach"
+                ),
+            }
+            if record["output"]:
+                result["output"] = record["output"]
+            self._note_failure(call, result)
+            return result
+        if name in _read_only_tools() and name not in _POLLING and record["count"] >= MAX_SAME_CALL:
+            record["count"] += 1
+            return {
+                "tool": name,
+                "ok": True,
+                "output": (
+                    f"not run again: this exact call already ran {record['count'] - 1} times since the last change "
+                    f"(last at step {record['step']}) and its result is above. Use it, or do something different."
+                ),
+            }
+        return None
+
+    def _is_loop(self, signature: tuple[str, ...]) -> bool:
+        """True when this reply repeats the calls of the previous LOOP_REPLIES - 1 replies."""
+        polling = all(key.split(":", 1)[0] in _POLLING for key in signature)
+        self.signatures = (self.signatures + [signature])[-LOOP_REPLIES:]
+        if not signature or polling or len(self.signatures) < LOOP_REPLIES:
+            return False
+        if len(set(self.signatures)) == 1:
+            self.signatures = []
+            return True
+        return False
 
     def _note_failure(self, call: ToolCall, result: dict[str, Any]) -> None:
         key = call.tool + ":" + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
@@ -1126,6 +1960,8 @@ class _TaskRun:
             return ""
         return agent_edit.best_candidate(text, agent_edit.strip_read_prefix(old), context=15)
 
+    # ----------------------------------------------------------------- finishing
+
     def _finish(self, status: str, *, reply: str = "", unchanged_ok: bool = False) -> str | None:
         if status in {"FAILED", "BLOCKED"}:
             reason = _failure_reason(reply)
@@ -1139,18 +1975,28 @@ class _TaskRun:
         if status in _STATUS_OK:
             changed = self._files_changed()
             if changed and self.check_command and not self.check_passed:
-                if self.check_cycles >= MAX_CHECK_CYCLES:
-                    return self._end("FAILED", f"the check still fails: {self.check_command}")
-                self.check_cycles += 1
-                _ui("work", f"Checking with {_one_line(self.check_command, 60)}")
-                result = _execute("run_command", {"command": self.check_command}, self.ctx)
+                result = self._run_check()
                 if result.get("ok"):
                     self.check_passed = True
                     _ui("good", "The check passed.")
                 else:
+                    self.check_cycles += 1
+                    if self.check_cycles > MAX_CHECK_CYCLES:
+                        return self._end("FAILED", f"the check still fails: {self.check_command}")
                     _ui("bad", "The check failed. Sending the failure back.")
                     self._send_results([result], extra=self.sections["CHECK_FAILED"])
                     return None
+            elif (
+                changed
+                and not self.check_command
+                and not self.verified
+                and not self.verify_asked
+                and _has_checks(self.ctx.workspace)
+            ):
+                self.verify_asked = True
+                _ui("note", "Nothing was run after the edits. Asking for a check.")
+                self._send_message("VERIFY")
+                return None
             if (
                 not changed
                 and not unchanged_ok
@@ -1164,6 +2010,41 @@ class _TaskRun:
         self._show_disk_once()
         _print_status(status)
         return status
+
+    def _note_shell_change(self) -> None:
+        """After /shell, use the new shell and tell the model in the next message."""
+        take = getattr(globals().get("agent_ui"), "take_shell_change", None)
+        chosen = take() if callable(take) else None
+        if chosen is None:
+            return
+        self.ctx.shell = chosen
+        available = getattr(self.ctx.session, "available", None)
+        try:
+            preamble = agent_shell.shell_preamble(chosen, available)
+        except Exception:  # a stand-in shell without the usual fields
+            preamble = f"SHELL: {getattr(chosen, 'label', chosen)}."
+        label = getattr(chosen, "label", "") or str(chosen)
+        self.payload = f"Shell changed to {label}: {preamble}\n\n" + self.payload
+
+    def _run_check(self) -> dict[str, Any]:
+        """The project check. It always runs again after a change, with its own long timeout."""
+        _ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
+        call = ToolCall(
+            "run_command",
+            {"command": self.check_command, "timeout": self.check_timeout, "cwd": str(self.ctx.workspace)},
+        )
+        session = self.ctx.session
+        before = getattr(session, "cwd", None)
+        _tool_start(call)
+        try:
+            result = _execute(call.tool, call.arguments, self.ctx)
+        finally:
+            if before is not None:
+                # The check runs in the workspace and leaves the session's cwd where the model put it.
+                session.cwd = before
+        _tool_done(call, result)
+        self.last_output = str(result.get("output") or result.get("error") or "")[-1_500:]
+        return result
 
     def _files_changed(self) -> bool:
         """True when this task's bytes on disk differ from the pre-edit copies.
@@ -1192,8 +2073,9 @@ class _TaskRun:
             return
         _ui("good", "On disk, this task changed:")
         lines = diff.splitlines()
-        for line in lines[:_REVIEW_LINES]:
-            log.print_safe(f"  {line}", file=sys.stderr, flush=True)
+        if not _show_diff_in_ui(diff):
+            for line in lines[:_REVIEW_LINES]:
+                log.print_safe(f"  {line}", file=sys.stderr, flush=True)
         if len(lines) > _REVIEW_LINES:
             _ui("note", f"{len(lines) - _REVIEW_LINES} more lines in the diff")
 
@@ -1215,8 +2097,37 @@ class _TaskRun:
         _print_status(code)
         return code
 
+    # ----------------------------------------------------------------- messages
+
     def _state_text(self) -> str:
         return self.state.render(self.sections["STATE"])
+
+    def _resume_text(self) -> str:
+        """What a fresh chat needs to carry on: the task, progress, and the last result."""
+        lines = [self.sections["RESUME"], f"Task: {self.task.strip()}"]
+        if self.state.todos:
+            lines.append(
+                "Todos: " + "; ".join(f"[{item.get('status')}] {item.get('content')}" for item in self.state.todos[:12])
+            )
+        changed = ""
+        checkpoints = self.ctx.checkpoints
+        if checkpoints is not None and checkpoints.task_dir is not None:
+            changed = _diffstat(checkpoints.disk_diff() or "")
+        if not changed and self.state.edits:
+            changed = ", ".join(self.state.edits)
+        lines.append(f"Files changed in this task: {changed or 'none yet'}")
+        if self.state.reads:
+            lines.append("Files read: " + ", ".join(list(self.state.reads)[-12:]) + " (read again before editing)")
+        if self.findings:
+            lines.append("Your notes so far:\n- " + "\n- ".join(self.findings))
+        if self.state.last_command:
+            lines.append(f"Last command: {self.state.last_command} -> {self.state.last_exit}")
+            if self.last_output.strip():
+                lines.append("Its output ended with:\n" + self.last_output.strip())
+        if self.chat.history:
+            lines.append("Earlier tasks in this session: " + "; ".join(self.chat.history[-5:]))
+        lines.append("The latest message from the program follows.")
+        return "\n".join(lines)
 
     def _send_results(self, results: list[dict[str, Any]], *, extra: str = "") -> None:
         state_text = self._state_text()
@@ -1227,8 +2138,8 @@ class _TaskRun:
         self.payload = body + "\n\n" + state_text
         self.turns.append({"role": "tool", "content": self.payload})
 
-    def _send_message(self, section: str) -> None:
-        text = fill(self.sections[section], path=self.state.last_path or "path/to/file")
+    def _send_message(self, section: str, **values: str) -> None:
+        text = fill(self.sections[section], path=self.state.last_path or "path/to/file", **values)
         self.payload = text + "\n\n" + self._state_text()
         self.turns.append({"role": "user", "content": self.payload})
 
@@ -1249,72 +2160,102 @@ def run_agent_loop(
     check_command: str | None = None,
     shell: agent_shell.Shell | None = None,
     runner: Callable[..., Any] | None = None,
+    approve_mode: str = "ask",
+    session_shell: Any = None,
+    turns: list[dict[str, str]] | None = None,
+    ask_user: Callable[[str], str | None] | None = None,
+    settings: dict[str, Any] | None = None,
+    seed_first: bool = False,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
-    ``seed`` is sent first. Each task gets fresh working memory and an undo
-    checkpoint. COMPLETED, FINISHED, DONE, FAILED, BLOCKED, a direct answer to a
-    question, or a plain answer after a tool has run ends that task; the same
-    chat waits for the next one. An answer with tool_call blocks is shown and
-    the blocks still run.
+    ``seed`` (the instructions) goes in front of the first task, so the first
+    reply already works on it; ``seed_first`` sends it alone first instead.
+    Each task gets fresh working memory and an undo checkpoint. COMPLETED,
+    FINISHED, DONE, FAILED, BLOCKED, a direct answer to a question, or a plain
+    answer after a tool has run ends that task; the same chat waits for the
+    next one. Ctrl+C ends the running task as INTERRUPTED; ``/new`` starts a
+    new chat. ``turns`` (when given) is filled as the session goes.
+
+    ``settings`` keys: ``check_timeout`` (seconds, default 600),
+    ``compact_after_chars`` (default 300000), ``reply_retries`` (default 3).
     """
-    turns: list[dict[str, str]] = []
+    turns = turns if turns is not None else []
     reader = read_message or _read_message
     show = emit or _emit
+    ask = ask_user or (lambda question: _ask_user(question, None))
     sections = load_prompt_sections()
     workspace = Path(workspace).resolve()
     checkpoints = agent_edit.Checkpoints(cache_dir, workspace)
-    chosen = shell or agent_shell.detect_shell()
+    chosen = shell or getattr(session_shell, "shell", None) or agent_shell.detect_shell()
+    options = settings if isinstance(settings, dict) else {}
+    chat = _Chat(
+        session,
+        seed=seed or "",
+        retries=_int_setting(options, "reply_retries", DEFAULT_REPLY_RETRIES, 0),
+        compact_after=_int_setting(options, "compact_after_chars", DEFAULT_COMPACT_AFTER_CHARS, 10_000),
+    )
+    check_timeout = _int_setting(options, "check_timeout", DEFAULT_CHECK_TIMEOUT, 1)
+    always: set[str] = set()
+    ui_mode_at_start = _ui_approve_mode()
+    base = dict(
+        workspace=workspace,
+        index_path=index_path,
+        cache_dir=cache_dir,
+        max_chars=min(DEFAULT_TOOL_CHARS, max_result_chars),
+        runner=runner,
+        shell=chosen,
+        session=session_shell,
+        on_output=_tool_output,
+        ask_user=lambda question: ask(question) or "",
+    )
     outcome_code = "COMPLETED"
     if seed and seed.strip():
-        _seed_session(
-            session,
-            seed.strip(),
-            turns,
-            ctx=ToolContext(
-                workspace=workspace,
-                index_path=index_path,
-                cache_dir=cache_dir,
-                max_chars=min(DEFAULT_TOOL_CHARS, max_result_chars),
-                runner=runner,
-                shell=chosen,
-            ),
-            max_result_chars=max_result_chars,
-            show=show,
-        )
+        if seed_first:
+            _seed_session(
+                chat, seed.strip(), turns, ctx=_tool_context(**base), max_result_chars=max_result_chars, show=show
+            )
+        else:
+            chat.prefix = _without_ready(seed)
     pending = first_task.strip()
     announced = False
+    carry = ""
     while True:
         if not pending:
             if not announced:
                 _ui("note", "Ready. Type a task, or exit.")
                 announced = True
-            pending = reader() or ""
+            try:
+                pending = reader() or ""
+            except (KeyboardInterrupt, EOFError):
+                break
             if not pending.strip():
                 break
         task = pending.strip()
+        pending = ""
         if task.lower() == "/theme":
             from critique_bot.welcome import reopen_theme
 
             reopen_theme(workspace)
-            pending = ""
+            continue
+        if task.lower() == "/new":
+            if not chat.restart("you asked for one"):
+                _ui("note", "This chat page cannot open a new conversation; staying in this one.")
             continue
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
+        if chat.too_long():
+            chat.restart("the chat grew long")
         repo_map = _prepare_index(workspace, index_path, task)
+        if chat.map_sent:
+            repo_map = ""
+        elif repo_map.strip():
+            chat.map_sent = True
         checkpoints.start_task()
-        ctx = ToolContext(
-            workspace=workspace,
-            index_path=index_path,
-            cache_dir=cache_dir,
-            max_chars=min(DEFAULT_TOOL_CHARS, max_result_chars),
-            runner=runner,
-            state=TaskState(task=task),
-            checkpoints=checkpoints,
-            shell=chosen,
-        )
+        cancel = threading.Event()
+        ctx = _tool_context(**base, state=TaskState(task=task), checkpoints=checkpoints, cancel=cancel)
         run = _TaskRun(
-            session,
+            chat,
             task,
             ctx=ctx,
             sections=sections,
@@ -1323,12 +2264,93 @@ def run_agent_loop(
             max_rounds=max_rounds,
             max_result_chars=max_result_chars,
             check_command=check_command,
+            check_timeout=check_timeout,
+            approve_mode=approve_mode,
+            always=always,
+            ask=ask,
+            ui_mode_at_start=ui_mode_at_start,
         )
-        outcome_code = run.run(task_message(task, repo_map=repo_map))
-        pending = ""
+        message = task_message(task, repo_map=repo_map)
+        if carry:
+            message = carry + "\n\n" + message
+            carry = ""
+        try:
+            outcome_code = run.run(message)
+        except KeyboardInterrupt:
+            cancel.set()
+            _stop_background(session_shell)
+            try:
+                _stop_reply(chat.session)
+            except KeyboardInterrupt:  # a second Ctrl+C: skip it; the next send stops it
+                pass
+            outcome_code = "INTERRUPTED"
+            turns.append({"role": "assistant", "content": "INTERRUPTED by the user"})
+            _ui("bad", "Interrupted. The task stopped.")
+            try:
+                run._show_disk_once()
+            except Exception as exc:  # the diff is a courtesy; the prompt must come back
+                log.debug(f"diff after interrupt failed: {exc}")
+            _print_status(outcome_code)
+            carry = (
+                "The user interrupted the previous task. Stop working on it; "
+                "its last reply was not acted on. The new task follows."
+            )
+        chat.history.append(f"{_one_line(task, 80)} -> {outcome_code}")
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns
+
+
+def _show_diff_in_ui(diff: str) -> bool:
+    """Print the diff through the terminal UI's colored renderer. False when that is not available."""
+    ui = globals().get("agent_ui")
+    render = getattr(ui, "render_diff", None)
+    printer = getattr(ui, "_print", None)
+    if not callable(render) or not callable(printer):
+        return False
+    chunks: list[tuple[str, list[str]]] = []
+    lines = diff.splitlines()
+    for number, line in enumerate(lines):
+        if line.startswith("--- ") and number + 1 < len(lines) and lines[number + 1].startswith("+++ "):
+            name = re.sub(r"^\+\+\+ (?:b/)?", "", lines[number + 1]).strip()
+            if name == "/dev/null":
+                name = re.sub(r"^--- (?:a/)?", "", line).strip()
+            chunks.append((name, []))
+        if not chunks:
+            chunks.append(("", []))
+        chunks[-1][1].append(line)
+    try:
+        budget = _REVIEW_LINES
+        for name, body in chunks:
+            if budget <= 0:
+                break
+            rows = render("\n".join(body), max_lines=min(budget, 40))
+            if name:
+                _ui("good", name)
+            if rows:
+                printer(*rows, sep="\n")
+            budget -= len(rows) or 1
+    except Exception as exc:
+        log.debug(f"colored diff failed: {exc}")
+        return False
+    return True
+
+
+def _stop_background(session_shell: Any) -> None:
+    """Kill the commands still running in the shell session (Ctrl+C)."""
+    if session_shell is None:
+        return
+    try:
+        jobs = session_shell.jobs()
+    except Exception as exc:
+        log.debug(f"listing background jobs failed: {exc}")
+        return
+    for job in jobs or []:
+        if isinstance(job, dict) and job.get("running"):
+            try:
+                session_shell.kill_background(job.get("id"))
+            except Exception as exc:
+                log.debug(f"killing background job failed: {exc}")
 
 
 def _ensure_code_graph(workspace: Path) -> None:
@@ -1363,8 +2385,23 @@ def _prepare_index(workspace: Path, index_path: Path | None, task: str) -> str:
     return graph or mapped
 
 
+#: Tools the reply to the instructions may run before there is a task.
+_SEED_TOOLS = _PARALLEL_SAFE | {"skill", "code_graph"}
+
+
+def _seed_needs_approval(name: str, call: ToolCall, ctx: ToolContext) -> bool:
+    """True when a read-only call would still need the user (a path outside the workspace)."""
+    check = getattr(agent_tools, "permission_for", None)
+    if check is None:
+        return False
+    try:
+        return (getattr(check(name, call.arguments, ctx), "kind", "read") or "read") != "read"
+    except Exception:
+        return True
+
+
 def _seed_session(
-    session: Any,
+    chat: Any,
     seed: str,
     turns: list[dict[str, str]],
     *,
@@ -1372,13 +2409,23 @@ def _seed_session(
     max_result_chars: int,
     show: Callable[[str], None],
 ) -> None:
-    """Send the tool instructions once. Read-only tool calls in the reply still run."""
+    """Send the tool instructions alone. Read-only tool calls in the reply still run.
+
+    Nothing that changes files or runs a command runs before there is a
+    task, whatever name the model uses for it (write_file, patch, bash).
+    """
+    if not isinstance(chat, _Chat):
+        chat = _Chat(chat)
     _ui("note", "Getting ready.")
     payload = seed
     turns.append({"role": "user", "content": seed})
     for _ in range(3):
-        with log.loading("Thinking..."):
-            reply = session.send(payload)
+        try:
+            reply = chat.send(payload)
+        except _ProviderFailed as exc:
+            _ui("bad", str(exc))
+            return
+        reply, _fabricated = _cut_fabricated(reply)
         calls, unclosed = parse_tool_calls(reply)
         note = commentary(reply)
         if note and _status_code(note) is None and note.strip().upper() != "READY":
@@ -1386,7 +2433,7 @@ def _seed_session(
             if visible:
                 show(visible)
         turns.append({"role": "assistant", "content": reply})
-        if unclosed or _idle_tool_reply(getattr(session, "last_detail", None), reply):
+        if unclosed or _idle_tool_reply(chat.last_detail, reply):
             payload = format_tool_result(
                 {"tool": "", "ok": False, "error": "reply was truncated before the tool call closed; resend complete tool_call blocks"}
             )
@@ -1396,15 +2443,18 @@ def _seed_session(
             return
         results = []
         for call in calls:
+            name = canonical_tool(call.tool)
             if call.error:
                 results.append({"tool": call.tool, "ok": False, "error": call.error})
-            elif call.tool in MUTATING:
+            elif name and (name not in _SEED_TOOLS or _seed_needs_approval(name, call, ctx)):
                 results.append(
-                    {"tool": call.tool, "ok": False, "error": "no task yet; wait for the task before changing files"}
+                    {"tool": name, "ok": False, "error": "no task yet; wait for the task before changing files or running commands"}
                 )
             else:
-                _ui("work", _activity(call))
-                results.append(_execute(call.tool, call.arguments, ctx))
+                _tool_start(call)
+                result = _execute(call.tool, call.arguments, ctx)
+                _tool_done(call, result)
+                results.append(result)
         payload = _cap("\n".join(format_tool_result(item) for item in results), max_result_chars)
         turns.append({"role": "tool", "content": payload})
 
@@ -1417,12 +2467,14 @@ def run_agent(
     max_rounds: int | None,
     output_dir: Path | None,
     headed: bool,
+    approve_mode: str | None = None,
 ) -> int:
-    """Open the Edge session, run the tool loop, and write the transcript."""
-    from critique_bot.browser import BrowserError
-    from critique_bot.chat_client import ChatError
-    from critique_bot.provider import open_provider
+    """Open the Edge session, run the tool loop, and write the transcript.
 
+    ``approve_mode`` is ``"auto"`` (``--yes``) or ``"ask"``; ``None`` reads
+    ``"permissions"`` from ``.bot/settings.json``. The transcript is saved even
+    when Ctrl+C or an error ends the session.
+    """
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
@@ -1435,28 +2487,147 @@ def run_agent(
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
+    if approve_mode not in {"ask", "auto"}:
+        approve_mode = "auto" if settings.get("permissions") == "auto" else "ask"
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
-    shell = agent_shell.detect_shell()
-    seed = seed_message(home.root, instructions, shell=shell, notes=notes)
-    _ensure_code_graph(home.root)
+    _prewarm_shell_environment()
+    shell = agent_shell.detect_shell(preference=_shell_preference(settings))
+    available = _available_shells()
+    session_shell = _open_shell_session(home.root, shell, available)
+    agent_ui.configure(
+        workspace=home.root,
+        model=config.model or "",
+        shell=shell,
+        approve_mode=approve_mode,
+        theme=settings.get("theme") or "dark",
+        history_path=home.bot_dir / "history",
+        cache_dir=home.cache_dir,
+        session_shell=session_shell,
+        tools=ALLOWED_TOOLS,
+    )
+    agent_ui.welcome_header()
+    agent_ui.install_log_bridge()
+    seed = seed_message(home.root, instructions, shell=shell, notes=notes, available=available)
+    code = 1
+    try:
+        _ensure_code_graph(home.root)
+        code = _run_session(
+            config,
+            home,
+            task,
+            headed=headed,
+            loop_kwargs={
+                "workspace": home.root,
+                "index_path": home.index_path,
+                "cache_dir": home.cache_dir,
+                "max_rounds": max_rounds,
+                "max_result_chars": _result_budget(config, settings),
+                "seed": seed,
+                "outcome": outcome,
+                "check_command": check_command,
+                "shell": shell,
+                "approve_mode": approve_mode,
+                "session_shell": session_shell,
+                "turns": turns,
+                "settings": settings,
+                "ask_user": _ask_user,
+            },
+            turns=turns,
+        )
+    except KeyboardInterrupt:
+        outcome[:] = ["INTERRUPTED"]
+        agent_ui.shutdown()
+        _print_status("INTERRUPTED")
+        code = 130
+    finally:
+        agent_ui.shutdown()
+        if session_shell is not None:
+            try:
+                session_shell.close()
+            except Exception as exc:
+                log.warn(f"closing the shell session failed: {exc}")
+        _save_transcript(config, home, turns, started=started, output_dir=output_dir)
+    if code != 0:
+        return code
+    return 0 if outcome[-1] in _STATUS_OK else 1
+
+
+_SHELL_SETTINGS = ("auto", "pwsh", "powershell", "cmd", "bash", "sh", "zsh", "gitbash", "git-bash")
+
+
+def _shell_preference(settings: dict[str, Any]) -> str:
+    """The ``"shell"`` setting (auto, pwsh, powershell, cmd, bash, sh, zsh); auto when unset or unknown."""
+    value = str(settings.get("shell") or "auto").strip().lower()
+    if value not in _SHELL_SETTINGS:
+        log.warn(f'settings "shell": {value!r} is not one of {", ".join(_SHELL_SETTINGS[:7])}; using auto')
+        return "auto"
+    return value
+
+
+def _prewarm_shell_environment() -> None:
+    """Start reading the login-shell environment now, so the first command does not wait."""
+    try:
+        agent_shell.prewarm_login_environment()
+    except Exception as exc:  # noqa: BLE001
+        log.warn(f"login environment: {exc}")
+
+
+def _available_shells() -> dict[str, agent_shell.Shell]:
+    try:
+        return agent_shell.available_shells()
+    except Exception as exc:  # noqa: BLE001
+        log.warn(f"listing shells failed: {exc}")
+        return {}
+
+
+def _open_shell_session(
+    workspace: Path, shell: agent_shell.Shell, available: dict[str, agent_shell.Shell] | None = None
+) -> Any:
+    """A persistent ShellSession when agent_shell provides one, else ``None``."""
+    factory = getattr(agent_shell, "ShellSession", None)
+    if factory is None:
+        return None
+    try:
+        return factory(workspace, shell, available=available)
+    except Exception as exc:
+        log.warn(f"shell session unavailable: {exc}")
+        return None
+
+
+def _loop_kwargs(candidates: dict[str, Any]) -> dict[str, Any]:
+    """Only the keyword arguments ``run_agent_loop`` accepts (it gains new ones over time)."""
+    import inspect
+
+    try:
+        accepted = set(inspect.signature(run_agent_loop).parameters)
+    except (TypeError, ValueError):
+        return candidates
+    return {key: value for key, value in candidates.items() if key in accepted}
+
+
+def _run_session(
+    config: BotConfig,
+    home: BotHome,
+    task: str,
+    *,
+    headed: bool,
+    loop_kwargs: dict[str, Any],
+    turns: list[dict[str, str]],
+) -> int:
+    """One browser session. A Cloudflare block in headless mode retries once, headed."""
+    from critique_bot.browser import BrowserError
+    from critique_bot.chat_client import ChatError
+    from critique_bot.provider import open_provider
+
+    kwargs = _loop_kwargs(loop_kwargs)
     try:
         with open_provider(config, headed=headed) as provider:
             with provider.session() as session:
                 try:
-                    turns = run_agent_loop(
-                        session,
-                        workspace=home.root,
-                        index_path=home.index_path,
-                        cache_dir=home.cache_dir,
-                        first_task=task,
-                        max_rounds=max_rounds,
-                        max_result_chars=_result_budget(config, settings),
-                        seed=seed,
-                        outcome=outcome,
-                        check_command=check_command,
-                        shell=shell,
-                    )
+                    result = run_agent_loop(session, first_task=task, **kwargs)
+                    if "turns" not in kwargs and result is not turns:
+                        turns[:] = list(result or [])
                 except Exception:
                     page = getattr(session, "page", None)
                     if page is not None:
@@ -1467,28 +2638,36 @@ def run_agent(
     except ChatError as exc:
         if not headed and "Cloudflare" in str(exc):
             _ui("note", "The headless window was blocked. Opening a visible browser.")
-            return run_agent(
-                config,
-                home,
-                task,
-                max_rounds=max_rounds,
-                output_dir=output_dir,
-                headed=True,
-            )
+            return _run_session(config, home, task, headed=True, loop_kwargs=loop_kwargs, turns=turns)
         log.error(str(exc))
+        agent_ui.shutdown()
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except BrowserError as exc:
         log.error(str(exc))
+        agent_ui.shutdown()
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        raise
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
+        agent_ui.shutdown()
         print(f"error: unexpected failure: {exc}", file=sys.stderr)
         return 1
+    return 0
 
+
+def _save_transcript(
+    config: BotConfig,
+    home: BotHome,
+    turns: list[dict[str, str]],
+    *,
+    started: datetime,
+    output_dir: Path | None,
+) -> None:
     if not turns:
-        return 0
+        return
     finished = datetime.now(timezone.utc)
     body = format_transcript(turns)
     payload = {
@@ -1503,10 +2682,13 @@ def run_agent(
         "finished_at": isoformat(finished),
     }
     stamp = started.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
-    if output_dir is not None:
-        write_output(output_dir, body, payload, stem="agent", print_body=False)
-    return 0 if outcome[-1] in _STATUS_OK else 1
+    try:
+        write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
+        if output_dir is not None:
+            write_output(output_dir, body, payload, stem="agent", print_body=False)
+    except OSError as exc:
+        log.error(f"could not save the transcript: {exc}")
+        print(f"error: could not save the transcript: {exc}", file=sys.stderr)
 
 
 def _result_budget(config: BotConfig, settings: dict[str, Any]) -> int:
@@ -1529,6 +2711,8 @@ def format_transcript(turns: list[dict[str, str]]) -> str:
 
 
 # --------------------------------------------------------------------------- terminal output
+
+from critique_bot import agent_ui  # noqa: E402  (UI layer; kept with the terminal hooks)
 
 
 def _one_line(text: str, limit: int = 120) -> str:
@@ -1557,15 +2741,11 @@ def _ui(kind: str, message: str) -> None:
     message = _present_text(message)
     if not message:
         return
-    colors = {"task": "1", "note": "33", "work": "36", "good": "32", "bad": "31"}
-    line = _paint(_one_line(message), colors.get(kind, "0"))
-    log.print_safe(f"  {line}", file=sys.stderr, flush=True)
+    agent_ui.note(kind, _one_line(message, 160))
 
 
 def _print_status(code: str) -> None:
-    color = "1;32" if code in _STATUS_OK else "1;31"
-    log.print_safe(file=sys.stderr)
-    log.print_safe(_paint(code, color), file=sys.stderr, flush=True)
+    agent_ui.final_status(code, ok=code in _STATUS_OK)
 
 
 def _call_paths(call: ToolCall) -> str:
@@ -1610,6 +2790,8 @@ def _activity(call: ToolCall) -> str:
 
 def _friendly_error(error: str) -> str:
     text = error.lower()
+    if "denied" in text:
+        return "You denied that step."
     if "invalid tool json" in text or "delimiter" in text or "tool call" in text:
         return "That step wasn't readable. Trying again."
     if "same text" in text:
@@ -1643,33 +2825,37 @@ def _emit(text: str) -> None:
     visible = _present_text(text)
     if not visible:
         return
-    log.print_safe(log.paint(visible, log.MODEL_COLOR), flush=True)
-    log.print_safe(flush=True)
+    agent_ui.assistant(visible)
 
 
 def _read_message() -> str | None:
-    if not sys.stdin.isatty():
-        return None
-    chunks: list[str] = []
-    while True:
-        prefix = "You> " if not chunks else "... "
-        try:
-            line = input(prefix)
-        except EOFError:
-            print(flush=True)
-            if chunks:
-                return "\n".join(chunks).rstrip()
-            return None
-        except KeyboardInterrupt:
-            print(flush=True)
-            return None
-        if not chunks:
-            if not line.strip():
-                continue
-            if line.strip().lower() in _QUIT:
-                return None
-        if line.endswith("\\") and not line.endswith("\\\\"):
-            chunks.append(line[:-1])
-            continue
-        chunks.append(line)
-        return "\n".join(chunks).rstrip()
+    """The next task. ``None`` exits; ``"/new"`` (agent_ui.NEW_CHAT) asks for a fresh chat."""
+    return agent_ui.read_message()
+
+
+def _tool_start(call: ToolCall) -> None:
+    name = canonical_tool(call.tool) or call.tool
+    agent_ui.tool_start(name, call.arguments)
+
+
+def _tool_done(call: ToolCall, result: dict[str, Any]) -> None:
+    name = canonical_tool(call.tool) or call.tool
+    friendly = "" if result.get("ok") else _friendly_error(str(result.get("error") or "failed"))
+    agent_ui.tool_done(name, call.arguments, result, friendly=friendly)
+
+
+def _tool_output(text: str) -> None:
+    agent_ui.tool_output(text)
+
+
+def _waiting(active: bool, label: str = "Thinking") -> None:
+    agent_ui.waiting(active, label)
+
+
+def _approve_prompt(permission: Any) -> tuple[str, str]:
+    return agent_ui.approve(permission)
+
+
+def _ask_user(question: str, options: list[str] | None = None) -> str | None:
+    """Ask the person a question from the model. None when there is no terminal."""
+    return agent_ui.ask_question(_present_text(question), options)

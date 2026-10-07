@@ -30,6 +30,16 @@ _SETTLE_MAX_MS = 2_000
 # If the "generating" signal never clears while the text stays frozen, the
 # signal is lying to us; fall back to the idle heuristic instead of hanging.
 _SIGNAL_STALL_MS = 45_000
+# Longest single blocking Playwright wait while sending, so Ctrl+C lands promptly.
+_WAIT_SLICE_MS = 500
+# Before sending, how long a reply still being written may take to finish
+# before it is stopped. Typing over a live reply crosses the two answers.
+_PREVIOUS_REPLY_WAIT_MS = 20_000
+# After clicking stop, how long the generating signal may take to go away.
+_STOP_WAIT_MS = 10_000
+# How long the assistant message count must hold still after a stop, so a
+# stopped reply that renders late is counted as old, not taken as the answer.
+_COUNT_STABLE_MS = 1_000
 _FILL_DIRECT_MAX = 8_000
 _FILL_CHUNK = 12_000
 _FILL_SINGLE_EVAL_MAX = 48_000
@@ -560,7 +570,7 @@ def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
 
     log.debug(f"waiting up to {timeout_ms}ms for {what} ({locator.first})")
     try:
-        locator.first.wait_for(state="visible", timeout=timeout_ms)
+        _wait_for_sliced(locator.first, timeout_ms, PlaywrightTimeoutError)
     except PlaywrightTimeoutError as exc:
         hint = ""
         try:
@@ -575,6 +585,26 @@ def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
             f"timed out waiting for {what}: {locator.first}{extra}"
         ) from exc
     log.debug(f"{what} is visible")
+
+
+def _wait_for_sliced(target: Locator, timeout_ms: int, timeout_error: type[Exception]) -> None:
+    """``wait_for(visible)`` in short slices.
+
+    One long Playwright wait blocks the main thread, so Ctrl+C would not land
+    until it ends. Slices of ``_WAIT_SLICE_MS`` let it land within half a second.
+    """
+    if timeout_ms <= 0:
+        target.wait_for(state="visible", timeout=timeout_ms)
+        return
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        try:
+            target.wait_for(state="visible", timeout=max(1, min(_WAIT_SLICE_MS, remaining)))
+            return
+        except timeout_error:
+            if remaining <= _WAIT_SLICE_MS:
+                raise
 
 
 def _fill_prompt_via_dom(locator: Locator, text: str) -> None:
@@ -1229,6 +1259,153 @@ def _settle_ms(idle_ms: int) -> int:
     return max(min(idle_ms // 4, _SETTLE_MAX_MS), _SETTLE_MIN_MS)
 
 
+def _stop_selectors(selectors: Selectors) -> list[str]:
+    ordered = [selectors.stop_button] if selectors.stop_button else []
+    return ordered + [item for item in _STOP_BUTTON_SELECTORS if item != selectors.stop_button]
+
+
+def _click_stop(page: Page, selectors: Selectors) -> bool:
+    """Click the first visible stop control. False when none could be clicked."""
+    for selector in _stop_selectors(selectors):
+        try:
+            button = _last_visible(page.locator(selector))
+        except Exception:
+            continue
+        if button is None:
+            continue
+        try:
+            button.click(timeout=_WAIT_SLICE_MS * 4)
+            log.info(f"clicked stop control {selector!r}")
+            return True
+        except Exception as exc:
+            log.debug(f"stop control {selector!r} click failed: {exc}")
+    return False
+
+
+def _wait_generation_over(page: Page, selectors: Selectors, wait_ms: int) -> bool:
+    """Poll until no generating signal shows. False when it is still on at ``wait_ms``."""
+    deadline = time.monotonic() + wait_ms / 1000
+    while True:
+        generating, _signal = _stream_state(page, selectors)
+        if not generating:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(POLL_MS)
+
+
+def _stable_count(page: Page, selector: str, *, stable_ms: int = _COUNT_STABLE_MS) -> int:
+    """The assistant message count once it has held still for ``stable_ms`` (bounded)."""
+    messages = page.locator(selector)
+    count = _visible_count(messages)
+    since = time.monotonic()
+    deadline = since + max(stable_ms * 3, 1) / 1000
+    while time.monotonic() < deadline:
+        if (time.monotonic() - since) * 1000 >= stable_ms:
+            break
+        page.wait_for_timeout(POLL_MS)
+        now = _visible_count(messages)
+        if now != count:
+            count = now
+            since = time.monotonic()
+    return count
+
+
+def stop_generation(page: Page, selectors: Selectors, *, wait_ms: int = _STOP_WAIT_MS) -> bool:
+    """Stop a reply the page is still writing. True when one was running.
+
+    Clicks the stop control, waits (bounded) for the generating signal to go
+    away, and lets the page settle so the stopped reply has rendered before the
+    next send counts the messages. A page with no generating signal is left alone.
+    """
+    generating, signal = _stream_state(page, selectors)
+    if not generating:
+        return False
+    log.info(f"stopping the reply still being written (signal={signal})")
+    deadline = time.monotonic() + wait_ms / 1000
+    clicked = _click_stop(page, selectors)
+    stopped = _wait_generation_over(page, selectors, max(wait_ms // 2, POLL_MS))
+    if not stopped and time.monotonic() < deadline:
+        # The first click can land while the button is being swapped in.
+        clicked = _click_stop(page, selectors) or clicked
+        remaining = int((deadline - time.monotonic()) * 1000)
+        stopped = _wait_generation_over(page, selectors, max(remaining, POLL_MS))
+    if not clicked:
+        log.warn("the page is still generating but no stop control could be clicked")
+    if not stopped:
+        log.warn(f"the reply was still generating {wait_ms}ms after asking it to stop")
+    # A stopped reply can render a moment later; let the count settle so the
+    # next send does not take it as its own answer.
+    _stable_count(page, selectors.assistant_messages)
+    return True
+
+
+def _ensure_idle(page: Page, selectors: Selectors, wait_ms: int = _PREVIOUS_REPLY_WAIT_MS) -> bool:
+    """Before a send: let a reply still being written finish, else stop it.
+
+    True when the page was busy, so the caller should recount messages.
+    """
+    generating, signal = _stream_state(page, selectors)
+    if not generating:
+        return False
+    log.info(f"the previous reply is still being written (signal={signal}); waiting up to {wait_ms}ms")
+    if not _wait_generation_over(page, selectors, wait_ms):
+        stop_generation(page, selectors)
+    return True
+
+
+def _continue_cut_reply(
+    page: Page,
+    selectors: Selectors,
+    text: str,
+    *,
+    timeout_ms: int,
+    idle_ms: int,
+    detail: dict[str, object] | None,
+) -> str:
+    """Click a configured "Continue generating" control once and merge the rest.
+
+    Only when ``selectors.continue_button`` is set and visible, and only when the
+    page starts generating again after the click; otherwise ``text`` is kept.
+    """
+    selector = selectors.continue_button
+    if not selector:
+        return text
+    try:
+        button = _last_visible(page.locator(selector))
+    except Exception:
+        button = None
+    if button is None:
+        return text
+    messages = page.locator(selectors.assistant_messages)
+    before = _visible_count(messages)
+    try:
+        button.click(timeout=_WAIT_SLICE_MS * 4)
+    except Exception as exc:
+        log.debug(f"continue control click failed: {exc}")
+        return text
+    log.info("the reply was cut off; clicked the continue control once")
+    deadline = time.monotonic() + _STOP_WAIT_MS / 1000
+    while not _stream_state(page, selectors)[0] and _visible_count(messages) <= before:
+        if time.monotonic() >= deadline:
+            log.warn("the page did not resume after the continue click; keeping the cut reply")
+            return text
+        page.wait_for_timeout(POLL_MS)
+    more = _wait_for_reply(
+        page,
+        selectors.assistant_messages,
+        previous_count=before - 1,
+        timeout_ms=timeout_ms,
+        idle_ms=idle_ms,
+        selectors=selectors,
+        detail=detail,
+    )
+    head = text.strip()
+    if not head or more.startswith(head[: min(len(head), 200)]):
+        return more  # the same bubble grew
+    return head + "\n" + more
+
+
 def _wait_for_reply(
     page: Page,
     selector: str,
@@ -1443,7 +1620,15 @@ def send_turn(
     """
     selectors = config.selectors
     timeout_ms = config.timeout_ms
-    previous_count = _visible_count(page.locator(selectors.assistant_messages))
+    if detail is None:
+        detail = {}
+    # Count only once nothing is being written: a reply that is still
+    # streaming (or a stopped one that renders late) belongs to an earlier
+    # send and must never be taken as this one's answer.
+    if _ensure_idle(page, selectors):
+        previous_count = _stable_count(page, selectors.assistant_messages)
+    else:
+        previous_count = _visible_count(page.locator(selectors.assistant_messages))
     log.info(
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
@@ -1461,6 +1646,10 @@ def send_turn(
             selectors=selectors,
             detail=detail,
         )
+        if detail.get("completion") == COMPLETION_STOPPED:
+            reply = _continue_cut_reply(
+                page, selectors, reply, timeout_ms=timeout_ms, idle_ms=config.idle_ms, detail=detail
+            )
     log.info(f"captured reply ({len(reply)} chars)")
     return reply
 

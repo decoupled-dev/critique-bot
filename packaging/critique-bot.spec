@@ -9,7 +9,7 @@ Build from the repo root:
 from pathlib import Path
 
 from PyInstaller.compat import is_win
-from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).resolve().parent
 
@@ -24,6 +24,9 @@ for package in ("playwright", "pyee"):
     hiddenimports += pkg_hidden
 
 binaries += collect_dynamic_libs("greenlet")
+# rich loads unicode tables and pygments lexers/styles by name at runtime.
+for package in ("rich", "pygments", "prompt_toolkit"):
+    hiddenimports += collect_submodules(package)
 datas += copy_metadata("playwright")
 datas += copy_metadata("greenlet")
 
@@ -67,6 +70,8 @@ a = Analysis(
         "critique_bot.worker",
         "critique_bot.agent",
         "critique_bot.agent_cli",
+        "critique_bot.agent_ui",
+        "critique_bot.welcome",
         "critique_bot.bot_home",
         "critique_bot.code_index",
         "playwright.sync_api",

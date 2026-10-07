@@ -185,7 +185,7 @@ def render_welcome(*, cursor: int, committed: int, syntax: bool) -> str:
 
     theme = THEMES[cursor]
     lines = [
-        _fg(212, 132, 106) + f"Welcome to {COMMAND} v{__version__}" + _RESET,
+        _fg(217, 119, 87) + "✻ " + _RESET + _BOLD + f"Welcome to {COMMAND}" + _RESET + _DIM + f" v{__version__}" + _RESET,
         _DIM + ("·" * 48) + _RESET,
         "",
         *_art_lines(),
@@ -434,14 +434,30 @@ def _read_key_posix() -> str:
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
-            if select.select([sys.stdin], [], [], 0.05)[0]:
-                nxt = sys.stdin.read(1)
-                if nxt == "[" and select.select([sys.stdin], [], [], 0.05)[0]:
-                    arrow = sys.stdin.read(1)
-                    return {"A": "up", "B": "down"}.get(arrow, "")
-            return "cancel"
-        return _map_key(ch)
+        return _decode_key(lambda: _read_byte(fd), lambda: bool(select.select([fd], [], [], 0.05)[0]))
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _read_byte(fd: int) -> str:
+    """One byte straight from the descriptor.
+
+    ``sys.stdin.read(1)`` would pull the whole escape sequence into Python's
+    buffer, and ``select`` on the descriptor would then see nothing left, so
+    an arrow key looked like a lone Esc (cancel).
+    """
+    data = os.read(fd, 1)
+    return data.decode("latin-1") if data else ""
+
+
+def _decode_key(read: Callable[[], str], ready: Callable[[], bool]) -> str:
+    ch = read()
+    if ch != "\x1b":
+        return _map_key(ch)
+    if not ready():
+        return "cancel"
+    nxt = read()
+    if nxt not in {"[", "O"} or not ready():
+        return ""
+    arrow = read()
+    return {"A": "up", "B": "down"}.get(arrow, "")

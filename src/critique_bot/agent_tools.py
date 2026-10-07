@@ -1,20 +1,35 @@
 """Tool handlers for the local agent and the per-task working memory.
 
 Every handler takes the parsed arguments and a :class:`ToolContext` and
-returns ``{"tool", "ok", "output"/"error"}``. Output is bounded so one call
-cannot push the task out of the chat's view.
+returns ``{"tool", "ok", "output"/"error"}`` plus a ``"ui"`` dict for the
+terminal (``summary``, ``diff``, ``lines``). Output is bounded so one call
+cannot push the task out of the chat's view. :func:`permission_for` says what
+the user must approve before a call runs.
+
+The model behind the chat sends imperfect calls: other tools' argument names,
+``./`` or backslash paths, numbers and booleans as strings, and lists as JSON
+text. :func:`normalize_args` and :func:`resolve` accept all of those.
 """
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
+import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -40,8 +55,32 @@ ALLOWED_TOOLS = (
     "todo",
     "skill",
     "code_graph",
+    "move_file",
+    "web_fetch",
+    "ask_user",
+    "command_output",
+    "kill_command",
 )
-MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch"})
+MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
+READ_ONLY = frozenset(
+    {
+        "list_files",
+        "find_files",
+        "read_files",
+        "search_code",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "todo",
+        "skill",
+        "code_graph",
+        "ask_user",
+        "command_output",
+        "kill_command",
+    }
+)
+SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
 
 DEFAULT_TOOL_CHARS = 16_000
 DEFAULT_COMMAND_TIMEOUT = 120
@@ -54,6 +93,13 @@ MAX_LIST_ENTRIES = 2_000
 SNIPPET_CHARS = 200
 HITS_PER_FILE = 5
 _SCAN_MAX_BYTES = 1_000_000
+_SCAN_LINE_CHARS = 2_000
+_SCAN_SECONDS = 20.0
+MAX_READ_PATHS = 20
+FETCH_TIMEOUT = 20.0
+FETCH_MAX_BYTES = 2_000_000
+FETCH_MAX_REDIRECTS = 5
+DEFAULT_FETCH_CHARS = 12_000
 _CASE_FOLD = sys.platform == "win32"
 
 
@@ -160,28 +206,93 @@ class ToolContext:
     state: TaskState | None = None
     checkpoints: agent_edit.Checkpoints | None = None
     shell: agent_shell.Shell | None = None
+    session: Any = None  # agent_shell.ShellSession
+    on_output: Callable[[str], None] | None = None
+    ask_user: Callable[[str], str] | None = None
+    cancel: threading.Event | None = None
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
+
+
+@dataclass
+class Permission:
+    """What a call needs from the user before it runs.
+
+    ``kind`` is read, edit, command, network, or outside. ``key`` is what an
+    "always allow" answer remembers; an empty key is never remembered.
+    """
+
+    kind: str
+    summary: str
+    key: str
+    detail: str = ""
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
     canonical = canonical_tool(name)
     if not canonical:
         hint = _did_you_mean(name)
+        error = "unknown tool" + (f"; did you mean {hint}?" if hint else "")
         return {
             "tool": name,
             "ok": False,
-            "error": "unknown tool" + (f"; did you mean {hint}?" if hint else ""),
+            "error": error,
             "allowed": list(ALLOWED_TOOLS),
+            "ui": _ui(f"Unknown tool {name}"),
         }
-    args = normalize_args(canonical, arguments if isinstance(arguments, dict) else {})
+    args = normalize_args(canonical, arguments if isinstance(arguments, (dict, str)) else {})
     try:
         result = _HANDLERS[canonical](args, ctx)
     except Exception as exc:  # a tool bug must come back as a result, not end the task
-        return {"tool": canonical, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        result = {"tool": canonical, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
     result.setdefault("tool", canonical)
+    if "ui" not in result:
+        result["ui"] = _default_ui(canonical, result)
     return result
+
+
+def _ui(summary: str, diff: str | None = None, lines: list[str] | None = None) -> dict[str, Any]:
+    return {"summary": summary, "diff": diff or None, "lines": lines or None}
+
+
+def _preview(text: str, count: int = 5, *, tail: bool = False) -> list[str] | None:
+    rows = [line for line in str(text or "").split("\n") if line.strip()]
+    if not rows:
+        return None
+    picked = rows[-count:] if tail else rows[:count]
+    return [_one_line(line, 160) for line in picked]
+
+
+def _default_ui(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    output = str(result.get("output") or "")
+    if not result.get("ok"):
+        return _ui("Error: " + _one_line(str(result.get("error") or "failed"), 140), lines=_preview(output, 3))
+    label = name.replace("_", " ")
+    if name == "read_files":
+        count = sum(1 for line in output.split("\n") if _NUMBERED_RE.match(line))
+        return _ui(f"Read {count} lines")
+    if name == "todo":
+        rows = [line for line in output.split("\n") if line.strip() and line != "no todos"]
+        return _ui(f"Todos ({len(rows)})", lines=rows[:8])
+    if name == "skill":
+        return _ui("Loaded skill" if "\n" in output else "Listed skills", lines=_preview(output, 3))
+    if name == "code_graph":
+        return _ui("Queried code graph", lines=_preview(output, 3))
+    if name.startswith("git_"):
+        body = output.split("\n", 1)[1] if output.startswith("exit ") and "\n" in output else output
+        return _ui(f"Ran git {name[4:]}", lines=_preview(body))
+    return _ui(f"Ran {label}", lines=_preview(output))
+
+
+def _diff_counts(diff: str) -> tuple[int, int]:
+    added = removed = 0
+    for line in diff.split("\n"):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return added, removed
 
 
 _ALIASES = {
@@ -215,48 +326,246 @@ _ALIASES = {
     "codegraph_explore": "code_graph",
     "graphify": "code_graph",
     "query_graph": "code_graph",
+    "mv": "move_file",
+    "move": "move_file",
+    "rename_file": "move_file",
+    "rename": "move_file",
+    "fetch": "web_fetch",
+    "webfetch": "web_fetch",
+    "web": "web_fetch",
+    "ask": "ask_user",
+    "question": "ask_user",
+    "ask_question": "ask_user",
+    "bash_output": "command_output",
+    "bashoutput": "command_output",
+    "get_output": "command_output",
+    "kill_shell": "kill_command",
+    "killshell": "kill_command",
+    "kill": "kill_command",
 }
 
 
 def canonical_tool(name: str) -> str:
     """The tool that actually runs. OpenCode names map onto these."""
-    key = str(name).strip()
+    key = str(name).strip().strip("`\"'")
     if key in ALLOWED_TOOLS:
         return key
-    return _ALIASES.get(key.lower(), "")
+    lowered = key.lower().replace("-", "_")
+    if lowered in ALLOWED_TOOLS:
+        return lowered
+    return _ALIASES.get(lowered, "") or _ALIASES.get(lowered.replace("_", ""), "")
 
 
-def normalize_args(tool: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Accept the argument names OpenCode and similar agents send."""
+_BOOL_KEYS = frozenset(
+    {
+        "overwrite", "replace_all", "force", "literal", "fixed_strings", "case_insensitive",
+        "staged", "stat", "background", "run_in_background", "create_dirs",
+    }
+)
+_NUMBER_KEYS = frozenset(
+    {
+        "offset", "limit", "count", "end_line", "start_line", "line", "max_entries", "depth",
+        "head_limit", "context", "timeout", "max_chars", "wait", "lines",
+    }
+)
+_JSON_KEYS = frozenset({"paths", "files", "edits", "todos", "items", "options", "arguments", "args"})
+_TRUE = {"true", "yes", "y", "1", "on"}
+_FALSE = {"false", "no", "n", "0", "off", "none", "null", ""}
+
+
+def _coerce_bool(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
+        return value.strip().lower() in _TRUE
+    return value
+
+
+def _coerce_number(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        scale = 1.0
+        if text.endswith("ms"):
+            text, scale = text[:-2], 0.001
+        elif text.endswith("s"):
+            text = text[:-1]
+        try:
+            number = float(text.strip()) * scale
+        except ValueError:
+            return value
+        return int(number) if number.is_integer() else number
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _maybe_json(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] in "[{" and text[-1:] in "]}":
+            try:
+                return json.loads(text)
+            except ValueError:
+                return value
+    return value
+
+
+def normalize_args(tool: str, args: dict[str, Any] | str) -> dict[str, Any]:
+    """Accept the argument names and shapes OpenCode, Claude Code, and a chat model send.
+
+    Nested ``arguments``/``input`` objects are unwrapped, JSON text in a list
+    field is parsed, ``"true"``/``"12"`` become a bool/number, and the other
+    tools' names for the same argument are mapped.
+    """
+    if isinstance(args, str):
+        parsed = _maybe_json(args)
+        args = parsed if isinstance(parsed, dict) else ({"command": args} if tool == "run_command" else {"path": args})
     out = dict(args)
+    for wrapper in ("arguments", "args", "input", "parameters", "params"):
+        inner = _maybe_json(out.get(wrapper))
+        if isinstance(inner, dict) and len(out) == 1:
+            out = dict(inner)
+            break
+    for key in list(out):
+        if key in _JSON_KEYS:
+            out[key] = _maybe_json(out[key])
+        elif key in _BOOL_KEYS:
+            out[key] = _coerce_bool(out[key])
+        elif key in _NUMBER_KEYS:
+            out[key] = _coerce_number(out[key])
     for src, dest in (
         ("filePath", "path"),
         ("file_path", "path"),
+        ("filepath", "path"),
+        ("filename", "path"),
+        ("file", "path"),
         ("workdir", "cwd"),
         ("working_directory", "cwd"),
+        ("workingDirectory", "cwd"),
+        ("dir", "cwd") if tool == "run_command" else ("dir", "path"),
+        ("directory", "cwd") if tool == "run_command" else ("directory", "path"),
+        ("folder", "path"),
     ):
         if dest not in out and src in out:
             out[dest] = out[src]
+    if isinstance(out.get("path"), list) and "paths" not in out:
+        out["paths"] = out.pop("path")
     if tool == "edit_file":
-        for src, dest in (("oldString", "old_string"), ("newString", "new_string"), ("replaceAll", "replace_all")):
+        for src, dest in (
+            ("oldString", "old_string"), ("newString", "new_string"), ("replaceAll", "replace_all"),
+            ("old_str", "old_string"), ("new_str", "new_string"), ("search", "old_string"), ("replace", "new_string"),
+        ):
             if dest not in out and src in out:
                 out[dest] = out[src]
-    if tool == "write_files" and "contents" not in out and "content" in out:
-        out["contents"] = out["content"]
+        if isinstance(out.get("edits"), list):
+            out["edits"] = [_normalize_edit(item) for item in out["edits"]]
+        if "replace_all" in out:
+            out["replace_all"] = _coerce_bool(out["replace_all"])
+    if tool == "write_files":
+        if "contents" not in out:
+            for src in ("content", "text", "body", "data"):
+                if src in out:
+                    out["contents"] = out[src]
+                    break
+        if isinstance(out.get("files"), dict):
+            files = out["files"]
+            out["files"] = [files] if "path" in files or "filePath" in files else [
+                {"path": key, "contents": value} for key, value in files.items()
+            ]
+        if isinstance(out.get("files"), list):
+            out["files"] = [_normalize_file(item) for item in out["files"]]
     if tool == "search_code":
         if "glob" not in out and isinstance(out.get("include"), str):
             out["glob"] = out["include"]
-        if "case_insensitive" not in out and "caseSensitive" in out:
-            out["case_insensitive"] = not bool(out["caseSensitive"])
+        if "pattern" not in out:
+            for src in ("query", "regex", "text", "search"):
+                if isinstance(out.get(src), str):
+                    out["pattern"] = out[src]
+                    break
+        if "case_insensitive" not in out:
+            if "caseSensitive" in out:
+                out["case_insensitive"] = not _coerce_bool(out["caseSensitive"])
+            elif "-i" in out:
+                out["case_insensitive"] = _coerce_bool(out["-i"])
+    if tool == "read_files" and "paths" not in out and isinstance(out.get("files"), list):
+        out["paths"] = out["files"]
     if tool == "run_command":
+        if "command" not in out:
+            for src in ("cmd", "script", "commands"):
+                if src in out:
+                    value = out[src]
+                    out["command"] = "\n".join(map(str, value)) if isinstance(value, list) else value
+                    break
+        if "background" not in out and "run_in_background" in out:
+            out["background"] = out["run_in_background"]
         timeout = out.get("timeout")
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > MAX_COMMAND_TIMEOUT:
             out["timeout"] = float(timeout) / 1000.0
-    if tool == "git_show" and "rev" not in out and "commit" in out:
-        out["rev"] = out["commit"]
+    if tool in {"command_output", "kill_command"}:
+        for src in ("job_id", "id", "bash_id", "shell_id", "job"):
+            if src in out and "job_id" not in out:
+                out["job_id"] = str(out[src])
+    if tool == "move_file":
+        for src in ("source", "src", "from", "old_path", "oldPath"):
+            if "path" not in out and src in out:
+                out["path"] = out[src]
+        for src in ("dest", "to", "target", "new_path", "newPath", "destination_path"):
+            if "destination" not in out and src in out:
+                out["destination"] = out[src]
+    if tool == "web_fetch":
+        for src in ("uri", "link", "href", "address"):
+            if "url" not in out and src in out:
+                out["url"] = out[src]
+        if "max_chars" not in out and "limit" in out:
+            out["max_chars"] = out["limit"]
+        if "max_chars" in out:
+            out["max_chars"] = _coerce_number(out["max_chars"])
+    if tool == "ask_user":
+        for src in ("prompt", "text", "message", "q"):
+            if "question" not in out and src in out:
+                out["question"] = out[src]
+        for src in ("choices", "answers"):
+            if "options" not in out and src in out:
+                out["options"] = _maybe_json(out[src])
+    if tool == "git_show" and "rev" not in out:
+        for src in ("commit", "ref", "sha", "revision"):
+            if src in out:
+                out["rev"] = out[src]
+                break
+    if tool == "git_show" and "patch" in out:
+        out["patch"] = _coerce_bool(out["patch"])
     if tool == "skill" and "name" not in out and "skill" in out:
         out["name"] = out["skill"]
     return out
+
+
+def _normalize_edit(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    edit = dict(item)
+    for src, dest in (
+        ("oldString", "old_string"), ("newString", "new_string"), ("replaceAll", "replace_all"),
+        ("old_str", "old_string"), ("new_str", "new_string"), ("old", "old_string"), ("new", "new_string"),
+        ("search", "old_string"), ("replace", "new_string"),
+    ):
+        if dest not in edit and src in edit:
+            edit[dest] = edit[src]
+    if "replace_all" in edit:
+        edit["replace_all"] = _coerce_bool(edit["replace_all"])
+    return edit
+
+
+def _normalize_file(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    entry = dict(item)
+    for src in ("filePath", "file_path", "filename", "file", "name"):
+        if "path" not in entry and src in entry:
+            entry["path"] = entry[src]
+    for src in ("content", "text", "body", "data"):
+        if "contents" not in entry and src in entry:
+            entry["contents"] = entry[src]
+    if "overwrite" in entry:
+        entry["overwrite"] = _coerce_bool(entry["overwrite"])
+    return entry
 
 
 def _did_you_mean(name: str) -> str:
@@ -272,15 +581,101 @@ def _did_you_mean(name: str) -> str:
 # --------------------------------------------------------------------------- paths
 
 
-def resolve(workspace: Path, raw: str) -> Path:
-    path = Path(str(raw).strip().strip('"').strip("'"))
-    if not path.is_absolute():
-        path = workspace / path
-    return path.resolve()
+def clean_path(raw: Any) -> str:
+    """Undo the usual ways a chat model mangles a path.
+
+    Surrounding quotes, backticks, and spaces; ``file://`` URLs; ``@`` and
+    ``./`` prefixes; trailing slashes; and, off Windows, backslashes.
+    """
+    text = str(raw if raw is not None else "").strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'`":
+        text = text[1:-1].strip()
+    text = text.strip("`").strip()
+    if text.lower().startswith("file://"):
+        text = urllib.parse.unquote(text[7:])
+        if re.match(r"^/[A-Za-z]:[/\\]", text):
+            text = text[1:]
+    if text.startswith("@") and len(text) > 1:
+        text = text[1:]
+    if os.sep == "/" and "\\" in text and not re.match(r"^[A-Za-z]:", text):
+        text = text.replace("\\", "/")
+    while text.startswith(("./", ".\\")) and len(text) > 2:
+        text = text[2:]
+    if text not in {"/", "\\"} and len(text) > 1:
+        text = text.rstrip("/\\") or text
+    return text or "."
+
+
+_LINE_SUFFIX_RE = re.compile(r"^(.+\.\w+)(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?(?:-\d+)?)$")
+
+
+def resolve(workspace: Path, raw: Any, *, follow: bool = True) -> Path:
+    """Absolute path for ``raw``, following symbolic links (``follow`` False keeps a final link).
+
+    Relative paths are under the workspace. A rooted path that does not
+    exist but names a file under the workspace (``/src/app.py``) is taken as
+    workspace-relative, and so is a path that starts with the workspace's own
+    folder name. Paths outside stay outside: :func:`permission_for` gates them.
+    """
+    workspace = Path(workspace)
+    text = clean_path(raw)
+    path = _resolve_text(workspace, text, follow)
+    if not os.path.lexists(path):
+        suffix = _LINE_SUFFIX_RE.match(text)
+        if suffix:
+            stripped = _resolve_text(workspace, suffix.group(1), follow)
+            if stripped.is_file():
+                return stripped
+    return path
+
+
+def _final(path: Path, follow: bool) -> Path:
+    path = Path(os.path.abspath(path))
+    if follow or not path.name:
+        return path.resolve()
+    return path.parent.resolve() / path.name
+
+
+def _resolve_text(workspace: Path, text: str, follow: bool = True) -> Path:
+    if text.startswith("~"):
+        text = os.path.expanduser(text)
+    path = Path(text)
+    rooted = path.is_absolute() or text[:1] in "/\\"
+    if not rooted:
+        parts = path.parts
+        if parts and parts[0] == workspace.name and not (workspace / text).exists():
+            rest = Path(*parts[1:]) if len(parts) > 1 else Path(".")
+            if (workspace / rest).exists():
+                return _final(workspace / rest, follow)
+        return _final(workspace / path, follow)
+    unc = text[:2] in ("//", "\\\\")
+    if not path.is_absolute() or (not os.path.lexists(path) and not unc and text[:1] in "/\\"):
+        inner = workspace / text.lstrip("/\\")
+        outer = Path(os.path.abspath(text))
+        if inner.exists() or inner.parent.exists() or not outer.parent.exists():
+            return _final(inner, follow)
+        if not path.is_absolute():
+            return _final(outer, follow)
+    return _final(path, follow)
+
+
+def inside(workspace: Path, path: Path) -> bool:
+    """True when ``path`` (already resolved) is the workspace or under it."""
+    try:
+        Path(path).relative_to(workspace)
+        return True
+    except ValueError:
+        pass
+    if _CASE_FOLD:
+        left = os.path.normcase(str(path))
+        root = os.path.normcase(str(workspace)).rstrip("\\/")
+        return left == root or left.startswith(root + os.sep)
+    return False
 
 
 def rel(workspace: Path, path: Path) -> str:
-    resolved = Path(path).resolve()
+    """Workspace-relative POSIX path, or the absolute path for a file outside."""
+    resolved = Path(os.path.abspath(path))
     try:
         return resolved.relative_to(workspace).as_posix()
     except ValueError:
@@ -385,14 +780,26 @@ def _cap(text: str, limit: int) -> str:
     return text[: max(0, limit - len(note))] + note
 
 
-def ok(name: str, output: str, ctx: ToolContext) -> dict[str, Any]:
-    return {"tool": name, "ok": True, "output": _cap(output, ctx.max_chars)}
+def ok(name: str, output: str, ctx: ToolContext, ui: dict[str, Any] | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"tool": name, "ok": True, "output": _cap(output, ctx.max_chars)}
+    if ui is not None:
+        result["ui"] = ui
+    return result
 
 
-def err(name: str, error: str, *, output: str = "", ctx: ToolContext | None = None) -> dict[str, Any]:
+def err(
+    name: str,
+    error: str,
+    *,
+    output: str = "",
+    ctx: ToolContext | None = None,
+    ui: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {"tool": name, "ok": False, "error": error}
     if output:
         result["output"] = _cap(output, ctx.max_chars) if ctx else output
+    if ui is not None:
+        result["ui"] = ui
     return result
 
 
@@ -406,7 +813,7 @@ def _int_arg(args: dict[str, Any], *names: str) -> int | None:
         value = args.get(name)
         if value is None or value == "":
             continue
-        return int(value)
+        return int(float(value))
     return None
 
 
@@ -431,15 +838,20 @@ def _list_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     max_entries = min(max(max_entries, 1), MAX_LIST_ENTRIES)
     depth = min(max(depth, 1), 4)
     if target.is_file():
-        return ok("list_files", f"f {rel(ctx.workspace, target)}", ctx)
+        return ok("list_files", f"f {rel(ctx.workspace, target)}", ctx, _ui("Listed 1 file"))
     recursive = bool(glob and ("**" in glob or "/" in glob))
     if recursive:
         files = [item for item in walk_files(ctx.workspace, target) if glob_match(item, glob)]
         rows = [f"f {item}" for item in files[:max_entries]]
         if len(files) > max_entries:
             rows.append(f"... {len(files) - max_entries} more; narrow path or glob")
-        return ok("list_files", "\n".join(rows) if rows else "(no files match)", ctx)
-    rows: list[str] = []
+        return ok(
+            "list_files",
+            "\n".join(rows) if rows else "(no files match)" + _name_hint(ctx, glob or ""),
+            ctx,
+            _ui(f"Listed {len(files)} files"),
+        )
+    rows = []
     total = 0
     for line in _tree(ctx.workspace, target, depth, glob):
         total += 1
@@ -448,7 +860,12 @@ def _list_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if total > max_entries:
         rows.append(f"... {total - max_entries} more; narrow path, glob, or depth")
     rows.append("Generated trees (out, build, prebuilts, intermediates, node_modules) are skipped.")
-    return ok("list_files", "\n".join(rows) if len(rows) > 1 else "(empty)", ctx)
+    return ok(
+        "list_files",
+        "\n".join(rows) if len(rows) > 1 else "(empty)",
+        ctx,
+        _ui(f"Listed {total} entries"),
+    )
 
 
 def _tree(workspace: Path, folder: Path, depth: int, glob: str | None, level: int = 0):
@@ -491,7 +908,7 @@ def _find_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         return err("find_files", "path must be a string")
     root = resolve(ctx.workspace, raw)
     if not root.exists():
-        return err("find_files", f"not found: {raw}")
+        return err("find_files", f"not found: {raw}" + _path_hint(ctx, raw))
     try:
         limit = min(max(int(args.get("limit") or args.get("head_limit") or 100), 1), 500)
     except (TypeError, ValueError):
@@ -511,7 +928,27 @@ def _find_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     rows = files[:limit]
     if len(files) > limit:
         rows.append(f"... {len(files) - limit} more; narrow the glob or path")
-    return ok("find_files", "\n".join(rows) if rows else "(no files match)", ctx)
+    if not rows:
+        return ok("find_files", "(no files match)" + _name_hint(ctx, pattern.strip()), ctx, _ui("Found 0 files"))
+    return ok("find_files", "\n".join(rows), ctx, _ui(f"Found {len(files)} files", lines=rows[:5]))
+
+
+def _name_hint(ctx: ToolContext, pattern: str) -> str:
+    """Names close to what a glob was after, for a search that found nothing."""
+    stem = re.sub(r"[*?\[\]{}]", "", pattern.replace("\\", "/").rsplit("/", 1)[-1]).strip(".").lower()
+    if len(stem) < 3:
+        return ""
+    files = walk_files(ctx.workspace, ctx.workspace)
+    names: dict[str, str] = {}
+    for item in files:
+        names.setdefault(item.rsplit("/", 1)[-1].lower(), item)
+    close = difflib.get_close_matches(stem, list(names), n=5, cutoff=0.6)
+    if not close:
+        base = stem.rsplit(".", 1)[0]
+        close = [name for name in names if base and base in name][:5]
+    if not close:
+        return ""
+    return "; similar names: " + ", ".join(names[name] for name in close)
 
 
 def _path_hint(ctx: ToolContext, raw: str) -> str:
@@ -535,11 +972,12 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if paths is None and args.get("path"):
         paths = [args.get("path")]
     if isinstance(paths, str):
-        paths = [paths]
+        paths = [part for part in re.split(r"[\n,]", paths) if part.strip()] if "\n" in paths else [paths]
     if symbol and isinstance(symbol, str):
-        return _read_symbol(symbol.strip(), paths[0] if paths else None, args, ctx)
+        first = paths[0] if paths else None
+        return _read_symbol(symbol.strip(), first.get("path") if isinstance(first, dict) else first, args, ctx)
     if not isinstance(paths, list) or not paths:
-        return err("read_files", "paths must be a list of files, or pass symbol")
+        return err("read_files", 'paths must be a list of files, for example {"paths": ["src/a.py"]}, or pass symbol')
     try:
         offset = _int_arg(args, "offset", "start_line", "line")
         limit = _int_arg(args, "limit", "count")
@@ -554,32 +992,80 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if limit is not None and limit < 1:
         return err("read_files", "limit must be at least 1")
     force = bool(args.get("force"))
-    budget = max(1500, min(MAX_READ_CHARS, ctx.max_chars // max(len(paths), 1)))
+    wanted = paths[:MAX_READ_PATHS]
+    budget = max(800, min(MAX_READ_CHARS, (ctx.max_chars - 200) // max(len(wanted), 1)))
     parts: list[str] = []
-    for raw in paths[:8]:
-        if not isinstance(raw, str):
+    for raw in wanted:
+        item_start, item_limit, item_explicit = start, limit, offset is not None
+        if isinstance(raw, dict):
+            try:
+                own_offset = _int_arg(raw, "offset", "start_line", "line")
+                own_limit = _int_arg(raw, "limit", "count")
+            except (TypeError, ValueError):
+                return err("read_files", "offset and limit must be integers")
+            if own_offset is not None:
+                item_start, item_explicit = max(1, own_offset), True
+            if own_limit is not None:
+                item_limit = max(1, own_limit)
+            raw = raw.get("path") or raw.get("file") or raw.get("filePath")
+        if not isinstance(raw, str) or not raw.strip():
             return err("read_files", "each path must be a string")
-        parts.append(_read_one(raw, start, limit, offset is not None, budget, force, ctx))
-    if len(paths) > 8:
-        parts.append(f"... {len(paths) - 8} more paths not read; read at most 8 per call")
-    return ok("read_files", "\n".join(parts), ctx)
+        parts.append(_read_one(raw, item_start, item_limit, item_explicit, budget, force, ctx))
+    if len(paths) > MAX_READ_PATHS:
+        parts.append(f"... {len(paths) - MAX_READ_PATHS} more paths not read; read at most {MAX_READ_PATHS} per call")
+    output = "\n".join(parts)
+    shown = sum(1 for line in output.split("\n") if _NUMBERED_RE.match(line))
+    files = sum(1 for line in output.split("\n") if line.startswith("--- "))
+    summary = f"Read {shown} lines" + (f" from {files} files" if files > 1 else "")
+    return ok("read_files", output, ctx, _ui(summary))
+
+
+_NUMBERED_RE = re.compile(r"^\d+\|")
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svgz", ".tif", ".tiff"}
+
+
+def _binary_note(path: Path, head: bytes) -> str:
+    """One line about a binary file instead of its bytes."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = len(head)
+    kind = path.suffix.lower().lstrip(".") or "binary"
+    detail = ""
+    if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+        detail = f", {int.from_bytes(head[16:20], 'big')}x{int.from_bytes(head[20:24], 'big')}"
+    elif head[:6] in (b"GIF87a", b"GIF89a") and len(head) >= 10:
+        detail = f", {int.from_bytes(head[6:8], 'little')}x{int.from_bytes(head[8:10], 'little')}"
+    what = "image" if path.suffix.lower() in _IMAGE_SUFFIXES or detail else "binary file"
+    return f"{what} ({kind}{detail}, {_size_text(size)}); contents not shown"
+
+
+def _size_text(size: int) -> str:
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext) -> str:
     path = resolve(ctx.workspace, raw)
     name = rel(ctx.workspace, path)
     if path.is_dir():
-        return f"--- {name} ---\nthat path is a folder; use list_files"
+        rows = list(_tree(ctx.workspace, path, 1, None))
+        listing = "\n".join(rows[:100]) or "(empty)"
+        if len(rows) > 100:
+            listing += f"\n... {len(rows) - 100} more; use list_files with a glob"
+        return f"--- {name}/ (a folder; its entries) ---\n{listing}"
     if not path.is_file():
         return f"--- {name} ---\nnot found: {raw}{_path_hint(ctx, raw)}"
-    if looks_binary_path(str(path)):
-        return f"--- {name} ---\nbinary file omitted"
     try:
-        head = path.read_bytes()[:8192]
+        with open(path, "rb") as handle:
+            head = handle.read(8192)
     except OSError as exc:
         return f"--- {name} ---\n{exc}"
-    if looks_binary_bytes(head):
-        return f"--- {name} ---\nbinary file omitted"
+    if looks_binary_path(str(path)) or looks_binary_bytes(head):
+        return f"--- {name} ---\n{_binary_note(path, head)}"
     loaded = agent_edit.load_text(path)
     lines = loaded.text.split("\n")
     if lines and lines[-1] == "":
@@ -700,14 +1186,14 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     lines: list[str] = []
     seen: set[tuple[str, int]] = set()
     if ctx.index_path is not None and (not literal or re.fullmatch(r"[\w.]+", pattern)):
-        symbol_pattern = re.escape(pattern) if literal else pattern
+        symbol_pattern = re.escape(pattern) if literal or risky_regex(pattern) else pattern
         for item in code_index.find_symbols(ctx.index_path, symbol_pattern, limit=min(limit, 20), path_prefix=prefix):
             if glob and not glob_match(item.path, glob):
                 continue
             signature = _one_line(item.signature, SNIPPET_CHARS)
             lines.append(f"{item.path}:{item.line}: {item.kind} {item.qualified} (lines {item.line}-{item.end_line}) {signature}".rstrip())
             seen.add((item.path, item.line))
-    hits, total, files_hit = _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern)
+    hits, total, files_hit = _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes)
     touched = set(ctx.state.reads) | set(ctx.state.edits) if ctx.state else set()
     order = sorted(hits, key=lambda item: (item not in touched, item.count("/"), item))
     shown = 0
@@ -727,7 +1213,23 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     body = "\n".join(lines) if lines else "(no matches)"
     if notes:
         body += "\n" + "\n".join(notes)
-    return ok("search_code", body, ctx)
+    found = sum(1 for line in lines if not line.startswith("    "))
+    return ok(
+        "search_code",
+        body,
+        ctx,
+        _ui(f"Found {total + len(seen)} matches" if total or seen else "No matches", lines=lines[:5] if found else None),
+    )
+
+
+# A group that repeats something which itself repeats, e.g. (a+)+ or (\w*\s?)*:
+# Python's re can take exponential time on such patterns.
+_NESTED_REPEAT_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)[+*{]")
+
+
+def risky_regex(pattern: str) -> bool:
+    """True for nested repetition, which can hang Python's backtracking engine."""
+    return bool(_NESTED_REPEAT_RE.search(pattern))
 
 
 def _context_lines(path: Path, line_no: int, context: int) -> list[str]:
@@ -742,11 +1244,23 @@ def _context_lines(path: Path, line_no: int, context: int) -> list[str]:
     return out
 
 
-def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern):
-    """``{path: [(line, text)]}``, total hit count, and number of files hit."""
+def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes=None):
+    """``{path: [(line, text)]}``, total hit count, and number of files hit.
+
+    ripgrep when it is installed. The Python fallback searches long lines only
+    in their first 2000 characters, stops after 20 seconds, and searches a
+    pattern with nested repetition as literal text, since Python's regex
+    engine cannot be interrupted once it starts backtracking.
+    """
+    notes = notes if notes is not None else []
     via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern)
     if via_rg is not None:
         return via_rg
+    if not literal and risky_regex(source):
+        matcher = re.compile(re.escape(pattern), re.IGNORECASE if ignore_case else 0)
+        literal = True
+        notes.append("pattern repeats a repeated group, which can hang; searched it as literal text. Simplify it")
+    deadline = time.monotonic() + _SCAN_SECONDS
     files: list[str] | None = None
     if ctx.index_path is not None:
         needle = pattern if literal else code_index.longest_literal(pattern)
@@ -769,8 +1283,11 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
             continue
         if looks_binary_bytes(data[:8192]):
             continue
+        if time.monotonic() > deadline:
+            notes.append(f"search stopped after {_SCAN_SECONDS:.0f}s; narrow with path or glob")
+            break
         for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), start=1):
-            if matcher.search(line) is None:
+            if matcher.search(line[:_SCAN_LINE_CHARS]) is None:
                 continue
             total += 1
             bucket = hits.setdefault(item, [])
@@ -843,15 +1360,34 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
     return version
 
 
+def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
+    """Why a mutating tool must not touch ``path``, or an empty string.
+
+    A path outside the workspace is allowed here: :func:`permission_for`
+    marks it "outside", the user approved it, and the checkpoint saves it by
+    its absolute path so undo restores it.
+    """
+    if path == ctx.workspace:
+        return "refusing to change the workspace root"
+    if path.is_dir():
+        return f"path is a directory: {raw}"
+    if inside(ctx.workspace, path) and ".git" in Path(rel(ctx.workspace, path)).parts:
+        return f"refusing to change files inside .git: {raw}"
+    return ""
+
+
 def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     files = args.get("files")
     if files is None and args.get("path") is not None:
         files = [{"path": args.get("path"), "contents": args.get("contents", args.get("content", ""))}]
     if not isinstance(files, list) or not files:
-        return err("write_files", "files must be a list of {path, contents}")
+        return err("write_files", 'files must be a list of {"path", "contents"}, or pass path and contents')
     overwrite = bool(args.get("overwrite"))
     written: list[str] = []
     errors: list[str] = []
+    diffs: list[str] = []
+    titles: list[str] = []
+    added = removed = 0
     for item in files:
         if not isinstance(item, dict):
             errors.append("each file must be an object")
@@ -866,17 +1402,15 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             continue
         path = resolve(ctx.workspace, raw)
         name = rel(ctx.workspace, path)
-        if path == ctx.workspace:
-            errors.append("refusing to write the workspace root")
-            continue
-        if path.is_dir():
-            errors.append(f"path is a directory: {raw}")
+        problem = _guard_target(ctx, path, raw)
+        if problem:
+            errors.append(problem)
             continue
         existed = path.is_file()
         if (
             existed
             and ctx.state is not None
-            and not (overwrite or item.get("overwrite"))
+            and not (overwrite or item.get("overwrite") is True)
             and name not in ctx.state.reads
             and name not in ctx.state.edits
         ):
@@ -889,22 +1423,38 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         before = like.text if like is not None else ""
         if ctx.checkpoints is not None:
             ctx.checkpoints.save(path)
-        agent_edit.save_text(path, contents, like)
+        try:
+            agent_edit.save_text(path, contents, like)
+        except (ValueError, OSError) as exc:
+            errors.append(f"{name}: {exc}")
+            continue
         _after_write(ctx, path)
         line_count = contents.count("\n") + (0 if contents.endswith("\n") or not contents else 1)
         summary = f"{'replaced' if existed else 'created'} {name} ({line_count} lines)"
         check = agent_edit.syntax_check(name, contents)
         if check:
             summary += f"; syntax {check}"
-        if existed:
-            diff = agent_edit.hunk_diff(before, contents.replace("\r\n", "\n"), name)
-            if diff:
-                summary += "\n" + diff
+        diff = agent_edit.hunk_diff(before, contents.replace("\r\n", "\n"), name)
+        if existed and diff:
+            summary += "\n" + diff
+        plus, minus = _diff_counts(diff)
+        added += plus
+        removed += minus
+        if diff:
+            diffs.append(diff)
+        titles.append(f"{'Updated' if existed else 'Created'} {name}" + (f" (+{plus} -{minus})" if existed else f" ({line_count} lines)"))
         written.append(summary)
     output = "\n".join(written) if written else "wrote nothing"
+    if len(titles) == 1:
+        title = titles[0]
+    else:
+        title = f"Wrote {len(titles)} files (+{added} -{removed})"
+    ui = _ui(title, "\n".join(diffs)) if titles else None
     if errors:
-        return err("write_files", "; ".join(errors), output=output, ctx=ctx)
-    return ok("write_files", output, ctx)
+        if ui is not None:
+            ui["summary"] += "; " + _one_line("; ".join(errors), 100)
+        return err("write_files", "; ".join(errors), output=output, ctx=ctx, ui=ui)
+    return ok("write_files", output, ctx, ui)
 
 
 def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -920,8 +1470,10 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                 "replace_all": args.get("replace_all"),
             }
         ]
+    if isinstance(edits, dict):
+        edits = [_normalize_edit(edits)]
     if not isinstance(edits, list) or not edits:
-        return err("edit_file", "edits must be a list of {old_string, new_string}")
+        return err("edit_file", 'edits must be a list of {"old_string", "new_string"}')
     path = resolve(ctx.workspace, raw)
     name = rel(ctx.workspace, path)
     if not path.is_file():
@@ -929,6 +1481,9 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             "edit_file",
             f"not found: {raw}. Use write_files to create a new file{_path_hint(ctx, raw)}",
         )
+    problem = _guard_target(ctx, path, raw)
+    if problem:
+        return err("edit_file", problem)
     expected = args.get("version")
     if isinstance(expected, str) and expected and expected != agent_edit.file_version(path):
         return err("edit_file", f"{name} changed since you read it (version {expected}); read it again")
@@ -973,7 +1528,10 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         )
     if ctx.checkpoints is not None:
         ctx.checkpoints.save(path)
-    agent_edit.save_text(path, text, loaded)
+    try:
+        agent_edit.save_text(path, text, loaded)
+    except ValueError as exc:
+        return err("edit_file", f"edit not applied: {exc}")
     version = _after_write(ctx, path)
     message = f"updated {name} ({total})"
     if notes:
@@ -983,31 +1541,82 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     message += f"; version {version}"
     if diff:
         message += "\n" + diff
-    return ok("edit_file", message, ctx)
+    plus, minus = _diff_counts(diff)
+    return ok("edit_file", message, ctx, _ui(f"Updated {name} (+{plus} -{minus})", diff))
 
 
 def _delete_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     raw = args.get("path")
     if not isinstance(raw, str) or not raw:
         return err("delete_file", "path is required")
+    link = resolve(ctx.workspace, raw, follow=False)
+    if link.is_symlink():
+        return err("delete_file", f"{raw} is a symbolic link; remove links with run_command")
     path = resolve(ctx.workspace, raw)
-    if path == ctx.workspace:
-        return err("delete_file", "refusing to delete the workspace root")
-    if path.is_dir():
-        return err("delete_file", f"path is a directory: {raw}")
+    problem = _guard_target(ctx, path, raw)
+    if problem:
+        return err("delete_file", problem.replace("change", "delete", 1))
     if not path.is_file():
-        return err("delete_file", f"not found: {raw}")
+        return err("delete_file", f"not found: {raw}" + _path_hint(ctx, raw))
     if ctx.checkpoints is not None:
         ctx.checkpoints.save(path)
     path.unlink()
     _after_write(ctx, path)
-    return ok("delete_file", f"deleted {rel(ctx.workspace, path)}", ctx)
+    name = rel(ctx.workspace, path)
+    return ok("delete_file", f"deleted {name}", ctx, _ui(f"Deleted {name}"))
+
+
+def _move_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    raw = args.get("path")
+    raw_dest = args.get("destination")
+    if not isinstance(raw, str) or not raw.strip():
+        return err("move_file", "path (the file to move) is required")
+    if not isinstance(raw_dest, str) or not raw_dest.strip():
+        return err("move_file", "destination is required, for example src/new_name.py")
+    if resolve(ctx.workspace, raw, follow=False).is_symlink():
+        return err("move_file", f"{raw} is a symbolic link; move links with run_command")
+    source = resolve(ctx.workspace, raw)
+    if source.is_dir():
+        return err("move_file", f"{raw} is a folder; move_file moves one file. Use run_command (git mv) for folders")
+    if not source.is_file():
+        return err("move_file", f"not found: {raw}" + _path_hint(ctx, raw))
+    problem = _guard_target(ctx, source, raw)
+    if problem:
+        return err("move_file", problem)
+    dest = resolve(ctx.workspace, raw_dest)
+    if dest.is_dir() or clean_path(raw_dest).endswith(("/", "\\")) or str(raw_dest).rstrip().endswith(("/", "\\")):
+        dest = dest / source.name
+    problem = _guard_target(ctx, dest, raw_dest)
+    if problem:
+        return err("move_file", problem)
+    if dest == source:
+        return err("move_file", "path and destination are the same file")
+    overwrite = bool(args.get("overwrite"))
+    if (dest.exists() or dest.is_symlink()) and not overwrite:
+        return err("move_file", f"{rel(ctx.workspace, dest)} already exists; pass overwrite true to replace it")
+    if ctx.checkpoints is not None:
+        ctx.checkpoints.save(source)
+        ctx.checkpoints.save(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(source, dest)
+    except OSError:
+        shutil.move(str(source), str(dest))
+    _after_write(ctx, source)
+    _after_write(ctx, dest)
+    left, right = rel(ctx.workspace, source), rel(ctx.workspace, dest)
+    return ok("move_file", f"moved {left} -> {right}", ctx, _ui(f"Moved {left} → {right}"))
+
+
+def _patch_text(args: dict[str, Any]) -> Any:
+    """The diff an apply_patch call carries, under any of the names models use for it."""
+    return args.get("patch") or args.get("diff") or args.get("input")
 
 
 def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    patch = args.get("patch") or args.get("diff")
+    patch = _patch_text(args)
     if not isinstance(patch, str) or not patch.strip():
-        return err("apply_patch", "patch is required")
+        return err("apply_patch", "patch is required: one unified diff as text")
     patch = patch.replace("\r\n", "\n")
     if not patch.endswith("\n"):
         patch += "\n"
@@ -1015,10 +1624,12 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     patch_path = folder / "apply.patch"
     patch_path.write_text(patch, encoding="utf-8")
+    prefixed = _patch_has_prefixes(patch)
     paths = patched_paths(patch)
+    strip = [] if prefixed else ["-p0"]
     attempts = (
-        ["apply", "--whitespace=nowarn", "--unsafe-paths"],
-        ["apply", "--whitespace=nowarn", "--unsafe-paths", "--ignore-whitespace", "--recount"],
+        ["apply", "--whitespace=nowarn", *strip],
+        ["apply", "--whitespace=nowarn", *strip, "--ignore-whitespace", "--recount"],
     )
     check_error = ""
     for flags in attempts:
@@ -1034,12 +1645,12 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         )
     if ctx.checkpoints is not None:
         for item in paths:
-            ctx.checkpoints.save(ctx.workspace / item)
+            ctx.checkpoints.save(resolve(ctx.workspace, item))
     result = _git(ctx, [*flags, str(patch_path)], tool="apply_patch")
     if result.get("ok"):
         checks = []
         for item in paths:
-            target = ctx.workspace / item
+            target = resolve(ctx.workspace, item)
             _after_write(ctx, target)
             if target.is_file():
                 check = agent_edit.syntax_check(item, agent_edit.load_text(target).text)
@@ -1049,18 +1660,57 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             result["output"] = (
                 "applied to " + ", ".join(paths) + ("\n" + "\n".join(checks) if checks else "")
             )
+        plus, minus = _diff_counts(patch)
+        shown = patch if len(patch) <= 2_500 else patch[:2_500] + "\n... diff truncated"
+        result["ui"] = _ui(f"Patched {', '.join(paths[:3])}" + (" ..." if len(paths) > 3 else "") + f" (+{plus} -{minus})", shown)
     return result
 
 
-def patched_paths(patch: str) -> list[str]:
-    paths: list[str] = []
+def _patch_has_prefixes(patch: str) -> bool:
+    """True for git-style ``a/`` ``b/`` paths (``git apply`` strips one component)."""
     for line in patch.splitlines():
-        if line.startswith("+++ "):
-            raw = line[4:].split("\t", 1)[0].strip()
-            if raw.startswith("b/"):
-                raw = raw[2:]
-            if raw and raw != "/dev/null" and raw not in paths:
-                paths.append(raw)
+        if line.startswith("diff --git "):
+            return True
+        if line.startswith(("--- ", "+++ ")):
+            raw = _patch_path(line[4:])
+            if raw == "/dev/null":
+                continue
+            return raw.startswith(("a/", "b/"))
+    return True
+
+
+def _patch_path(text: str) -> str:
+    raw = text.split("\t", 1)[0].strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = raw[1:-1]
+    return raw
+
+
+def patched_paths(patch: str) -> list[str]:
+    """Every path a patch touches: changed, created, deleted, and both sides of a rename."""
+    prefixed = _patch_has_prefixes(patch)
+    paths: list[str] = []
+
+    def add(raw: str, prefix: str) -> None:
+        if not raw or raw == "/dev/null":
+            return
+        if prefixed and raw.startswith(prefix):
+            raw = raw[len(prefix) :]
+        if raw not in paths:
+            paths.append(raw)
+
+    for line in patch.splitlines():
+        if line.startswith("--- "):
+            add(_patch_path(line[4:]), "a/")
+        elif line.startswith("+++ "):
+            add(_patch_path(line[4:]), "b/")
+        elif line.startswith(("rename from ", "copy from ")):
+            add(line.split(" ", 2)[2].strip(), "")
+        elif line.startswith(("rename to ", "copy to ")):
+            add(line.split(" ", 2)[2].strip(), "")
     return paths
 
 
@@ -1076,7 +1726,161 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     except (TypeError, ValueError):
         return err("run_command", "timeout must be a number")
     timeout = min(max(timeout, 1), MAX_COMMAND_TIMEOUT)
+    wanted = _shell_arg(args.get("shell"))
+    if wanted is None:
+        return err("run_command", "shell must be one of " + ", ".join(SHELL_NAMES) + ", or omitted for the session shell")
+    background = args.get("background")
+    if background is not None and not isinstance(background, bool):
+        return err("run_command", "background must be true or false")
+    if ctx.session is None:
+        return _run_plain(args, ctx, command, timeout, wanted, bool(background))
+    return _run_in_session(args, ctx, command, timeout, wanted, bool(background))
+
+
+def _session_cwd(ctx: ToolContext, raw: Any) -> tuple[Path | None, str]:
+    """The folder a call starts in: relative to the session's cwd first, then the workspace."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, ""
+    current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+    text = clean_path(raw)
+    if not Path(text).is_absolute() and text[:1] not in "/\\":
+        candidate = Path(os.path.abspath(current / text))
+        if candidate.is_dir():
+            return candidate, ""
+    path = resolve(ctx.workspace, raw)
+    if not path.is_dir():
+        return None, f"cwd is not a folder: {raw}" + _path_hint(ctx, raw)
+    return path, ""
+
+
+def _run_in_session(
+    args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool
+) -> dict[str, Any]:
+    session = ctx.session
+    try:
+        shell = session.resolve(wanted or None)
+    except ValueError as exc:
+        return err("run_command", str(exc))
+    problem = agent_shell.lint_command(command, shell, getattr(session, "available", None))
+    if problem:
+        return err("run_command", problem)
+    cwd, problem = _session_cwd(ctx, args.get("cwd"))
+    if problem:
+        return err("run_command", problem)
+    shell_name = getattr(shell, "name", shell.kind)
+    if background:
+        try:
+            job_id = session.start_background(command, shell=wanted or None, cwd=cwd)
+            first, running, code = session.read_background(job_id, wait=1.0)
+        except (ValueError, KeyError, OSError) as exc:
+            return err("run_command", f"could not start it: {exc}")
+        state = "running" if running else f"already exited ({'exit ' + str(code) if code is not None else 'killed'})"
+        body = (
+            f"started background job {job_id} ({shell_name}): {state}\n"
+            + (first.strip() or "(no output yet)")
+            + f"\nRead more with command_output {{\"job_id\": \"{job_id}\"}}; stop it with kill_command."
+        )
+        if ctx.state is not None:
+            ctx.state.last_command = command
+            ctx.state.last_exit = f"background {job_id}"
+        return ok(
+            "run_command",
+            agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            ctx,
+            _ui(f"Started {job_id} in background ({shell_name})", lines=_preview(first, tail=True)),
+        )
+    before = Path(session.cwd)
+    try:
+        result = session.run(
+            command,
+            timeout=timeout,
+            shell=wanted or None,
+            cwd=cwd,
+            on_output=ctx.on_output,
+            cancel=ctx.cancel,
+        )
+    except ValueError as exc:
+        return err("run_command", str(exc))
+    ended = Path(result.cwd)
+    if cwd is not None and _same_dir(ended, cwd):
+        # A cwd argument is for this call only (OpenCode's workdir); a cd inside the command still sticks.
+        session.cwd = before
+    out = result.stdout
+    errs = result.stderr
+    code = result.exit_code
+    seconds = result.seconds
+    if ctx.state is not None:
+        ctx.state.last_command = command
+        ctx.state.last_exit = (
+            "interrupted" if result.interrupted else "timeout" if result.timed_out else f"exit {code}"
+        )
+    head = [f"exit {code if code is not None else '-'} ({seconds:.1f}s)"]
+    if wanted:
+        head.append(f"shell: {shell.label}")
+    moved = not _same_dir(session.cwd, before)
+    if moved:
+        head.append(f"cwd: {session.cwd}")
+    elif cwd is not None:
+        head.append(f"ran in: {ended} (session cwd stays {before})")
+    preview = _preview(out + "\n" + errs, tail=True)
+    if result.interrupted:
+        body = "\n".join(part for part in ("interrupted by the user", *head[1:], out, errs) if part)
+        return err(
+            "run_command",
+            "interrupted by the user; the command was stopped",
+            output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            ctx=ctx,
+            ui=_ui(f"interrupted · {seconds:.1f}s · {shell_name}", lines=preview),
+        )
+    if result.timed_out or code is None:
+        hint = ""
+        if agent_shell.waiting_for_input(out + "\n" + errs):
+            hint = "; the command was waiting for input. Pass a flag such as -y, --yes, or -Force"
+        else:
+            hint = "; pass a longer timeout, or background true for a server or watcher"
+        body = "\n".join(part for part in (f"timed out after {timeout:.0f}s", *head[1:], out, errs) if part)
+        return err(
+            "run_command",
+            f"timed out after {timeout:.0f}s{hint}",
+            output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            ctx=ctx,
+            ui=_ui(f"timed out after {timeout:.0f}s · {shell_name}", lines=preview),
+        )
+    parts = list(head)
+    if out:
+        parts.append(out)
+    if errs:
+        parts.append(errs)
+    if not out and not errs:
+        parts.append("(no output)")
+    body = agent_shell.head_tail("\n".join(parts), max_chars=ctx.max_chars)
+    summary = f"exit {code} · {seconds:.1f}s · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
+    ui = _ui(summary, lines=preview)
+    if code == 0:
+        return ok("run_command", body, ctx, ui)
+    return err("run_command", f"command failed with exit {code}", output=body, ctx=ctx, ui=ui)
+
+
+def _same_dir(left: Any, right: Any) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return str(left) == str(right)
+
+
+def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool) -> dict[str, Any]:
+    """One process per call (no ShellSession): the runner= fakes and old callers."""
     shell = ctx.shell or agent_shell.detect_shell()
+    if wanted and not _same_shell(wanted, shell):
+        return err(
+            "run_command",
+            f"shell {wanted} is not available in this session; the shell is {shell.label}. Omit shell",
+        )
+    if background:
+        return err(
+            "run_command",
+            "background commands are not available in this session; run it in the foreground with a timeout",
+        )
     problem = agent_shell.lint_command(command, shell)
     if problem:
         return err("run_command", problem)
@@ -1085,9 +1889,10 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if isinstance(raw_cwd, str) and raw_cwd.strip():
         cwd = resolve(ctx.workspace, raw_cwd)
         if not cwd.is_dir():
-            return err("run_command", f"cwd is not a folder: {raw_cwd}")
+            return err("run_command", f"cwd is not a folder: {raw_cwd}" + _path_hint(ctx, raw_cwd))
+    extra = {} if ctx.runner is not None else {"on_output": ctx.on_output, "cancel": ctx.cancel}
     code, stdout, stderr, seconds = agent_shell.run(
-        command, cwd=cwd, timeout=timeout, shell=shell, runner=ctx.runner
+        command, cwd=cwd, timeout=timeout, shell=shell, runner=ctx.runner, **extra
     )
     out = agent_shell.tidy(stdout)
     errs = agent_shell.tidy(stderr)
@@ -1104,6 +1909,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             f"timed out after {timeout:.0f}s{hint}",
             output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
             ctx=ctx,
+            ui=_ui(f"timed out after {timeout:.0f}s", lines=_preview(out + "\n" + errs, tail=True)),
         )
     parts = [f"exit {code} ({seconds:.1f}s)", f"cwd: {cwd}"]
     if out:
@@ -1111,9 +1917,96 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if errs:
         parts.append(errs)
     body = agent_shell.head_tail("\n".join(parts), max_chars=ctx.max_chars)
+    ui = _ui(f"exit {code} · {seconds:.1f}s", lines=_preview(out + "\n" + errs, tail=True))
     if code == 0:
-        return ok("run_command", body, ctx)
-    return err("run_command", "command failed", output=body, ctx=ctx)
+        return ok("run_command", body, ctx, ui)
+    return err("run_command", "command failed", output=body, ctx=ctx, ui=ui)
+
+
+def _shell_arg(value: Any) -> str | None:
+    """Lower-case shell name, "" for none, or None when the value is not a shell."""
+    if value is None or value is False:
+        return ""
+    if not isinstance(value, str):
+        return None
+    name = value.strip().lower().removesuffix(".exe")
+    name = {"git bash": "gitbash", "git-bash": "gitbash", "windows powershell": "powershell", "cmd.exe": "cmd",
+            "default": "", "auto": ""}.get(name, name)
+    if name and name not in SHELL_NAMES:
+        return None
+    return name
+
+
+def _same_shell(wanted: str, shell: agent_shell.Shell) -> bool:
+    kind = getattr(shell, "kind", "")
+    if wanted == kind:
+        return True
+    return wanted == "bash" and kind == "gitbash"
+
+
+def _job_id(session: Any, raw: Any) -> str:
+    text = str(raw or "").strip()
+    known = {str(row.get("id")) for row in session.jobs()}
+    if text not in known and text.isdigit() and f"b{text}" in known:
+        return f"b{text}"
+    return text
+
+
+def _format_jobs(rows: list[dict]) -> str:
+    if not rows:
+        return "no background jobs"
+    out = []
+    for row in rows:
+        state = "running" if row.get("running") else (
+            f"exit {row.get('exit_code')}" if row.get("exit_code") is not None else "stopped"
+        )
+        out.append(f"{row.get('id')} [{state}] {_one_line(str(row.get('command') or ''), 100)}")
+    return "\n".join(out)
+
+
+def _command_output(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    session = ctx.session
+    if session is None:
+        return err("command_output", "there are no background jobs in this session; run_command with background true starts one")
+    if not args.get("job_id"):
+        rows = session.jobs()
+        return ok("command_output", _format_jobs(rows), ctx, _ui(f"{len(rows)} background jobs", lines=_format_jobs(rows).split("\n")[:5]))
+    try:
+        wait = float(args.get("wait") or 0)
+    except (TypeError, ValueError):
+        return err("command_output", "wait must be a number of seconds")
+    wait = min(max(wait, 0.0), 30.0)
+    job_id = _job_id(session, args.get("job_id"))
+    try:
+        text, running, code = session.read_background(job_id, wait=wait)
+    except KeyError as exc:
+        return err("command_output", str(exc.args[0] if exc.args else exc))
+    state = "running" if running else (f"exit {code}" if code is not None else "stopped")
+    body = f"{job_id}: {state}\n" + (text.strip() or "(no new output)")
+    return ok(
+        "command_output",
+        agent_shell.head_tail(body, max_chars=ctx.max_chars),
+        ctx,
+        _ui(f"{job_id} {state}", lines=_preview(text, tail=True)),
+    )
+
+
+def _kill_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    session = ctx.session
+    if session is None:
+        return err("kill_command", "there are no background jobs in this session")
+    if not args.get("job_id"):
+        return err("kill_command", "job_id is required. Jobs:\n" + _format_jobs(session.jobs()))
+    job_id = _job_id(session, args.get("job_id"))
+    try:
+        stopped = session.kill_background(job_id)
+    except KeyError as exc:
+        return err("kill_command", str(exc.args[0] if exc.args else exc))
+    if stopped:
+        return ok("kill_command", f"stopped {job_id}", ctx, _ui(f"Stopped {job_id}"))
+    row = next((item for item in session.jobs() if item.get("id") == job_id), {})
+    code = row.get("exit_code")
+    return ok("kill_command", f"{job_id} had already exited (exit {code})", ctx, _ui(f"{job_id} had already exited"))
 
 
 def _code_graph(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1174,7 +2067,7 @@ def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
             capture_output=True,
             check=False,
             shell=False,
-            **({} if ctx.runner else {"env": agent_shell.environment(), "timeout": 120}),
+            **({} if ctx.runner else {"env": _git_environment(), "timeout": 120}),
         )
     except FileNotFoundError:
         return err(tool, "git is not installed or not on PATH")
@@ -1187,6 +2080,22 @@ def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
     if code != 0:
         return err(tool, stderr or stdout or "git failed", output=output, ctx=ctx)
     return ok(tool, output if stdout or stderr else "exit 0\n(empty)", ctx)
+
+
+_SECRET_NAME_RE = re.compile(
+    r"TOKEN|SECRET|PASSW|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL|AUTH(?!OR)|COOKIE|SESSION_?KEY", re.IGNORECASE
+)
+
+
+def _git_environment() -> dict[str, str]:
+    """Environment for the tools' own git calls, without credentials."""
+    scrubbed = getattr(agent_shell, "scrubbed_environment", None)
+    if callable(scrubbed):
+        env = dict(scrubbed())
+    else:
+        env = {key: value for key, value in agent_shell.environment().items() if not _SECRET_NAME_RE.search(key)}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 
 def is_git_repo(workspace: Path) -> bool:
@@ -1328,6 +2237,517 @@ def _skill_description(text: str) -> str:
     return ""
 
 
+# --------------------------------------------------------------------------- web_fetch
+
+
+class _CrossHostRedirect(urllib.error.URLError):
+    """A redirect to another host: the approval covered one host, so the model must ask again."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__(f"redirected to another host: {target}")
+        self.target = target
+
+
+class _LimitedRedirects(urllib.request.HTTPRedirectHandler):
+    max_redirections = FETCH_MAX_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401 - stdlib signature
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        parts = urllib.parse.urlsplit(target)
+        scheme = parts.scheme.lower()
+        if scheme not in {"http", "https"}:
+            raise urllib.error.URLError(f"redirected to a {scheme or 'relative'} URL, which is not fetched")
+        here = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
+        if (parts.hostname or "").lower() != here:
+            raise _CrossHostRedirect(target)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _TextExtractor(HTMLParser):
+    """Readable text from HTML: headings, paragraphs, lists, links, and code blocks."""
+
+    _DROP = {"script", "style", "nav", "noscript", "svg", "template", "iframe", "head", "form", "button"}
+    _BLOCK = {"p", "div", "section", "article", "main", "header", "footer", "aside", "table", "tr", "ul", "ol",
+              "dl", "dt", "dd", "blockquote", "figure", "figcaption", "br", "hr", "li", "h1", "h2", "h3", "h4",
+              "h5", "h6", "pre", "title", "summary", "details"}
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.parts: list[str] = []
+        self.title = ""
+        self._drop = 0
+        self._pre = 0
+        self._in_title = False
+        self._href: list[str | None] = []
+        self._link_start: list[int] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._DROP and tag != "head":
+            self._drop += 1
+            return
+        if tag == "title":
+            self._in_title = True
+            return
+        if self._drop:
+            return
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.parts.append("#" * int(tag[1]) + " ")
+        elif tag == "li":
+            self.parts.append("- ")
+        elif tag == "pre":
+            self._pre += 1
+            self.parts.append("```\n")
+        elif tag == "code" and not self._pre:
+            self.parts.append("`")
+        elif tag == "a":
+            href = dict(attrs).get("href")
+            self._href.append(href)
+            self._link_start.append(len(self.parts))
+        elif tag == "td" or tag == "th":
+            self.parts.append(" | ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._DROP and tag != "head":
+            self._drop = max(0, self._drop - 1)
+            return
+        if tag == "title":
+            self._in_title = False
+            return
+        if self._drop:
+            return
+        if tag == "pre":
+            self._pre = max(0, self._pre - 1)
+            self.parts.append("\n```\n")
+        elif tag == "code" and not self._pre:
+            self.parts.append("`")
+        elif tag == "a" and self._href:
+            href = self._href.pop()
+            start = self._link_start.pop()
+            label = "".join(self.parts[start:]).strip()
+            if href and not href.startswith(("#", "javascript:", "mailto:")) and label:
+                target = urllib.parse.urljoin(self.base_url, href)
+                if target != label:
+                    self.parts.append(f" ({target})")
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+            return
+        if self._drop:
+            return
+        if self._pre:
+            self.parts.append(data)
+        else:
+            self.parts.append(re.sub(r"\s+", " ", data))
+
+    def text(self) -> str:
+        raw = "".join(self.parts)
+        out: list[str] = []
+        in_code = False
+        for line in raw.split("\n"):
+            if line.strip() == "```":
+                in_code = not in_code
+                out.append("```")
+                continue
+            out.append(line.rstrip() if in_code else line.strip())
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+        title = " ".join(self.title.split())
+        return (f"# {title}\n\n" if title and not text.startswith("# ") else "") + text
+
+
+def html_to_text(markup: str, base_url: str = "") -> str:
+    parser = _TextExtractor(base_url)
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:  # malformed markup: keep what was parsed
+        pass
+    return parser.text()
+
+
+def _web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return err("web_fetch", "url is required, for example https://docs.python.org/3/")
+    url = url.strip().strip("<>\"'` ")
+    if "://" not in url:
+        url = "https://" + url
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        return err("web_fetch", f"only http and https URLs are fetched, not {url}")
+    try:
+        limit = int(args.get("max_chars") or DEFAULT_FETCH_CHARS)
+        start = max(0, int(args.get("offset") or 0))
+    except (TypeError, ValueError):
+        return err("web_fetch", "max_chars and offset must be integers")
+    limit = min(max(limit, 500), ctx.max_chars)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; crit-agent/1.0)",
+            "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
+        },
+    )
+    opener = urllib.request.build_opener(_LimitedRedirects())
+    started = time.monotonic()
+    try:
+        with opener.open(request, timeout=FETCH_TIMEOUT) as response:
+            final_url = response.geturl()
+            status = getattr(response, "status", 200)
+            content_type = response.headers.get("Content-Type", "")
+            charset = response.headers.get_content_charset() or ""
+            data = response.read(FETCH_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read(2000).decode("utf-8", "replace")
+            if "html" in (exc.headers.get("Content-Type") or ""):
+                body = html_to_text(body, url)
+        except Exception:
+            pass
+        return err(
+            "web_fetch",
+            f"HTTP {exc.code} {exc.reason} for {url}",
+            output=_one_line(body, 400) if body else "",
+            ctx=ctx,
+        )
+    except _CrossHostRedirect as exc:
+        return err(
+            "web_fetch",
+            f"{url} redirects to another host: {exc.target}. It was not followed; "
+            "call web_fetch with that URL if you need it (it needs its own approval)",
+        )
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason):
+            return err("web_fetch", f"timed out after {FETCH_TIMEOUT:.0f}s: {url}")
+        if "redirect" in str(reason).lower() or "redirect" in str(exc).lower():
+            return err("web_fetch", f"too many redirects or a bad redirect: {_one_line(str(reason), 200)}")
+        return err("web_fetch", f"could not fetch {url}: {_one_line(str(reason), 200)}")
+    except TimeoutError:
+        return err("web_fetch", f"timed out after {FETCH_TIMEOUT:.0f}s: {url}")
+    except (OSError, ValueError) as exc:
+        return err("web_fetch", f"could not fetch {url}: {_one_line(str(exc), 200)}")
+    seconds = time.monotonic() - started
+    clipped = len(data) > FETCH_MAX_BYTES
+    data = data[:FETCH_MAX_BYTES]
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if not kind:
+        kind = "text/html" if data.lstrip()[:15].lower().startswith((b"<!doctype html", b"<html")) else "text/plain"
+    textual = kind.startswith("text/") or "json" in kind or "xml" in kind or "javascript" in kind
+    if not textual or looks_binary_bytes(data[:8192]):
+        return ok(
+            "web_fetch",
+            f"{final_url}\n{kind or 'unknown type'}, {_size_text(len(data))}: binary content is not shown",
+            ctx,
+            _ui(f"Fetched {_size_text(len(data))} ({kind})"),
+        )
+    text = data.decode(charset or "utf-8", "replace") if _known_codec(charset) else data.decode("utf-8", "replace")
+    if "html" in kind or "xhtml" in kind:
+        text = html_to_text(text, final_url)
+    elif "json" in kind:
+        try:
+            text = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+        except ValueError:
+            pass
+    total = len(text)
+    piece = text[start : start + limit]
+    header = f"{final_url} (HTTP {status}, {kind}, {total} chars"
+    header += f", showing {start}-{start + len(piece)}" if total > len(piece) or start else ""
+    header += ")"
+    lines = [header, piece]
+    if start + len(piece) < total:
+        lines.append(f"... {total - start - len(piece)} more chars; pass offset {start + len(piece)} to read on")
+    if clipped:
+        lines.append(f"download stopped at {_size_text(FETCH_MAX_BYTES)}")
+    return ok(
+        "web_fetch",
+        "\n".join(lines),
+        ctx,
+        _ui(f"Fetched {_size_text(len(data))} ({kind}) in {seconds:.1f}s"),
+    )
+
+
+def _known_codec(name: str) -> bool:
+    if not name:
+        return False
+    import codecs
+
+    try:
+        codecs.lookup(name)
+        return True
+    except LookupError:
+        return False
+
+
+# --------------------------------------------------------------------------- ask_user
+
+
+def _ask_user(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    question = args.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return err("ask_user", "question is required")
+    options = args.get("options")
+    if isinstance(options, str):
+        options = [item.strip() for item in re.split(r"[\n|]", options) if item.strip()]
+    if options is not None and not isinstance(options, list):
+        return err("ask_user", "options must be a list of short answers")
+    choices = [
+        str(item.get("label") or item.get("text") or item.get("value") or "") if isinstance(item, dict) else str(item)
+        for item in (options or [])
+    ]
+    choices = [item for item in choices if item.strip()][:9]
+    if ctx.ask_user is None:
+        return err("ask_user", "no user available; decide yourself and continue")
+    prompt = question.strip()
+    if choices:
+        prompt += "\n" + "\n".join(f"{index}. {item}" for index, item in enumerate(choices, start=1))
+    try:
+        answer = ctx.ask_user(prompt)
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    answer = str(answer or "").strip()
+    if not answer:
+        return err("ask_user", "the user gave no answer; decide yourself and continue")
+    if choices and answer.isdigit() and 1 <= int(answer) <= len(choices):
+        answer = choices[int(answer) - 1]
+    return ok("ask_user", f"user answered: {answer}", ctx, _ui(f"User answered: {_one_line(answer, 80)}"))
+
+
+# --------------------------------------------------------------------------- permissions
+
+
+def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> Permission:
+    """What the user must approve before ``name`` runs with ``args``.
+
+    read: never asks. edit: key "edit". command: key "command:<program>".
+    network: key "network:<host>". outside: any path outside the workspace;
+    its key is empty, so it is asked every time.
+    """
+    tool = canonical_tool(name)
+    if not tool:
+        return Permission("read", f"Unknown tool {name}", "")
+    args = normalize_args(tool, args if isinstance(args, (dict, str)) else {})
+    outside = [item for item in _paths_of(tool, args, ctx) if not inside(ctx.workspace, item)]
+    if tool in READ_ONLY:
+        if outside:
+            shown = ", ".join(str(item) for item in outside[:3])
+            return Permission("outside", f"Read outside the workspace: {shown}", "", _tool_label(tool, args))
+        return Permission("read", _tool_label(tool, args), tool)
+    if tool in MUTATING:
+        summary = _tool_label(tool, args)
+        detail = ""
+        if tool == "apply_patch":
+            detail = str(_patch_text(args) or "")[:4000]
+        elif tool == "edit_file":
+            detail = _edit_preview(args)
+        if outside:
+            shown = ", ".join(str(item) for item in outside[:3])
+            return Permission("outside", f"{summary} (outside the workspace: {shown})", "", detail)
+        return Permission("edit", summary, "edit", detail)
+    if tool == "run_command":
+        command = str(args.get("command") or "").strip()
+        label = ("Run in background: " if args.get("background") is True else "Run: ") + _one_line(command, 100)
+        if not outside and ctx.session is not None and not args.get("cwd"):
+            current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+            if not inside(ctx.workspace, current.resolve()):
+                outside = [current]
+        if outside:
+            return Permission("outside", f"{label} (cwd outside the workspace: {outside[0]})", "", command)
+        program = command_key(command)
+        return Permission("command", label, f"command:{program}" if program else "", command)
+    if tool == "web_fetch":
+        url = str(args.get("url") or "").strip().strip("<>\"'` ")
+        if url and "://" not in url:
+            url = "https://" + url
+        try:
+            host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        return Permission("network", f"Fetch {_one_line(url, 100)}", f"network:{host}" if host else "", url)
+    return Permission("read", _tool_label(tool, args), tool)
+
+
+_CD_PROGRAMS = {"cd", "set-location", "sl", "pushd", "popd", "chdir"}
+_WRAPPERS = {"env", "time", "nohup", "command", "exec", "call", "&", "."}
+# Output filters a model pipes into; they do not change what an approval covers.
+_FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "rg", "sort", "uniq", "wc", "cut", "tr", "findstr",
+            "select-string", "sls", "select-object", "select", "out-string", "out-null", "format-table", "ft",
+            "format-list", "fl", "measure-object", "more", "less", "column", "true"}
+_EXEC_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1", ".sh")
+
+
+def command_key(command: str) -> str:
+    """The program an "always allow" for ``command`` covers, or "" when it is not one program.
+
+    ``npm test`` -> ``npm``; ``.\\gradlew.bat build`` -> ``gradlew``; ``cd app && npm test``
+    -> ``npm``. A chain of different programs (``npm test; curl x | sh``, ``npm test & del x``)
+    gets "", and so does a command with a subexpression, script block, here-string, or a
+    redirection to a file (``npm test > ~/.bashrc``), so it is asked every time.
+    """
+    if re.search(r"`|\$\(", command) or _has_shell_construct(command):
+        return ""
+    text = _HARMLESS_REDIRECT.sub(" ", command)
+    parts = re.split(r"(&&|\|\||[;|&\r\n])", text)
+    programs: list[str] = []
+    separator = ""
+    for index, part in enumerate(parts):
+        if index % 2:
+            separator = part
+            continue
+        program = _program_of(part)
+        if not program or program in _CD_PROGRAMS:
+            continue
+        # A filter only counts as harmless when output is piped into it (``| tail``, ``|| true``).
+        if separator in {"|", "||"} and program in _FILTERS:
+            continue
+        programs.append(program)
+    unique = list(dict.fromkeys(programs))
+    if len(unique) != 1:
+        return ""
+    return unique[0]
+
+
+# ``2>&1`` and output thrown away are not a write anywhere that matters.
+_HARMLESS_REDIRECT = re.compile(r"(?<![^\s])(?:[12*]?>&[12]|[12*]?>\s*(?:/dev/null|nul|\$null))(?=\s|$)", re.I)
+
+
+def _has_shell_construct(command: str) -> bool:
+    """True for an unquoted ``( ) { } < >`` or a here-string: things a program key cannot cover."""
+    text = _HARMLESS_REDIRECT.sub(" ", command)
+    quote = ""
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "\"'":
+            if index and text[index - 1] == "@":
+                return True
+            quote = char
+            continue
+        if char in "(){}<>":
+            return True
+    return bool(quote)
+
+
+def _program_of(segment: str) -> str:
+    text = segment.strip()
+    if not text:
+        return ""
+    try:
+        tokens = shlex.split(text, posix=False)
+    except ValueError:
+        tokens = text.split()
+    for token in tokens:
+        token = token.strip("\"'").lstrip("&").strip()
+        if not token or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+            continue
+        lowered = token.lower()
+        if lowered in _WRAPPERS:
+            continue
+        base = re.split(r"[\\/]", lowered)[-1]
+        for suffix in _EXEC_SUFFIXES:
+            if base.endswith(suffix) and len(base) > len(suffix):
+                base = base[: -len(suffix)]
+                break
+        return base
+    return ""
+
+
+def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:
+    """Resolved paths a call would read or change (for the outside-workspace check)."""
+    raws: list[Any] = []
+    if tool in {"list_files", "find_files", "search_code", "delete_file", "edit_file", "git_diff", "git_log", "git_show"}:
+        raws.append(args.get("path"))
+    elif tool == "read_files":
+        paths = args.get("paths")
+        if paths is None:
+            paths = [args.get("path")]
+        if isinstance(paths, str):
+            paths = [paths]
+        for item in paths if isinstance(paths, list) else []:
+            raws.append(item.get("path") if isinstance(item, dict) else item)
+    elif tool == "write_files":
+        files = args.get("files")
+        if files is None:
+            files = [{"path": args.get("path")}]
+        for item in files if isinstance(files, list) else []:
+            if isinstance(item, dict):
+                raws.append(item.get("path"))
+    elif tool == "move_file":
+        raws += [args.get("path"), args.get("destination")]
+    elif tool == "apply_patch":
+        patch = _patch_text(args) or ""
+        raws += patched_paths(patch.replace("\r\n", "\n")) if isinstance(patch, str) else []
+    elif tool == "run_command":
+        raw = args.get("cwd")
+        if ctx.session is not None and isinstance(raw, str) and raw.strip():
+            # Same resolution as the run: relative to the session's cwd first.
+            started, _problem = _session_cwd(ctx, raw)
+            if started is not None:
+                return [started.resolve()]
+        raws.append(raw)
+    out: list[Path] = []
+    for raw in raws:
+        if isinstance(raw, str) and raw.strip():
+            try:
+                out.append(resolve(ctx.workspace, raw))
+            except (OSError, ValueError, RuntimeError):
+                continue
+    return out
+
+
+def _tool_label(tool: str, args: dict[str, Any]) -> str:
+    def path_of(value: Any) -> str:
+        return clean_path(value) if isinstance(value, str) and value.strip() else "?"
+
+    if tool == "edit_file":
+        return f"Edit {path_of(args.get('path'))}"
+    if tool == "write_files":
+        files = args.get("files")
+        if isinstance(files, list) and len(files) > 1:
+            names = [path_of(item.get("path")) for item in files if isinstance(item, dict)]
+            return f"Write {len(names)} files: " + ", ".join(names[:4]) + (" ..." if len(names) > 4 else "")
+        if isinstance(files, list) and files and isinstance(files[0], dict):
+            return f"Write {path_of(files[0].get('path'))}"
+        return f"Write {path_of(args.get('path'))}"
+    if tool == "delete_file":
+        return f"Delete {path_of(args.get('path'))}"
+    if tool == "move_file":
+        return f"Move {path_of(args.get('path'))} → {path_of(args.get('destination'))}"
+    if tool == "apply_patch":
+        patch = _patch_text(args) or ""
+        names = patched_paths(patch) if isinstance(patch, str) else []
+        return "Patch " + (", ".join(names[:4]) or "files") + (" ..." if len(names) > 4 else "")
+    if tool == "read_files":
+        paths = args.get("paths") or [args.get("path")]
+        if isinstance(paths, str):
+            paths = [paths]
+        names = [path_of(item.get("path") if isinstance(item, dict) else item) for item in paths if item]
+        return "Read " + (", ".join(names[:4]) or str(args.get("symbol") or "?"))
+    if tool in {"list_files", "find_files", "search_code"}:
+        what = args.get("pattern") or args.get("glob") or ""
+        return f"{tool.replace('_', ' ').capitalize()} {_one_line(str(what), 60)} in {path_of(args.get('path') or '.')}".replace("  ", " ")
+    return tool.replace("_", " ").capitalize()
+
+
+def _edit_preview(args: dict[str, Any]) -> str:
+    edits = args.get("edits")
+    if not isinstance(edits, list):
+        edits = [{"old_string": args.get("old_string"), "new_string": args.get("new_string")}]
+    chunks = []
+    for edit in edits[:5]:
+        if isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
+            chunks.append(agent_edit.hunk_diff(edit["old_string"], edit["new_string"], "edit", context=1))
+    return "\n".join(chunks)[:4000]
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = {
     "list_files": _list_files,
     "find_files": _find_files,
@@ -1345,4 +2765,9 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "todo": _todo,
     "skill": _skill,
     "code_graph": _code_graph,
+    "move_file": _move_file,
+    "web_fetch": _web_fetch,
+    "ask_user": _ask_user,
+    "command_output": _command_output,
+    "kill_command": _kill_command,
 }
