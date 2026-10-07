@@ -126,6 +126,7 @@ def _write_readme(dest: Path, binary_name: str) -> None:
                 f'  {invoke} --config config.json --mode general '
                 '--prompt "Summarize this" notes.txt',
                 "",
+                "CodeGraph is included under codegraph/ and used for code search.",
                 "Licensed under the Apache License, Version 2.0. See LICENSE.",
                 "",
             ]
@@ -163,6 +164,7 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     if prompts_src.is_dir():
         shutil.copytree(prompts_src, payload / "prompts")
     _write_readme(payload / "README.txt", binary_name)
+    _bundle_codegraph(payload)
 
     zip_path = DIST / f"{bundle_name}.zip"
     if zip_path.exists():
@@ -173,6 +175,19 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
                 zf.write(path, path.relative_to(payload.parent).as_posix())
     print(f"wrote {zip_path} ({zip_path.stat().st_size} bytes)")
     return zip_path
+
+
+def _bundle_codegraph(payload: Path) -> None:
+    """Put the official CodeGraph release beside the executable. A failed download still ships the zip."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from critique_bot.code_graph import install_bundle
+
+    dest = payload / "codegraph"
+    print("adding CodeGraph to the bundle")
+    try:
+        install_bundle(dest)
+    except OSError as exc:
+        print(f"warning: CodeGraph was not added to the zip ({exc})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

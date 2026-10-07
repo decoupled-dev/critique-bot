@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from critique_bot import agent_edit, agent_shell, code_index
+from critique_bot import agent_edit, agent_shell, code_graph, code_index
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 
@@ -39,6 +39,7 @@ ALLOWED_TOOLS = (
     "apply_patch",
     "todo",
     "skill",
+    "code_graph",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch"})
 
@@ -210,6 +211,10 @@ _ALIASES = {
     "todoread": "todo",
     "todos": "todo",
     "patch": "apply_patch",
+    "codegraph": "code_graph",
+    "codegraph_explore": "code_graph",
+    "graphify": "code_graph",
+    "query_graph": "code_graph",
 }
 
 
@@ -831,6 +836,10 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
         ctx.state.note_write(name, version)
     if ctx.index_path is not None:
         refresh_path(ctx.workspace, ctx.index_path, path)
+    try:
+        code_graph.sync_after_edit(ctx.workspace)
+    except Exception:
+        pass
     return version
 
 
@@ -1107,6 +1116,37 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return err("run_command", "command failed", output=body, ctx=ctx)
 
 
+def _code_graph(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    query = args.get("query") or args.get("question") or args.get("symbol") or args.get("name")
+    if not isinstance(query, str) or not query.strip():
+        return err("code_graph", "query is required")
+    action = args.get("action") or args.get("mode") or "explore"
+    if not isinstance(action, str):
+        return err("code_graph", "action must be a string")
+    target = args.get("target") or args.get("to") or ""
+    if not isinstance(target, str):
+        return err("code_graph", "target must be a string")
+    try:
+        timeout = float(args.get("timeout") or 60)
+    except (TypeError, ValueError):
+        return err("code_graph", "timeout must be a number")
+    timeout = min(max(timeout, 1), 120)
+    code, text = code_graph.query(
+        ctx.workspace,
+        query,
+        action=action,
+        target=target,
+        runner=ctx.runner,
+        timeout=timeout,
+    )
+    body = agent_shell.head_tail(text, max_chars=ctx.max_chars)
+    if code == 0:
+        return ok("code_graph", body or "exit 0", ctx)
+    if code == 127:
+        return err("code_graph", body or "code graph is not installed", ctx=ctx)
+    return err("code_graph", "graph query failed", output=body, ctx=ctx)
+
+
 def _git_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     del args
     return _git(ctx, ["status", "--short", "--branch"], tool="git_status")
@@ -1304,4 +1344,5 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "apply_patch": _apply_patch,
     "todo": _todo,
     "skill": _skill,
+    "code_graph": _code_graph,
 }

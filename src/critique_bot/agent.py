@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_edit, agent_shell, code_index, log
+from critique_bot import agent_edit, agent_shell, code_graph, code_index, log
 from critique_bot.agent_tools import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
@@ -726,6 +726,7 @@ def seed_message(
     else:
         lines.append("run_command is bash -lc.")
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
+    lines.append(code_graph.hint(workspace))
     lines.append(
         "Each run_command is a new process whose starting folder is the workspace above, "
         "not C:\\ and not the user profile. cd does not carry over; pass cwd to use another folder. "
@@ -1103,12 +1104,20 @@ def _prepare_index(workspace: Path, index_path: Path | None, task: str) -> str:
     """Bring the index up to date with the disk and build the repo map."""
     if index_path is None or not Path(index_path).is_file():
         return ""
+    graph = ""
+    try:
+        graph = code_graph.prepare(workspace)
+    except Exception as exc:  # the graph is a hint; a missing CLI must not stop the task
+        log.debug(f"code graph refresh failed: {exc}")
     try:
         code_index.refresh_index(workspace, index_path)
-        return code_index.repo_map(index_path, keywords=_keywords(task), budget_chars=REPO_MAP_CHARS)
+        mapped = code_index.repo_map(index_path, keywords=_keywords(task), budget_chars=REPO_MAP_CHARS)
     except Exception as exc:  # the map is a hint; a broken index must not stop the task
         log.debug(f"index refresh failed: {exc}")
-        return ""
+        return graph
+    if graph and mapped:
+        return graph + "\n\n" + mapped
+    return graph or mapped
 
 
 def _seed_session(
@@ -1328,6 +1337,7 @@ def _activity(call: ToolCall) -> str:
         "apply_patch": "Applying the changes",
         "todo": "Updating the task list",
         "skill": f"Loading {_one_line(str(args.get('name') or args.get('skill') or 'skills'), 40)}",
+        "code_graph": f"Tracing {_one_line(str(args.get('query') or args.get('symbol') or 'the code'), 50)}",
     }
     return messages.get(name, "Working on the next step")
 

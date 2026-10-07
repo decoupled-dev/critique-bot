@@ -50,6 +50,8 @@ SKIP_DIR_NAMES = frozenset(
         ".externalNativeBuild",
         "captures",
         ".idea",
+        ".codegraph",
+        "graphify-out",
         "bazel-bin",
         "bazel-out",
         "bazel-testlogs",

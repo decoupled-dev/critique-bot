@@ -12,7 +12,7 @@ from critique_bot.code_index import IndexStats, rebuild_index
 BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
-_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/")
+_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".codegraph/", "graphify-out/")
 _LOCAL_GITIGNORE = "cache/\nsessions/\n"
 NOTES_TEMPLATE = """# Project notes for bot-agent
 
