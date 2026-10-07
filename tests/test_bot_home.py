@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from critique_bot.bot_home import find_bot_home, init_bot_home
+from critique_bot.bot_home import (
+    check_command_from_notes,
+    find_bot_home,
+    init_bot_home,
+    resolve_check_command,
+)
 
 
 class BotHomeTests(unittest.TestCase):
@@ -33,6 +38,7 @@ class BotHomeTests(unittest.TestCase):
             self.assertEqual(home.project_notes(), "Run tests with: gradlew.bat test")
             init_bot_home(root)
             self.assertIn("gradlew.bat", home.project_notes())
+            self.assertEqual(check_command_from_notes(home.project_notes()), "")
 
     def test_second_init_keeps_settings_and_gitignore_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,3 +67,13 @@ class BotHomeTests(unittest.TestCase):
             assert found is not None
             self.assertEqual(found.root, root.resolve())
             self.assertIsNone(find_bot_home(Path(tempfile.mkdtemp())))
+
+    def test_test_with_line_is_the_check_and_settings_win(self) -> None:
+        notes = "Build with: ./gradlew assemble\nTest with: ./gradlew test\n"
+        self.assertEqual(check_command_from_notes(notes), "./gradlew test")
+        self.assertEqual(resolve_check_command({}, notes), "./gradlew test")
+        self.assertEqual(
+            resolve_check_command({"check_command": "pytest -q"}, notes),
+            "pytest -q",
+        )
+        self.assertIsNone(resolve_check_command({}, "Build with: make"))

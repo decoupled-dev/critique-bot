@@ -118,7 +118,7 @@ Kotlin only; do not add Java files.
 
 | Key | Effect |
 | --- | --- |
-| `check_command` | Runs after the model reports COMPLETED and at least one file changed. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. Example: `".\\gradlew.bat testDebugUnitTest"`. |
+| `check_command` | The finish line after a real edit. A `Test with:` or `Test command:` line in `AGENT.md` is used when this key is absent; this key wins when both are set. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. When the task ends, the program prints the on-disk diff once. Example: `".\\gradlew.bat testDebugUnitTest"`. |
 | `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller. Values under 4000 are ignored. |
 | `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first turn then sends only the environment and project notes. |
 

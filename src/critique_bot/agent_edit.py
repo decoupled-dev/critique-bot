@@ -450,6 +450,33 @@ class Checkpoints:
         self._step = 0
         self._saved = set()
 
+    def disk_diff(self) -> str | None:
+        """Unified diff of this task against the copies saved before the first edit.
+
+        None when this task has no checkpoint (no cache). An empty string means
+        every saved file still matches disk, including when nothing was saved.
+        """
+        if self.task_dir is None:
+            return None
+        if not self.task_dir.is_dir():
+            return ""
+        chunks: list[str] = []
+        for step in sorted(item for item in self.task_dir.iterdir() if item.is_dir()):
+            marker = step / "path.txt"
+            if not marker.is_file():
+                continue
+            rel = marker.read_text(encoding="utf-8").strip()
+            if not rel:
+                continue
+            target = self.workspace / rel
+            before_path = step / "before"
+            before = load_text(before_path).text if before_path.is_file() else ""
+            after = load_text(target).text if target.is_file() else ""
+            if before == after:
+                continue
+            chunks.append(hunk_diff(before, after, rel) or rel)
+        return "\n".join(chunks)
+
     def save(self, path: Path) -> None:
         """Copy ``path`` before its first change in this task."""
         if self.task_dir is None:

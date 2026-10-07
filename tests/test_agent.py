@@ -833,6 +833,39 @@ class LoopTests(unittest.TestCase):
         self.assertIn("read the closest region", session.sent[3])
         self.assertIn("41|return total(items)", session.sent[3])
 
+    def test_identical_write_is_not_a_change_on_disk(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        cache = root / ".bot" / "cache"
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted(
+            [
+                _call("write_files", path="note.txt", contents="one\n", overwrite=True),
+                "COMPLETED",
+                "COMPLETED",
+            ]
+        )
+        outcome: list[str] = []
+        _loop(session, root, "change note.txt", outcome=outcome, cache_dir=cache)
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "one\n")
+        self.assertIn("No file has changed", session.sent[2])
+        self.assertEqual(outcome, ["COMPLETED"])
+
+    def test_finish_diff_is_the_bytes_on_disk(self) -> None:
+        from critique_bot.agent_edit import Checkpoints
+
+        root = Path(tempfile.mkdtemp())
+        cache = root / ".bot" / "cache"
+        (root / "note.txt").write_text("one\n", encoding="utf-8")
+        session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED"])
+        _loop(session, root, "change note.txt", cache_dir=cache)
+        tasks = sorted(item for item in (cache / "undo").iterdir() if item.is_dir())
+        checkpoints = Checkpoints(cache, root)
+        checkpoints.task_dir = tasks[-1]
+        diff = checkpoints.disk_diff() or ""
+        self.assertIn("-one", diff)
+        self.assertIn("+two", diff)
+        self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
     def test_check_command_failure_is_sent_back(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")

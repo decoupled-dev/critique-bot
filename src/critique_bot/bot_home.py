@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,9 @@ empty. Keep the notes short and specific, for example:
 <!-- notes start -->
 """
 _NOTES_MARKER = "<!-- notes start -->"
+_CHECK_LINE = re.compile(
+    r"(?im)^[ \t>*-]*(?:test with|test command|check with|check command)\s*:\s*(.+?)\s*$"
+)
 
 
 class BotHomeError(RuntimeError):
@@ -65,6 +69,27 @@ class BotHome:
         if _NOTES_MARKER in text:
             text = text.split(_NOTES_MARKER, 1)[1]
         return text.strip()
+
+
+def check_command_from_notes(notes: str) -> str:
+    """The finish-line command written in project notes, or "" if there is none.
+
+    A line such as ``Test with: pytest -q`` is the command. ``Build with:`` is
+    not. A ``check_command`` in settings overrides this.
+    """
+    match = _CHECK_LINE.search(notes or "")
+    if match is None:
+        return ""
+    return match.group(1).strip().strip("`")
+
+
+def resolve_check_command(settings: dict, notes: str) -> str | None:
+    """Settings win. Otherwise the test line in ``.bot/AGENT.md`` is the check."""
+    raw = settings.get("check_command") if isinstance(settings, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    found = check_command_from_notes(notes)
+    return found or None
 
 
 def find_bot_home(start: Path) -> BotHome | None:

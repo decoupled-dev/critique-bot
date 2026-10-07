@@ -43,7 +43,7 @@ run_command: one command in the workspace. arguments: command, timeout (seconds,
 
 BUILD TOOLS. You are an expert engineer. Use what ENVIRONMENT lists. Do not download Gradle, a JDK, or the Android SDK into the repo. Do not invent a .gradle-* folder. Prefer the project wrapper (.\\gradlew.bat on Windows, ./gradlew otherwise). Use gradle on PATH only when there is no wrapper. If neither is available, reply BLOCKED. After a change to an Android or Gradle project, sync before COMPLETED by running the wrapper, for example .\\gradlew.bat tasks --console=plain, or the build command in PROJECT NOTES. Editing files is not a sync.
 
-git_status: no arguments. git_diff: arguments path, staged, stat. Use git_diff before you finish when the workspace is a git checkout. git_log: arguments limit (at most 50), path. git_show: arguments rev (commit, branch, or HEAD), path, patch (true to include the diff).
+git_status: no arguments. git_diff: arguments path, staged, stat. The program prints the on-disk diff when the task ends, so do not call git_diff just to finish. git_log: arguments limit (at most 50), path. git_show: arguments rev (commit, branch, or HEAD), path, patch (true to include the diff).
 
 todo: the task list for a job with several steps. arguments: todos [{content, status}]. status is pending, in_progress, completed, or cancelled. Only one item is in_progress. Omit todos to read the list back. Write it at the start of a multi-step task and update it as you finish each step. The list is repeated in STATE.
 

@@ -32,7 +32,7 @@ from critique_bot.agent_tools import (
     normalize_args,
 )
 from critique_bot.agent_tools import execute as _execute
-from critique_bot.bot_home import BotHome
+from critique_bot.bot_home import BotHome, resolve_check_command
 from critique_bot.chat_client import COMPLETION_IDLE
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
@@ -97,6 +97,7 @@ MAX_REFUSALS = 3
 MAX_FAILED_ROUNDS = 8
 MAX_TRUNCATIONS = 4
 MAX_CHECK_CYCLES = 2
+_REVIEW_LINES = 80
 REPO_MAP_CHARS = 2_500
 
 _FALLBACKS = {
@@ -911,6 +912,7 @@ class _TaskRun:
         self.check_passed = False
         self.nothing_nudged = False
         self.reason_asked = False
+        self.reviewed = False
         self.payload = ""
 
     def _present(self, text: str) -> None:
@@ -1077,7 +1079,8 @@ class _TaskRun:
             if reason:
                 _ui("bad", reason)
         if status in _STATUS_OK:
-            if self.state.mutated and self.check_command and not self.check_passed:
+            changed = self._files_changed()
+            if changed and self.check_command and not self.check_passed:
                 if self.check_cycles >= MAX_CHECK_CYCLES:
                     return self._end("FAILED", f"the check still fails: {self.check_command}")
                 self.check_cycles += 1
@@ -1091,7 +1094,7 @@ class _TaskRun:
                     self._send_results([result], extra=self.sections["CHECK_FAILED"])
                     return None
             if (
-                not self.state.mutated
+                not changed
                 and not unchanged_ok
                 and not self.nothing_nudged
                 and _asks_for_change(self.task)
@@ -1100,10 +1103,41 @@ class _TaskRun:
                 _ui("note", "Nothing changed yet. Asking once more.")
                 self._send_message("NOTHING_CHANGED")
                 return None
-        if self.state.mutated:
-            self._show_diffstat()
+        self._show_disk_once()
         _print_status(status)
         return status
+
+    def _files_changed(self) -> bool:
+        """True when this task's bytes on disk differ from the pre-edit copies.
+
+        With no checkpoint, the successful mutating tools are the record.
+        """
+        checkpoints = self.ctx.checkpoints
+        if checkpoints is not None and checkpoints.task_dir is not None:
+            diff = checkpoints.disk_diff()
+            if diff is not None:
+                return bool(diff.strip())
+        return self.state.mutated
+
+    def _show_disk_once(self) -> None:
+        """Print this task's on-disk diff a single time, for the person watching."""
+        if self.reviewed:
+            return
+        self.reviewed = True
+        checkpoints = self.ctx.checkpoints
+        diff = checkpoints.disk_diff() if checkpoints is not None else None
+        if diff is None:
+            if self.state.mutated:
+                self._show_diffstat()
+            return
+        if not diff.strip():
+            return
+        _ui("good", "On disk, this task changed:")
+        lines = diff.splitlines()
+        for line in lines[:_REVIEW_LINES]:
+            log.print_safe(f"  {line}", file=sys.stderr, flush=True)
+        if len(lines) > _REVIEW_LINES:
+            _ui("note", f"{len(lines) - _REVIEW_LINES} more lines in the diff")
 
     def _show_diffstat(self) -> None:
         changed = ", ".join(self.state.edits) or "none"
@@ -1119,6 +1153,7 @@ class _TaskRun:
         log.warn(message)
         _ui("bad", message)
         self.turns.append({"role": "assistant", "content": message})
+        self._show_disk_once()
         _print_status(code)
         return code
 
@@ -1336,9 +1371,10 @@ def run_agent(
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
-    check_command = settings.get("check_command") if isinstance(settings.get("check_command"), str) else None
+    notes = home.project_notes()
+    check_command = resolve_check_command(settings, notes)
     shell = agent_shell.detect_shell()
-    seed = seed_message(home.root, instructions, shell=shell, notes=home.project_notes())
+    seed = seed_message(home.root, instructions, shell=shell, notes=notes)
     _ensure_code_graph(home.root)
     try:
         with open_provider(config, headed=headed) as provider:
