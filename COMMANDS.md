@@ -2,7 +2,7 @@
 
 Reference for **modes**, **CLI flags**, and **in-session chat commands**. Examples are given for **Linux (bash)** and **Windows PowerShell**.
 
-Full command list for **Linux (bash)** and **Windows PowerShell**: [`COMMANDS.md`](COMMANDS.md). `--config` is required on every run. Copy [`config.example.json`](config.example.json) to `config.json` first.
+Full command list for **Linux (bash)** and **Windows PowerShell**: [`COMMANDS.md`](COMMANDS.md). `--config` is required on every run, except `crit` once a folder has stored it (see [Agent](#agent-crit)). Copy [`config.example.json`](config.example.json) to `config.json` first.
 
 How you invoke the bot:
 
@@ -83,10 +83,10 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 
 | Flag | Modes | Meaning |
 | --- | --- | --- |
-| `--config PATH` | all | JSON config (required). See [`config.example.json`](config.example.json). |
-| `--mode {review,general,chat}` | all | Mode. Default: `review`, or `general` if `--prompt` / `--prompt-file` is set. |
-| `--prompt TEXT` | general, chat | Prompt text. First message in chat. |
-| `--prompt-file PATH` | general, chat | Read prompt text from a file. |
+| `--config PATH` | all | JSON config (required, except `crit` after `.bot/settings.json` has stored it). See [`config.example.json`](config.example.json). |
+| `--mode {review,general,chat,agent}` | all | Mode. Default: `review`, or `general` if `--prompt` / `--prompt-file` is set. `crit` is `--mode agent`. |
+| `--prompt TEXT` | general, chat, agent | Prompt text. First message in chat; the task in agent. |
+| `--prompt-file PATH` | general, chat, agent | Read prompt text from a file. |
 | `--file PATH` | all | Attach a UTF-8 file (repeatable). Patch, source, or any text file. |
 | `FILE ...` | all | Trailing paths; same as `--file`. |
 | `--patch-file PATH` | all | Patch/diff to include. In review, omit in GitLab CI to build it from the checkout; locally, omit to read stdin. |
@@ -99,6 +99,8 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model (visible dropdown label). |
 | `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
+| `--yes` / `--auto` (`crit -y`) | agent | Run edits, commands, and web fetches without asking. Same as `"permissions": "auto"` in `.bot/settings.json`. |
+| `--max-rounds N` | agent | Optional cap on tool rounds per task. Omit to run until the model stops. |
 | `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `--label NAME` | submit | Override the job slug in the queue filename. Default: GitLab MR IID, CI job id, or `local`. |
 | `-h` / `--help` | all | Print CLI help. |
@@ -123,14 +125,73 @@ Used only after `--mode chat` is running (`You>` prompt).
 
 ## Agent (`crit`)
 
-`crit` is `critique-bot --mode agent`. `bot-agent` is the same command.
+`crit` is `critique-bot --mode agent`. `bot-agent` is the same command. Full guide: [`docs/bot-agent.md`](docs/bot-agent.md).
 
-```text
-crit
-crit "update the test cases"
+Install it and put `crit` on `PATH` with the setup script (options: [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script)):
+
+```bash
+scripts/setup-crit.sh
+scripts/setup-crit.sh --with-index --install-deps
 ```
 
-The first `crit` in a folder creates `.bot/` (or `--repo-dir`), shows the text-style screen, asks you to sign in, and opens the Edge login window. If `config.json` is in that directory, later tasks can omit `--config`. `crit init` only rebuilds the index. Windows setup for a global `crit` and one shared `config.json`: [`docs/bot-agent.md`](docs/bot-agent.md). The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a promise to keep working on a file change, is sent back again until the model calls a tool or actually finishes. A reply of DONE, or a reply that no edit is needed, is answered with DONE and that task ends. The `You>` prompt stays up until exit or Ctrl-D. `/theme` opens the text-style screen again. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
+```powershell
+.\scripts\setup-crit.ps1
+powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
+```
+
+The script's `crit` and `bot-agent` always pass `--config`. Without the script, pass `--config` on the first `crit` in a folder and it is stored in `.bot/settings.json`. A `config.json` already in the folder when `.bot` is created is recorded the same way.
+
+| Command | Meaning |
+| --- | --- |
+| `crit` | Open the session screen and wait for a task |
+| `crit "TASK"` | Run that task, then wait for the next one |
+| `crit --yes "TASK"` | No approval prompts (also `--auto`, `-y`) |
+| `crit --headed "TASK"` | Show the browser window |
+| `crit undo` | Restore the files the last task changed. Run again to step back further |
+| `crit init` | Create `.bot/`, or rebuild the index without replacing settings |
+
+The same commands in both shells:
+
+```bash
+cd ~/my-project
+crit
+crit "update the test cases"
+crit --yes "fix the failing test"
+crit undo
+crit init
+```
+
+```powershell
+cd C:\my-project
+crit
+crit "update the test cases"
+crit --yes "fix the failing test"
+crit undo
+crit init
+```
+
+The first `crit` in a folder creates `.bot/` (or under `--repo-dir`), shows the text-style screen, and asks you to sign in. It opens the browser only when the profile is not signed in yet. A task run from a subdirectory finds `.bot` by walking upward.
+
+Inside a session (the `>` prompt):
+
+| Input | Meaning |
+| --- | --- |
+| any other text | Send that task |
+| `@path` | Complete a file or folder path; mentioned files are listed for the model |
+| `/help` | Commands and shortcuts |
+| `/new` | Start a fresh chat |
+| `/clear` | Clear the screen |
+| `/undo` | Restore the files the last task changed |
+| `/permissions` | Switch between asking and not asking for this session |
+| `/status` | Model, shell, folder, permission mode, background commands |
+| `/shell [name]` | List the shells, or switch the default for this session |
+| `/tools` | The tools the model can call |
+| `/theme` | Change the text style |
+| `/exit`, `exit`, `quit`, Ctrl+D | Leave |
+| Ctrl+C | Clear the input; during a task, stop it; twice on an empty line, leave |
+| Alt+Enter, Ctrl+J, trailing `\` | New line |
+
+The instructions from `prompts/agent.txt` go out with the first task in one message. Tool results go back until the model finishes. A question with no file change is answered in words and that task ends. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes. A real question that needs your decision is shown to you. A reply of COMPLETED or DONE, or a reply that no edit is needed, ends that task. `--max-rounds` is an optional cap for a loop that never answers. Each session is saved to `.bot/sessions/<stamp>/agent.md` and `agent.json`.
 
 ---
 

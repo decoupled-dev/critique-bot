@@ -79,7 +79,8 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 | `prompt_input` | **yes** | Composer: `<textarea>`, contenteditable, or equivalent |
 | `assistant_messages` | **yes** | Nodes whose **visible text** is the assistant reply. The bot reads the last match as it grows |
 | `send_button` | no | Send control. Empty → press Enter in the prompt |
-| `stop_button` | no | The "stop generating" control. **Strongly recommended:** it is how the bot knows a reply actually finished |
+| `stop_button` | no | The "stop generating" control. **Strongly recommended:** it is how the bot knows a reply actually finished, and how `crit` stops a reply |
+| `continue_button` | no | A "Continue generating" control. Clicked once when it shows after a reply ends |
 | `model_dropdown_identifier` | no | Pin the model **opener** (see below). Also accepted at the **top level** of the JSON |
 | `model_dropdown` | no | CSS for the same opener, or a native `<select>` |
 | `model_option` | no | CSS for items **inside** the open model panel |
@@ -128,7 +129,13 @@ button[data-testid='stop-button'], button[aria-label*='Stop' i]
 
 Leave it empty and the bot falls back to `idle_ms`: it assumes a reply that stopped changing for that long is done. A model that pauses longer than `idle_ms` mid-answer — extended thinking, a tool call, rate limiting — then yields a **silently truncated** review. When that happens the run logs a warning and `review.json` records `completion.complete: false`, so you can tell truncated output apart from finished output.
 
-Even with `stop_button` empty, the bot also treats a visible `aria-busy="true"` on a reply bubble as "still generating".
+Even with `stop_button` empty, the bot also treats a visible `aria-busy="true"` on a reply bubble as "still generating", and tries a few common stop-button selectors.
+
+The `crit` agent uses the same signal two more ways. Before each send it checks whether the page is still writing an earlier reply; it waits up to about 20 seconds for that reply to finish, then clicks stop, so two replies never mix. Ctrl+C on a task, and a retry after a timed-out reply, click stop too. A wrong `stop_button` makes both slower and less reliable.
+
+### `continue_button`
+
+Optional. Some chat pages cut a long reply and show a "Continue generating" button. When this selector is set and the button is visible after a reply ends, the bot clicks it once, waits for the rest, and merges it into the same reply. When the page does not start writing again, the cut reply is kept. Empty (the default) never clicks. `critique-bot setup` does not pick this one; write it by hand.
 
 ### Model picker (`model` + dropdown fields)
 
@@ -240,7 +247,7 @@ Persistent Edge profile so cookies survive restarts.
 
 | Value | Result |
 | --- | --- |
-| Relative path (default `.edge-profile`) | Resolved against the **process cwd**, not the config file. Worker systemd `WorkingDirectory=/opt/critique-bot` → `/opt/critique-bot/.edge-profile` |
+| Relative path (default `.edge-profile`) | Resolved against the **process cwd**, not the config file. Worker systemd `WorkingDirectory=/opt/critique-bot` → `/opt/critique-bot/.edge-profile`. `crit` runs from each project folder, so use an absolute path there ([`bot-agent.md`](bot-agent.md); the setup scripts rewrite it for you) |
 | Absolute path | Used as-is. Prefer this on CI |
 | `system` or `default` | Not the daily desktop profile (Chromium 136+ blocks remote debugging there and returns HTTP 403). Uses a dedicated dir **outside** Edge's default User Data path: Linux `~/.config/critique-bot/msedge-user-data`, Windows `%LOCALAPPDATA%\critique-bot\msedge-user-data` |
 

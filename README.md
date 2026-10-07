@@ -20,6 +20,8 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+That installs Playwright plus `rich` and `prompt_toolkit` for the `crit` screen. To install everything and put `crit` on `PATH` in one step, use `scripts/setup-crit.sh` (Linux, macOS) or `scripts\setup-crit.ps1` (Windows): [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script).
+
 Copy [`config.example.json`](config.example.json) (or [`config.chatgpt.example.json`](config.chatgpt.example.json)) to `config.json`. Field-by-field reference: [`docs/config.json.md`](docs/config.json.md). Then let the setup UI fill in the selectors:
 
 ```bash
@@ -116,19 +118,20 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 ### Agent
 
-`crit` is the local coding agent (`bot-agent` is the same command). It edits the repo on this machine. The first run in a folder creates `.bot/`, asks which text style looks right in this terminal, then asks you to sign in and opens Edge. Later runs go straight to the task. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long chat. Edits run as soon as the model sends them; no plan is required. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that hands the task back, is sent back until the model calls a tool or finishes, and three refusals in a row end the task as FAILED. When the model says no edit is needed, or replies DONE, the program answers DONE and ends that task. `crit undo` restores the files changed by the last task.
+`crit` is the local coding agent (`bot-agent` is the same command). It edits the repo on this machine. The first run in a folder creates `.bot/`, asks which text style looks right in this terminal, then asks you to sign in and opens Edge when the profile is not signed in yet. Later runs go straight to the task. The instructions in [`prompts/agent.txt`](prompts/agent.txt) go out in front of the first task, in the same message, so the first reply already works on it and emits `<tool_call>` blocks. Later turns are tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long chat. Edits run as soon as you approve them (or at once with `--yes`); no plan is required. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes; after three in a row the next one ends the task as FAILED. A real question that needs your decision (or an `ask_user` call) is shown to you, and your answer goes back to the model. When the model says no edit is needed, or replies COMPLETED or DONE, that task ends; after an edit, a configured check command runs first. `crit undo` restores the files changed by the last task.
 
-The session screen works like Claude Code: a header box with the folder, model, shell, and permission mode; a `>` input box with history (`.bot/history`), Alt+Enter or Ctrl+J for a new line, `/` for commands (`/help`, `/new`, `/clear`, `/undo`, `/permissions`, `/status`, `/shell`, `/tools`, `/theme`, `/exit`), and `@` to complete file paths. Each tool step prints `● Read(src/app.py)` with a `⎿` result line; edits show a numbered diff. Edits, commands, web fetches, and paths outside the project ask first (yes / yes for this session / no with a note to the model); `crit --yes` or `"permissions": "auto"` in `.bot/settings.json` skips the prompts. Ctrl+C stops a task; twice on an empty prompt (or Ctrl+D, or `exit`) leaves. Piped output is plain text, and `NO_COLOR` is honored. Details: [`docs/bot-agent.md`](docs/bot-agent.md).
+The session screen works like Claude Code: a header box with the folder, model, shell, and permission mode; a `>` input box with history (`.bot/history`), Alt+Enter or Ctrl+J for a new line, `/` for commands (`/help`, `/new`, `/clear`, `/undo`, `/permissions`, `/status`, `/shell`, `/tools`, `/theme`, `/exit`), and `@` to complete file paths. Each tool step prints `● Read(src/app.py)` with a `⎿` result line; edits show a numbered diff. Edits, commands, web fetches, and paths outside the project ask first (yes / yes for this session / no with a note to the model); `crit --yes` or `"permissions": "auto"` in `.bot/settings.json` skips the prompts. Ctrl+C stops a task and the reply the chat page is still writing; twice on an empty prompt (or Ctrl+D, or `exit`) leaves. Piped output is plain text, and `NO_COLOR` is honored. Details: [`docs/bot-agent.md`](docs/bot-agent.md).
 
 ```bash
 crit
 crit "update the test cases"
 crit --yes "fix the failing test"
+crit undo
 ```
 
 The first `crit` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. `crit init` rebuilds the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
 
-On Windows, put `crit` on `PATH` and reuse one `config.json` from any new folder: [`docs/bot-agent.md`](docs/bot-agent.md).
+To put `crit` on `PATH` and reuse one `config.json` and one signed-in profile from any folder, run the setup script for your OS: `scripts/setup-crit.sh` on Linux and macOS, `.\scripts\setup-crit.ps1` on Windows. Script options and the manual steps for both: [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script).
 
 ## CI runner (GitLab)
 

@@ -157,7 +157,7 @@ Start with a one-shot `--mode general` prompt (login, selectors, real round trip
 | `$env:CRITIQUE_BIN submit` / `submit` not found | Windows job used `$env:CRITIQUE_BIN` without `&`. Use [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml): `& "$CRITIQUE_BIN" submit …` |
 | `worker is not running` | `queue-status`; systemd status; same `queue_dir` as the job |
 | Job queued forever | Worker logs; chat UI login expired (`worker --headed`); selectors in `config.json` |
-| Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup` |
+| Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup`. If the page shows a "Continue generating" button, set `selectors.continue_button` ([`config.json.md`](config.json.md#continue_button)) |
 | Same job retried and then failed | It hit `max_attempts` (default 3). The real error is in `status.json` and the worker log |
 | Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present, un-protected, scope `api`. `gitlab-post` exits non-zero when the summary fails to post |
 | `No Chromium browser was found` | Edge installed for the runner user |

@@ -9,7 +9,7 @@ Build **on the OS you want to ship**. A Linux binary will not run on Windows, an
 | Linux | bash / zsh | `critique-bot` |
 | Windows | PowerShell | `critique-bot.exe` |
 
-The zip bundles Python, Playwright’s Node driver, `config.example.json`, and the review template. It does **not** bundle Edge, and it does not bundle Playwright’s Chromium/Firefox/WebKit downloads. The bot drives system Edge (`channel=msedge`).
+The zip bundles Python, Playwright’s Node driver, `rich` and `prompt_toolkit` (the `crit` agent screen), `config.example.json`, the review and agent prompts, and CodeGraph. It does **not** bundle Edge, and it does not bundle Playwright’s Chromium/Firefox/WebKit downloads. The bot drives system Edge (`channel=msedge`).
 
 ## Target requirements
 
@@ -73,8 +73,10 @@ python scripts/build.py --skip-smoke
 critique-bot-<version>-linux-x64/
   critique-bot
   _internal/
+  codegraph/
   config.example.json
   prompts/review.txt
+  prompts/agent.txt
   README.txt
 ```
 
@@ -84,8 +86,10 @@ critique-bot-<version>-linux-x64/
 critique-bot-<version>-windows-x64\
   critique-bot.exe
   _internal\
+  codegraph\
   config.example.json
   prompts\review.txt
+  prompts\agent.txt
   README.txt
 ```
 
@@ -190,6 +194,26 @@ Or one line:
 .\critique-bot.exe --config config.json --mode general --prompt "Summarize this" notes.txt
 ```
 
+### Coding agent
+
+The zip has no separate `crit` binary. `crit` is `critique-bot --mode agent`, and everything it needs is in the zip. Run it from the project folder:
+
+**Linux (bash)**
+
+```bash
+cd ~/my-project
+/path/to/critique-bot-0.1.0-linux-x64/critique-bot --mode agent --config /path/to/config.json
+```
+
+**Windows (PowerShell)**
+
+```powershell
+cd C:\my-project
+C:\path\to\critique-bot-0.1.0-windows-x64\critique-bot.exe --mode agent --config C:\path\to\config.json
+```
+
+Set `user_data_dir` in that `config.json` to an absolute path so every project folder uses the same signed-in profile. The short `crit` command and the setup scripts are for a source install; see [Pip wheel](#pip-wheel-python-already-on-the-target).
+
 ## GitHub Actions (Linux + Windows)
 
 [`.github/workflows/build.yml`](.github/workflows/build.yml) ships Linux/Windows zips and a pip wheel on GitHub-hosted runners.
@@ -239,6 +263,12 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
+To also put `crit`, `bot-agent`, and `critique-bot` on `PATH` with one shared `config.json`, run the setup script from the checkout instead. It creates the venv, installs, and writes the commands into `~/.local/bin`:
+
+```bash
+scripts/setup-crit.sh
+```
+
 **Windows (PowerShell)**
 
 ```powershell
@@ -259,6 +289,14 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
+
+Or let the setup script do that and put `crit`, `bot-agent`, and `critique-bot` on your user `PATH` (in `%LOCALAPPDATA%\critique-bot\bin`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
+```
+
+Script options and the manual steps: [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script). The wheel installs `crit` and `bot-agent` as well; `pip` pulls in `rich` and `prompt_toolkit` with it.
 
 ## Environment overrides
 
