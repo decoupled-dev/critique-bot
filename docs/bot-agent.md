@@ -3,7 +3,7 @@
 Start here after the checkout already works: the repo is cloned, the virtual environment exists, the libraries are installed, `pip install -e .` has been run, and a one-word reply succeeded. That check looks like this in PowerShell, from the repo, with the venv activated:
 
 ```powershell
-critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG." --headed
+critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG."
 ```
 
 The steps below leave that `config.json` and the signed-in Edge profile where they are, and make `bot-agent` available in every folder. You type the task. You do not pass `--config` again.
@@ -87,7 +87,7 @@ bot-agent "create a hello.txt file that says hello"
 
 `init` creates `C:\agent-test\.bot\` (settings, a symbol index, and a sessions folder) and indexes the files there. An empty folder is enough. Run `bot-agent init` again later to rebuild the index. An existing `.bot\settings.json` is left as it is.
 
-The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. Add `--headed` on that first task if you want the Edge window visible:
+The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. If that profile is missing, the first task opens an Edge window so you can sign in. Add `--headed` when you want the window on a later task:
 
 ```powershell
 bot-agent --headed "create a hello.txt file that says hello"

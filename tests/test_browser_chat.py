@@ -14,6 +14,8 @@ from critique_bot.browser import (
     _first_existing,
     _helpful_edge_error,
     _is_system_profile,
+    _open_headed_if_profile_missing,
+    _profile_has_data,
     _stderr_tail,
     _urls_match,
     _wait_for_cdp,
@@ -290,6 +292,39 @@ class ProfileAndTailTests(unittest.TestCase):
             path.write_text("word " * 400, encoding="utf-8")
             out = _stderr_tail(path, limit=40)
             self.assertEqual(len(out), 40)
+
+    def test_profile_has_data_ignores_missing_empty_and_locks(self) -> None:
+        missing = Path("/no/such/edge-profile")
+        self.assertFalse(_profile_has_data(missing))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = root / "empty"
+            empty.mkdir()
+            self.assertFalse(_profile_has_data(empty))
+            locks = root / "locks"
+            locks.mkdir()
+            (locks / "SingletonLock").write_text("", encoding="utf-8")
+            self.assertFalse(_profile_has_data(locks))
+            ready = root / "ready"
+            ready.mkdir()
+            (ready / "Local State").write_text("{}", encoding="utf-8")
+            self.assertTrue(_profile_has_data(ready))
+
+    def test_missing_profile_opens_headed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / ".edge-profile"
+            self.assertTrue(_open_headed_if_profile_missing(False, missing))
+            self.assertTrue(_open_headed_if_profile_missing(True, missing))
+            missing.mkdir()
+            (missing / "Local State").write_text("{}", encoding="utf-8")
+            self.assertFalse(_open_headed_if_profile_missing(False, missing))
+            self.assertTrue(_open_headed_if_profile_missing(True, missing))
+            fresh = Path(tmp) / "fresh"
+            self.assertFalse(
+                _open_headed_if_profile_missing(
+                    False, fresh, storage_state="cookies.json"
+                )
+            )
 
     def test_first_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

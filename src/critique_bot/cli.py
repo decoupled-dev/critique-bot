@@ -644,7 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--headed",
         action="store_true",
-        help="show the browser window (selector debugging / first login)",
+        help="show the browser window (a missing Edge profile opens the window on its own)",
     )
     parser.add_argument(
         "--cdp-url",
@@ -762,7 +762,7 @@ def build_worker_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--headed",
         action="store_true",
-        help="show the browser window (first login / debugging)",
+        help="show the browser window (a missing Edge profile opens the window on its own)",
     )
     parser.add_argument(
         "--cdp-url",

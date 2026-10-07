@@ -69,7 +69,7 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
-Chat mode is headless unless you pass `--headed`.
+Chat mode is headless when an Edge profile already exists. A missing profile opens the window so you can sign in. Pass `--headed` to show the window anyway.
 
 ### Placeholders
 
@@ -95,7 +95,7 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--write-patch PATH` | review | Where to write a generated git diff (default: `diff.patch`). |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
 | `--output-dir DIR` | all | Where replies and failure screenshots go. Default: `out`. |
-| `--headed` | all | Show the Edge window. |
+| `--headed` | all | Show the Edge window. A missing profile does this on its own. |
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model (visible dropdown label). |
 | `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |

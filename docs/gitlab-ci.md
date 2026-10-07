@@ -25,7 +25,7 @@ Copy the job definition into the **application** repo (the project whose MRs sho
 | Machine | 64-bit Linux or Windows with Microsoft Edge (Chrome is a fallback) |
 | Shared disk | Job and worker must see the **same** `config.json` and `queue_dir` |
 | Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install: `/opt/critique-bot` (Linux) or `C:\critique-bot` (Windows) |
-| Session | Edge signed in once (`--headed`). Later runs reuse `.edge-profile` |
+| Session | First run opens Edge when `.edge-profile` is missing. Later runs reuse it |
 | Token | Project (or group) access token, scope `api`, role Developer+, in `CRITIQUE_GITLAB_TOKEN` |
 
 Shared GitLab.com / instance runners and Docker executors cannot run this bot: they have no signed-in Edge and no shared queue.
@@ -38,7 +38,7 @@ Shared GitLab.com / instance runners and Docker executors cannot run this bot: t
 4. Sign in once (needs a display):
 
    ```bash
-   /opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --headed --logs
+   /opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --logs
    ```
 
    Log in to the chat UI, confirm a prompt works, then Ctrl-C. Then confirm the whole setup with a one-shot prompt:

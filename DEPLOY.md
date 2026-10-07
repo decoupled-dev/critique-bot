@@ -118,34 +118,34 @@ Instead of editing selectors by hand, run the setup page. It opens Edge on your 
 
 That serves on `127.0.0.1:8765` and writes the selectors it picks straight into `config.json`. Use `--port 0` if that port is taken and `--no-open` on a machine where you would rather open the printed URL yourself.
 
-### First login (headed)
+### First login
 
-Later runs can omit `--headed`. The Edge profile defaults to `.edge-profile` in the current working directory.
+If `.edge-profile` is missing in the current working directory, the first run opens an Edge window so you can sign in. Later runs reuse that profile headless. Pass `--headed` when you want the window on a later run.
 
 **Linux (bash)**
 
 ```bash
-./critique-bot --config config.json --headed --mode general --prompt "hello"
+./critique-bot --config config.json --mode general --prompt "hello"
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-.\critique-bot.exe --config config.json --headed --mode general --prompt "hello"
+.\critique-bot.exe --config config.json --mode general --prompt "hello"
 ```
 
 ### Verify the install
 
-Send a one-shot prompt through the signed-in chat page. Use `--headed` on the first login.
+Send a one-shot prompt through the signed-in chat page. The first run opens Edge when the profile is missing.
 
 ```bash
 ./critique-bot --config config.json --mode general \
-  --prompt "Reply with exactly one word: PONG." --headed
+  --prompt "Reply with exactly one word: PONG."
 ```
 
 ```powershell
 .\critique-bot.exe --config config.json --mode general `
-  --prompt "Reply with exactly one word: PONG." --headed
+  --prompt "Reply with exactly one word: PONG."
 ```
 
 Or use **Send test prompt** in `critique-bot setup --config config.json`.
@@ -287,7 +287,7 @@ Also: `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`, `C
 Keep **one worker** running on the runner PC. CI jobs only call `submit`. The job and the worker must share `queue_dir` (GitLab **shell** executor).
 
 1. Install Edge, unpack the zip (or pip-install) onto the runner, copy `config.example.json` to `config.json`.
-2. Sign in once: `critique-bot worker --config config.json --headed --logs` (or one-shot `--headed`). Later runs reuse `.edge-profile`.
+2. Sign in once: `critique-bot worker --config config.json --logs` (the window opens when `.edge-profile` is missing). Later runs reuse that profile.
 3. Start the worker at boot:
    - **Linux:** copy [`packaging/critique-bot-worker.service`](packaging/critique-bot-worker.service) to `/etc/systemd/system/`, edit paths, then `systemctl enable --now critique-bot-worker`.
    - **Windows:** [`packaging/worker-start.ps1`](packaging/worker-start.ps1) at logon, or a scheduled task.

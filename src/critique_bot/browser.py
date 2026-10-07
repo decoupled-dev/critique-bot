@@ -158,6 +158,34 @@ def _helpful_edge_error(exc: BaseException) -> BrowserError:
     )
 
 
+def _profile_has_data(profile_dir: Path) -> bool:
+    """True when the directory already holds an Edge/Chromium profile."""
+    path = profile_dir.expanduser()
+    if not path.is_dir():
+        return False
+    ignored = set(_PROFILE_LOCKS)
+    try:
+        return any(entry.name not in ignored for entry in path.iterdir())
+    except OSError:
+        return False
+
+
+def _open_headed_if_profile_missing(
+    headed: bool,
+    profile_dir: Path,
+    *,
+    storage_state: str | None = None,
+) -> bool:
+    """Show Edge when this folder has no profile yet, so the first login needs no flag."""
+    if headed or storage_state or _profile_has_data(profile_dir):
+        return headed
+    log.info(
+        f"no Edge profile at {profile_dir}; opening a visible Edge window "
+        "so you can sign in. Later runs reuse that profile without --headed."
+    )
+    return True
+
+
 def _is_system_profile(user_data_dir: str | None) -> bool:
     if not user_data_dir:
         return False
@@ -1096,6 +1124,16 @@ def launch_edge(
     desktop_proc: subprocess.Popen[bytes] | None = None
     profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
     use_system_profile = _is_system_profile(str(profile_dir))
+    if use_system_profile:
+        profile_dir = dedicated_edge_user_data_dir()
+    if not cdp_url:
+        # Cookie files can sign in without a window. The dedicated desktop
+        # profile ignores storage_state, so a missing one still opens Edge.
+        headed = _open_headed_if_profile_missing(
+            headed,
+            profile_dir,
+            storage_state=None if use_system_profile else storage_state,
+        )
     try:
         log.info("starting Playwright")
         playwright = sync_playwright().start()
@@ -1112,12 +1150,12 @@ def launch_edge(
             return
 
         if use_system_profile:
-            profile_dir = dedicated_edge_user_data_dir()
             log.warn(
                 "Edge (Chrome 136+) refuses remote debugging on the daily desktop "
                 "profile (HTTP 403), so using a dedicated profile at "
-                f"{profile_dir}. Log in once with --headed; later runs reuse that "
-                "session. Everyday Edge is left open."
+                f"{profile_dir}. If that profile is missing, a visible Edge window "
+                "opens so you can sign in; later runs reuse that session. "
+                "Everyday Edge is left open."
             )
             if storage_state:
                 log.warn(
@@ -1144,7 +1182,7 @@ def launch_edge(
         close_existing_edge_sessions(profile_dir=profile_dir)
 
         profile_dir.mkdir(parents=True, exist_ok=True)
-        existing = any(profile_dir.iterdir())
+        existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
         args = list(EDGE_LAUNCH_ARGS)
         debug_url = ""

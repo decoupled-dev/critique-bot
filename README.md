@@ -40,9 +40,9 @@ To write selectors by hand instead:
 playwright codegen --channel msedge https://YOUR_CHAT_UI/
 ```
 
-The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. First run with `--headed`, log in to the chat UI, then later runs (including headless) reuse that session.
+The bot reuses a persistent Edge profile (default `.edge-profile`) so you stay signed in. If that folder has no profile yet, the first run opens an Edge window so you can log in to the chat UI. Later runs reuse that session headless unless you pass `--headed`.
 
-Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile (Windows: `%LOCALAPPDATA%\Microsoft\Edge\User Data`; HTTP 403), so the bot uses a dedicated profile outside that folder (`%LOCALAPPDATA%\critique-bot\msedge-user-data` on Windows, `~/.config/critique-bot/msedge-user-data` on Linux). Log in once with `--headed`; later runs reuse that session. Everyday Edge is left alone. Without `--headed`, this path is headless too.
+Set `user_data_dir` to `system` to open **real Microsoft Edge** (the desktop app, not a Playwright automation window). Chromium blocks remote debugging on the daily desktop profile (Windows: `%LOCALAPPDATA%\Microsoft\Edge\User Data`; HTTP 403), so the bot uses a dedicated profile outside that folder (`%LOCALAPPDATA%\critique-bot\msedge-user-data` on Windows, `~/.config/critique-bot/msedge-user-data` on Linux). A missing dedicated profile opens a visible window for the first login; later runs reuse that session. Everyday Edge is left alone. Pass `--headed` when you want the window on a later run.
 
 To attach to an Edge window you already started yourself, launch it with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`, then set `cdp_url` to `http://127.0.0.1:9222`.
 
@@ -52,11 +52,11 @@ Env overrides: `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_STORAGE_STATE`, 
 
 ## Check the install
 
-Send a one-shot prompt through the signed-in chat page. Use `--headed` on the first login so you can sign in; later runs reuse `.edge-profile`.
+Send a one-shot prompt through the signed-in chat page. The first run opens Edge when `.edge-profile` is missing so you can sign in; later runs reuse that profile. Pass `--headed` to show the window anyway.
 
 ```bash
 critique-bot --config config.json --mode general \
-  --prompt "Reply with exactly one word: PONG." --headed
+  --prompt "Reply with exactly one word: PONG."
 ```
 
 The setup UI has the same check: **Send test prompt**.
@@ -92,7 +92,7 @@ python -m critique_bot --config config.json --mode general \
 
 ### Chat
 
-Interactive conversation in this terminal. Edge stays headless unless you pass `--headed`. Type a message at `You>`; a spinner shows until the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`. Diagnostic logs are off by default; pass `--logs` to print them on stderr.
+Interactive conversation in this terminal. Edge stays headless when a profile already exists; a missing profile opens the window so you can sign in. Pass `--headed` to show the window anyway. Type a message at `You>`; a spinner shows until the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`. Diagnostic logs are off by default; pass `--logs` to print them on stderr.
 
 ```bash
 python -m critique_bot --config config.json --mode chat
