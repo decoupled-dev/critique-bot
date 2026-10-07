@@ -227,7 +227,7 @@ def wait_until_signed_in(
         "waiting for sign-in in the visible Edge window "
         f"(up to {int(timeout_ms / 1000)}s)"
     )
-    with log.loading("Sign in in the browser window..."):
+    with log.loading("Waiting for sign-in..."):
         while time.monotonic() < deadline:
             try:
                 if _chat_box_ready(page, prompt_selector):

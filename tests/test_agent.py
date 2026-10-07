@@ -10,14 +10,15 @@ from pathlib import Path
 from critique_bot.agent import (
     ALLOWED_TOOLS,
     command_argv,
+    commentary,
     execute_tool,
     format_tool_result,
     parse_tool_calls,
     run_agent_loop,
     seed_message,
 )
-from critique_bot.agent_shell import Shell
-from critique_bot.agent_tools import TaskState
+from critique_bot.agent_shell import Shell, command_argv as shell_command_argv, tool_hints
+from critique_bot.agent_tools import TaskState, canonical_tool
 from critique_bot.chat_client import COMPLETION_IDLE
 
 
@@ -76,6 +77,29 @@ Look here.
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["allowed"], list(ALLOWED_TOOLS))
         self.assertIn("unknown tool", payload["error"])
+
+    def test_commentary_hides_tool_markup(self) -> None:
+        text = (
+            "Reading the file.\n"
+            "<tool_call>\n"
+            '{"tool": "read_files"}\n'
+            "</tool_call>\n"
+            "<tool_result>\n"
+            '{"ok": true}\n'
+            "</tool_result>\n"
+            "Done."
+        )
+        visible = commentary(text)
+        self.assertNotIn("<tool_call>", visible)
+        self.assertNotIn("<tool_result>", visible)
+        self.assertNotIn("read_files", visible)
+        self.assertIn("Reading the file.", visible)
+        self.assertIn("Done.", visible)
+        unclosed = commentary('Hello\n<tool_call>\n{"tool": "list_files"}')
+        self.assertEqual(unclosed, "Hello")
+        mentioned = commentary("The notes mention <tool_call> blocks.")
+        self.assertNotIn("<tool_call>", mentioned)
+        self.assertIn("blocks.", mentioned)
 
     def test_invalid_json_and_unclosed_tag(self) -> None:
         calls, unclosed = parse_tool_calls("<tool_call>\n{not json}\n</tool_call>")
@@ -139,6 +163,24 @@ Look here.
         calls, _ = parse_tool_calls('Here is some JSON: {"tool": "hammer", "x": 1}')
         self.assertEqual(calls, [])
 
+    def test_unquoted_tool_json_is_a_call(self) -> None:
+        reply = '{tool:"write_file", arguments:{path:"notes.txt", contents:"hello"}}'
+        calls, unclosed = parse_tool_calls(reply)
+        self.assertFalse(unclosed)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0].error)
+        self.assertEqual(canonical_tool(calls[0].tool), "write_files")
+        self.assertEqual(calls[0].arguments["path"], "notes.txt")
+        self.assertEqual(calls[0].arguments["contents"], "hello")
+        visible = commentary("Writing the notes.\n" + reply)
+        self.assertIn("Writing the notes.", visible)
+        self.assertNotIn("write_file", visible)
+        self.assertNotIn("notes.txt", visible)
+        quoted, _ = parse_tool_calls('{"tool": "git_status", "arguments": {}}')
+        self.assertEqual(quoted[0].tool, "git_status")
+        unknown, _ = parse_tool_calls('{tool:"hammer", arguments:{x:1}}')
+        self.assertEqual(unknown, [])
+
     def test_tag_inside_a_string_is_not_a_cut_off_block(self) -> None:
         reply = _edit("README.md", "old", "The model emits <tool_call> blocks.")
         calls, unclosed = parse_tool_calls(reply)
@@ -170,6 +212,13 @@ class CommandArgvTests(unittest.TestCase):
         self.assertIn("LASTEXITCODE", script)
         self.assertIn("UTF8Encoding", script)
         self.assertEqual(command_argv("pwd", platform_name="linux"), ["bash", "-lc", "pwd"])
+        legacy = Shell("powershell", "powershell.exe", "Windows PowerShell 5.1 (powershell.exe)")
+        encoded = shell_command_argv("gradlew.bat tasks", platform_name="win32", shell=legacy)
+        script = base64.b64decode(encoded[-1]).decode("utf-16-le")
+        self.assertIn("if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }", script)
+        self.assertNotIn("$LASTEXITCODE -ne 0", script)
+        self.assertIn("if (-not $?) { exit 1 }", script)
+        self.assertIn("$PSNativeCommandUseErrorActionPreference = $false", script)
         placed = command_argv("Get-Location", platform_name="win32", cwd=Path(r"D:\work\app"))
         placed_script = base64.b64decode(placed[-1]).decode("utf-16-le")
         self.assertIn(r"Set-Location -LiteralPath 'D:\work\app'", placed_script)
@@ -193,6 +242,48 @@ class SeedMessageTests(unittest.TestCase):
 
         bash = seed_message(root, "INSTRUCTIONS", shell=Shell("bash", "bash", "bash -lc"), platform_name="linux")
         self.assertTrue(bash.startswith("SHELL: bash -lc."))
+
+    def test_tool_hints_report_gradle_java_and_android(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "gradlew.bat").write_text("@echo off\n", encoding="utf-8")
+            (root / "settings.gradle").write_text("include ':app'\n", encoding="utf-8")
+            app = root / "app"
+            app.mkdir()
+            (app / "build.gradle").write_text("plugins { id 'com.android.application' }\n", encoding="utf-8")
+            wrapper = root / "gradle" / "wrapper"
+            wrapper.mkdir(parents=True)
+            (wrapper / "gradle-wrapper.properties").write_text(
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-bin.zip\n",
+                encoding="utf-8",
+            )
+
+            def find(name: str) -> str | None:
+                if name == "gradle.bat":
+                    return r"C:\Gradle\bin\gradle.bat"
+                if name == "java.exe":
+                    return r"C:\Java\bin\java.exe"
+                return None
+
+            hints = "\n".join(
+                tool_hints(
+                    root,
+                    "win32",
+                    which=find,
+                    environ={"JAVA_HOME": r"C:\Java", "ANDROID_HOME": r"C:\Android\Sdk"},
+                )
+            )
+            self.assertIn("gradle wrapper: .\\gradlew.bat", hints)
+            self.assertIn("https://services.gradle.org/distributions/gradle-8.7-bin.zip", hints)
+            self.assertIn(r"gradle on PATH: C:\Gradle\bin\gradle.bat", hints)
+            self.assertIn(r"java: JAVA_HOME=C:\Java", hints)
+            self.assertIn(r"android sdk: C:\Android\Sdk", hints)
+            self.assertIn("android project: yes", hints)
+
+            missing = "\n".join(tool_hints(root, "win32", which=lambda name: None, environ={}))
+            self.assertIn("gradle on PATH: not installed", missing)
+            self.assertIn("java: not installed", missing)
+            self.assertIn("android sdk: not set", missing)
 
 
 class ToolTests(unittest.TestCase):
@@ -678,7 +769,9 @@ class LoopTests(unittest.TestCase):
         shown: list[str] = []
         session = _Scripted(
             [
-                "note.txt said one. It now says two.\n" + _edit("note.txt", "one", "two"),
+                "note.txt said one. It now says two.\n"
+                + _edit("note.txt", "one", "two")
+                + '\n<tool_result>\n{"tool": "edit_file", "ok": true}\n</tool_result>',
                 "COMPLETED",
             ]
         )
@@ -692,6 +785,7 @@ class LoopTests(unittest.TestCase):
         )
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
         self.assertTrue(any("said one" in item for item in shown))
+        self.assertFalse(any("<tool_call>" in item or "<tool_result>" in item for item in shown))
         self.assertEqual(outcome, ["COMPLETED"])
         self.assertNotIn("No tool_call", session.sent[1])
 

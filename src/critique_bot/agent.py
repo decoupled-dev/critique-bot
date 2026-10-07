@@ -50,11 +50,21 @@ __all__ = [
 
 _OPEN_RE = re.compile(r"<tool_call>", re.IGNORECASE)
 _BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
+_CLOSED_TOOL_MARKUP_RE = re.compile(
+    r"<\s*tool_call\b[^>]*>.*?<\s*/\s*tool_call\s*>"
+    r"|<\s*tool_result\b[^>]*>.*?<\s*/\s*tool_result\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TOOL_TAG_RE = re.compile(r"<\s*/?\s*tool_(?:call|result)\b[^>]*>", re.IGNORECASE)
+_UNCLOSED_TOOL_RE = re.compile(r"<\s*tool_(?:call|result)\b[^>]*>[\s\S]*\Z", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*)\n```$", re.DOTALL)
 _FENCED_JSON_RE = re.compile(
     r"```(?:json|tool|tool_call)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
 )
 _CHROME_LINES = frozenset({"json", "copy", "copy code", "code", "tool", "tool_call", "javascript"})
+_BARE_TOOL_KEY_RE = re.compile(
+    r"""(?:"tool"|'tool'|"name"|'name'|(?<![A-Za-z0-9_$])(?:tool|name)\s*:)"""
+)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _PLAN_RE = re.compile(r"<plan>\s*(.*?)\s*</plan>", re.IGNORECASE | re.DOTALL)
 _UNTAGGED_PLAN_RE = re.compile(r"(?is)\bfiles?\s*:.{8,}?\bchange\s*:.{8,}?\bcheck\s*:")
@@ -92,14 +102,16 @@ REPO_MAP_CHARS = 2_500
 _FALLBACKS = {
     "TASK_PREFIX": "Print tool_call blocks to act. Do not refuse.",
     "NUDGE": (
-        "No tool_call block was found, so nothing was run. Reply with a tool_call block now.\n"
+        "No tool_call block was found, so nothing was run. "
+        "A bare JSON object such as {tool:\"write_file\"} is not a tool call. "
+        "Reply with a tool_call block now.\n"
         "<tool_call>\n"
         '{"tool": "list_files", "arguments": {"path": "."}}\n'
         "</tool_call>"
     ),
     "RECOVER": (
         "The previous step did not finish. Do not ask what to change. Do not say the tools "
-        "are unavailable. Send the next tool_call now, for example:\n"
+        "are unavailable. A bare JSON object is not a tool call. Send the next tool_call now, for example:\n"
         "<tool_call>\n"
         '{"tool": "read_files", "arguments": {"path": "{path}"}}\n'
         "</tool_call>"
@@ -212,11 +224,9 @@ def parse_tool_calls(text: str) -> tuple[list[ToolCall], bool]:
 
 
 def _bare_json_calls(text: str) -> list[ToolCall]:
-    """JSON objects naming a known tool, as left by a chat page that rendered the fence."""
-    if '"tool"' not in text and "'tool'" not in text and '"name"' not in text:
-        return []
+    """JSON objects naming a known tool, including ``{tool:"write_file", ...}``."""
     calls: list[ToolCall] = []
-    for blob in _json_objects(text):
+    for blob in _bare_tool_blobs(text):
         try:
             data = _loads_lenient(blob)
         except json.JSONDecodeError:
@@ -227,8 +237,41 @@ def _bare_json_calls(text: str) -> list[ToolCall]:
     return calls
 
 
+def _bare_tool_blobs(text: str) -> list[str]:
+    """Raw JSON objects whose tool name this program can run."""
+    if not _BARE_TOOL_KEY_RE.search(text):
+        return []
+    blobs: list[str] = []
+    for blob in _json_objects(text):
+        try:
+            data = _loads_lenient(blob)
+        except json.JSONDecodeError:
+            continue
+        call = _call_from_data(data)
+        if not call.error and canonical_tool(call.tool):
+            blobs.append(blob)
+    return blobs
+
+
+def _hide_tool_markup(text: str) -> str:
+    """Drop tool protocol from text that is about to be printed."""
+    cleaned = _CLOSED_TOOL_MARKUP_RE.sub("", text)
+    unclosed = _UNCLOSED_TOOL_RE.search(cleaned)
+    if unclosed:
+        after = _TOOL_TAG_RE.sub("", cleaned[unclosed.start():], count=1).lstrip()
+        if not after or after[0] in "{[":
+            cleaned = cleaned[: unclosed.start()]
+        else:
+            cleaned = _TOOL_TAG_RE.sub("", cleaned)
+    else:
+        cleaned = _TOOL_TAG_RE.sub("", cleaned)
+    for blob in _bare_tool_blobs(cleaned):
+        cleaned = cleaned.replace(blob, "", 1)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def commentary(text: str) -> str:
-    return _BLOCK_RE.sub("", text).strip()
+    return _hide_tool_markup(text)
 
 
 def _answer_text(text: str) -> str:
@@ -870,6 +913,11 @@ class _TaskRun:
         self.reason_asked = False
         self.payload = ""
 
+    def _present(self, text: str) -> None:
+        visible = _present_text(text)
+        if visible:
+            self.show(visible)
+
     def run(self, first_payload: str) -> str:
         self.payload = first_payload
         rounds = 0
@@ -891,15 +939,15 @@ class _TaskRun:
         plan = _plan_text(reply)
         shown = _answer_text(note)
         if calls and shown:
-            self.show(shown)
+            self._present(shown)
         elif shown and not status:
-            self.show(plan if plan else shown)
+            self._present(plan if plan else shown)
         elif shown and status in _STATUS_OK:
-            self.show(shown)
+            self._present(shown)
         if unclosed or _idle_tool_reply(detail, reply):
             self.truncations += 1
             if self.truncations > MAX_TRUNCATIONS:
-                return self._end("FAILED", "the chat kept cutting replies off before the tool call closed")
+                return self._end("FAILED", "the reply was cut off before it finished")
             self._send_results(
                 [
                     {
@@ -927,7 +975,7 @@ class _TaskRun:
                 self.refusals += 1
                 if self.refusals > MAX_REFUSALS:
                     return self._end(
-                        "FAILED", f"the chat model stopped working on the task: {_one_line(reply, 160)}"
+                        "FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}"
                     )
                 _ui("note", "Still working on it.")
                 self._send_message("ANSWER")
@@ -943,7 +991,7 @@ class _TaskRun:
                 return self._finish("COMPLETED")
             self.refusals += 1
             if self.refusals > MAX_REFUSALS:
-                return self._end("FAILED", f"the chat model stopped working on the task: {_one_line(reply, 160)}")
+                return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
             _ui("note", "Still working on it.")
             self._send_message("RECOVER" if self.tools_ran else "NUDGE")
             return None
@@ -1235,7 +1283,9 @@ def _seed_session(
         calls, unclosed = parse_tool_calls(reply)
         note = commentary(reply)
         if note and _status_code(note) is None and note.strip().upper() != "READY":
-            show(note)
+            visible = _hide_tool_markup(note)
+            if visible:
+                show(visible)
         turns.append({"role": "assistant", "content": reply})
         if unclosed or _idle_tool_reply(getattr(session, "last_detail", None), reply):
             payload = format_tool_result(
@@ -1387,7 +1437,14 @@ def _paint(text: str, color: str) -> str:
     return f"\033[{color}m{text}\033[0m"
 
 
+def _present_text(text: str) -> str:
+    return _hide_tool_markup(text)
+
+
 def _ui(kind: str, message: str) -> None:
+    message = _present_text(message)
+    if not message:
+        return
     colors = {"task": "1", "note": "33", "work": "36", "good": "32", "bad": "31"}
     line = _paint(_one_line(message), colors.get(kind, "0"))
     log.print_safe(f"  {line}", file=sys.stderr, flush=True)
@@ -1471,7 +1528,10 @@ def _ui_result(result: dict[str, Any]) -> None:
 
 
 def _emit(text: str) -> None:
-    log.print_safe(text.rstrip(), flush=True)
+    visible = _present_text(text)
+    if not visible:
+        return
+    log.print_safe(visible, flush=True)
     log.print_safe(flush=True)
 
 

@@ -112,8 +112,10 @@ def _powershell_argv(command: str, exe: str = "powershell.exe", cwd: Path | None
 
     Windows PowerShell writes UTF-16 when stdout is a pipe, and a native
     program's exit code stays in ``$LASTEXITCODE`` instead of the process
-    code. The wrapper fixes both so the tool result is the text the command
-    printed. A terminating error exits 1 with its message on stderr.
+    code. A set ``$LASTEXITCODE``, including 0, is the process exit code.
+    ``$?`` is checked only when no native command ran: Windows PowerShell 5.1
+    sets ``$?`` to false when a program writes to stderr, which Gradle always
+    does. A terminating error exits 1 with its message on stderr.
     """
     location = ""
     if cwd is not None:
@@ -124,11 +126,14 @@ def _powershell_argv(command: str, exe: str = "powershell.exe", cwd: Path | None
         "$OutputEncoding = [Console]::OutputEncoding\n"
         "$ProgressPreference = 'SilentlyContinue'\n"
         "$ConfirmPreference = 'None'\n"
+        "if (Test-Path -Path variable:PSNativeCommandUseErrorActionPreference) {\n"
+        "    $PSNativeCommandUseErrorActionPreference = $false\n"
+        "}\n"
         "try {\n"
         f"{location}"
         f"{command.rstrip()}\n"
         "} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }\n"
-        "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+        "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }\n"
         "if (-not $?) { exit 1 }\n"
     )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -179,9 +184,21 @@ def adjust_command(command: str) -> str:
     return command
 
 
-def tool_hints(workspace: Path, platform_name: str | None = None) -> list[str]:
-    """Interpreters and wrappers the model should use, for the ENVIRONMENT block."""
+def tool_hints(
+    workspace: Path,
+    platform_name: str | None = None,
+    *,
+    which: Callable[[str], str | None] | None = None,
+    environ: dict[str, str] | None = None,
+) -> list[str]:
+    """Interpreters and wrappers the model should use, for the ENVIRONMENT block.
+
+    Gradle is detected with ``which`` and the wrapper files only. Running
+    ``gradle -v`` can download a distribution, so this never does that.
+    """
     plat = platform_name if platform_name is not None else sys.platform
+    find = which or shutil.which
+    env = os.environ if environ is None else environ
     root = Path(workspace)
     hints: list[str] = []
     for folder in (".venv", "venv", "env"):
@@ -194,15 +211,96 @@ def tool_hints(workspace: Path, platform_name: str | None = None) -> list[str]:
         if candidate.is_file():
             hints.append(f"python: {shown} (project virtualenv; use it instead of the system python)")
             break
-    if (root / "gradlew.bat").is_file() and plat == "win32":
-        hints.append("gradle: .\\gradlew.bat")
-    elif (root / "gradlew").is_file():
-        hints.append("gradle: ./gradlew")
+    wrapper = _wrapper_command(root, plat)
+    if wrapper:
+        line = f"gradle wrapper: {wrapper} (use this; do not download Gradle)"
+        pinned = _wrapper_distribution(root / "gradle" / "wrapper" / "gradle-wrapper.properties")
+        if pinned:
+            line += f"; pinned {pinned}"
+        hints.append(line)
+    gradle_names = ("gradle.bat", "gradle.cmd", "gradle") if plat == "win32" else ("gradle",)
+    gradle_path = _which_first(find, gradle_names)
+    if gradle_path:
+        hint = f"gradle on PATH: {gradle_path}"
+        if not wrapper:
+            hint += " (no project wrapper; use this)"
+        hints.append(hint)
+    else:
+        hints.append("gradle on PATH: not installed")
+    java_home = str(env.get("JAVA_HOME") or "").strip()
+    if java_home:
+        hints.append(f"java: JAVA_HOME={java_home}")
+    else:
+        java_names = ("java.exe", "java") if plat == "win32" else ("java",)
+        java_path = _which_first(find, java_names)
+        hints.append(f"java: {java_path}" if java_path else "java: not installed")
+    sdk = str(env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT") or "").strip()
+    hints.append(f"android sdk: {sdk}" if sdk else "android sdk: not set")
+    if _is_android_project(root):
+        hints.append(
+            "android project: yes. Sync with the gradle wrapper before COMPLETED. "
+            "Do not download a Gradle distribution into the repo."
+        )
     if (root / "package.json").is_file():
         hints.append("node: npm (package.json present)")
     if (root / "pyproject.toml").is_file() or (root / "setup.py").is_file():
         hints.append("python project: pyproject.toml present")
     return hints
+
+
+def _which_first(find: Callable[[str], str | None], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        found = find(name)
+        if found:
+            return found
+    return None
+
+
+def _wrapper_command(root: Path, plat: str) -> str:
+    bat = (root / "gradlew.bat").is_file()
+    script = (root / "gradlew").is_file()
+    if plat == "win32" and bat:
+        return ".\\gradlew.bat"
+    if script:
+        return "./gradlew"
+    if bat:
+        return ".\\gradlew.bat"
+    return ""
+
+
+def _wrapper_distribution(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith("distributionUrl="):
+            return line.split("=", 1)[1].strip().replace("\\:", ":").replace("\\=", "=")
+    return ""
+
+
+def _is_android_project(root: Path) -> bool:
+    if not (root / "settings.gradle").is_file() and not (root / "settings.gradle.kts").is_file():
+        return False
+    manifests = (
+        root / "AndroidManifest.xml",
+        root / "app" / "src" / "main" / "AndroidManifest.xml",
+        root / "src" / "main" / "AndroidManifest.xml",
+    )
+    if any(path.is_file() for path in manifests) or any(root.glob("*/src/main/AndroidManifest.xml")):
+        return True
+    builds = [root / "build.gradle", root / "build.gradle.kts", root / "app" / "build.gradle", root / "app" / "build.gradle.kts"]
+    builds.extend(root.glob("*/build.gradle"))
+    builds.extend(root.glob("*/build.gradle.kts"))
+    return any(_mentions_android_plugin(path) for path in builds)
+
+
+def _mentions_android_plugin(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:65536]
+    except OSError:
+        return False
+    return "com.android" in text
 
 
 def run(

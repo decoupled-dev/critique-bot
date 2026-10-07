@@ -1388,22 +1388,21 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
     )
     log.debug(f"before navigation: {describe_page(page)}")
 
-    with log.loading("Opening chat..."):
-        try:
-            navigate(page, config.url, timeout_ms)
-        except BrowserError as exc:
-            raise ChatError(str(exc)) from exc
+    try:
+        navigate(page, config.url, timeout_ms)
+    except BrowserError as exc:
+        raise ChatError(str(exc)) from exc
 
-        warn_if_login_page(page)
-        frames = list(page.frames)
-        log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
+    warn_if_login_page(page)
+    frames = list(page.frames)
+    log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
 
-        _wait_visible(
-            page.locator(selectors.prompt_input),
-            timeout_ms,
-            "prompt input after navigation",
-        )
-        _select_model(page, selectors, config.model, timeout_ms)
+    _wait_visible(
+        page.locator(selectors.prompt_input),
+        timeout_ms,
+        "prompt input after navigation",
+    )
+    _select_model(page, selectors, config.model, timeout_ms)
     log.info("chat UI is ready")
 
 

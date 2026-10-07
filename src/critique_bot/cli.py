@@ -1258,7 +1258,7 @@ def _main_run(argv: list[str]) -> int:
     response = ""
     completion: dict | None = None
     try:
-        setup_msg = "Starting browser..."
+        setup_msg = "Starting..."
         provider = open_provider(config, headed=headed)
         with ExitStack() as stack:
             with log.loading(setup_msg):
