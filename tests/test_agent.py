@@ -658,6 +658,13 @@ class ToolTests(unittest.TestCase):
 
 
 class LoopTests(unittest.TestCase):
+    def test_theme_command_is_not_sent_to_the_chat(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        session = _Scripted(["DONE"])
+        turns = _loop(session, root, "/theme")
+        self.assertEqual(session.sent, [])
+        self.assertEqual(turns, [])
+
     def test_edit_runs_without_a_plan_and_state_follows_each_result(self) -> None:
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")

@@ -65,7 +65,7 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 | `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). HEAD files + patch are inlined when they fit (instructions, then files, then patch). Otherwise: instructions, then one file per chat turn, then the patch | `{output-dir}/review.md` + `review.json` |
 | `general` | One-shot question | `--prompt` or `--prompt-file` (required) | Optional | `{output-dir}/reply.md` + `reply.json` |
 | `chat` | Interactive conversation | Optional first message via `--prompt` / `--prompt-file` | Optional on the first turn; more via `/file` | `{output-dir}/chat.md` + `chat.json` |
-| `agent` | Local coding harness. `bot-agent` is an alias | Positional task, or `--prompt` | The model reads files itself with tools | `.bot/sessions/<stamp>/agent.md` + `agent.json` |
+| `agent` | Local coding harness. `crit` is the command (`bot-agent` is the same) | Positional task, or `--prompt` | The model reads files itself with tools | `.bot/sessions/<stamp>/agent.md` + `agent.json` |
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
@@ -121,16 +121,16 @@ Used only after `--mode chat` is running (`You>` prompt).
 
 ---
 
-## Agent (`bot-agent`)
+## Agent (`crit`)
 
-`bot-agent` is an alias for `critique-bot --mode agent`. Same flags, shorter command.
+`crit` is `critique-bot --mode agent`. `bot-agent` is the same command.
 
 ```text
-bot-agent init
-bot-agent "update the test cases"
+crit
+crit "update the test cases"
 ```
 
-`init` creates `.bot/` in the current directory (or `--repo-dir`) and indexes the code. If `config.json` is in that directory, later tasks can omit `--config`. Windows setup for a global `bot-agent` and one shared `config.json`: [`docs/bot-agent.md`](docs/bot-agent.md). The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a promise to keep working on a file change, is sent back again until the model calls a tool or actually finishes. A reply of DONE, or a reply that no edit is needed, is answered with DONE and that task ends. The `You>` prompt stays up until exit or Ctrl-D. A `<plan>` block is required before the first edit, write, delete, or patch, and that edit has to be in a later reply. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
+The first `crit` in a folder creates `.bot/` (or `--repo-dir`), shows the text-style screen, asks you to sign in, and opens the Edge login window. If `config.json` is in that directory, later tasks can omit `--config`. `crit init` only rebuilds the index. Windows setup for a global `crit` and one shared `config.json`: [`docs/bot-agent.md`](docs/bot-agent.md). The first chat message seeds `prompts/agent.txt` (tool names and the `<tool_call>` format). The task is the next message. Tool results go back until the model replies with no `<tool_call>` tag. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a promise to keep working on a file change, is sent back again until the model calls a tool or actually finishes. A reply of DONE, or a reply that no edit is needed, is answered with DONE and that task ends. The `You>` prompt stays up until exit or Ctrl-D. `/theme` opens the text-style screen again. `--max-rounds` is an optional cap for a loop that never answers. `read_files` returns a window on a long file, and generated trees such as `out`, `prebuilts`, and `build` are left out of the index.
 
 ---
 

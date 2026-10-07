@@ -15,6 +15,7 @@ classifiers = [
 
 [project.scripts]
 critique-bot = "critique_bot.cli:main"
+crit = "critique_bot.agent_cli:main"
 bot-agent = "critique_bot.agent_cli:main"
 
 [project.optional-dependencies]

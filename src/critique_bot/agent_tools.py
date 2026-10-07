@@ -634,7 +634,7 @@ def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: i
 
 def _read_symbol(symbol: str, raw_path: Any, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if ctx.index_path is None:
-        return err("read_files", "symbol reads need the index; run bot-agent init, or pass paths and offset")
+        return err("read_files", "symbol reads need the index; run crit in this project, or pass paths and offset")
     hit: code_index.Symbol | None = None
     if isinstance(raw_path, str) and raw_path.strip():
         name = rel(ctx.workspace, resolve(ctx.workspace, raw_path))

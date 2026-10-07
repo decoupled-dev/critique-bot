@@ -66,6 +66,29 @@ def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
     return BrowserProvider(config, headed=headed)
 
 
+def login_in_edge(config: BotConfig) -> None:
+    """Open a visible Edge window and wait until the chat box shows a signed-in session."""
+    from critique_bot.browser import launch_edge, wait_until_signed_in
+
+    log.info(
+        "no saved Edge login; opening a visible window. "
+        "It closes after you sign in, then this run continues headless."
+    )
+    with launch_edge(
+        headed=True,
+        storage_state=config.storage_state,
+        user_data_dir=config.user_data_dir,
+        start_url=config.url,
+        timeout_ms=config.timeout_ms,
+    ) as page:
+        wait_until_signed_in(
+            page,
+            prompt_selector=config.selectors.prompt_input,
+            timeout_ms=max(config.timeout_ms, _LOGIN_WINDOW_MS),
+        )
+    log.info("closed the login window; continuing headless")
+
+
 def _job_config(config: BotConfig, model: str | None) -> BotConfig:
     if model:
         return replace(config, model=model)
@@ -82,7 +105,7 @@ class BrowserProvider(ChatProvider):
         self.can_parallelize = False
 
     def __enter__(self) -> BrowserProvider:
-        from critique_bot.browser import launch_edge, needs_visible_login, wait_until_signed_in
+        from critique_bot.browser import launch_edge, needs_visible_login
 
         signed_in_visibly = False
         if (
@@ -93,24 +116,8 @@ class BrowserProvider(ChatProvider):
                 self._config.storage_state,
             )
         ):
-            log.info(
-                "no saved Edge login; opening a visible window. "
-                "It closes after you sign in, then this run continues headless."
-            )
-            with launch_edge(
-                headed=True,
-                storage_state=self._config.storage_state,
-                user_data_dir=self._config.user_data_dir,
-                start_url=self._config.url,
-                timeout_ms=self._config.timeout_ms,
-            ) as page:
-                wait_until_signed_in(
-                    page,
-                    prompt_selector=self._config.selectors.prompt_input,
-                    timeout_ms=max(self._config.timeout_ms, _LOGIN_WINDOW_MS),
-                )
+            login_in_edge(self._config)
             signed_in_visibly = True
-            log.info("closed the login window; continuing headless")
 
         self._stack = ExitStack()
         cdp_out: dict[str, str] = {}

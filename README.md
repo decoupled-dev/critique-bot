@@ -116,16 +116,16 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 ### Agent
 
-`bot-agent` is an alias for `--mode agent`. It edits the repo on this machine. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long chat. Edits run as soon as the model sends them; no plan is required. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that hands the task back, is sent back until the model calls a tool or finishes, and three refusals in a row end the task as FAILED. When the model says no edit is needed, or replies DONE, the program answers DONE and ends that task. `bot-agent undo` restores the files changed by the last task. `exit` ends the session.
+`crit` is the local coding agent (`bot-agent` is the same command). It edits the repo on this machine. The first run in a folder creates `.bot/`, asks which text style looks right in this terminal, then asks you to sign in and opens Edge. Later runs go straight to the task. The first chat turn seeds [`prompts/agent.txt`](prompts/agent.txt) so the model emits `<tool_call>` blocks. Later turns are the task, then tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long chat. Edits run as soon as the model sends them; no plan is required. A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that hands the task back, is sent back until the model calls a tool or finishes, and three refusals in a row end the task as FAILED. When the model says no edit is needed, or replies DONE, the program answers DONE and ends that task. `crit undo` restores the files changed by the last task. `exit` ends the session. `/theme` opens the text-style screen again.
 
 ```bash
-bot-agent init
-bot-agent "update the test cases"
+crit
+crit "update the test cases"
 ```
 
-`init` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. Run it again to rebuild the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
+The first `crit` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. `crit init` rebuilds the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
 
-On Windows, put `bot-agent` on `PATH` and reuse one `config.json` from any new folder: [`docs/bot-agent.md`](docs/bot-agent.md).
+On Windows, put `crit` on `PATH` and reuse one `config.json` from any new folder: [`docs/bot-agent.md`](docs/bot-agent.md).
 
 ## CI runner (GitLab)
 

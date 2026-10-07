@@ -1,4 +1,4 @@
-"""``bot-agent`` is an alias for ``critique-bot --mode agent``."""
+"""``crit`` is the local coding agent. ``bot-agent`` is the same command."""
 
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
 _GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".codegraph/", "graphify-out/")
 _LOCAL_GITIGNORE = "cache/\nsessions/\n"
-NOTES_TEMPLATE = """# Project notes for bot-agent
+NOTES_TEMPLATE = """# Project notes for crit
 
 Lines below the marker are sent to the chat at the start of every session,
 like CLAUDE.md or .cursorrules. Nothing is sent while the space below is
@@ -157,6 +157,15 @@ def _load(root: Path, settings_path: Path) -> BotHome:
         sessions_dir=bot_dir / "sessions",
         index_path=bot_dir / "cache" / "index.sqlite",
         settings=raw,
+    )
+
+
+def update_settings(home: BotHome, **values: object) -> None:
+    """Merge ``values`` into ``.bot/settings.json`` and keep ``home.settings`` in step."""
+    home.settings.update(values)
+    home.settings_path.write_text(
+        json.dumps(home.settings, indent=2) + "\n",
+        encoding="utf-8",
     )
 
 

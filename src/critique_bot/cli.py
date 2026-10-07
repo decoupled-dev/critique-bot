@@ -11,6 +11,7 @@ from pathlib import Path
 
 from critique_bot import log
 from critique_bot.config import (
+    BotConfig,
     ConfigError,
     compose_prompt_from_args,
     default_prompt_template_path,
@@ -538,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Microsoft Edge. Default mode is a specialized code reviewer; "
             "--mode general sends any prompt and optional files; "
             "--mode chat is an interactive terminal session; "
-            "--mode agent is the local coding harness (alias: bot-agent)."
+            "--mode agent is the local coding harness (command: crit)."
         ),
         epilog=(
             "first run on a new machine:\n"
@@ -557,11 +558,13 @@ def build_parser() -> argparse.ArgumentParser:
             "--prompt 'Summarize this' notes.txt\n"
             "  critique-bot --config config.json --mode chat\n"
             "\n"
-            "local coding agent (bot-agent is an alias for --mode agent):\n"
-            "  bot-agent init\n"
-            "  bot-agent\n"
-            "  bot-agent \"update the test cases\"\n"
-            "  bot-agent undo    (restore the files the last task changed)\n"
+            "local coding agent (crit; bot-agent is the same command):\n"
+            "  crit\n"
+            "  crit \"update the test cases\"\n"
+            "  crit undo    (restore the files the last task changed)\n"
+            "\n"
+            "The first crit in a folder creates .bot, asks which text style\n"
+            "looks right, then asks to sign in and opens Edge.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -569,7 +572,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         help=(
             "path to JSON config (see config.example.json). "
-            "Required except an agent task after bot-agent init stored it"
+            "Required except an agent task after crit has stored it"
         ),
     )
     parser.add_argument(
@@ -580,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"{MODE_GENERAL}: send --prompt and optional files as-is. "
             f"{MODE_CHAT}: interactive conversation in this terminal "
             f"(--prompt is optional as the first message). "
-            f"{MODE_AGENT}: local coding harness; bot-agent is an alias"
+            f"{MODE_AGENT}: local coding harness; crit is the command"
         ),
     )
     prompt_src = parser.add_mutually_exclusive_group()
@@ -605,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help=(
             "files to include in the prompt (same as --file). "
-            "In agent mode this is the task text, or the word init"
+            "In agent mode this is the task text"
         ),
     )
     parser.add_argument(
@@ -1108,9 +1111,10 @@ def _main_gitlab_post(argv: list[str]) -> int:
 
 
 def _main_agent(args: argparse.Namespace) -> int:
-    """``--mode agent`` / ``bot-agent``: init the workspace, or run a task."""
+    """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
     from critique_bot.agent import run_agent
-    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home
+    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home, update_settings
+    from critique_bot.welcome import pick_theme, stdio_is_tty
 
     workspace = Path(args.repo_dir).resolve()
     words = [part for part in (args.paths or []) if part]
@@ -1125,7 +1129,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         config_path = Path(args.config) if args.config else (home.config_file() if home else None)
         if config_path is None or not config_path.is_file():
             print(
-                "Initialized. Add config.json, then run bot-agent.",
+                "Initialized. Add config.json, then run crit.",
                 file=sys.stderr,
             )
         return 0
@@ -1133,13 +1137,10 @@ def _main_agent(args: argparse.Namespace) -> int:
         return _config_error(ConfigError("init does not take extra arguments"))
 
     home = find_bot_home(workspace)
-    if home is None:
-        print(
-            "error: no .bot folder here. Run: bot-agent init",
-            file=sys.stderr,
-        )
-        return 1
     if words == ["undo"]:
+        if home is None:
+            print("nothing to undo", file=sys.stderr)
+            return 1
         from critique_bot.agent_edit import undo_last
 
         restored = undo_last(home.cache_dir, home.root)
@@ -1149,12 +1150,38 @@ def _main_agent(args: argparse.Namespace) -> int:
         for path in restored:
             print(f"restored {path}")
         return 0
+
+    welcome = stdio_is_tty() and (home is None or not home.settings.get("welcomed"))
+    chosen = None
+    if welcome and (home is None or not home.settings.get("theme")):
+        chosen = pick_theme()
+        if chosen is None:
+            return 1
+    just_created = home is None
+    if home is None:
+        try:
+            home = init_bot_home(workspace)
+        except BotHomeError as exc:
+            return _config_error(ConfigError(str(exc)))
+    if chosen is not None:
+        theme_id, syntax = chosen
+        update_settings(home, theme=theme_id, syntax_preview=syntax)
+    if args.config and not home.settings.get("config"):
+        update_settings(home, config=str(Path(args.config).resolve()))
+
+    has_task = bool(args.prompt or args.prompt_file or words or args.files)
     config_path = Path(args.config) if args.config else home.config_file()
-    if config_path is None or not config_path.is_file():
+    missing_config = config_path is None or not config_path.is_file()
+    if missing_config:
+        if not has_task and (just_created or welcome):
+            print(
+                "Initialized. Add config.json, then run crit.",
+                file=sys.stderr,
+            )
+            return 0
         return _config_error(
             ConfigError(
-                "no Edge config. Place config.json in the repo and run "
-                "bot-agent init, or pass --config"
+                "no Edge config. Place config.json in the repo, or pass --config"
             )
         )
     try:
@@ -1166,6 +1193,11 @@ def _main_agent(args: argparse.Namespace) -> int:
         _log_config(config)
     except ConfigError as exc:
         return _config_error(exc)
+
+    if welcome:
+        if not _welcome_login(config):
+            return 0 if not has_task else 1
+        update_settings(home, welcomed=True)
 
     task = ""
     if args.prompt_file:
@@ -1198,6 +1230,29 @@ def _main_agent(args: argparse.Namespace) -> int:
         output_dir=output_dir,
         headed=bool(args.headed),
     )
+
+
+def _welcome_login(config: BotConfig) -> bool:
+    """Ask to sign in, then open Edge. False means stop before the session."""
+    from critique_bot.browser import BrowserError, needs_visible_login
+    from critique_bot.provider import login_in_edge
+    from critique_bot.welcome import ask_login
+
+    if not ask_login():
+        print(
+            "Sign in later by running crit again and opening the login window.",
+            file=sys.stderr,
+        )
+        return False
+    if needs_visible_login(config.user_data_dir, config.storage_state):
+        try:
+            login_in_edge(config)
+        except BrowserError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return False
+        return True
+    print("Already signed in.", file=sys.stderr)
+    return True
 
 
 def _main_run(argv: list[str]) -> int:

@@ -1,4 +1,4 @@
-# Use bot-agent from any folder (Windows)
+# Use crit from any folder (Windows)
 
 Start here after the checkout already works: the repo is cloned, the virtual environment exists, the libraries are installed, `pip install -e .` has been run, and a one-word reply succeeded. That check looks like this in PowerShell, from the repo, with the venv activated:
 
@@ -6,7 +6,7 @@ Start here after the checkout already works: the repo is cloned, the virtual env
 critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG."
 ```
 
-The steps below leave that `config.json` and the signed-in Edge profile where they are, and make `bot-agent` available in every folder. You type the task. You do not pass `--config` again.
+The steps below leave that `config.json` and the signed-in Edge profile where they are, and make `crit` available in every folder. `bot-agent` is the same command. You type the task. You do not pass `--config` again.
 
 Use the real path of your clone everywhere this page says `C:\path\to\critique-bot`. If the virtual environment folder is named `venv` rather than `.venv`, use that name in the paths below.
 
@@ -30,9 +30,9 @@ Test-Path C:\path\to\critique-bot\.edge-profile
 
 That command prints `True` when the signed-in profile is in place.
 
-## 2. Add a bot-agent command that always uses this config
+## 2. Add a crit command that always uses this config
 
-`pip install -e .` wrote `bot-agent.exe` under `.venv\Scripts`. Calling that exe directly still expects `--config` on each task. A small `.cmd` in front of it passes the config for you.
+`pip install -e .` wrote `crit.exe` under `.venv\Scripts` (`bot-agent.exe` is the same program). Calling that exe directly still expects `--config` on each task. A small `.cmd` in front of it passes the config for you.
 
 In PowerShell, from any directory:
 
@@ -40,6 +40,11 @@ In PowerShell, from any directory:
 $repo = "C:\path\to\critique-bot"
 $bin  = "$env:LOCALAPPDATA\critique-bot\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+@"
+@echo off
+"$repo\.venv\Scripts\crit.exe" --config "$repo\config.json" %*
+"@ | Set-Content -Encoding ASCII "$bin\crit.cmd"
 
 @"
 @echo off
@@ -52,7 +57,7 @@ New-Item -ItemType Directory -Force -Path $bin | Out-Null
 "@ | Set-Content -Encoding ASCII "$bin\critique-bot.cmd"
 ```
 
-`bot-agent.cmd` always adds `--config` pointing at the file from the PONG check. `critique-bot.cmd` is the same install for `setup`, `worker`, and `submit`. Those commands still take `--config` when you run them.
+`crit.cmd` always adds `--config` pointing at the file from the PONG check. `bot-agent.cmd` does the same thing. `critique-bot.cmd` is the same install for `setup`, `worker`, and `submit`. Those commands still take `--config` when you run them.
 
 ## 3. Put that folder on PATH
 
@@ -64,46 +69,46 @@ $parts = @($current -split ";" | Where-Object { $_ -and ($_ -ne $bin) })
 [Environment]::SetEnvironmentVariable("Path", (($bin, $parts) -join ";"), "User")
 ```
 
-This puts the new `bin` folder first. If `.venv\Scripts` is already on your user `PATH` from an earlier setup, the command above leaves it later in the list, so `bot-agent` runs the `.cmd` that includes the config.
+This puts the new `bin` folder first. If `.venv\Scripts` is already on your user `PATH` from an earlier setup, the command above leaves it later in the list, so `crit` runs the `.cmd` that includes the config.
 
 Close PowerShell and open a new window. The PATH change applies to new windows only.
 
 ## 4. Check the command
 
 ```powershell
-Get-Command bot-agent
-bot-agent --help
+Get-Command crit
+crit --help
 ```
 
-`Get-Command` should show `...\AppData\Local\critique-bot\bin\bot-agent.cmd`. The help text is the critique-bot help.
+`Get-Command` should show `...\AppData\Local\critique-bot\bin\crit.cmd`. The help text is the critique-bot help.
 
 ## 5. Run it in another folder
 
 ```powershell
 cd C:\agent-test
-bot-agent init
-bot-agent "create a hello.txt file that says hello"
+crit
+crit "create a hello.txt file that says hello"
 ```
 
-`init` creates `C:\agent-test\.bot\` (settings, a symbol index, and a sessions folder) and indexes the files there. An empty folder is enough. Run `bot-agent init` again later to rebuild the index. An existing `.bot\settings.json` is left as it is.
+The first `crit` creates `C:\agent-test\.bot\` (settings, a symbol index, and a sessions folder), asks which text style looks right, then asks you to sign in and opens Edge. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot\settings.json` is left as it is.
 
-The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. If that profile is missing, the first task opens an Edge window so you can sign in, then closes it and continues headless. Add `--headed` when you want the window on a later task:
+The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. The first `crit` asks before it opens Edge. The window closes after you sign in, and later tasks stay headless. Add `--headed` when you want the window on a later task:
 
 ```powershell
-bot-agent --headed "create a hello.txt file that says hello"
+crit --headed "create a hello.txt file that says hello"
 ```
 
-Later tasks from the same folder, or from any other folder after `bot-agent init` there, are the task text alone:
+Later tasks from the same folder, or from any other folder after the first `crit` there, are the task text alone:
 
 ```powershell
-bot-agent "update the test cases"
+crit "update the test cases"
 ```
 
 ## 6. Tune a project
 
 ### Project notes
 
-`bot-agent init` writes `.bot\AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every session, the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
+The first `crit` writes `.bot\AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every session, the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
 
 ```markdown
 <!-- notes start -->
@@ -121,6 +126,8 @@ Kotlin only; do not add Java files.
 | `check_command` | The finish line after a real edit. A `Test with:` or `Test command:` line in `AGENT.md` is used when this key is absent; this key wins when both are set. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. When the task ends, the program prints the on-disk diff once. Example: `".\\gradlew.bat testDebugUnitTest"`. |
 | `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller. Values under 4000 are ignored. |
 | `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first turn then sends only the environment and project notes. |
+| `theme` | Text style chosen on the welcome screen: `auto`, `dark`, `light`, `dark-colorblind`, `light-colorblind`, `dark-ansi`, or `light-ansi`. `/theme` changes it. |
+| `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 
 ### Use a ChatGPT Project for the instructions
 
@@ -140,7 +147,7 @@ winget install --id Microsoft.PowerShell
 
 ### Undo
 
-Before a task changes a file for the first time, `bot-agent` saves a copy under `.bot\cache\undo\`. `bot-agent undo` restores the files changed by the most recent task and deletes the files it created. Run it again to step back one more task. The last 20 tasks are kept.
+Before a task changes a file for the first time, `crit` saves a copy under `.bot\cache\undo\`. `crit undo` restores the files changed by the most recent task and deletes the files it created. Run it again to step back one more task. The last 20 tasks are kept.
 
 ## What stays where it is
 
@@ -148,7 +155,7 @@ Before a task changes a file for the first time, `bot-agent` saves a copy under 
 | --- | --- |
 | `C:\path\to\critique-bot\` | Checkout. The commands run code from here. |
 | `C:\path\to\critique-bot\.venv\` | The install from `pip install -e .`. |
-| `C:\path\to\critique-bot\config.json` | Chat URL and selectors. The `bot-agent` command passes this every time. |
+| `C:\path\to\critique-bot\config.json` | Chat URL and selectors. The `crit` command passes this every time. |
 | `C:\path\to\critique-bot\.edge-profile\` | Signed-in Edge session. `user_data_dir` points here with a full path. |
-| `%LOCALAPPDATA%\critique-bot\bin\` | `bot-agent.cmd` and `critique-bot.cmd` on your user `PATH`. |
-| `C:\some-project\.bot\` | Per-project index and sessions, created by `bot-agent init`. |
+| `%LOCALAPPDATA%\critique-bot\bin\` | `crit.cmd`, `bot-agent.cmd`, and `critique-bot.cmd` on your user `PATH`. |
+| `C:\some-project\.bot\` | Per-project index and sessions, created the first time you run `crit` there. |

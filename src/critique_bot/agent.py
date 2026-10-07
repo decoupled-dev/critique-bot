@@ -1293,6 +1293,12 @@ def run_agent_loop(
             if not pending.strip():
                 break
         task = pending.strip()
+        if task.lower() == "/theme":
+            from critique_bot.welcome import reopen_theme
+
+            reopen_theme(workspace)
+            pending = ""
+            continue
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
         repo_map = _prepare_index(workspace, index_path, task)
