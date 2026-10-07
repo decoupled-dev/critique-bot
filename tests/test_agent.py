@@ -102,6 +102,20 @@ Look here.
         calls, _ = parse_tool_calls(samples[3])
         self.assertEqual(calls[0].arguments["old_string"], 'say "hi"')
 
+    def test_windows_path_keeps_the_backslash(self) -> None:
+        reply = (
+            "<tool_call>\n"
+            '{"tool": "run_command", "arguments": {"command": ".gradle-8.5\\gradle-8.5\\bin\\gradle.bat help"}}\n'
+            "</tool_call>"
+        )
+        calls, unclosed = parse_tool_calls(reply)
+        self.assertFalse(unclosed)
+        self.assertIsNone(calls[0].error, calls[0].error)
+        self.assertEqual(
+            calls[0].arguments["command"],
+            ".gradle-8.5\\gradle-8.5\\bin\\gradle.bat help",
+        )
+
     def test_accepts_name_and_args(self) -> None:
         calls, unclosed = parse_tool_calls('<tool_call>\n{"name": "git_status", "args": {}}\n</tool_call>')
         self.assertFalse(unclosed)

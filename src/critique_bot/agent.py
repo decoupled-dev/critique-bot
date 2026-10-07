@@ -437,6 +437,19 @@ def _repair_json(text: str) -> str:
     return _TRAILING_COMMA_RE.sub(r"\1", "".join(out))
 
 
+_JSON_STRING_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+}
+
+
 def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
     """Read one quoted string, keeping interior quotes and raw newlines."""
     index += 1
@@ -455,19 +468,19 @@ def _read_json_string(source: str, index: int, quote: str) -> tuple[str, int]:
                     continue
                 except ValueError:
                     pass
-            chars.append(
-                {
-                    "n": "\n",
-                    "t": "\t",
-                    "r": "\r",
-                    '"': '"',
-                    "'": "'",
-                    "\\": "\\",
-                    "/": "/",
-                    "b": "\b",
-                    "f": "\f",
-                }.get(escaped, escaped)
-            )
+            # A single backslash in a Windows path (\gradle, \bin) is not a
+            # JSON escape. Dropping it glues the folders together. \b and \f
+            # before a letter are the same: \bin, not a backspace.
+            if escaped in {"b", "f"} and index + 2 < length and (
+                source[index + 2].isalnum() or source[index + 2] in "._"
+            ):
+                chars.append("\\")
+                chars.append(escaped)
+            elif escaped in _JSON_STRING_ESCAPES:
+                chars.append(_JSON_STRING_ESCAPES[escaped])
+            else:
+                chars.append("\\")
+                chars.append(escaped)
             index += 2
             continue
         if char == quote and _string_ends(source, index):
@@ -1100,6 +1113,18 @@ def run_agent_loop(
     return turns
 
 
+def _ensure_code_graph(workspace: Path) -> None:
+    """Download CodeGraph and build the project graph before the chat opens."""
+    _ui("note", "Setting up the code graph.")
+    try:
+        note = code_graph.prepare(workspace, timeout=600)
+    except Exception as exc:
+        _ui("bad", f"Code graph setup failed: {exc}")
+        return
+    if note:
+        _ui("note", note)
+
+
 def _prepare_index(workspace: Path, index_path: Path | None, task: str) -> str:
     """Bring the index up to date with the disk and build the repo map."""
     if index_path is None or not Path(index_path).is_file():
@@ -1193,6 +1218,7 @@ def run_agent(
     check_command = settings.get("check_command") if isinstance(settings.get("check_command"), str) else None
     shell = agent_shell.detect_shell()
     seed = seed_message(home.root, instructions, shell=shell, notes=home.project_notes())
+    _ensure_code_graph(home.root)
     try:
         with open_provider(config, headed=headed) as provider:
             with provider.session() as session:

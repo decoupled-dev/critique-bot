@@ -221,6 +221,8 @@ def prepare(
             if code == 0:
                 return "code graph: codegraph synced"
             return "code graph: codegraph sync failed. Use search_code.\n" + _brief(out)
+        if runner is None:
+            log.print_safe("Building the code graph for this project...", file=sys.stderr, flush=True)
         code, out = _run(root, _command(exe, ["init", str(root), "--yes"]), timeout=timeout, runner=runner)
         if code == 0:
             return "code graph: codegraph built"
