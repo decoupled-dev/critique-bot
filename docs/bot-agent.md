@@ -87,7 +87,7 @@ bot-agent "create a hello.txt file that says hello"
 
 `init` creates `C:\agent-test\.bot\` (settings, a symbol index, and a sessions folder) and indexes the files there. An empty folder is enough. Run `bot-agent init` again later to rebuild the index. An existing `.bot\settings.json` is left as it is.
 
-The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. If that profile is missing, the first task opens an Edge window so you can sign in. Add `--headed` when you want the window on a later task:
+The task uses the chat URL, selectors, and Edge profile from the clone's `config.json`. If that profile is missing, the first task opens an Edge window so you can sign in, then closes it and continues headless. Add `--headed` when you want the window on a later task:
 
 ```powershell
 bot-agent --headed "create a hello.txt file that says hello"

@@ -69,7 +69,7 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
-Chat mode is headless when an Edge profile already exists. A missing profile opens the window so you can sign in. Pass `--headed` to show the window anyway.
+Chat mode is headless when an Edge profile already exists. A missing profile opens the window so you can sign in, then closes it and continues headless. Pass `--headed` to show the window anyway. While a reply is coming, the spinner says `Thinking...`.
 
 ### Placeholders
 

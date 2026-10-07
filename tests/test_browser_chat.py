@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from critique_bot.browser import (
     BrowserError,
     _cdp_version_urls,
+    _chat_box_ready,
     _first_existing,
     _helpful_edge_error,
     _is_system_profile,
@@ -25,8 +26,10 @@ from critique_bot.browser import (
     guard_page_network,
     is_blank_url,
     is_browser_closed_error,
+    needs_visible_login,
     page_block_hint,
     request_is_allowed,
+    wait_until_signed_in,
     warn_if_login_page,
 )
 from critique_bot.chat_client import (
@@ -268,6 +271,42 @@ class PageHintTests(unittest.TestCase):
         self.assertIn("url error", text)
 
 
+class _LoginPage:
+    """Login tab that becomes the chat page after the first poll."""
+
+    def __init__(self, become_ready: bool = True) -> None:
+        self.url = "https://login.example/signin"
+        self.ready = False
+        self.polls = 0
+        self.become_ready = become_ready
+
+    def title(self) -> str:
+        return "Sign in" if "login" in self.url else "Chat"
+
+    def locator(self, selector: str) -> "_PromptLocator":
+        del selector
+        return _PromptLocator(self)
+
+    def wait_for_timeout(self, ms: int) -> None:
+        del ms
+        self.polls += 1
+        if self.become_ready:
+            self.url = "https://chat.example/c"
+            self.ready = True
+
+
+class _PromptLocator:
+    def __init__(self, page: _LoginPage) -> None:
+        self.page = page
+        self.first = self
+
+    def count(self) -> int:
+        return 1 if self.page.ready else 0
+
+    def is_visible(self) -> bool:
+        return self.page.ready
+
+
 class ProfileAndTailTests(unittest.TestCase):
     def test_empty_user_data_is_not_system(self) -> None:
         self.assertFalse(_is_system_profile(None))
@@ -325,6 +364,29 @@ class ProfileAndTailTests(unittest.TestCase):
                     False, fresh, storage_state="cookies.json"
                 )
             )
+
+    def test_needs_visible_login(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / ".edge-profile"
+            self.assertTrue(needs_visible_login(str(missing), None))
+            self.assertFalse(needs_visible_login(str(missing), "cookies.json"))
+            missing.mkdir()
+            (missing / "Local State").write_text("{}", encoding="utf-8")
+            self.assertFalse(needs_visible_login(str(missing), None))
+
+    def test_wait_until_signed_in_when_chat_box_appears(self) -> None:
+        page = _LoginPage()
+        with patch("critique_bot.browser._LOGIN_POLL_MS", 0):
+            wait_until_signed_in(page, prompt_selector="#prompt", timeout_ms=5_000)
+        self.assertGreaterEqual(page.polls, 1)
+        self.assertTrue(_chat_box_ready(page, "#prompt"))
+
+    def test_wait_until_signed_in_times_out(self) -> None:
+        page = _LoginPage(become_ready=False)
+        with patch("critique_bot.browser._LOGIN_POLL_MS", 0):
+            with self.assertRaises(BrowserError) as ctx:
+                wait_until_signed_in(page, prompt_selector="#prompt", timeout_ms=1)
+        self.assertIn("sign in", str(ctx.exception).lower())
 
     def test_first_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

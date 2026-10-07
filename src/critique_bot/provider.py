@@ -10,7 +10,12 @@ from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
 
+from critique_bot import log
 from critique_bot.config import BotConfig
+
+#: How long the first-login window stays open. Longer than a normal turn so
+#: SSO and a second factor can finish before the window closes.
+_LOGIN_WINDOW_MS = 600_000
 
 
 class ChatSession:
@@ -77,7 +82,35 @@ class BrowserProvider(ChatProvider):
         self.can_parallelize = False
 
     def __enter__(self) -> BrowserProvider:
-        from critique_bot.browser import launch_edge
+        from critique_bot.browser import launch_edge, needs_visible_login, wait_until_signed_in
+
+        signed_in_visibly = False
+        if (
+            not self._headed
+            and not self._config.cdp_url
+            and needs_visible_login(
+                self._config.user_data_dir,
+                self._config.storage_state,
+            )
+        ):
+            log.info(
+                "no saved Edge login; opening a visible window. "
+                "It closes after you sign in, then this run continues headless."
+            )
+            with launch_edge(
+                headed=True,
+                storage_state=self._config.storage_state,
+                user_data_dir=self._config.user_data_dir,
+                start_url=self._config.url,
+                timeout_ms=self._config.timeout_ms,
+            ) as page:
+                wait_until_signed_in(
+                    page,
+                    prompt_selector=self._config.selectors.prompt_input,
+                    timeout_ms=max(self._config.timeout_ms, _LOGIN_WINDOW_MS),
+                )
+            signed_in_visibly = True
+            log.info("closed the login window; continuing headless")
 
         self._stack = ExitStack()
         cdp_out: dict[str, str] = {}
@@ -90,6 +123,7 @@ class BrowserProvider(ChatProvider):
                 start_url=self._config.url,
                 timeout_ms=self._config.timeout_ms,
                 cdp_out=cdp_out if self._config.max_parallel_tabs > 1 else None,
+                promote_missing_profile=not signed_in_visibly,
             )
         )
         self._cdp_url = cdp_out.get("url") or self._config.cdp_url

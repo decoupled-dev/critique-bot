@@ -120,7 +120,7 @@ That serves on `127.0.0.1:8765` and writes the selectors it picks straight into 
 
 ### First login
 
-If `.edge-profile` is missing in the current working directory, the first run opens an Edge window so you can sign in. Later runs reuse that profile headless. Pass `--headed` when you want the window on a later run.
+If `.edge-profile` is missing in the current working directory, the first run opens an Edge window so you can sign in. After you sign in, that window closes and the same run continues headless. Later runs reuse that profile headless. Pass `--headed` when you want the window on a later run.
 
 **Linux (bash)**
 

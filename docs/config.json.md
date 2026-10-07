@@ -68,7 +68,7 @@ Full URL of the chat page the bot should open. Must not contain `YOUR_CHAT_URL` 
 
 Edge is not allowed to call anything else after the chat page has loaded. Playwright aborts later XHR/fetch whose host is not the chat URL (or a subdomain of it). Loopback (`127.0.0.1` / `localhost`) stays open so CDP and the local setup page still work. For `https://chatgpt.com/` the first-party hosts that page itself is served from (`openai.com`, `oaistatic.com`, `oaiusercontent.com`, Cloudflare, Arkose) are also allowed; Google, GitHub, ads, and arbitrary sites are not. The first navigation is not intercepted, so login and Cloudflare challenges can finish.
 
-The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run; pass `worker --headed` to show it again later.
+The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
 
 ---
 

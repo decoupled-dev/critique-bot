@@ -186,6 +186,83 @@ def _open_headed_if_profile_missing(
     return True
 
 
+def needs_visible_login(
+    user_data_dir: str | None,
+    storage_state: str | None,
+) -> bool:
+    """True when this run must show a window so someone can sign in once."""
+    profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
+    use_system_profile = _is_system_profile(str(profile_dir))
+    if use_system_profile:
+        profile_dir = dedicated_edge_user_data_dir()
+        storage_state = None
+    if storage_state or _profile_has_data(profile_dir):
+        return False
+    return True
+
+
+_LOGIN_POLL_MS = 500
+
+
+def wait_until_signed_in(
+    page: Page,
+    *,
+    prompt_selector: str,
+    timeout_ms: int,
+) -> None:
+    """Block until the chat box is visible and the tab is not a login page.
+
+    The caller opens a headed window for this wait, then closes it and
+    continues in a headless window that reuses the saved profile.
+    """
+    if timeout_ms < 1:
+        raise BrowserError("sign-in wait timeout must be positive")
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    log.print_safe(
+        "Sign in in the Edge window. It closes after login, then this run continues without a window.",
+        file=sys.stderr,
+        flush=True,
+    )
+    log.info(
+        "waiting for sign-in in the visible Edge window "
+        f"(up to {int(timeout_ms / 1000)}s)"
+    )
+    with log.loading("Sign in in the browser window..."):
+        while time.monotonic() < deadline:
+            try:
+                if _chat_box_ready(page, prompt_selector):
+                    log.info("signed in; chat box is visible")
+                    return
+            except Exception as exc:
+                log.debug(f"sign-in check failed: {exc}")
+            try:
+                page.wait_for_timeout(_LOGIN_POLL_MS)
+            except Exception as exc:
+                raise BrowserError(
+                    "the login window closed before the chat box was ready"
+                ) from exc
+    raise BrowserError(
+        "timed out waiting for you to sign in in the Edge window. "
+        "Finish login before the chat box appears, then run again."
+    )
+
+
+def _chat_box_ready(page: Page, prompt_selector: str) -> bool:
+    if page_block_hint(page):
+        return False
+    locator = page.locator(prompt_selector).first
+    try:
+        count = locator.count()
+    except Exception:
+        return False
+    if not count:
+        return False
+    try:
+        return bool(locator.is_visible())
+    except Exception:
+        return False
+
+
 def _is_system_profile(user_data_dir: str | None) -> bool:
     if not user_data_dir:
         return False
@@ -1108,6 +1185,7 @@ def launch_edge(
     start_url: str | None = None,
     timeout_ms: int = 180_000,
     cdp_out: dict[str, str] | None = None,
+    promote_missing_profile: bool = True,
 ) -> Iterator[Page]:
     """Open Microsoft Edge on a persistent signed-in profile (or attach via CDP)."""
     try:
@@ -1126,7 +1204,7 @@ def launch_edge(
     use_system_profile = _is_system_profile(str(profile_dir))
     if use_system_profile:
         profile_dir = dedicated_edge_user_data_dir()
-    if not cdp_url:
+    if not cdp_url and promote_missing_profile:
         # Cookie files can sign in without a window. The dedicated desktop
         # profile ignores storage_state, so a missing one still opens Edge.
         headed = _open_headed_if_profile_missing(

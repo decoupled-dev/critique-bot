@@ -1426,7 +1426,7 @@ def send_turn(
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
     )
-    with log.loading("Waiting for assistant..."):
+    with log.loading("Thinking..."):
         _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
         _send(page, selectors, timeout_ms)
 
