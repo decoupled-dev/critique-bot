@@ -178,16 +178,13 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
 
 
 def _bundle_codegraph(payload: Path) -> None:
-    """Put the official CodeGraph release beside the executable. A failed download still ships the zip."""
+    """Extract the CodeGraph archive shipped in this repo beside the executable."""
     sys.path.insert(0, str(ROOT / "src"))
     from critique_bot.code_graph import install_bundle
 
     dest = payload / "codegraph"
     print("adding CodeGraph to the bundle")
-    try:
-        install_bundle(dest)
-    except OSError as exc:
-        print(f"warning: CodeGraph was not added to the zip ({exc})", file=sys.stderr)
+    install_bundle(dest)
 
 
 def main(argv: list[str] | None = None) -> int:

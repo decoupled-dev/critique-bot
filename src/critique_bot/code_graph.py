@@ -1,10 +1,11 @@
 """Knowledge-graph lookup for ``code_graph``.
 
 CodeGraph (https://github.com/colbymchenry/codegraph) ships with this app.
-The first task uses a copy placed next to the frozen executable, or downloads
-the official release into the app data directory. ``init`` builds
-``.codegraph/`` once, and ``sync`` updates it after files change. One
-``explore`` call returns the symbols, their source, and the call path.
+The official v1.6.2 archives live in ``vendor/codegraph`` and are extracted
+locally. Nothing is downloaded. A frozen build also looks beside the
+executable. ``init`` builds ``.codegraph/`` once, and ``sync`` updates it
+after files change. One ``explore`` call returns the symbols, their source,
+and the call path.
 
 Graphify (https://github.com/Graphify-Labs/graphify) is a fallback when its
 CLI is the only graph tool a caller injected and ``graphify-out/graph.json``
@@ -14,6 +15,7 @@ model. Code extraction stays on this machine.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import re
@@ -21,8 +23,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.parse
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
@@ -30,7 +30,7 @@ from typing import Any, Callable
 from critique_bot import agent_shell, log
 
 _ACTIONS = {"explore", "callers", "callees", "impact", "explain", "path"}
-_LATEST = "https://github.com/colbymchenry/codegraph/releases/latest"
+_VENDORED_VERSION = "1.6.2"
 _VERSION = re.compile(r"^v?\d+\.\d+\.\d+$")
 
 
@@ -85,7 +85,7 @@ def install_dir() -> Path:
 
 
 def shipped_dirs() -> list[Path]:
-    """Places the app looks before downloading: beside a frozen exe, then the app data dir."""
+    """Places the app looks before extracting: beside a frozen exe, then the app data dir."""
     dirs: list[Path] = []
     if getattr(sys, "frozen", False):
         dirs.append(Path(sys.executable).resolve().parent / "codegraph")
@@ -103,7 +103,7 @@ def launcher(root: Path) -> Path | None:
 
 
 def resolve(which: Callable[[str], str | None] | None = None, *, download: bool = False) -> str:
-    """Path to the CodeGraph launcher. An injected ``which`` never touches the network."""
+    """Path to the CodeGraph launcher. An injected ``which`` never extracts or searches."""
     if which is not None:
         return which("codegraph") or ""
     for root in shipped_dirs():
@@ -144,23 +144,61 @@ def release_url(version: str, target: str) -> str:
     )
 
 
+def vendor_dirs(version: str = "") -> list[Path]:
+    """Directories that may hold the CodeGraph archives shipped in this repo."""
+    tag = _pinned(version)
+    relative = Path("vendor") / "codegraph" / tag
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(path)
+
+    for parent in Path(__file__).resolve().parents:
+        add(parent / relative)
+    if getattr(sys, "frozen", False):
+        add(Path(sys.executable).resolve().parent / relative)
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            add(Path(meipass) / relative)
+    return found
+
+
+def vendored_archive(target: str, version: str = "") -> Path:
+    """Local release archive for ``target``. Never contacts the network."""
+    name = archive_name(target)
+    for root in vendor_dirs(version):
+        path = root / name
+        if path.is_file():
+            return path
+    tag = _pinned(version)
+    raise OSError(
+        f"CodeGraph {name} ({tag}) is not in this app. "
+        "The copy ships in vendor/codegraph and is not downloaded."
+    )
+
+
 def install_bundle(dest: Path, *, version: str = "") -> Path:
-    """Download the official CodeGraph release for this OS into ``dest`` and return its launcher."""
+    """Extract the CodeGraph build shipped in this repo into ``dest`` and return its launcher."""
     dest = Path(dest)
     found = launcher(dest)
     if found is not None:
         return found
-    tag = _tag(version) if version else latest_tag()
-    target = platform_target()
-    url = release_url(tag, target)
+    archive = vendored_archive(platform_target(), version)
+    _verify_sha256(archive)
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = dest.with_name(dest.name + ".partial")
-    archive = dest.parent / f".download-{archive_name(target)}"
     if staging.exists():
         shutil.rmtree(staging)
-    log.print_safe("Downloading CodeGraph into this app (one time)...", file=sys.stderr, flush=True)
+    log.print_safe("Installing the CodeGraph copy shipped with this app...", file=sys.stderr, flush=True)
     try:
-        _download(url, archive)
         _extract(archive, staging)
         if launcher(staging) is None:
             raise OSError("CodeGraph archive did not contain bin/codegraph")
@@ -168,8 +206,6 @@ def install_bundle(dest: Path, *, version: str = "") -> Path:
             shutil.rmtree(dest)
         staging.rename(dest)
     finally:
-        if archive.exists():
-            archive.unlink()
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
     found = launcher(dest)
@@ -180,21 +216,9 @@ def install_bundle(dest: Path, *, version: str = "") -> Path:
     return found
 
 
-def latest_tag() -> str:
-    pinned = os.environ.get("CODEGRAPH_VERSION", "").strip()
-    if pinned:
-        return _tag(pinned)
-    opener = urllib.request.build_opener(_CaptureRedirect)
-    request = urllib.request.Request(_LATEST, headers={"User-Agent": "critique-bot"})
-    try:
-        with opener.open(request, timeout=30) as response:
-            final = response.geturl()
-    except _Redirect as found:
-        final = found.url
-    parsed = urllib.parse.urlparse(final)
-    if parsed.netloc != "github.com" or "/colbymchenry/codegraph/releases/tag/" not in parsed.path:
-        raise OSError(f"unexpected CodeGraph release URL {final}")
-    return _tag(parsed.path.rstrip("/").rsplit("/", 1)[-1])
+def _pinned(version: str) -> str:
+    pinned = version.strip() or os.environ.get("CODEGRAPH_VERSION", "").strip() or _VENDORED_VERSION
+    return _tag(pinned)
 
 
 def prepare(
@@ -370,19 +394,6 @@ def _brief(text: str) -> str:
     return line[-1][:240] if line else "no output"
 
 
-class _Redirect(Exception):
-    def __init__(self, url: str) -> None:
-        super().__init__(url)
-        self.url = url
-
-
-class _CaptureRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        del req, fp, code, msg
-        location = headers.get("Location") or newurl
-        raise _Redirect(str(location))
-
-
 def _tag(version: str) -> str:
     text = version.strip()
     if not _VERSION.fullmatch(text):
@@ -396,10 +407,21 @@ def _command(exe: str, args: list[str]) -> list[str]:
     return [exe, *args]
 
 
-def _download(url: str, dest: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "critique-bot"})
-    with urllib.request.urlopen(request, timeout=300) as response, dest.open("wb") as out:
-        shutil.copyfileobj(response, out)
+def _verify_sha256(archive: Path) -> None:
+    sums = archive.parent / "SHA256SUMS"
+    if not sums.is_file():
+        raise OSError(f"CodeGraph checksum file is missing beside {archive.name}")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    expected = ""
+    for line in sums.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[-1].lstrip("*") == archive.name:
+            expected = parts[0].lower()
+            break
+    if not expected:
+        raise OSError(f"CodeGraph checksum file has no entry for {archive.name}")
+    if digest != expected:
+        raise OSError(f"CodeGraph archive {archive.name} failed its checksum")
 
 
 def _safe_rel(name: str) -> str | None:

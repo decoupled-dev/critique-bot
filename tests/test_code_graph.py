@@ -10,14 +10,18 @@ from critique_bot.agent_tools import canonical_tool
 from critique_bot.code_graph import (
     _command,
     _extract,
+    _verify_sha256,
     archive_name,
     detect,
     hint,
+    install_bundle,
     launcher,
+    platform_target,
     prepare,
     query,
     release_url,
     sync_after_edit,
+    vendored_archive,
 )
 
 
@@ -164,6 +168,28 @@ class CodeGraphTests(unittest.TestCase):
             self.assertEqual(found.read_bytes(), payload)
             self.assertFalse((root / "outside.txt").exists())
             self.assertFalse((dest / "outside.txt").exists())
+
+    def test_install_uses_the_archive_shipped_in_the_repo(self) -> None:
+        archive = vendored_archive(platform_target())
+        self.assertTrue(archive.is_file())
+        self.assertIn("vendor/codegraph/v1.6.2", archive.as_posix())
+        with tempfile.TemporaryDirectory() as tmp:
+            found = install_bundle(Path(tmp) / "current")
+            self.assertTrue(Path(found).is_file())
+            self.assertEqual(Path(found).name, "codegraph")
+        with self.assertRaises(OSError) as missing:
+            vendored_archive(platform_target(), "9.9.9")
+        self.assertIn("not downloaded", str(missing.exception))
+
+    def test_checksum_rejects_a_changed_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "codegraph-linux-x64.tar.gz"
+            archive.write_bytes(b"not the release")
+            (root / "SHA256SUMS").write_text("abc  codegraph-linux-x64.tar.gz\n", encoding="utf-8")
+            with self.assertRaises(OSError) as bad:
+                _verify_sha256(archive)
+            self.assertIn("failed its checksum", str(bad.exception))
 
     def test_windows_launcher_goes_through_cmd(self) -> None:
         self.assertEqual(

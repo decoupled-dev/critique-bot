@@ -1,2 +1,6 @@
 critique-bot
 Copyright 2026 Decoupled
+
+CodeGraph binaries in vendor/codegraph are official builds of
+https://github.com/colbymchenry/codegraph (MIT License).
+See vendor/codegraph/v1.6.2/LICENSE.
