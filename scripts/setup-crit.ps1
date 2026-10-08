@@ -29,6 +29,11 @@ Config file the commands use. Default: <repo>\config.json
 Folder for crit.cmd, bot-agent.cmd, critique-bot.cmd.
 Default: %LOCALAPPDATA%\critique-bot\bin
 
+.PARAMETER Proxy
+Proxy for every pip install, for example
+http://username:password@10.1.2.3:8080.
+uv installs receive the same URL through HTTP_PROXY and HTTPS_PROXY.
+
 .PARAMETER WithIndex
 Also install the [index] extra (tree-sitter parsers).
 
@@ -43,12 +48,16 @@ Do not look for Microsoft Edge / Google Chrome.
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
+
+.EXAMPLE
+.\scripts\setup-crit.ps1 -Proxy "http://username:password@10.1.2.3:8080"
 #>
 [CmdletBinding()]
 param(
     [string]$Venv = "",
     [string]$Config = "",
     [string]$BinDir = "",
+    [string]$Proxy = "",
     [switch]$WithIndex,
     [switch]$NoPath,
     [switch]$SkipBrowserCheck
@@ -143,6 +152,27 @@ function Get-MergedPath([string]$Current, [string]$Dir) {
         }
     }
     return ($parts -join ";")
+}
+
+# Hide userinfo in http://user:password@host:port when printing.
+function Get-RedactedProxy([string]$Url) {
+    if ($Url -match '^(?<scheme>[a-z][a-z0-9+.-]*://)[^/@]+@(?<rest>.+)$') {
+        return ($Matches.scheme + '***@' + $Matches.rest)
+    }
+    return $Url
+}
+
+# pip arguments with --proxy URL appended when a proxy was given.
+function Get-PipInstallArgs([string]$ProxyUrl, [string[]]$Arguments) {
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($Arguments)) {
+        if ($null -ne $item -and "$item" -ne "") { $list.Add([string]$item) }
+    }
+    if ($ProxyUrl) {
+        $list.Add("--proxy")
+        $list.Add($ProxyUrl)
+    }
+    return ,$list.ToArray()
 }
 
 # Text of one .cmd wrapper (CRLF line endings).
@@ -253,6 +283,15 @@ function Invoke-Setup {
     Write-Info "venv:    $venvDir"
     Write-Info "config:  $configPath"
     Write-Info "bin dir: $binPath"
+    if ($Proxy) {
+        if ($Proxy -notmatch '^[a-z][a-z0-9+.-]*://') {
+            Stop-Setup "-Proxy must be a URL such as http://username:password@10.1.2.3:8080"
+        }
+        foreach ($name in @("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")) {
+            Set-Item -Path "Env:$name" -Value $Proxy
+        }
+        Write-Info ("proxy:   " + (Get-RedactedProxy $Proxy))
+    }
 
     # 1. Python
     Write-Step "Looking for Python 3.10 or newer"
@@ -308,13 +347,18 @@ function Invoke-Setup {
             Write-Step "Installing critique-bot (pip install -e)"
         }
         if ($uv) {
+            # uv reads HTTP_PROXY / HTTPS_PROXY, set above from -Proxy.
             $rc = Invoke-Native $uv.Path @("pip", "install", "--quiet", "--python", $venvPython, "-e", $target)
         } else {
             Write-Info "upgrading pip"
-            if ((Invoke-Native $venvPython @("-m", "pip", "install", "--quiet", "--upgrade", "pip")) -ne 0) {
+            $upgradeArgs = @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
+            if ($Proxy) { $upgradeArgs += @("--proxy", $Proxy) }
+            if ((Invoke-Native $venvPython $upgradeArgs) -ne 0) {
                 Write-Warn "pip upgrade failed; continuing with the installed pip"
             }
-            $rc = Invoke-Native $venvPython @("-m", "pip", "install", "--quiet", "-e", $target)
+            $installArgs = @("-m", "pip", "install", "--quiet", "-e", $target)
+            if ($Proxy) { $installArgs += @("--proxy", $Proxy) }
+            $rc = Invoke-Native $venvPython $installArgs
         }
         if ($rc -ne 0) { Stop-Setup "pip install -e $target failed" }
     }

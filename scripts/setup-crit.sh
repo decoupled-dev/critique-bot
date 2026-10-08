@@ -3,8 +3,8 @@
 # `bot-agent`, and `critique-bot` on PATH (Linux and macOS).
 #
 # Usage: scripts/setup-crit.sh [--venv DIR] [--config FILE] [--bin-dir DIR]
-#                              [--with-index] [--no-path] [--skip-browser-check]
-#                              [--install-deps] [-h|--help]
+#                              [--proxy URL] [--with-index] [--no-path]
+#                              [--skip-browser-check] [--install-deps] [-h|--help]
 #
 # Safe to re-run: every step checks what is already in place.
 set -euo pipefail
@@ -24,12 +24,19 @@ Options:
   --venv DIR            Virtual environment to create/use (default: <repo>/.venv)
   --config FILE         Config file the commands use (default: <repo>/config.json)
   --bin-dir DIR         Where the commands are written (default: ~/.local/bin)
+  --proxy URL           Proxy for every pip install, for example
+                        http://username:password@10.1.2.3:8080
   --with-index          Also install the [index] extra (tree-sitter parsers)
   --no-path             Do not add the bin folder to PATH in your shell rc file
   --skip-browser-check  Do not look for Microsoft Edge / Google Chrome
   --install-deps        Linux: run `playwright install-deps` (may need sudo)
   -h, --help            Show this help
 EOF
+}
+
+# Hide userinfo in http://user:password@host:port when printing.
+redact_proxy() {
+    printf '%s' "$1" | sed -E 's#//[^/@]*@#//***@#'
 }
 
 say() { printf '==> %s\n' "$*"; }
@@ -89,6 +96,7 @@ repo=$(dirname -- "$script_dir")
 venv=$repo/.venv
 config=$repo/config.json
 bin_dir=$HOME/.local/bin
+proxy=""
 with_index=0
 no_path=0
 skip_browser=0
@@ -106,6 +114,8 @@ while [ "$#" -gt 0 ]; do
         --config=*) config=${1#*=}; shift ;;
         --bin-dir) need_arg "$@"; bin_dir=$2; shift 2 ;;
         --bin-dir=*) bin_dir=${1#*=}; shift ;;
+        --proxy) need_arg "$@"; proxy=$2; shift 2 ;;
+        --proxy=*) proxy=${1#*=}; [ -n "$proxy" ] || die "--proxy needs a value (see --help)"; shift ;;
         --with-index) with_index=1; shift ;;
         --no-path) no_path=1; shift ;;
         --skip-browser-check) skip_browser=1; shift ;;
@@ -117,6 +127,16 @@ done
 
 [ -f "$repo/pyproject.toml" ] || die "$repo does not look like the critique-bot checkout (no pyproject.toml)"
 
+if [ -n "$proxy" ]; then
+    case $proxy in
+        [a-zA-Z]*://*) ;;
+        *) die "--proxy must be a URL such as http://username:password@10.1.2.3:8080" ;;
+    esac
+    # pip install ... --proxy URL, and the same URL for uv via the environment.
+    export http_proxy="$proxy" https_proxy="$proxy" all_proxy="$proxy"
+    export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" ALL_PROXY="$proxy"
+fi
+
 venv=$(abs_path "$venv")
 config=$(abs_path "$config")
 bin_dir=$(abs_path "$bin_dir")
@@ -126,6 +146,18 @@ say "critique-bot checkout: $repo"
 info "venv:    $venv"
 info "config:  $config"
 info "bin dir: $bin_dir"
+if [ -n "$proxy" ]; then
+    info "proxy:   $(redact_proxy "$proxy")"
+fi
+
+# Every pip install gets --proxy when one was given. pip --version stays local.
+run_pip() {
+    if [ -n "$proxy" ]; then
+        "$venv_python" -m pip "$@" --proxy "$proxy"
+    else
+        "$venv_python" -m pip "$@"
+    fi
+}
 
 # --- a. Python >= 3.10 --------------------------------------------------------
 say "Looking for Python 3.10 or newer"
@@ -201,9 +233,9 @@ else
         uv pip install --quiet --python "$venv_python" -e "$target"
     else
         info "upgrading pip"
-        "$venv_python" -m pip install --quiet --upgrade pip \
+        run_pip install --quiet --upgrade pip \
             || warn "pip upgrade failed; continuing with the installed pip"
-        "$venv_python" -m pip install --quiet -e "$target"
+        run_pip install --quiet -e "$target"
     fi
 fi
 for exe in crit bot-agent critique-bot; do

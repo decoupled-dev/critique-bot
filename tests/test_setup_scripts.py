@@ -81,7 +81,7 @@ class SetupCritShTests(unittest.TestCase):
     def test_help(self) -> None:
         proc = subprocess.run([BASH, str(SH_SCRIPT), "--help"], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0)
-        for flag in ("--venv", "--config", "--bin-dir", "--with-index", "--no-path",
+        for flag in ("--venv", "--config", "--bin-dir", "--proxy", "--with-index", "--no-path",
                      "--skip-browser-check", "--install-deps"):
             self.assertIn(flag, proc.stdout)
 
@@ -89,6 +89,63 @@ class SetupCritShTests(unittest.TestCase):
         proc = subprocess.run([BASH, str(SH_SCRIPT), "--bogus"], capture_output=True, text=True)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("unknown option", proc.stderr)
+
+    def test_proxy_requires_a_url(self) -> None:
+        missing = subprocess.run([BASH, str(SH_SCRIPT), "--proxy"], capture_output=True, text=True)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("needs a value", missing.stderr)
+        bad = subprocess.run(
+            [BASH, str(SH_SCRIPT), "--proxy", "10.1.2.3:8080"], capture_output=True, text=True,
+        )
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("must be a URL", bad.stderr)
+
+    def test_proxy_is_passed_to_every_pip_install(self) -> None:
+        """A stand-in venv records pip's argv so both installs get --proxy."""
+        proxy = "http://alice:s3cret@10.1.2.3:8080"
+        venv = self.tmp / "venv"
+        bindir = venv / "bin"
+        bindir.mkdir(parents=True)
+        log = self.tmp / "pip-args.log"
+        python = bindir / "python"
+        python.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> '{log}'\n"
+            'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
+            '  if [ "${3:-}" = "--version" ]; then echo "pip 24.0"; exit 0; fi\n'
+            "  exit 0\n"
+            "fi\n"
+            'exec /usr/bin/python3 "$@"\n',
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
+        stub = "#!/bin/sh\necho 'usage: crit'\nexit 0\n"
+        for name in ("crit", "bot-agent", "critique-bot"):
+            exe = bindir / name
+            exe.write_text(stub, encoding="utf-8")
+            exe.chmod(0o755)
+
+        env = dict(os.environ)
+        env.update(HOME=str(self.home), SHELL="/bin/bash")
+        env.pop("CRIT_SETUP_SKIP_INSTALL", None)
+        proc = subprocess.run(
+            [BASH, str(SH_SCRIPT), "--venv", str(venv), "--config", str(self.config),
+             "--bin-dir", str(self.bin_dir), "--skip-browser-check", "--no-path",
+             "--proxy", proxy],
+            env=env, capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("proxy:   http://***@10.1.2.3:8080", proc.stdout)
+        self.assertNotIn("s3cret", proc.stdout)
+        lines = log.read_text(encoding="utf-8").splitlines()
+        installs = [line for line in lines if " install " in line]
+        self.assertEqual(len(installs), 2, lines)
+        for line in installs:
+            self.assertTrue(line.endswith(f"--proxy {proxy}"), line)
+        version_lines = [line for line in lines if line.endswith("pip --version") or "pip --version" in line]
+        self.assertTrue(version_lines, lines)
+        for line in version_lines:
+            self.assertNotIn("--proxy", line)
 
     def test_install_writes_wrappers_and_config(self) -> None:
         proc = self._run("--no-path")
@@ -252,7 +309,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         proc = self._pwsh(f"$h = Get-Help '{script}' -Full; $h.Synopsis; $h.parameters.parameter.name")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("critique-bot", proc.stdout)
-        for name in ("Venv", "Config", "BinDir", "WithIndex", "NoPath", "SkipBrowserCheck"):
+        for name in ("Venv", "Config", "BinDir", "Proxy", "WithIndex", "NoPath", "SkipBrowserCheck"):
             self.assertIn(name, proc.stdout.split())
 
     def test_helpers(self) -> None:
@@ -263,7 +320,11 @@ class SetupCritPs1Tests(unittest.TestCase):
             "'EMPTY=' + (Get-MergedPath '' 'C:\\x\\bin'); "
             "'AGAIN=' + (Get-MergedPath 'C:\\x\\bin;%USERPROFILE%\\bin;D:\\y' 'C:\\x\\bin'); "
             "'WRAP=' + ((Get-WrapperText 'C:\\a b\\.venv\\Scripts\\crit.exe' 'C:\\a b\\config.json') -replace \"`r`n\", '|'); "
-            "'PLAIN=' + ((Get-WrapperText 'C:\\a%b\\critique-bot.exe' '') -replace \"`r`n\", '|')",
+            "'PLAIN=' + ((Get-WrapperText 'C:\\a%b\\critique-bot.exe' '') -replace \"`r`n\", '|'); "
+            "'REDACT=' + (Get-RedactedProxy 'http://username:secret@10.1.2.3:8080'); "
+            "'NOPASS=' + (Get-RedactedProxy 'http://10.1.2.3:8080'); "
+            "'PIP=' + ((Get-PipInstallArgs 'http://username:secret@10.1.2.3:8080' @('install','--quiet','-e','C:\\repo')) -join ' '); "
+            "'NOPROXY=' + ((Get-PipInstallArgs '' @('install','--quiet','-e','C:\\repo')) -join ' ')",
             CRIT_SETUP_NO_MAIN="1",
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -280,6 +341,13 @@ class SetupCritPs1Tests(unittest.TestCase):
             lines["PLAIN"],
             '@echo off|rem critique-bot: written by scripts\\setup-crit.ps1|"C:\\a%%b\\critique-bot.exe" %*|',
         )
+        self.assertEqual(lines["REDACT"], "http://***@10.1.2.3:8080")
+        self.assertEqual(lines["NOPASS"], "http://10.1.2.3:8080")
+        self.assertEqual(
+            lines["PIP"],
+            "install --quiet -e C:\\repo --proxy http://username:secret@10.1.2.3:8080",
+        )
+        self.assertEqual(lines["NOPROXY"], "install --quiet -e C:\\repo")
 
     def test_refuses_to_run_off_windows(self) -> None:
         if os.name == "nt":

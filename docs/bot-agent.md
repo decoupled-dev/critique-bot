@@ -21,6 +21,7 @@ scripts/setup-crit.sh
 | `--venv DIR` | Virtual environment to create or reuse. Default `<repo>/.venv`. |
 | `--config FILE` | Config file the commands use. Default `<repo>/config.json`. |
 | `--bin-dir DIR` | Where the commands are written. Default `~/.local/bin`. |
+| `--proxy URL` | Send this proxy on every `pip install` (`--proxy URL`). Example: `http://username:password@10.1.2.3:8080`. A `uv` install uses the same URL through `HTTP_PROXY` and `HTTPS_PROXY`. |
 | `--with-index` | Also install the `[index]` extra (tree-sitter parsers). |
 | `--no-path` | Do not add the bin folder to `PATH`. |
 | `--skip-browser-check` | Do not look for Edge or Chrome. |
@@ -29,7 +30,7 @@ scripts/setup-crit.sh
 The script:
 
 1. Finds Python 3.10 or newer. When the only Python on `PATH` is older but the virtual environment already has a newer one, it uses that.
-2. Creates the virtual environment and runs `pip install -e .` in it (`pip install -e ".[index]"` with `--with-index`). A virtual environment without pip (for example one made by `uv`) gets pip from `ensurepip`, or the install runs through `uv pip`.
+2. Creates the virtual environment and runs `pip install -e .` in it (`pip install -e ".[index]"` with `--with-index`). With `--proxy`, every `pip install` is `pip install ... --proxy URL`, including the pip upgrade. A virtual environment without pip (for example one made by `uv`) gets pip from `ensurepip`, or the install runs through `uv pip` with that proxy in the environment.
 3. Checks that Edge or Chrome is installed. With `--install-deps` on Linux it also runs `playwright install-deps`.
 4. Copies `config.example.json` to the config file when that file is missing.
 5. Rewrites a relative `user_data_dir` in the config to an absolute path next to the config, so every folder uses the same signed-in profile.
@@ -58,6 +59,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
 | `-Venv DIR` | Virtual environment to create or reuse. Default `<repo>\.venv`. |
 | `-Config FILE` | Config file the commands use. Default `<repo>\config.json`. |
 | `-BinDir DIR` | Where the commands are written. Default `%LOCALAPPDATA%\critique-bot\bin`. |
+| `-Proxy URL` | Send this proxy on every `pip install` (`--proxy URL`). Example: `http://username:password@10.1.2.3:8080`. A `uv` install uses the same URL through `HTTP_PROXY` and `HTTPS_PROXY`. |
 | `-WithIndex` | Also install the `[index]` extra (tree-sitter parsers). |
 | `-NoPath` | Do not change the user `PATH`. |
 | `-SkipBrowserCheck` | Do not look for Edge or Chrome. |

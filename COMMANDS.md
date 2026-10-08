@@ -132,11 +132,13 @@ Install it and put `crit` on `PATH` with the setup script (options: [`docs/bot-a
 ```bash
 scripts/setup-crit.sh
 scripts/setup-crit.sh --with-index --install-deps
+scripts/setup-crit.sh --proxy http://username:password@10.1.2.3:8080
 ```
 
 ```powershell
 .\scripts\setup-crit.ps1
 powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
+.\scripts\setup-crit.ps1 -Proxy "http://username:password@10.1.2.3:8080"
 ```
 
 The script's `crit` and `bot-agent` always pass `--config`. Without the script, pass `--config` on the first `crit` in a folder and it is stored in `.bot/settings.json`. A `config.json` already in the folder when `.bot` is created is recorded the same way.
