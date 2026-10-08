@@ -114,3 +114,19 @@ In the chat-client tests: one evaluate per poll, full text read only when the re
 - In the existing chat route, abort image, media, font, and similar types on allowed hosts when the page is headless
 - One evaluate per poll in `_wait_for_reply`; pull full text only when the reply finishes; shorten settle when the stop signal was seen
 - Cover headless vs headed flags, `quiet_context`, resource aborts, and the lighter reply poll
+
+## What was built
+
+The reply loop, the headless request cuts, and the no-throttle flags are in. The long flag list and the 250ms settle are not. Measured in headless Chrome with 80 replies in the chat: counting the replies went from 46ms (one call per message, every 250ms while waiting) to 1ms, and one streaming poll from 2.5ms to 0.8ms.
+
+- **One probe per poll.** `_reply_state` in `src/critique_bot/chat_client.py` returns `{count, generating, signal, length, hash}` in one `page.evaluate`. A change is detected from the length and hash of the newest reply's `textContent`, which needs no layout and catches edits in the middle that the tail would miss. `innerText` is read once, when the reply is done. Visibility follows Playwright's `is_visible`. `_count_replies` replaces the per-message `is_visible()` loop before a send, after a stop, and after a continue click.
+- **Fallback.** `selectors.assistant_messages` comes from `config.json` and may use Playwright-only syntax (`:has-text()`, `>>`) that `querySelectorAll` rejects. That page then keeps the old locator path (`_wait_for_reply_locators`), remembered per page. A probe that keeps failing mid-reply switches to it too.
+- **Settle.** After the stop control goes away, the reply ends once the control has been gone for two polls in a row and the text has held still for 500ms (it was `idle_ms // 4`, 1000ms by default). Not 250ms: a reply read while the page is still reformatting costs a whole extra round trip with a slow model.
+- **Timing.** Each turn logs `send_s`, `first_text_s`, and `total_s`, so the remaining time can be seen per turn.
+- **Headless requests.** When crit launches the browser headless (not `--headed`, not `cdp_url`), the chat route aborts `image`, `media`, `font`, `texttrack`, and `manifest` requests. Challenge hosts (Cloudflare, Turnstile, Arkose, captchas) are never cut. `CRIT_LEAN_HEADLESS=0` turns it off.
+- **No throttling.** `--disable-renderer-backgrounding`, `--disable-background-timer-throttling`, and `--disable-backgrounding-occluded-windows` are added to desktop Edge in both modes, because a minimized or covered visible window is throttled too. Playwright already passes them, and most of the list above, when it launches the browser itself (`--disable-background-networking`, `--disable-extensions`, `--disable-sync`, `--disable-component-update`, `--disable-breakpad`, `--disable-hang-monitor`, `--disable-default-apps`, its own `--disable-features`).
+
+Left out:
+
+- **The rest of the flag list.** Most are already there through Playwright. The others (`--mute-audio`, `--hide-scrollbars`, `--disable-remote-fonts`, `--blink-settings=imagesEnabled=false`, `--metrics-recording-only`) are the usual headless-automation fingerprint, and this bot already works to look less automated (`AutomationControlled`, no `--enable-automation`); one more challenge costs far more than they save. A second `--disable-features=` would also replace Playwright's list instead of adding to it.
+- **Reduced motion.** Small gain; can be added later behind the same headless check.

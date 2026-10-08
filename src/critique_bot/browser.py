@@ -40,6 +40,29 @@ EDGE_LAUNCH_ARGS = (
     "--disable-blink-features=AutomationControlled",
 )
 
+# Keep a streaming reply at full speed while the window is minimized, covered, or
+# headless. Playwright passes these itself when it launches the browser; desktop
+# Edge, which crit starts as a plain process, needs them on its command line.
+EDGE_NO_THROTTLE_ARGS = (
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+)
+
+# Headless only: what the chat page would download just to look nice. Reading a
+# reply needs the DOM, scripts, CSS, and the network calls; none of these.
+LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifest"})
+# Never trimmed: a challenge may need its images to pass.
+_CHALLENGE_MARKERS = ("challenges.cloudflare.com", "turnstile", "arkoselabs", "funcaptcha", "hcaptcha", "recaptcha", "captcha")
+#: True while launch_edge opens a headless browser it started itself (not --headed, not an attached browser).
+_lean_launch = False
+
+
+def lean_headless_enabled() -> bool:
+    """``CRIT_LEAN_HEADLESS=0`` keeps images and fonts in headless runs."""
+    return os.environ.get("CRIT_LEAN_HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 _BROWSER_PROCESS_TOKENS = (
     "msedge",
     "microsoft-edge",
@@ -680,6 +703,7 @@ def _start_desktop_edge(
         "--hide-crash-restore-bubble",
         "--no-first-run",
         "--no-default-browser-check",
+        *EDGE_NO_THROTTLE_ARGS,
     ]
     if headed:
         cmd.append("--start-maximized")
@@ -890,12 +914,18 @@ def request_is_allowed(request_url: str, chat_url: str) -> bool:
     return any(_host_matches_suffix(host, suffix) for suffix in allowed)
 
 
-def _filter_chat_route(route, chat_url: str) -> None:
+def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
     request = getattr(route, "request", None)
     url = getattr(request, "url", "") or ""
     # Document navigations (Cloudflare challenge, SSO) must not be aborted or
     # page.goto waits until timeout and setup looks stuck on "opening browser".
     rtype = str(getattr(request, "resource_type", "") or "").lower()
+    if lean and rtype in LEAN_RESOURCE_TYPES and not any(marker in url.lower() for marker in _CHALLENGE_MARKERS):
+        try:
+            route.abort("blockedbyclient")
+        except Exception as exc:
+            log.debug(f"route abort failed {log.preview(url, 180)}: {exc}")
+        return
     if rtype in {"document", "websocket"} or request_is_allowed(url, chat_url):
         try:
             route.continue_()
@@ -926,9 +956,10 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     """
     if not chat_url or getattr(page, "_critique_chat_guard", None) == chat_url:
         return
+    lean = _lean_launch and lean_headless_enabled()
 
     def handle(route) -> None:
-        _filter_chat_route(route, chat_url)
+        _filter_chat_route(route, chat_url, lean=lean)
 
     try:
         page.route("**/*", handle)
@@ -948,7 +979,7 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     except Exception as exc:
         log.debug(f"popup listener: {exc}")
     hosts = ", ".join(sorted(allowed_chat_hosts(chat_url))) or chat_url
-    log.info(f"browser network restricted to {hosts}")
+    log.info(f"browser network restricted to {hosts}" + (" (headless: images, fonts, and media skipped)" if lean else ""))
 
 
 def describe_page(page: Page) -> str:
@@ -1195,6 +1226,7 @@ def launch_edge(
             "Playwright is required. Install with: pip install -r requirements.txt"
         ) from exc
 
+    global _lean_launch
     playwright = None
     context = None
     attached_page = None
@@ -1212,6 +1244,8 @@ def launch_edge(
             profile_dir,
             storage_state=None if use_system_profile else storage_state,
         )
+    # A browser the user started (cdp_url) and a visible window keep everything.
+    _lean_launch = not headed and not cdp_url
     try:
         log.info("starting Playwright")
         playwright = sync_playwright().start()
@@ -1330,6 +1364,7 @@ def launch_edge(
         log.info(f"browser ready {describe_page(page)}")
         yield page
     finally:
+        _lean_launch = False
         log.info("closing Playwright connection")
         if attached_page is not None and not started_desktop_edge:
             try:

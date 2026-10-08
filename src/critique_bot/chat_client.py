@@ -30,6 +30,10 @@ _SETTLE_MAX_MS = 2_000
 # If the "generating" signal never clears while the text stays frozen, the
 # signal is lying to us; fall back to the idle heuristic instead of hanging.
 _SIGNAL_STALL_MS = 45_000
+# After the stop control goes away, how long the text must hold still. The fast
+# path also wants the control gone on two polls in a row, so a control that is
+# swapped out and back in does not end the reply early.
+_SETTLE_AFTER_STOP_MS = 500
 # Longest single blocking Playwright wait while sending, so Ctrl+C lands promptly.
 _WAIT_SLICE_MS = 500
 # Before sending, how long a reply still being written may take to finish
@@ -1255,6 +1259,124 @@ def _stream_state(page: Page, selectors: Selectors | None) -> tuple[bool, str]:
     return bool(result.get("active")), str(result.get("signal") or "")
 
 
+# One round trip per poll: how many replies are visible, whether the page is still
+# generating, and a fingerprint of the newest reply (length and hash of its
+# textContent, which needs no layout). innerText is read only when asked, at the end.
+# Visibility follows Playwright's is_visible: a non-empty box and not visibility:hidden.
+_REPLY_STATE_JS = """
+(payload) => {
+  let nodes;
+  try {
+    nodes = Array.from(document.querySelectorAll(payload.selector));
+  } catch (err) {
+    return { ok: false };
+  }
+  const shown = (el) => {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    return window.getComputedStyle(el).visibility !== 'hidden';
+  };
+  const lit = (el) => {
+    if (!shown(el)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || parseFloat(style.opacity || '1') === 0) return false;
+    return el.getAttribute('aria-hidden') !== 'true';
+  };
+  let count = 0;
+  let last = null;
+  for (const node of nodes) {
+    if (shown(node)) { count += 1; last = node; }
+  }
+  let generating = false;
+  let signal = '';
+  if (payload.stream) {
+    const stops = [];
+    if (payload.stopSelector) stops.push(payload.stopSelector);
+    for (const item of payload.defaults || []) stops.push(item);
+    outer: for (const selector of stops) {
+      let found = [];
+      try { found = Array.from(document.querySelectorAll(selector)); } catch (err) { continue; }
+      for (const node of found) {
+        if (lit(node)) { generating = true; signal = 'stop-button'; break outer; }
+      }
+    }
+    if (!generating) {
+      let busy = [];
+      try { busy = Array.from(document.querySelectorAll('[aria-busy="true"]')); } catch (err) { busy = []; }
+      for (const node of busy) {
+        if (!lit(node)) continue;
+        try {
+          if (node.matches(payload.selector) || node.closest(payload.selector)) {
+            generating = true; signal = 'aria-busy'; break;
+          }
+        } catch (err) { break; }
+      }
+    }
+  }
+  let length = 0;
+  let hash = 0;
+  let text = null;
+  if (last) {
+    const raw = last.textContent || '';
+    length = raw.length;
+    let h = 2166136261;
+    for (let i = 0; i < raw.length; i += 1) h = Math.imul(h ^ raw.charCodeAt(i), 16777619);
+    hash = h >>> 0;
+    if (payload.withText) text = last.innerText;
+  }
+  return { ok: true, count, generating, signal, length, hash, text };
+}
+"""
+
+
+def _reply_state(
+    page: Page,
+    selector: str,
+    selectors: Selectors | None = None,
+    *,
+    with_text: bool = False,
+) -> dict | None:
+    """The page's reply state in one evaluate, or None when this page cannot answer it.
+
+    None for a selector ``document.querySelectorAll`` rejects (Playwright-only
+    syntax such as ``:has-text()`` or ``>>``) and for a page whose evaluate does
+    not return the state; the caller then uses the per-element locator path.
+    That answer is remembered on the page. A failed evaluate (the page is
+    navigating) is None for this poll only.
+    """
+    if getattr(page, "_critique_slow_reply", None) == selector:
+        return None
+    evaluate = getattr(page, "evaluate", None)
+    if evaluate is None:
+        return None
+    payload: dict[str, object] = {"selector": selector, "withText": with_text, "stream": selectors is not None}
+    if selectors is not None:
+        payload["stopSelector"] = selectors.stop_button
+        payload["defaults"] = list(_STOP_BUTTON_SELECTORS)
+    try:
+        result = evaluate(_REPLY_STATE_JS, payload)
+    except Exception as exc:
+        log.debug(f"reply-state probe failed: {exc}")
+        return None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        try:
+            page._critique_slow_reply = selector  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        log.debug(f"reply selector {selector!r} needs the locator path")
+        return None
+    return result
+
+
+def _count_replies(page: Page, selector: str) -> int:
+    """Visible assistant messages: one evaluate, else one call per message."""
+    state = _reply_state(page, selector)
+    if state is not None:
+        return int(state.get("count") or 0)
+    return _visible_count(page.locator(selector))
+
+
 def _settle_ms(idle_ms: int) -> int:
     return max(min(idle_ms // 4, _SETTLE_MAX_MS), _SETTLE_MIN_MS)
 
@@ -1296,15 +1418,14 @@ def _wait_generation_over(page: Page, selectors: Selectors, wait_ms: int) -> boo
 
 def _stable_count(page: Page, selector: str, *, stable_ms: int = _COUNT_STABLE_MS) -> int:
     """The assistant message count once it has held still for ``stable_ms`` (bounded)."""
-    messages = page.locator(selector)
-    count = _visible_count(messages)
+    count = _count_replies(page, selector)
     since = time.monotonic()
     deadline = since + max(stable_ms * 3, 1) / 1000
     while time.monotonic() < deadline:
         if (time.monotonic() - since) * 1000 >= stable_ms:
             break
         page.wait_for_timeout(POLL_MS)
-        now = _visible_count(messages)
+        now = _count_replies(page, selector)
         if now != count:
             count = now
             since = time.monotonic()
@@ -1377,8 +1498,7 @@ def _continue_cut_reply(
         button = None
     if button is None:
         return text
-    messages = page.locator(selectors.assistant_messages)
-    before = _visible_count(messages)
+    before = _count_replies(page, selectors.assistant_messages)
     try:
         button.click(timeout=_WAIT_SLICE_MS * 4)
     except Exception as exc:
@@ -1386,7 +1506,7 @@ def _continue_cut_reply(
         return text
     log.info("the reply was cut off; clicked the continue control once")
     deadline = time.monotonic() + _STOP_WAIT_MS / 1000
-    while not _stream_state(page, selectors)[0] and _visible_count(messages) <= before:
+    while not _stream_state(page, selectors)[0] and _count_replies(page, selectors.assistant_messages) <= before:
         if time.monotonic() >= deadline:
             log.warn("the page did not resume after the continue click; keeping the cut reply")
             return text
@@ -1416,6 +1536,194 @@ def _wait_for_reply(
     selectors: Selectors | None = None,
     detail: dict[str, object] | None = None,
 ) -> str:
+    """Wait for the new reply to appear and finish; return its text.
+
+    Uses one evaluate per poll when the page can answer it (see
+    :func:`_reply_state`), else the per-element locator path.
+    """
+    if _reply_state(page, selector, selectors) is not None:
+        return _wait_for_reply_fast(
+            page,
+            selector,
+            previous_count=previous_count,
+            timeout_ms=timeout_ms,
+            idle_ms=idle_ms,
+            selectors=selectors,
+            detail=detail,
+        )
+    return _wait_for_reply_locators(
+        page,
+        selector,
+        previous_count=previous_count,
+        timeout_ms=timeout_ms,
+        idle_ms=idle_ms,
+        selectors=selectors,
+        detail=detail,
+    )
+
+
+def _wait_for_reply_fast(
+    page: Page,
+    selector: str,
+    *,
+    previous_count: int,
+    timeout_ms: int,
+    idle_ms: int,
+    selectors: Selectors | None,
+    detail: dict[str, object] | None,
+) -> str:
+    """:func:`_wait_for_reply` with one evaluate per poll and innerText read once, at the end."""
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000
+    log.info(
+        f"waiting for assistant reply selector={selector!r} "
+        f"previous_count={previous_count} timeout={timeout_ms}ms idle={idle_ms}ms (one probe per poll)"
+    )
+    misses = 0
+
+    def fallback() -> str:
+        remaining = max(int((deadline - time.monotonic()) * 1000), POLL_MS)
+        log.debug("reply probe stopped answering; switching to the locator path")
+        return _wait_for_reply_locators(
+            page, selector, previous_count=previous_count, timeout_ms=remaining,
+            idle_ms=idle_ms, selectors=selectors, detail=detail,
+        )
+
+    last_status_log = 0.0
+    count = previous_count
+    while True:
+        state = _reply_state(page, selector, selectors)
+        if state is None:
+            misses += 1
+            if misses >= 8 or getattr(page, "_critique_slow_reply", None) == selector:
+                return fallback()
+        else:
+            misses = 0
+            count = int(state.get("count") or 0)
+            if count > previous_count:
+                log.info(f"assistant message appeared (count {previous_count} -> {count})")
+                break
+        now = time.monotonic()
+        if now >= deadline:
+            log.error(
+                "no assistant message appeared "
+                f"(selector={selector!r}, previous_count={previous_count}, current_count={count})"
+            )
+            raise ChatError(f"no assistant message appeared (selector={selector!r}, previous_count={previous_count})")
+        if now - last_status_log >= 5:
+            log.debug(f"still waiting for a new assistant message (count={count}, remaining={int((deadline - now) * 1000)}ms)")
+            last_status_log = now
+        page.wait_for_timeout(POLL_MS)
+
+    if detail is not None:
+        detail["first_text_seconds"] = round(time.monotonic() - started, 2)
+    last_key: tuple[int, int] | None = None
+    last_length = 0
+    last_change = time.monotonic()
+    last_growth_log = 0.0
+    stop_settle = min(_settle_ms(idle_ms), _SETTLE_AFTER_STOP_MS)
+    saw_generating = False
+    signal_trusted = True
+    signal_name = ""
+    generating_since = 0.0
+    clear_polls = 0
+
+    def finish(reason: str) -> str:
+        final = _reply_state(page, selector, selectors, with_text=True)
+        text = str(final.get("text") or "") if final is not None else ""
+        if final is None or (not text.strip() and last_length):
+            target = _last_visible(page.locator(selector))
+            text = target.inner_text() if target is not None else ""
+        if detail is not None:
+            detail["completion"] = reason
+            detail["complete"] = reason == COMPLETION_STOPPED
+            detail["signal"] = signal_name
+            detail["chars"] = len(text.strip())
+        return text.strip()
+
+    while time.monotonic() < deadline:
+        state = _reply_state(page, selector, selectors)
+        if state is None:
+            misses += 1
+            if misses >= 8 or getattr(page, "_critique_slow_reply", None) == selector:
+                return fallback()
+            page.wait_for_timeout(POLL_MS)
+            continue
+        misses = 0
+        generating = bool(state.get("generating")) and signal_trusted
+        signal = str(state.get("signal") or "")
+        if generating:
+            clear_polls = 0
+            if not saw_generating:
+                log.info(f"assistant is generating (signal={signal})")
+                generating_since = time.monotonic()
+            saw_generating = True
+            signal_name = signal
+        else:
+            clear_polls += 1
+        key = (int(state.get("length") or 0), int(state.get("hash") or 0))
+        now = time.monotonic()
+        if key != last_key:
+            last_key = key
+            last_length = key[0]
+            last_change = now
+            if now - last_growth_log >= 1.0:
+                log.debug(
+                    f"reply streaming: {last_length} chars, {state.get('count')} message(s), generating={generating}"
+                )
+                last_growth_log = now
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        idle_so_far = (now - last_change) * 1000
+        if saw_generating and not generating:
+            if last_length and idle_so_far >= stop_settle and clear_polls >= 2:
+                log.info(
+                    f"generation finished (signal={signal_name}); "
+                    f"reply settled after {int(idle_so_far)}ms ({last_length} chars)"
+                )
+                return finish(COMPLETION_STOPPED)
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        if generating:
+            stalled_ms = (now - generating_since) * 1000
+            if stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, 1):
+                log.warn(
+                    f"generation signal ({signal_name}) has been on for "
+                    f"{int(stalled_ms)}ms with no new text; ignoring it for the "
+                    "rest of this reply and falling back to the idle heuristic"
+                )
+                signal_trusted = False
+                saw_generating = False
+                signal_name = ""
+            page.wait_for_timeout(POLL_MS)
+            continue
+
+        if last_length and idle_so_far >= idle_ms:
+            log.warn(
+                f"reply idle for {int(idle_so_far)}ms with no generation "
+                f"indicator; treating as complete ({last_length} chars). "
+                "Set selectors.stop_button to detect this reliably."
+            )
+            return finish(COMPLETION_IDLE)
+        page.wait_for_timeout(POLL_MS)
+
+    log.error(f"timed out waiting for the assistant reply to finish streaming ({last_length} chars captured)")
+    raise ChatError(f"timed out waiting for the assistant reply to finish streaming ({last_length} chars captured)")
+
+
+def _wait_for_reply_locators(
+    page: Page,
+    selector: str,
+    *,
+    previous_count: int,
+    timeout_ms: int,
+    idle_ms: int,
+    selectors: Selectors | None = None,
+    detail: dict[str, object] | None = None,
+) -> str:
+    """The per-element path: for a selector only Playwright understands, or a page without evaluate."""
     deadline = time.monotonic() + timeout_ms / 1000
     messages = page.locator(selector)
     log.info(
@@ -1486,7 +1794,6 @@ def _wait_for_reply(
             if now - last_growth_log >= 1.0:
                 log.debug(
                     f"reply streaming: {len(text)} chars, "
-                    f"{_visible_count(messages)} message(s), "
                     f"generating={generating}, "
                     f"preview={log.preview(text, 80)!r}"
                 )
@@ -1625,10 +1932,11 @@ def send_turn(
     # Count only once nothing is being written: a reply that is still
     # streaming (or a stopped one that renders late) belongs to an earlier
     # send and must never be taken as this one's answer.
+    started = time.monotonic()
     if _ensure_idle(page, selectors):
         previous_count = _stable_count(page, selectors.assistant_messages)
     else:
-        previous_count = _visible_count(page.locator(selectors.assistant_messages))
+        previous_count = _count_replies(page, selectors.assistant_messages)
     log.info(
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
@@ -1636,6 +1944,7 @@ def send_turn(
     with log.loading("Thinking..."):
         _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
         _send(page, selectors, timeout_ms)
+        detail["send_seconds"] = round(time.monotonic() - started, 2)
 
         reply = _wait_for_reply(
             page,
@@ -1650,7 +1959,16 @@ def send_turn(
             reply = _continue_cut_reply(
                 page, selectors, reply, timeout_ms=timeout_ms, idle_ms=config.idle_ms, detail=detail
             )
-    log.info(f"captured reply ({len(reply)} chars)")
+    detail["total_seconds"] = round(time.monotonic() - started, 2)
+    log.info(
+        f"captured reply ({len(reply)} chars) "
+        + log.kv(
+            send_s=detail.get("send_seconds"),
+            first_text_s=detail.get("first_text_seconds"),
+            total_s=detail.get("total_seconds"),
+            completion=detail.get("completion"),
+        )
+    )
     return reply
 
 
