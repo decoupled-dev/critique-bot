@@ -32,9 +32,10 @@ import urllib.request
 from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Callable
 
-from critique_bot import agent_edit, agent_shell, code_graph, code_index
+from critique_bot import agent_build, agent_edit, agent_shell, code_graph, code_index
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 
@@ -124,6 +125,8 @@ class TaskState:
     failed_calls: dict[str, int] = field(default_factory=dict)
     last_path: str = ""
     todos: list[dict[str, str]] = field(default_factory=list)
+    commands: int = 0
+    commands_failed: int = 0
 
     @property
     def mutated(self) -> bool:
@@ -162,6 +165,8 @@ class TaskState:
         ) or "none"
         edits = ", ".join(f"{path} x{count}" for path, count in self.edits.items()) or "none"
         command = f"{_one_line(self.last_command, 80)} -> {self.last_exit}" if self.last_command else "none"
+        if self.commands > 1:
+            command += f" ({self.commands} commands in this task, {self.commands_failed} failed)"
         todos = ", ".join(
             f"[{item['status']}] {item['content']}" for item in self.todos[:8]
         ) or "none"
@@ -202,6 +207,10 @@ class ToolContext:
     cache_dir: Path | None = None
     max_chars: int = DEFAULT_TOOL_CHARS
     command_timeout: float = DEFAULT_COMMAND_TIMEOUT
+    #: A build (gradle, mvn, m, npm install, ...) runs at least this long before it is moved to the background.
+    build_timeout: float = agent_build.DEFAULT_BUILD_TIMEOUT
+    #: Automatic retries of a build that failed for a passing reason (locked files, a dropped download).
+    command_retries: int = 1
     runner: Callable[..., Any] | None = None
     state: TaskState | None = None
     checkpoints: agent_edit.Checkpoints | None = None
@@ -1726,6 +1735,11 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     except (TypeError, ValueError):
         return err("run_command", "timeout must be a number")
     timeout = min(max(timeout, 1), MAX_COMMAND_TIMEOUT)
+    if agent_build.is_build_command(command):
+        # A first Gradle or AOSP build downloads and compiles for a long time; a short
+        # timeout killed it half way and left locks behind.
+        floor = min(max(float(ctx.build_timeout or 0), 1.0), agent_build.MAX_BUILD_TIMEOUT)
+        timeout = max(timeout, floor)
     wanted = _shell_arg(args.get("shell"))
     if wanted is None:
         return err("run_command", "shell must be one of " + ", ".join(SHELL_NAMES) + ", or omitted for the session shell")
@@ -1790,8 +1804,10 @@ def _run_in_session(
             _ui(f"Started {job_id} in background ({shell_name})", lines=_preview(first, tail=True)),
         )
     before = Path(session.cwd)
-    try:
-        result = session.run(
+    started_wall = time.time()
+
+    def once() -> Any:
+        return session.run(
             command,
             timeout=timeout,
             shell=wanted or None,
@@ -1799,8 +1815,37 @@ def _run_in_session(
             on_output=ctx.on_output,
             cancel=ctx.cancel,
         )
+
+    try:
+        result = once()
     except ValueError as exc:
         return err("run_command", str(exc))
+    retried: list[str] = []
+    for _attempt in range(max(0, int(ctx.command_retries or 0))):
+        if result.exit_code in (0, None) or result.timed_out or result.interrupted:
+            break
+        transient = agent_build.transient_failure(command, result.stdout + "\n" + result.stderr)
+        if transient is None:
+            break
+        reason, stop_first = transient
+        retried.append(reason)
+        if hasattr(session, "note_retry"):
+            session.note_retry(reason)
+        if ctx.on_output is not None:
+            ctx.on_output(f"\n[crit] {reason}; trying once more\n")
+        if stop_first:
+            wrapper = agent_build.gradle_wrapper(Path(cwd or session.cwd), windows=_windows_shell(shell))
+            if wrapper:
+                try:
+                    session.run(f"{wrapper} --stop", timeout=120, shell=wanted or None, cwd=cwd)
+                except ValueError:
+                    pass
+        else:
+            time.sleep(5)
+        try:
+            result = once()
+        except ValueError as exc:
+            return err("run_command", str(exc))
     ended = Path(result.cwd)
     if cwd is not None and _same_dir(ended, cwd):
         # A cwd argument is for this call only (OpenCode's workdir); a cd inside the command still sticks.
@@ -1812,17 +1857,26 @@ def _run_in_session(
     if ctx.state is not None:
         ctx.state.last_command = command
         ctx.state.last_exit = (
-            "interrupted" if result.interrupted else "timeout" if result.timed_out else f"exit {code}"
+            "interrupted" if result.interrupted
+            else f"still running as {result.job_id}" if getattr(result, "job_id", None)
+            else "timeout" if result.timed_out else f"exit {code}"
         )
+        if hasattr(ctx.state, "commands"):
+            ctx.state.commands += 1
+            if code not in (0, None) or result.timed_out:
+                ctx.state.commands_failed += 1
     head = [f"exit {code if code is not None else '-'} ({seconds:.1f}s)"]
     if wanted:
         head.append(f"shell: {shell.label}")
+    if retried:
+        head.append("retried once: " + "; ".join(retried))
     moved = not _same_dir(session.cwd, before)
     if moved:
         head.append(f"cwd: {session.cwd}")
     elif cwd is not None:
         head.append(f"ran in: {ended} (session cwd stays {before})")
-    preview = _preview(out + "\n" + errs, tail=True)
+    combined = out + "\n" + errs
+    preview = _preview(combined, tail=True)
     if result.interrupted:
         body = "\n".join(part for part in ("interrupted by the user", *head[1:], out, errs) if part)
         return err(
@@ -1832,9 +1886,23 @@ def _run_in_session(
             ctx=ctx,
             ui=_ui(f"interrupted · {seconds:.1f}s · {shell_name}", lines=preview),
         )
+    job_id = getattr(result, "job_id", None)
+    if job_id:
+        note = (
+            f"still running after {timeout:.0f}s, so it was NOT stopped: it continues as background job {job_id}. "
+            f'Wait for it with command_output {{"job_id": "{job_id}", "wait": 30}} (repeat until it exits) '
+            "and read its result there; stop it with kill_command only if it is stuck"
+        )
+        body = "\n".join(part for part in (note, *head[1:], out, errs) if part)
+        return ok(
+            "run_command",
+            agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            ctx,
+            _ui(f"still running after {timeout:.0f}s · continues as {job_id}", lines=preview),
+        )
     if result.timed_out or code is None:
         hint = ""
-        if agent_shell.waiting_for_input(out + "\n" + errs):
+        if agent_shell.waiting_for_input(combined):
             hint = "; the command was waiting for input. Pass a flag such as -y, --yes, or -Force"
         else:
             hint = "; pass a longer timeout, or background true for a server or watcher"
@@ -1847,6 +1915,18 @@ def _run_in_session(
             ui=_ui(f"timed out after {timeout:.0f}s · {shell_name}", lines=preview),
         )
     parts = list(head)
+    summary_lines = agent_build.summarize(combined) if agent_build.is_build_command(command) or code != 0 else []
+    built = agent_build.artifacts(Path(session.cwd), since=started_wall) if code == 0 and agent_build.is_build_command(command) else []
+    if built:
+        parts.append("ARTIFACTS (written by this command):\n" + "\n".join(
+            f"  {path} ({agent_build.size_text(size)})" for path, size in built
+        ))
+    if summary_lines and (code != 0 or len(combined) > 6_000):
+        parts.append("SUMMARY (the key lines of the full output below):\n" + "\n".join(summary_lines))
+    if code != 0:
+        found = agent_build.hints(combined, _build_context(ctx, session, shell))
+        if found:
+            parts.append("HINTS (from crit, for this failure):\n" + "\n".join(f"- {line}" for line in found))
     if out:
         parts.append(out)
     if errs:
@@ -1854,11 +1934,56 @@ def _run_in_session(
     if not out and not errs:
         parts.append("(no output)")
     body = agent_shell.head_tail("\n".join(parts), max_chars=ctx.max_chars)
-    summary = f"exit {code} · {seconds:.1f}s · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
-    ui = _ui(summary, lines=preview)
+    summary = f"exit {code} · {_duration(seconds)} · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
+    if retried:
+        summary += " · retried once"
+    ui_lines = preview
+    if built:
+        ui_lines = [f"{path} ({agent_build.size_text(size)})" for path, size in built[:3]]
+    elif summary_lines and code != 0:
+        ui_lines = summary_lines[:5]
+    ui = _ui(summary, lines=ui_lines)
     if code == 0:
         return ok("run_command", body, ctx, ui)
     return err("run_command", f"command failed with exit {code}", output=body, ctx=ctx, ui=ui)
+
+
+def _duration(seconds: float) -> str:
+    if seconds >= 60:
+        minutes, rest = divmod(int(round(seconds)), 60)
+        return f"{minutes}m {rest:02d}s"
+    return f"{seconds:.1f}s"
+
+
+def _windows_shell(shell: Any) -> bool:
+    return bool(getattr(shell, "is_powershell", False) or getattr(shell, "kind", "") in {"cmd", "gitbash"}) and (
+        sys.platform == "win32" or str(getattr(shell, "exe", "")).lower().endswith(".exe")
+    )
+
+
+def _build_context(ctx: ToolContext, session: Any, shell: Any) -> agent_build.Context:
+    windows = _windows_shell(shell)
+    try:
+        env = session.environment() if hasattr(session, "environment") else dict(os.environ)
+    except Exception:  # noqa: BLE001
+        env = dict(os.environ)
+    try:
+        jdks = tuple((jdk.version, str(jdk.home)) for jdk in agent_shell.installed_jdks())
+    except Exception:  # noqa: BLE001
+        jdks = ()
+    sdk = ""
+    try:
+        sdk = agent_shell.android_sdk(env, scan=True, workspace=ctx.workspace)
+    except Exception:  # noqa: BLE001
+        pass
+    return agent_build.Context(
+        windows=windows,
+        wrapper=agent_build.gradle_wrapper(Path(getattr(session, "cwd", ctx.workspace)), windows=windows)
+        or agent_build.gradle_wrapper(ctx.workspace, windows=windows),
+        android_sdk=sdk,
+        jdks=jdks,
+        java_home=str(env.get("JAVA_HOME") or ""),
+    )
 
 
 def _same_dir(left: Any, right: Any) -> bool:
@@ -2187,17 +2312,21 @@ def _format_todos(items: list[dict[str, str]]) -> str:
 
 
 def _skill(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    found = _discover_skills(ctx.workspace)
+    found = discover_skills(ctx.workspace)
     name = args.get("name")
     if not isinstance(name, str) or not name.strip():
         if not found:
             return ok("skill", "no skills. Add SKILL.md under .bot/skills/<name>/.", ctx)
-        return ok("skill", "\n".join(f"{item['name']}: {item['description']}" for item in found), ctx)
-    key = name.strip()
-    match = next((item for item in found if item["name"] == key), None)
+        return ok(
+            "skill",
+            "\n".join(f"{item['name']} ({item['source']}): {item['description']}" for item in found),
+            ctx,
+        )
+    key = name.strip().lower()
+    match = next((item for item in found if item["name"].lower() == key), None)
     if match is None:
         names = ", ".join(item["name"] for item in found) or "none"
-        return err("skill", f"unknown skill {key}. Available: {names}")
+        return err("skill", f"unknown skill {name.strip()}. Available: {names}")
     try:
         text = Path(match["path"]).read_text(encoding="utf-8")
     except OSError as exc:
@@ -2205,25 +2334,166 @@ def _skill(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return ok("skill", text, ctx)
 
 
-def _discover_skills(workspace: Path) -> list[dict[str, str]]:
-    found: list[dict[str, str]] = []
-    for root_rel in _SKILL_ROOTS:
-        root = workspace / root_rel
+def builtin_skills_dir() -> Path | None:
+    """The skill packs shipped with crit (android, aosp, aaos, kotlin, aspice, ...)."""
+    here = Path(__file__).resolve().parent
+    for candidate in (here / "skills", Path(sys.executable).resolve().parent / "skills"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def discover_skills(workspace: Path) -> list[dict[str, Any]]:
+    """Project skills (.bot/skills, .agents/skills, .opencode/skills), then the built-in ones.
+
+    A project skill with the same name as a built-in one replaces it.
+    """
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    roots: list[tuple[Path, str]] = [(Path(workspace) / rel, "project") for rel in _SKILL_ROOTS]
+    builtin = builtin_skills_dir()
+    if builtin is not None:
+        roots.append((builtin, "built-in"))
+    for root, source in roots:
         if not root.is_dir():
             continue
         for skill_md in sorted(root.glob("*/SKILL.md")):
+            name = skill_md.parent.name
+            if name.lower() in seen:
+                continue
             try:
                 text = skill_md.read_text(encoding="utf-8")
             except OSError:
                 continue
+            meta = skill_meta(text)
+            seen.add(name.lower())
             found.append(
                 {
-                    "name": skill_md.parent.name,
-                    "description": _skill_description(text),
+                    "name": name,
+                    "description": meta.get("description") or _skill_description(text),
                     "path": str(skill_md),
+                    "source": source,
+                    "keywords": _split_list(meta.get("keywords", "")),
+                    "files": _split_list(meta.get("files", ""), lower=False),
                 }
             )
     return found
+
+
+def _discover_skills(workspace: Path) -> list[dict[str, Any]]:
+    return discover_skills(workspace)
+
+
+def skill_meta(text: str) -> dict[str, str]:
+    """The ``key: value`` lines of a SKILL.md front matter (between the first two ``---`` lines)."""
+    match = re.match(r"﻿?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", text, re.S)
+    if not match:
+        return {}
+    meta: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() and not key.startswith((" ", "\t")):
+            meta[key.strip().lower()] = value.strip().strip("\"'")
+    return meta
+
+
+def skill_body(text: str) -> str:
+    """A SKILL.md without its front matter."""
+    return re.sub(r"\A﻿?---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|$)", "", text, count=1, flags=re.S).strip()
+
+
+def _split_list(raw: str, *, lower: bool = True) -> list[str]:
+    items = [item.strip() for item in re.split(r"[,;]", raw or "") if item.strip()]
+    return [item.lower() for item in items] if lower else items
+
+
+# Which project-type skill to load when only the repo's files point at one (no keyword in the task).
+_MARKER_PREFERENCE = ("aosp", "aaos", "android", "jetpack-compose", "kotlin", "java", "cpp-native", "gradle")
+_marker_cache: dict[tuple[str, str], bool] = {}
+
+
+def _has_marker(workspace: Path, pattern: str) -> bool:
+    """True when ``pattern`` exists at the workspace root or one folder down. Cheap on huge trees."""
+    pattern = pattern.strip().replace("\\", "/").strip("/")
+    while pattern.endswith("/**") or pattern.endswith("/*"):
+        pattern = pattern.rsplit("/", 1)[0]
+    if not pattern or "**" in pattern or pattern.startswith(".."):
+        return False
+    key = (str(workspace), pattern)
+    if key not in _marker_cache:
+        hit = False
+        for glob in (pattern, "*/" + pattern):
+            try:
+                if next(iter(Path(workspace).glob(glob)), None) is not None:
+                    hit = True
+                    break
+            except (OSError, ValueError, NotImplementedError):
+                continue
+        _marker_cache[key] = hit
+    return _marker_cache[key]
+
+
+def _mentions(text: str, phrase: str) -> bool:
+    phrase = phrase.strip().lower()
+    if not phrase:
+        return False
+    # "android" is not a mention inside "android.bp"; a dot joins words in file and package names.
+    pattern = r"(?<![a-z0-9_])(?<![a-z0-9_]\.)" + re.escape(phrase) + r"(?![a-z0-9_])(?!\.[a-z0-9_])"
+    return re.search(pattern, text) is not None
+
+
+def select_skills(
+    task: str,
+    workspace: Path,
+    *,
+    pinned: Iterable[str] = (),
+    limit: int = 2,
+) -> list[dict[str, Any]]:
+    """The skills that fit ``task``: pinned ones, then by keywords in the task, then by the repo's files.
+
+    A skill named or matched by the task's words ranks first. When fewer than
+    ``limit`` match that way, one project-type skill found from the repo's
+    files (for example ``AndroidManifest.xml`` -> android) fills a slot.
+    """
+    found = discover_skills(workspace)
+    wanted = {str(name).strip().lower() for name in pinned if str(name).strip()}
+    text = " ".join(str(task or "").lower().split())
+    chosen: list[dict[str, Any]] = [item for item in found if item["name"].lower() in wanted]
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    by_marker: list[dict[str, Any]] = []
+    for order, item in enumerate(found):
+        if item in chosen:
+            continue
+        name = item["name"].lower()
+        score = 0
+        if _mentions(text, name) or _mentions(text, name.replace("-", " ")):
+            score += 6
+        hits = sum(1 for word in item["keywords"] if _mentions(text, word))
+        score += 3 * min(hits, 4)
+        if score >= 3:
+            scored.append((score, -order, item))
+        elif item["files"] and any(_has_marker(workspace, pattern) for pattern in item["files"]):
+            by_marker.append(item)
+    scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+    chosen.extend(item for _score, _order, item in scored)
+    room = max(limit, len([item for item in chosen if item["name"].lower() in wanted]))
+    if len(chosen) < limit and by_marker:
+        rank = {name: index for index, name in enumerate(_MARKER_PREFERENCE)}
+        by_marker.sort(key=lambda item: rank.get(item["name"].lower(), len(rank)))
+        chosen.append(by_marker[0])
+    return chosen[:room]
+
+
+def skill_text(item: dict[str, Any], *, max_chars: int = 7_000) -> str:
+    """The body of one skill for the model, capped."""
+    try:
+        text = Path(item["path"]).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    body = skill_body(text)
+    if len(body) > max_chars:
+        body = body[:max_chars].rsplit("\n", 1)[0] + "\n..."
+    return body
 
 
 def _skill_description(text: str) -> str:
@@ -2658,6 +2928,179 @@ def _program_of(segment: str) -> str:
                 break
         return base
     return ""
+
+
+# --------------------------------------------------------------------------- command risk
+
+_DELETE_PROGRAMS = {"rm", "remove-item", "ri", "del", "erase", "rd", "rmdir"}
+_BROAD_TARGETS = {
+    "/", "/*", "~", "~/", "~/*", "*", "*.*", ".", "./", "./*", "..", "../", "../*", ".git", "./.git",
+    "$home", "${home}", "$env:userprofile", "%userprofile%", "%homedrive%", "$env:homedrive",
+    "/home", "/usr", "/etc", "/var", "/opt", "/bin", "/lib", "/system", "/vendor", "/data", "/sdcard",
+}
+_RISKY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern, re.I), reason)
+    for pattern, reason in (
+        (r"\bgit\b[^;&|\n]*\bpush\b[^;&|\n]*(?:\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)", "force-pushes to a remote"),
+        (r"\bgit\b[^;&|\n]*\bpush\b", "pushes to a remote"),
+        (r"\bgit\b[^;&|\n]*\breset\b[^;&|\n]*--hard\b", "throws away uncommitted changes (git reset --hard)"),
+        (r"\bgit\b[^;&|\n]*\bclean\b[^;&|\n]*\s-[a-z]*f", "deletes untracked files (git clean)"),
+        (r"\bgit\b[^;&|\n]*\b(?:checkout|restore)\b[^;&|\n]*\s(?:--\s+)?\.(?:\s|$)", "discards uncommitted changes"),
+        (r"\bgit\b[^;&|\n]*\bbranch\b[^;&|\n]*\s-D\b", "force-deletes a branch"),
+        (r"\bgit\b[^;&|\n]*\bstash\b[^;&|\n]*\b(?:drop|clear)\b", "deletes stashed work"),
+        (r"\bgit\b[^;&|\n]*\bfilter-(?:branch|repo)\b", "rewrites history"),
+        (r"\brepo\s+upload\b", "uploads changes for review"),
+        (r"\bfastboot\b[^;&|\n]*\b(?:flash|flashall|erase|format|oem|flashing|update|-w)\b", "writes to a device's partitions"),
+        (r"\b(?:mkfs(?:\.\w+)?|fdisk|parted|diskpart|format-volume|clear-disk|initialize-disk)\b", "formats or partitions a disk"),
+        (r"(?:^|[\s;&|])format\s+[a-z]:", "formats a drive"),
+        (r"\bdd\b[^;&|\n]*\bof=", "writes raw data with dd"),
+        (r"(?:^|[\s;&|])(?:shutdown|reboot|halt|poweroff|stop-computer|restart-computer)\b", "shuts down or restarts the computer"),
+        (r"(?:^|[\s;&|])(?:sudo|su|doas|runas)\s", "runs with elevated rights"),
+        (r"start-process\b[^;&|\n]*-verb\s+runas", "runs with elevated rights"),
+        (r"\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python3?|iex|invoke-expression|pwsh|powershell)\b", "runs a script straight from the internet"),
+        (r"\b(?:iex|invoke-expression)\b[^\n]*(?:downloadstring|irm|iwr|invoke-restmethod|invoke-webrequest)", "runs a script straight from the internet"),
+        (r"\b(?:npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bdocker\s+push\b|\bmvn\b[^;&|\n]*\bdeploy\b|\bgradlew?(?:\.bat)?\b[^;&|\n]*\bpublish", "publishes a package"),
+        (r"\breg(?:\.exe)?\s+delete\b|\bremove-itemproperty\b[^;&|\n]*hklm", "deletes registry keys"),
+        (r"\bkill\s+-9\s+-1\b|\bkillall\b", "kills many processes"),
+        (r"\b(?:chmod|chown)\b[^;&|\n]*\s-r\b[^;&|\n]*\s(?:/|~)(?:\s|$)", "changes permissions on a whole tree"),
+        (r">\s*/dev/(?:sd[a-z]|nvme|disk)", "writes to a raw disk"),
+        (r"\bsetx\b[^;&|\n]*\s/m\b|setenvironmentvariable\([^)]*['\"]machine['\"]", "changes machine-wide settings"),
+    )
+)
+
+
+def risky_command(command: str) -> str:
+    """Why ``command`` deserves a person's yes even in auto mode, or "" when it does not.
+
+    Deletes of broad trees (``rm -rf /``, ``Remove-Item -Recurse ~``, ``rd /s .``),
+    history and work loss (``git reset --hard``, ``git clean -f``, force pushes),
+    pushes and publishes, disk and device writes (``dd``, ``mkfs``, ``fastboot flash``),
+    elevation, restarts, and piping a download into a shell.
+    """
+    text = " ".join(str(command or "").split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    deleting = _broad_delete(text)
+    if deleting:
+        return deleting
+    for pattern, reason in _RISKY_PATTERNS:
+        if pattern.search(lowered):
+            return reason
+    return ""
+
+
+def _broad_delete(command: str) -> str:
+    for segment in re.split(r"&&|\|\||[;|&\n]", command):
+        try:
+            tokens = shlex.split(segment, posix=False)
+        except ValueError:
+            tokens = segment.split()
+        tokens = [token.strip("\"'") for token in tokens if token.strip("\"'")]
+        while tokens and tokens[0].lower() in _WRAPPERS | {"sudo", "cmd", "/c", "cmd.exe"}:
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        program = re.split(r"[\\/]", tokens[0].lower())[-1].removesuffix(".exe")
+        if program not in _DELETE_PROGRAMS:
+            continue
+        flags = [token.lower() for token in tokens[1:] if token.startswith("-") or token.startswith("/") and len(token) <= 3]
+        recursive = any(
+            flag in {"/s", "--recursive", "-r", "-recurse"}
+            or (flag.startswith("-rec") and "-recurse".startswith(flag))
+            or (re.fullmatch(r"-[a-z]+", flag) and "r" in flag and program in {"rm", "rmdir"})
+            for flag in flags
+        )
+        targets = [
+            token.lower().rstrip("\\/") or token.lower()
+            for token in tokens[1:]
+            if not (token.startswith("-") or (token.startswith("/") and len(token) <= 3 and token.lower() not in {"/", "/*"}))
+        ]
+        for target in targets:
+            bare = target.replace("\\", "/")
+            if (
+                bare in _BROAD_TARGETS
+                or re.fullmatch(r"[a-z]:/?\*?", bare)
+                or re.fullmatch(r"/[^/\s]*", bare) and recursive
+                or bare.endswith("/.git")
+            ):
+                return f"deletes {target}" + (" and everything under it" if recursive else "")
+    return ""
+
+
+# Programs that only look. In plan mode these run; anything else waits until the plan is approved.
+_LOOK_PROGRAMS = {
+    "ls", "dir", "gci", "get-childitem", "cat", "type", "gc", "get-content", "head", "tail", "less", "more",
+    "grep", "egrep", "fgrep", "rg", "ag", "findstr", "select-string", "sls", "find", "fd", "wc", "pwd",
+    "get-location", "gl", "which", "where", "get-command", "gcm", "tree", "file", "stat", "du", "df",
+    "echo", "write-output", "printenv", "env", "uname", "hostname", "whoami", "test-path", "get-item", "gi",
+    "resolve-path", "sort", "uniq", "cut", "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "get-filehash",
+    "ps", "get-process", "tasklist", "readlink", "realpath", "basename", "dirname", "jq", "nl", "od", "xxd",
+    "hexdump", "strings", "objdump", "readelf", "nm", "aapt", "aapt2", "apkanalyzer", "javap", "ver",
+}
+_GIT_LOOK = {
+    "status", "log", "diff", "show", "blame", "grep", "ls-files", "ls-tree", "rev-parse", "describe",
+    "shortlog", "reflog", "cat-file", "merge-base", "show-ref", "whatchanged", "rev-list", "name-rev",
+}
+_VERSION_FLAGS = {"--version", "-version", "-v", "version", "--help", "-h", "help"}
+
+
+def read_only_command(command: str) -> bool:
+    """True when ``command`` only reads: ``ls``, ``git log``, ``grep``, ``Get-Content``, ``x --version``."""
+    text = str(command or "").strip()
+    if not text or risky_command(text):
+        return False
+    program = command_key(text)
+    if not program:
+        return False
+    segments = [seg for seg in re.split(r"&&|\|\||[;|\n]", text) if _program_of(seg) == program]
+    for segment in segments:
+        try:
+            tokens = shlex.split(segment, posix=False)
+        except ValueError:
+            tokens = segment.split()
+        args = [token.strip("\"'").lower() for token in tokens[1:]]
+        if args and all(arg in _VERSION_FLAGS for arg in args):
+            continue
+        if program == "git":
+            words = [arg for arg in args if not arg.startswith("-")]
+            sub = words[0] if words else ""
+            if sub in _GIT_LOOK:
+                if sub == "reflog" and len(words) > 1 and words[1] in {"delete", "expire"}:
+                    return False
+                continue
+            if sub in {"branch", "tag", "remote", "stash"} and not set(args) & {"-d", "-D", "--delete", "-m", "-M", "-f", "drop", "clear", "pop", "apply", "add", "remove", "rm", "rename", "set-url", "push", "save"}:
+                if sub == "stash" and (len(words) < 2 or words[1] != "list"):
+                    return False
+                if sub == "tag" and len(words) > 1 and not set(args) & {"-l", "--list"}:
+                    return False
+                if sub == "branch" and len(words) > 1 and not set(args) & {"-l", "--list", "--contains", "--merged"}:
+                    return False
+                continue
+            if sub == "config" and set(args) & {"--get", "--list", "-l", "--get-all", "--show-origin"}:
+                continue
+            return False
+        if program == "repo":
+            words = [arg for arg in args if not arg.startswith("-")]
+            if words and words[0] in {"status", "info", "branches", "list", "diff", "overview", "manifest"}:
+                continue
+            return False
+        if program == "adb":
+            joined = " ".join(args)
+            if re.match(r"^(?:-s \S+ )?(?:devices|get-state|get-serialno|logcat -d\b|shell (?:getprop|dumpsys|pm list|cmd package list|ls|cat|ps|df|id|uname|wm size|wm density|settings get))", joined):
+                continue
+            return False
+        if program in {"gradlew", "gradle"}:
+            if args and all(arg in {"tasks", "projects", "properties", "dependencies", "help", "--console=plain", "-q", "--quiet", "--all", "--offline"} or arg.startswith(("--configuration", ":")) for arg in args):
+                continue
+            return False
+        if program == "find" and set(args) & {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls"}:
+            return False
+        if program in {"sort"} and "-o" in args:
+            return False
+        if program not in _LOOK_PROGRAMS:
+            return False
+    return True
 
 
 def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:

@@ -276,7 +276,7 @@ class TextTests(_Base):
     def test_header_plain_when_piped(self) -> None:
         agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5", approve_mode="auto")
         agent_ui.welcome_header(version="1.2")
-        self.assertEqual(self.text(), f"crit v1.2 · {Path('/w')} · model: ChatGPT 5.5 · permissions: auto\n")
+        self.assertEqual(self.text(), f"crit v1.2 · {Path('/w')} · model: ChatGPT 5.5 · mode: auto\n")
 
     def test_header_box_on_a_terminal(self) -> None:
         con = _console(terminal=True)
@@ -334,12 +334,12 @@ class InputTests(_Base):
         return lambda: next(items)
 
     def test_slash_commands_are_handled_in_the_ui(self) -> None:
-        reader = self._reader("/help", "/permissions", "/status", "/tools", "fix it")
+        reader = self._reader("/help", "/permissions auto", "/status", "/tools", "fix it")
         self.assertEqual(agent_ui.read_message(reader=reader), "fix it")
         text = self.text()
         self.assertIn("/undo", text)
         self.assertIn("Enter", text)
-        self.assertIn("permissions  auto", text)
+        self.assertIn("auto mode on", text)
         self.assertEqual(agent_ui.approve_mode(), "auto")
         self.assertIn("Update", text)
 
@@ -430,10 +430,10 @@ class PromptToolkitTests(_Base):
 
     def test_approval_yes_always_no(self) -> None:
         permission = _Permission("command", "Run: npm test", "command:npm", "npm test")
-        self.assertEqual(self._run("1", agent_ui.approve, permission=permission), ("yes", ""))
-        self.assertEqual(self._run("a", agent_ui.approve, permission=permission), ("always", ""))
+        self.assertEqual(self._run("1\r", agent_ui.approve, permission=permission), ("yes", ""))
+        self.assertEqual(self._run("a\r", agent_ui.approve, permission=permission), ("always", ""))
         self.assertEqual(self._run("\x1b[B\r", agent_ui.approve, permission=permission), ("always", ""))
-        self.assertEqual(self._run("n\r", agent_ui.approve, permission=permission)[0], "no")
+        self.assertEqual(self._run("n\r\r", agent_ui.approve, permission=permission)[0], "no")
         text = self.text()
         self.assertIn("Bash command", text)
         self.assertIn("Run: npm test", text)
@@ -445,6 +445,49 @@ class PromptToolkitTests(_Base):
         self.assertEqual(answer, ("no", "use the helper instead"))
         self.assertIn('print("Hello, crit!")', self.text())
 
+    def test_typed_words_and_numbers(self) -> None:
+        permission = _Permission("command", "Run: npm test", "command:npm", "npm test")
+        for keys, expected in [
+            ("yes\r", ("yes", "")),
+            ("Yes\r", ("yes", "")),
+            ("YES\r", ("yes", "")),
+            ("1.\r", ("yes", "")),
+            ("ok\r", ("yes", "")),
+            ("2.\r", ("always", "")),
+            ("Always\r", ("always", "")),
+            ("yes, always\r", ("always", "")),
+            ("no, use pnpm\r", ("no", "use pnpm")),
+            ("3. use pnpm\r", ("no", "use pnpm")),
+            ("what\ryes\r", ("yes", "")),
+        ]:
+            with self.subTest(keys=keys):
+                self.assertEqual(self._run(keys, agent_ui.approve, permission=permission), expected)
+
+    def test_capital_no_is_not_approval(self) -> None:
+        permission = _Permission("command", "Run: rm -rf build", "command:rm", "rm -rf build")
+        self.assertEqual(self._run("No\r\r", agent_ui.approve, permission=permission), ("no", ""))
+        self.assertEqual(self._run("NO\rstop\r", agent_ui.approve, permission=permission), ("no", "stop"))
+
+    def test_plain_fallback_accepts_words(self) -> None:
+        options = agent_ui.approval_options(_Permission("command", "Run: npm test", "command:npm"))
+        for lines, expected in [(["Yes"], 0), (["1."], 0), (["always"], 1), (["huh", "", "n"], 2), (["?", "?", "?"], -1)]:
+            with self.subTest(lines=lines), patch("builtins.input", side_effect=lines):
+                self.assertEqual(agent_ui._choose_plain(options)[0], expected)
+
+    def test_parse_choice(self) -> None:
+        options = agent_ui.approval_options(_Permission("outside", "Read /etc/hosts", "outside"))
+        self.assertEqual(agent_ui.parse_choice("(1)", options), (0, ""))
+        self.assertEqual(agent_ui.parse_choice("Yes.", options), (0, ""))
+        self.assertEqual(agent_ui.parse_choice("nope", options), (1, ""))
+        self.assertEqual(agent_ui.parse_choice("always", options), (-1, ""))
+        self.assertEqual(agent_ui.parse_choice("7", options), (-1, ""))
+        self.assertEqual(agent_ui.parse_choice("nothing", options), (-1, ""))
+
+    def test_question_typed_answer_is_free_text(self) -> None:
+        answer = self._run("use postgres\r", agent_ui.ask_question, question="Which db?", options=["sqlite", "mysql"])
+        self.assertEqual(answer, "use postgres")
+        self.assertEqual(self._run("2\r", agent_ui.ask_question, question="Which db?", options=["sqlite", "mysql"]), "mysql")
+
     def test_escape_declines(self) -> None:
         permission = _Permission("network", "Fetch https://example.com", "network:example.com")
         self.assertEqual(self._run("\x1b", agent_ui.approve, permission=permission), ("no", ""))
@@ -452,8 +495,8 @@ class PromptToolkitTests(_Base):
     def test_outside_never_offers_always(self) -> None:
         permission = _Permission("outside", "Read /etc/hosts", "outside")
         options = [answer for answer, _label in agent_ui.approval_options(permission)]
-        self.assertEqual(options, ["yes", "no"])
-        self.assertEqual(self._run("2\r", agent_ui.approve, permission=permission)[0], "no")
+        self.assertEqual(options, ["yes", "no", "auto"])
+        self.assertEqual(self._run("2\r\r", agent_ui.approve, permission=permission)[0], "no")
         labels = agent_ui.approval_options(_Permission("command", "Run: npm i", "command:npm"))
         self.assertIn("npm commands", labels[1][1])
 

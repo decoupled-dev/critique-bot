@@ -278,6 +278,7 @@ Later tasks from the same folder, or from any other folder after the first `crit
 ```bash
 crit "update the test cases"
 crit --yes "fix the failing test"
+crit --plan "add a VHAL property for seat heating"
 crit undo
 ```
 
@@ -285,12 +286,13 @@ crit undo
 
 ## The crit screen
 
-Each session opens with a box that shows the folder, model, shell, and permission mode. Type at the `>` prompt:
+Each session opens with a box that shows the folder, model, shell, and mode. Type at the `>` prompt:
 
 | Key | Effect |
 | --- | --- |
 | Enter | Send the message. Pasted text with several lines stays one message. |
 | Alt+Enter, Ctrl+J, or `\` at the end of a line | New line. |
+| Shift+Tab (or Alt+M) | Switch the mode: ask, accept edits, auto, plan (see [Modes](#modes)). The line under the input shows the mode. |
 | `/` | Command menu (below). |
 | `@` | Complete a file or folder path in the project. Mentioned paths that exist are listed for the model as `Referenced files:`. |
 | Up / Down | Earlier messages. History is kept in `.bot/history`. |
@@ -304,14 +306,18 @@ Each session opens with a box that shows the folder, model, shell, and permissio
 | `/new` | Start a fresh chat. |
 | `/clear` | Clear the screen. |
 | `/undo` | Restore the files the last task changed. |
-| `/permissions` | Switch between asking and not asking for the rest of the session. |
-| `/status` | Model, shell, folder, permission mode, and background commands. |
+| `/mode [name]` | List the modes, or switch to `ask`, `edits`, `auto`, or `plan`. `/permissions` is the same. |
+| `/plan` | Plan mode for the next tasks. |
+| `/auto` | Auto mode for the rest of the session. |
+| `/skills [name ...]` | List the skills, or pin some for every task this session. `/skills off name` unpins. |
+| `/status` | Model, shell, folder, mode, pinned skills, and background commands. |
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |
+| `/commands` | The shell commands run this session: exit code, time, shell, and whether one was retried or moved to the background. |
 | `/theme` | Change the text style. |
 | `/exit` | Leave (`exit` and `quit` work too). |
 
-Each tool step prints one line such as `● Read(src/app.py)` with the result under it, `⎿  Read 120 lines`. Edits show a short numbered diff, and commands show the exit code, time, and the first lines of output. While the chat is replying, a line such as `✻ Thinking… (23s · ctrl+c to interrupt)` counts the seconds.
+While tools run, a status line counts them and the time, for example `✻ Running 1 shell command… (2m 14s · ctrl+c to interrupt)` or `Reading 3 files, searching 1 pattern…`, with the last lines of a command's output above it. Each tool step then prints one line such as `● Read(src/app.py)` with the result under it, `⎿  Read 120 lines`. Edits show a short numbered diff, and commands show the exit code, time, and the first lines of output. While the chat is replying, a line such as `✻ Thinking… (23s · ctrl+c to interrupt)` counts the seconds.
 
 Ctrl+C during a task ends that task as INTERRUPTED. It stops the running command and every process it started, stops background commands, and clicks the chat page's stop control so the half-written reply does not mix into the next one. The session stays open for the next task. If the page is still writing a reply when the next message goes out, crit waits for it to finish, or stops it after about 20 seconds. Both depend on [`selectors.stop_button`](config.json.md#stop_button).
 
@@ -325,15 +331,108 @@ The instructions from [`prompts/agent.txt`](../prompts/agent.txt) go out in fron
 - A real question that needs your decision is shown to you, and your answer goes back to the model. The model can also ask with the `ask_user` tool. With no terminal, the model is told no user is available and decides itself.
 - COMPLETED, DONE, or a reply that no edit is needed ends the task. After an edit, a set check command runs first (see `check_command` below).
 
+### Modes
+
+Shift+Tab cycles through four modes, as in Claude Code. The line under the input box shows the one in use.
+
+| Mode | What asks first | Start with |
+| --- | --- | --- |
+| **ask** (default) | Every edit, command, web fetch, and path outside the project. | `crit`, or `"permissions": "ask"` |
+| **edits** (accept edits) | Commands, fetches, and outside paths. File edits in the project run at once. | `--permission-mode edits` |
+| **auto** | Only risky commands (below). Everything else runs, and questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
+| **plan** | Nothing changes. The model reads the code and sends a plan, then you approve it. | `crit --plan`, `/plan` |
+
+**Risky commands** ask in every mode, auto included. These are deletes of a whole tree (`rm -rf /`, `~`, `.`, `.git`, a drive root), `git reset --hard`, `git clean -f`, `git checkout -- .`, any `git push`, `repo upload`, `fastboot flash`/`erase`, `dd`, `mkfs`, `format`, `sudo`, shutdown or restart, publishing a package, and piping a download into a shell. That box has only Yes and No; "don't ask again" does not cover them. `"confirm_risky": false` lets auto mode run them too.
+
+**Plan mode.** The task goes out with plan-mode instructions. The model may read and search files, ask the code graph, fetch web pages, and run read-only commands (`git log`, `git diff`, `ls`, `grep`, `Get-Content`, `./gradlew tasks`, `adb devices`). Edits, writes, and builds are not run; the model is told to finish reading and send the plan. The plan comes back as **Goal, Findings, Steps, Risks, Verify**, and a box asks:
+
+1. **Yes, start now in auto mode**
+2. **Yes, start and auto-accept edits**
+3. **Yes, start and ask before each edit and command**
+4. **No, keep planning**, then type what to change (or type `no, also update the tests`)
+
+On a yes the mode switches and the model carries out the plan in the same chat. Esc keeps the plan and changes nothing. A question ("why does X fail?") is answered as usual and is not planned.
+
 ### Approvals
 
-Reading and searching run without asking. Edits, commands, web fetches, and anything outside the project folder show a box first:
+Reading and searching run without asking. In ask mode, edits, commands, web fetches, and anything outside the project folder show a box first:
 
 1. **Yes** runs this step.
 2. **Yes, and don't ask again** remembers the choice for this session: all file edits, commands that start with the same program (for example every `npm` command), or one web site. It never covers a command that chains, redirects, or nests another command; those are asked each time. Paths outside the project are always asked.
 3. **No** (or Esc) skips the step. After `3` you can type what to do instead, and the model gets that note.
+4. **Yes, and switch to auto mode** runs this step and stops asking for the rest of the session (risky commands still ask).
 
-Use the arrow keys and Enter, or press `1`, `2`, `3`, `y`, `a`, or `n`. `crit --yes "task"` (also `--auto` or `-y`) or `"permissions": "auto"` in `.bot/settings.json` runs everything without asking. `/permissions` switches for the rest of the session. With no terminal (a pipe or a CI job) and no `--yes`, those steps are declined.
+When there is no "don't ask again" row (a path outside the project), No is `2` and auto is `3`.
+
+Use the arrow keys and Enter, or type an answer and press Enter: a number (`1`, `2.`, `(3)`), or a word in any case (`yes`, `Yes`, `ok`, `always`, `auto`, `no`). The highlight follows what you type. `no, use pnpm instead` or `3 use pnpm` declines and sends the rest as the note. Text that matches no option is not taken as an answer; crit asks again. With no terminal (a pipe or a CI job), steps that would ask are declined.
+
+### Builds
+
+crit treats a build differently from other commands. Builds include `gradlew`, `gradle`, `mvn`, AOSP `m`/`mm`, `make`, `ninja`, `cmake --build`, `atest`, `npm install`, `npm ci`, `dotnet build`, `cargo build`, and `build.sh`/`build.ps1`.
+
+- **Time.** A build gets at least 30 minutes (`build_timeout`), whatever timeout the model asked for. Other commands get 2 minutes unless the model asks for more, up to 10.
+- **Nothing is lost at the timeout.** A command still running at its timeout is not killed. It continues as a background job (`b1`), and the model waits for it with `command_output`. A command waiting for input (`[y/n]`, `password:`) is still stopped.
+- **The JDK and SDK are set for the project.** crit finds every installed JDK. It looks in Android Studio's own `jbr`, `C:\Program Files\Java`, Eclipse Adoptium, Microsoft, Zulu, Corretto, `~/.gradle/jdks`, `~/.jdks`, SDKMAN, `/usr/lib/jvm`, and `/Library/Java/JavaVirtualMachines`. It then picks the one the project needs: AGP 8 needs JDK 17+, AGP 7 needs 11, and the wrapper's Gradle version caps the newest. When JAVA_HOME fits, it is kept. The Android SDK is found from `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `sdk.dir` in `local.properties`, or the default folder (`%LOCALAPPDATA%\Android\Sdk` on Windows). Commands run with both set, and ENVIRONMENT tells the model which ones.
+- **The result starts with what matters.** A failed build's result begins with **SUMMARY**: Gradle's "What went wrong", the `e:`/`error:` lines, and BUILD FAILED. Then comes **HINTS** for the failures crit recognizes:
+  - SDK not found (with the `sdk.dir` line to write)
+  - wrong Java (with the installed JDKs)
+  - a corporate proxy's HTTPS certificate (`trustStoreType=Windows-ROOT` on Windows)
+  - network or proxy settings
+  - locked files
+  - out of memory
+  - SDK licenses or a missing SDK package
+  - a missing `gradle-wrapper.jar`
+  - PowerShell's `.\` rule
+  - the Windows path length limit
+  
+  A successful `assembleDebug` lists the APK/AAB files it wrote under **ARTIFACTS**, with their sizes.
+- **One automatic retry.** A build that failed because Gradle's files were locked or its daemon died is retried once after `gradlew --stop`. A build cut off by a dropped download or a 5xx from a repository is retried once after 5 seconds. Compile errors, a wrong JDK, and certificate problems are not retried, since they would fail the same way. The result says `retried once: <reason>`.
+- **The wrapper is called the right way.** In PowerShell, a bare `gradlew` or `./gradlew` becomes `.\gradlew.bat`, and in cmd it becomes `gradlew.bat`. `--console=plain` is added. Windows PowerShell 5.1's `NativeCommandError` decoration around a program's stderr is removed from the output.
+- **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
+
+Every command is listed by `/commands` and saved in `.bot/sessions/<stamp>/agent.json` under `commands`.
+
+### Skills
+
+crit ships expert guidance for these domains, and sends the ones that fit each task along with it:
+
+| Skill | Covers |
+| --- | --- |
+| `android` | App architecture, lifecycle, manifest and permissions, coroutines, Hilt, Room, WorkManager, R8. |
+| `aosp` | Platform work: Soong/`Android.bp`, system services, Binder/AIDL, HALs and VINTF, SELinux, init, overlays, API surfaces, `atest`. |
+| `aaos` | Android Automotive: CarService and Car APIs, Vehicle HAL properties, driver distraction, occupant zones, car audio, power. |
+| `android-testing` | JUnit 4/5, Espresso, Compose UI tests, Robolectric, Mockito/MockK, coroutine and Flow tests, flaky tests. |
+| `android-debugging` | adb, logcat, tombstones, ANRs, dumpsys, bugreport, Perfetto, SELinux denials. |
+| `gradle` | Wrapper, AGP, variants, version catalogs, JDK/toolchain errors, dependency conflicts. |
+| `java` | Java 17/21 and AOSP style: null handling, exceptions, concurrency, collections. |
+| `kotlin` | Kotlin 2.x: null safety, coroutines and Flow, Java interop, KSP, ktlint/detekt. |
+| `jetpack-compose` | State, side effects, recomposition, Material 3, navigation, UI tests. |
+| `cpp-native` | NDK, JNI, AOSP native code, ownership, thread safety, sanitizers. |
+| `aspice` | Automotive SPICE: traceability, verification evidence, change impact, work products. |
+| `automotive-safety` | ISO 26262, MISRA and AUTOSAR C++ themes, ISO 21434, defensive coding, deviations. |
+
+How a skill is chosen for a task:
+
+- **Words in the task.** "fix the espresso test" gets `android-testing`; "add a VHAL property" gets `aaos`; "ASPICE traceability" gets `aspice`. At most two skills go with a task (`max_skills`).
+- **The project's files.** When the task names no domain, one skill is chosen from the files in the project, for example `AndroidManifest.xml` picks `android` and `build/envsetup.sh` picks `aosp`.
+- **Pinned skills.** `/skills aosp aaos` pins skills for the session, and `"skills": ["aspice"]` in settings pins them for every session.
+
+A skill goes out once per chat, and a new chat sends it again. The line `Skills: android-testing` shows which ones went with a task. The model can load any other skill with the `skill` tool.
+
+To add a project skill, write `.bot/skills/<name>/SKILL.md`:
+
+```markdown
+---
+name: our-hal
+description: Rules for our vehicle HAL
+keywords: vhal, our-hal, seat heating
+files: hardware/our/vehicle
+---
+# Our HAL
+...
+```
+
+A project skill with the same name as a built-in one replaces it.
 
 When the output is not a terminal, crit prints plain text with no colors or spinner. `NO_COLOR=1` keeps the layout and drops the colors.
 
@@ -362,7 +461,15 @@ On Linux and macOS the same lines use `./gradlew`.
 | `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller. Values under 4000 are ignored. |
 | `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first task then goes out with only the environment and project notes in front of it. |
 | `theme` | Text style chosen on the welcome screen: `auto`, `dark`, `light`, `dark-colorblind`, `light-colorblind`, `dark-ansi`, or `light-ansi`. The session screen uses the same colors. `/theme` changes it. |
-| `permissions` | `"auto"` runs edits, commands, and fetches without asking, like `--yes`. The default, `"ask"`, shows the approval box. |
+| `permissions` | The starting mode: `"ask"` (the default), `"edits"`, `"auto"` (like `--yes`), or `"plan"`. See [Modes](#modes). |
+| `confirm_risky` | `false` lets auto mode run risky commands (a broad delete, `git reset --hard`, a push, a flash) without asking. Default `true`. |
+| `auto_questions` | `"ask"` keeps showing the model's questions in auto mode. The default, `"decide"`, tells the model to choose itself. |
+| `skills` | Skills sent with every task, for example `["aosp", "aaos"]`. |
+| `auto_skills` | `false` stops choosing skills from the task and project files; pinned skills still go. Default `true`. |
+| `max_skills` | How many skills go with one task. Default 2. |
+| `build_timeout` | Seconds a build (gradle, mvn, m, npm install, ...) runs before it moves to the background. Default 1800. |
+| `command_retries` | Automatic retries of a build that failed for a passing reason (locked files, a dropped download). Default 1; 0 turns it off. |
+| `background_on_timeout` | `false` stops a command at its timeout instead of keeping it as a background job. Default `true`. |
 | `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 | `shell` | Default shell for `run_command`: `auto` (the default: PowerShell 7, then Windows PowerShell 5.1 on Windows; bash, then sh elsewhere), `pwsh`, `powershell`, `cmd`, `bash` (Git Bash on Windows), `sh`, or `zsh`. A shell that is not installed falls back to `auto`. `/shell` changes it for one session. |
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
@@ -396,7 +503,7 @@ The model has 21 tools. `/tools` lists them in a session.
 | `web_fetch` | Read one http or https page as text. Asks first, per site. |
 | `ask_user` | Ask you one question when the task needs your decision. |
 | `todo` | The task list for a job with several steps. |
-| `skill` | Load a `SKILL.md` from `.bot/skills`, `.agents/skills`, or `.opencode/skills`. |
+| `skill` | Load a built-in skill or a `SKILL.md` from `.bot/skills`, `.agents/skills`, or `.opencode/skills`. With no name, list them. |
 | `code_graph` | Callers, callees, and impact from the project's code graph. |
 
 ### Shells

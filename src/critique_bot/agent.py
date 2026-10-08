@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_edit, agent_shell, agent_tools, code_graph, code_index, log
+from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_graph, code_index, log
 from critique_bot.agent_tools import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
@@ -129,6 +129,7 @@ _STATUS_WORDS = {
     "blocked": "BLOCKED",
 }
 _STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
+MAX_PLAN_REVISIONS = 5
 _FAIL_HEAD = re.compile(r"^(FAILED|BLOCKED)\b\s*[:\-—]?\s*(.*)$")
 MAX_REFUSALS = 3
 MAX_FAILED_ROUNDS = 8
@@ -185,6 +186,29 @@ _sleep = time.sleep
 
 _FALLBACKS = {
     "TASK_PREFIX": "Print tool_call blocks to act. Do not refuse.",
+    "PLAN_MODE": (
+        "PLAN MODE. Do not change anything yet. Investigate with read-only tools, then reply with a plan "
+        "and no tool_call: the goal, what you found (with paths), the steps (files and the change in each), "
+        "risks, and how you will verify. Do not reply COMPLETED."
+    ),
+    "PLAN_NEEDED": "Plan mode is on. Reply with the plan in words now, with no tool_call and no COMPLETED.",
+    "PLAN_ONLY": (
+        "Plan mode is on, so nothing that changes files or runs a build was run. Use read-only tools only, "
+        "then reply with the plan and no tool_call."
+    ),
+    "PLAN_APPROVED": (
+        "The user approved the plan. Plan mode is off. Carry it out now: write the todo list from the plan, "
+        "then send the tool_call blocks for the first steps. Verify, then reply COMPLETED."
+    ),
+    "PLAN_REVISE": "The user wants the plan changed:\n{feedback}\nInvestigate if needed, then reply with the revised plan and no tool_call.",
+    "HAND_BACK": (
+        "Do not hand the work to the user. run_command runs on the user's machine, so run the build or "
+        "command yourself now. If it fails, read SUMMARY and HINTS in its result, fix the cause, and run it again."
+    ),
+    "AUTO_DECIDE": (
+        "Auto mode is on and the user is not answering questions. Decide yourself: pick the safest reasonable "
+        "option, say which in one line, and continue the task."
+    ),
     "NUDGE": (
         "No tool_call block was found, so nothing was run. "
         "A bare JSON object such as {tool:\"write_file\"} is not a tool call. "
@@ -1105,6 +1129,23 @@ _QUESTION_MARKERS = (
     "shall i", "do you want", "what do you want",
 )
 _PROMISE_MARKERS = ("i'll ", "i will ", "let me ", "next i", "going to ")
+#: The model handing the work back: "build it yourself", "run this in Android Studio".
+_HAND_BACK_RE = re.compile(
+    r"(?:\b(?:yourself|manually)\b"
+    r"|\bon your (?:machine|computer|system|side|end|local)\b"
+    r"|\b(?:please|you can|you could|you should|you(?:'ll| will)? need to|you may need to|you must|kindly)\s+"
+    r"(?:\w+\s+){0,2}(?:run|build|execute|install|open|launch|rebuild|sync|try running)\b"
+    r"|\b(?:open|build|run|sync)\b[^.\n]{0,40}\bin android studio\b"
+    r"|\brun (?:the following|these|this) commands?\b"
+    r"|\bi (?:can(?:no|')t|am unable to|'m unable to|do not have the ability to|don't have the ability to) (?:run|execute|build)\b)",
+    re.I,
+)
+MAX_HAND_BACKS = 2
+
+
+def _hands_back(text: str) -> bool:
+    """True when the reply tells the user to run, build, or install something themselves."""
+    return bool(_HAND_BACK_RE.search(_hide_tool_markup(text or "")))
 
 
 def _refuses(text: str) -> bool:
@@ -1278,13 +1319,17 @@ def load_agent_instructions() -> str:
     return load_prompt_sections()["SYSTEM"]
 
 
-def task_message(task: str, *, repo_map: str = "") -> str:
-    """The task with the short protocol reminder and, when built, the repo map."""
+def task_message(task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "") -> str:
+    """The task with the short protocol reminder, the repo map, skills, and the mode note."""
     body = task.strip()
     prefix = load_prompt_sections()["TASK_PREFIX"].rstrip()
     if body.startswith(prefix.splitlines()[0]):
         return body
     parts = [prefix]
+    if mode_note.strip():
+        parts.append(mode_note.strip())
+    if skills.strip():
+        parts.append(skills.strip())
     if repo_map.strip():
         parts.append(
             "REPO MAP (files ranked for this task; numbers are definition lines; "
@@ -1303,6 +1348,7 @@ def seed_message(
     platform_name: str | None = None,
     persistent_cwd: bool = True,
     available: dict[str, agent_shell.Shell] | None = None,
+    skills: list[str] | None = None,
 ) -> str:
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
@@ -1313,6 +1359,11 @@ def seed_message(
     ]
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
     lines.append(code_graph.hint(workspace))
+    if skills:
+        lines.append(
+            "skills: " + ", ".join(skills) + ". The ones that fit a task come with it under SKILLS; "
+            "load another with the skill tool when the work turns to its domain."
+        )
     if persistent_cwd:
         lines.append(
             "run_command starts in the workspace above. cd persists between run_command calls, "
@@ -1339,6 +1390,40 @@ def seed_message(
 def _without_ready(seed: str) -> str:
     """The seed for a message that also carries the task: no READY handshake."""
     return re.sub(r"\n*[^\n]*\bexactly READY\b[^\n]*", "", seed).strip()
+
+
+MAX_SKILL_CHARS = 14_000
+
+
+def skills_block(items: list[dict[str, Any]], *, max_chars: int = MAX_SKILL_CHARS) -> str:
+    """The SKILLS part of a task message: the body of each chosen skill, within ``max_chars``."""
+    text_of = getattr(agent_tools, "skill_text", None)
+    if not items or not callable(text_of):
+        return ""
+    parts: list[str] = []
+    room = max_chars
+    for item in items:
+        body = text_of(item, max_chars=min(7_000, room))
+        if not body:
+            continue
+        chunk = f"=== skill: {item['name']} ===\n{body}"
+        if len(chunk) > room:
+            break
+        parts.append(chunk)
+        room -= len(chunk)
+    if not parts:
+        return ""
+    return (
+        "SKILLS (expert guidance for this task's domain; apply it unless the task or PROJECT NOTES say otherwise)\n"
+        + "\n\n".join(parts)
+    )
+
+
+def _setting_list(settings: dict[str, Any], key: str) -> list[str]:
+    raw = settings.get(key)
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(item).strip() for item in raw or [] if str(item).strip()] if isinstance(raw, list) else []
 
 
 def _agent_prompt_path() -> Path:
@@ -1386,6 +1471,9 @@ def _int_setting(settings: dict[str, Any], key: str, default: int, minimum: int)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < minimum:
         return default
     return int(raw)
+
+
+_MODES = frozenset({"ask", "edits", "auto", "plan"})
 
 
 def _ui_approve_mode() -> str:
@@ -1438,6 +1526,8 @@ class _Chat:
         self.chars = 0
         self.violations = 0
         self.map_sent = False
+        #: Skills already sent in this chat; a new chat sends them again.
+        self.skills_sent: set[str] = set()
         #: Sent ahead of the next message: the instructions, in a fresh chat.
         self.prefix = ""
         self.can_restart = callable(getattr(session, "new_chat", None))
@@ -1497,6 +1587,7 @@ class _Chat:
         self.chars = 0
         self.violations = 0
         self.map_sent = False
+        self.skills_sent = set()
         self.prefix = _without_ready(self.seed) if self.seed else ""
         return True
 
@@ -1521,6 +1612,7 @@ class _TaskRun:
         always: set[str] | None = None,
         ask: Callable[[str], str | None] | None = None,
         ui_mode_at_start: str | None = None,
+        confirm_risky: bool = True,
     ) -> None:
         self.chat = chat
         self.task = task
@@ -1537,6 +1629,12 @@ class _TaskRun:
         self.ui_mode_at_start = ui_mode_at_start if ui_mode_at_start is not None else _ui_approve_mode()
         self.always = always if always is not None else set()
         self.ask = ask
+        self.confirm_risky = confirm_risky
+        #: Plan mode: the plan was approved (or the task was not planned), so work goes ahead.
+        self.plan_done = False
+        self.plan_asks = 0
+        self.plans = 0
+        self.hand_backs = 0
         self.tools_ran = False
         self.last_failed = False
         self.nudges = 0
@@ -1643,6 +1741,22 @@ class _TaskRun:
             self._send_message("FABRICATED")
             self.last_failed = True
             return None
+        if self._planning() and not answer_task:
+            return self._plan_reply(reply, status)
+        if (
+            not answer_task
+            and self.hand_backs < MAX_HAND_BACKS
+            and _hands_back(reply)
+            and (status not in _STATUS_OK or self.last_failed or not self.tools_ran)
+        ):
+            self.hand_backs += 1
+            self.chat.violations += 1
+            _ui("note", "The model asked you to do it yourself. Sending it back to run it.")
+            last = ""
+            if self.state.last_command and self.last_failed:
+                last = f"The last command was {_one_line(self.state.last_command, 160)} ({self.state.last_exit}). "
+            self._send_message("HAND_BACK", last=last)
+            return None
         if status in {"FAILED", "BLOCKED"} and _refuses(reply):
             return self._refuse(reply)
         if status:
@@ -1694,6 +1808,33 @@ class _TaskRun:
             return None
         return self._finish("COMPLETED")
 
+    def _plan_reply(self, reply: str, status: str | None) -> str | None:
+        """Plan mode: a reply with no calls is the plan. The user approves it, asks for changes, or stops."""
+        plan = _hide_tool_markup(reply).strip()
+        if status in {"FAILED", "BLOCKED"} and len(plan) > 40:
+            return self._finish(status, reply=reply)
+        words = re.sub(r"\b(?:COMPLETED|FINISHED|DONE)\b\.?", "", plan).strip()
+        if len(words) < 40:
+            self.plan_asks += 1
+            if self.plan_asks > 2:
+                return self._end("FAILED", "plan mode: the model did not send a plan")
+            _ui("note", "Asking for the plan.")
+            self._send_message("PLAN_NEEDED")
+            return None
+        self.plans += 1
+        choice, feedback = _review_plan()
+        if choice in {"auto", "edits", "ask"}:
+            self.plan_done = True
+            self.approve_mode = choice
+            self._send_message("PLAN_APPROVED")
+            return None
+        if choice == "no" and feedback and self.plans <= MAX_PLAN_REVISIONS:
+            self._send_message("PLAN_REVISE", feedback=feedback)
+            return None
+        _ui("note", "Plan only; no files were changed. Switch modes with Shift+Tab or /mode to carry it out.")
+        _print_status("COMPLETED")
+        return "COMPLETED"
+
     def _refuse(self, reply: str) -> str | None:
         """Send a refusal back. FAILED/BLOCKED does not finish the task when the model only claims the tools are missing."""
         self.refusals += 1
@@ -1743,6 +1884,7 @@ class _TaskRun:
             batch.clear()
 
         denied = False
+        plan_blocked = False
         for index, call in enumerate(calls):
             if call.error:
                 flush()
@@ -1762,6 +1904,18 @@ class _TaskRun:
                 batch.append((index, call))
                 continue
             flush()
+            if self._planning() and not self._plan_allows(call, perm):
+                result = {
+                    "tool": canonical_tool(call.tool) or call.tool,
+                    "ok": False,
+                    "error": "not run: plan mode is on. Read only for now, then reply with the plan",
+                    "planned": True,
+                }
+                _tool_start(call)
+                _tool_done(call, result)
+                slots[index] = result
+                plan_blocked = True
+                continue
             key = _call_key(call)
             if key in self.denials:
                 # Asked and denied already in this task: do not ask the user again.
@@ -1792,7 +1946,7 @@ class _TaskRun:
         flush()
         results = [item for item in slots if item is not None]
         self.state.step += 1
-        counted = [item for item in results if not item.get("denied")]
+        counted = [item for item in results if not item.get("denied") and not item.get("planned")]
         self.denied_rounds = self.denied_rounds + 1 if denied and not counted else 0
         self.last_failed = any(not item.get("ok") for item in counted)
         if not self.last_failed:
@@ -1803,6 +1957,8 @@ class _TaskRun:
             self.state.failures_in_row = 0
         if denied:
             extras.append(self.sections["DENIED"])
+        if plan_blocked:
+            extras.append(self.sections["PLAN_ONLY"])
         self._send_results(results, extra="\n\n".join(extras))
 
     def _execute_one(self, call: ToolCall) -> dict[str, Any]:
@@ -1826,15 +1982,28 @@ class _TaskRun:
             return _Perm("command" if name == "run_command" else "edit", _activity(call), "")
 
     def _approved(self, perm: Any) -> tuple[bool, str]:
-        """Ask the user unless the call only reads, approvals are off, or it was always-allowed."""
+        """Ask the user unless the call only reads, the mode allows it, or it was always-allowed.
+
+        ask: every edit, command, fetch, and outside path. edits: file edits in
+        the workspace run. auto: everything runs. A risky command (a broad
+        delete, git reset --hard, a push, a flash) asks in every mode, unless
+        ``"confirm_risky": false``.
+        """
         kind = getattr(perm, "kind", "read") or "read"
-        if kind == "read" or self._approve_mode() == "auto":
+        if kind == "read":
             return True, ""
+        mode = self._approve_mode()
+        risky = self._risk(perm)
+        if risky and not self.confirm_risky and mode == "auto":
+            risky = ""
+        if not risky:
+            if mode == "auto" or (mode == "edits" and kind == "edit"):
+                return True, ""
         key = getattr(perm, "key", "") or ""
         rememberable = bool(key) and kind != "outside"
-        if rememberable and key in self.always:
+        if rememberable and key in self.always and not risky:
             return True, ""
-        decision, reason = _approve_prompt(perm)
+        decision, reason = _approve_prompt(perm, risky=risky) if risky else _approve_prompt(perm)
         if decision == "always":
             if rememberable:
                 self.always.add(key)
@@ -1843,10 +2012,40 @@ class _TaskRun:
             return True, ""
         return False, (reason or "").strip()
 
+    def _risk(self, perm: Any) -> str:
+        if getattr(perm, "kind", "") not in {"command", "outside"}:
+            return ""
+        check = getattr(agent_tools, "risky_command", None)
+        command = str(getattr(perm, "detail", "") or "")
+        if not callable(check) or not command:
+            return ""
+        try:
+            return str(check(command) or "")
+        except Exception as exc:
+            log.debug(f"risk check failed: {exc}")
+            return ""
+
+    def _planning(self) -> bool:
+        return not self.plan_done and self._approve_mode() == "plan"
+
+    def _plan_allows(self, call: ToolCall, perm: Any) -> bool:
+        """In plan mode: reads, read-only commands, and fetches run; edits and builds wait for the plan."""
+        kind = getattr(perm, "kind", "read") or "read"
+        name = canonical_tool(call.tool)
+        if kind == "read" or kind == "network":
+            return True
+        if name in _read_only_tools():
+            return True  # a read outside the workspace still asks
+        if name == "run_command":
+            check = getattr(agent_tools, "read_only_command", None)
+            command = str(call.arguments.get("command") or "")
+            return bool(callable(check) and check(command))
+        return False
+
     def _approve_mode(self) -> str:
         """The mode now. /permissions in the UI can flip it mid-session; that change wins."""
         live = _ui_approve_mode()
-        if live in {"ask", "auto"} and live != self.ui_mode_at_start:
+        if live in _MODES and live != self.ui_mode_at_start:
             return live
         return self.approve_mode
 
@@ -2183,8 +2382,16 @@ def run_agent_loop(
     turns = turns if turns is not None else []
     reader = read_message or _read_message
     show = emit or _emit
-    ask = ask_user or (lambda question: _ask_user(question, None))
+    ask_person = ask_user or (lambda question: _ask_user(question, None))
     sections = load_prompt_sections()
+
+    def ask(question: str) -> str | None:
+        # Auto mode does not stop for questions: the model decides and says what it chose.
+        if decide_in_auto and _current_mode(approve_mode, ui_mode_at_start) == "auto":
+            _ui("note", f"Auto mode: the model decides ({_one_line(question, 100)})")
+            return sections["AUTO_DECIDE"]
+        return ask_person(question)
+
     workspace = Path(workspace).resolve()
     checkpoints = agent_edit.Checkpoints(cache_dir, workspace)
     chosen = shell or getattr(session_shell, "shell", None) or agent_shell.detect_shell()
@@ -2196,6 +2403,17 @@ def run_agent_loop(
         compact_after=_int_setting(options, "compact_after_chars", DEFAULT_COMPACT_AFTER_CHARS, 10_000),
     )
     check_timeout = _int_setting(options, "check_timeout", DEFAULT_CHECK_TIMEOUT, 1)
+    build_timeout = _int_setting(options, "build_timeout", int(agent_build.DEFAULT_BUILD_TIMEOUT), 60)
+    command_retries = _int_setting(options, "command_retries", 1, 0)
+    if session_shell is not None and options.get("background_on_timeout") is False:
+        try:
+            session_shell.detach_on_timeout = False
+        except Exception:
+            pass
+    confirm_risky = options.get("confirm_risky") is not False
+    decide_in_auto = str(options.get("auto_questions") or "decide").lower() != "ask"
+    auto_skills = options.get("auto_skills") is not False
+    max_skills = _int_setting(options, "max_skills", 2, 0)
     always: set[str] = set()
     ui_mode_at_start = _ui_approve_mode()
     base = dict(
@@ -2208,6 +2426,8 @@ def run_agent_loop(
         session=session_shell,
         on_output=_tool_output,
         ask_user=lambda question: ask(question) or "",
+        build_timeout=float(build_timeout),
+        command_retries=command_retries,
     )
     outcome_code = "COMPLETED"
     if seed and seed.strip():
@@ -2251,6 +2471,9 @@ def run_agent_loop(
             repo_map = ""
         elif repo_map.strip():
             chat.map_sent = True
+        skills = _task_skills(task, workspace, chat, options, auto=auto_skills, limit=max_skills)
+        mode_now = _current_mode(approve_mode, ui_mode_at_start)
+        mode_note = sections["PLAN_MODE"] if mode_now == "plan" and not _answer_only(task) else ""
         checkpoints.start_task()
         cancel = threading.Event()
         ctx = _tool_context(**base, state=TaskState(task=task), checkpoints=checkpoints, cancel=cancel)
@@ -2269,8 +2492,11 @@ def run_agent_loop(
             always=always,
             ask=ask,
             ui_mode_at_start=ui_mode_at_start,
+            confirm_risky=confirm_risky,
         )
-        message = task_message(task, repo_map=repo_map)
+        if mode_now != "plan" or _answer_only(task):
+            run.plan_done = True
+        message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note)
         if carry:
             message = carry + "\n\n" + message
             carry = ""
@@ -2299,6 +2525,51 @@ def run_agent_loop(
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns
+
+
+def _current_mode(default: str, at_start: str | None = None) -> str:
+    """``default`` (the session's mode), unless the UI switched to another one since ``at_start``."""
+    live = _ui_approve_mode()
+    if live in _MODES and live != at_start:
+        return live
+    return default if default in _MODES else "ask"
+
+
+def _task_skills(
+    task: str, workspace: Path, chat: Any, settings: dict[str, Any], *, auto: bool, limit: int
+) -> str:
+    """The SKILLS block for this task: pinned skills and the ones that match, each sent once per chat."""
+    select = getattr(agent_tools, "select_skills", None)
+    if not callable(select):
+        return ""
+    pinned = _setting_list(settings, "skills")
+    getter = getattr(globals().get("agent_ui"), "pinned_skills", None)
+    if callable(getter):
+        try:
+            pinned += [name for name in getter() if name not in pinned]
+        except Exception:
+            pass
+    try:
+        chosen = select(task, workspace, pinned=pinned, limit=limit if auto else 0)
+    except Exception as exc:  # skills help; they must never stop a task
+        log.debug(f"choosing skills failed: {exc}")
+        return ""
+    sent = getattr(chat, "skills_sent", None)
+    if not isinstance(sent, set):
+        sent = set()
+        try:
+            chat.skills_sent = sent
+        except Exception:
+            pass
+    fresh = [item for item in chosen if item["name"] not in sent]
+    if chosen:
+        _ui("note", "Skills: " + ", ".join(item["name"] for item in chosen))
+    block = skills_block(fresh)
+    if block:
+        sent.update(item["name"] for item in fresh)
+    elif chosen:
+        block = "SKILLS: " + ", ".join(item["name"] for item in chosen) + " (sent earlier in this chat; still apply)."
+    return block
 
 
 def _show_diff_in_ui(diff: str) -> bool:
@@ -2471,8 +2742,8 @@ def run_agent(
 ) -> int:
     """Open the Edge session, run the tool loop, and write the transcript.
 
-    ``approve_mode`` is ``"auto"`` (``--yes``) or ``"ask"``; ``None`` reads
-    ``"permissions"`` from ``.bot/settings.json``. The transcript is saved even
+    ``approve_mode`` is ``"ask"``, ``"edits"``, ``"auto"`` (``--yes``), or ``"plan"``
+    (``--plan``); ``None`` reads ``"permissions"`` from ``.bot/settings.json``. The transcript is saved even
     when Ctrl+C or an error ends the session.
     """
     started = datetime.now(timezone.utc)
@@ -2487,8 +2758,8 @@ def run_agent(
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
-    if approve_mode not in {"ask", "auto"}:
-        approve_mode = "auto" if settings.get("permissions") == "auto" else "ask"
+    if approve_mode not in _MODES:
+        approve_mode = agent_ui.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
     _prewarm_shell_environment()
@@ -2508,7 +2779,12 @@ def run_agent(
     )
     agent_ui.welcome_header()
     agent_ui.install_log_bridge()
-    seed = seed_message(home.root, instructions, shell=shell, notes=notes, available=available)
+    try:
+        skill_names = [item["name"] for item in agent_tools.discover_skills(home.root)]
+    except Exception as exc:
+        log.debug(f"listing skills failed: {exc}")
+        skill_names = []
+    seed = seed_message(home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names)
     code = 1
     try:
         _ensure_code_graph(home.root)
@@ -2547,7 +2823,14 @@ def run_agent(
                 session_shell.close()
             except Exception as exc:
                 log.warn(f"closing the shell session failed: {exc}")
-        _save_transcript(config, home, turns, started=started, output_dir=output_dir)
+        _save_transcript(
+            config,
+            home,
+            turns,
+            started=started,
+            output_dir=output_dir,
+            commands=list(getattr(session_shell, "history", []) or []),
+        )
     if code != 0:
         return code
     return 0 if outcome[-1] in _STATUS_OK else 1
@@ -2665,6 +2948,7 @@ def _save_transcript(
     *,
     started: datetime,
     output_dir: Path | None,
+    commands: list[dict[str, Any]] | None = None,
 ) -> None:
     if not turns:
         return
@@ -2681,6 +2965,8 @@ def _save_transcript(
         "started_at": isoformat(started),
         "finished_at": isoformat(finished),
     }
+    if commands:
+        payload["commands"] = commands
     stamp = started.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     try:
         write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
@@ -2852,8 +3138,12 @@ def _waiting(active: bool, label: str = "Thinking") -> None:
     agent_ui.waiting(active, label)
 
 
-def _approve_prompt(permission: Any) -> tuple[str, str]:
-    return agent_ui.approve(permission)
+def _approve_prompt(permission: Any, *, risky: str = "") -> tuple[str, str]:
+    return agent_ui.approve(permission, risky=risky)
+
+
+def _review_plan() -> tuple[str, str]:
+    return agent_ui.review_plan()
 
 
 def _ask_user(question: str, options: list[str] | None = None) -> str | None:

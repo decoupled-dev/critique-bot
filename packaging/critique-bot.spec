@@ -51,6 +51,10 @@ for prompt_name in ("review.txt", "agent.txt"):
     if packaged_prompt.is_file():
         datas.append((str(packaged_prompt), "critique_bot/prompts"))
 
+# Built-in skill packs (android, aosp, aaos, kotlin, aspice, ...): agent_tools.builtin_skills_dir().
+for skill_md in sorted((ROOT / "src" / "critique_bot" / "skills").glob("*/SKILL.md")):
+    datas.append((str(skill_md), f"critique_bot/skills/{skill_md.parent.name}"))
+
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],
     pathex=[str(ROOT / "src")],

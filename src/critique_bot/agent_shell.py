@@ -826,32 +826,240 @@ def compiler_home(
     return _scan_jdk_roots(plat)
 
 
-@functools.lru_cache(maxsize=None)
 def _scan_jdk_roots(plat: str) -> Path | None:
-    roots: list[Path] = []
-    if plat != "win32":
-        roots.append(Path("/usr/lib/jvm"))
-    roots.append(Path.home() / ".gradle" / "jdks")
-    for root in roots:
-        if not root.is_dir():
-            continue
+    found = installed_jdks(plat)
+    return found[0].home if found else None
+
+
+@dataclass(frozen=True)
+class Jdk:
+    home: Path
+    version: int  # major: 8, 11, 17, 21
+    source: str = ""
+
+
+def jdk_version(home: Path) -> int:
+    """The major version of the JDK at ``home`` from its ``release`` file (or its folder name); 0 if unknown."""
+    try:
+        text = (Path(home) / "release").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'^JAVA_VERSION="?(\d+)(?:\.(\d+))?', text, re.M)
+        if match:
+            major = int(match.group(1))
+            return int(match.group(2) or 0) if major == 1 else major
+    except OSError:
+        pass
+    name = Path(home).name.lower()
+    match = re.search(r"(?:jdk|java|openjdk|temurin|corretto|zulu|jbr)[-_]?(?:1\.)?(\d{1,2})(?!\d)", name) or re.match(
+        r"^(?:1\.)?(\d{1,2})[.\-_]", name
+    )
+    return int(match.group(1)) if match else 0
+
+
+def _jdk_roots(plat: str, environ: Any) -> list[tuple[Path, str, int]]:
+    """``(folder, label, depth)``: where JDKs are installed on ``plat``. ``depth`` 1 = children are JDKs."""
+    home = Path.home()
+    roots: list[tuple[Path, str, int]] = []
+    if plat == "win32":
+        bases = []
+        for key in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            value = _env_get(environ, key)
+            if value and Path(value) not in bases:
+                bases.append(Path(value))
+        if not bases:
+            bases = [Path("C:\\Program Files")]
+        local = _env_get(environ, "LOCALAPPDATA")
+        for base in bases:
+            for vendor in ("Java", "Eclipse Adoptium", "Eclipse Foundation", "AdoptOpenJDK", "Microsoft", "Zulu",
+                           "Amazon Corretto", "BellSoft", "Semeru", "OpenJDK", "RedHat", "Oracle", "Android\\jdk"):
+                roots.append((base / vendor, vendor, 1))
+            roots.append((base / "Android" / "Android Studio" / "jbr", "Android Studio", 0))
+            roots.append((base / "Android" / "Android Studio" / "jre", "Android Studio", 0))
+        if local:
+            roots.append((Path(local) / "Programs" / "Android Studio" / "jbr", "Android Studio", 0))
+            roots.append((Path(local) / "Programs" / "Eclipse Adoptium", "Eclipse Adoptium", 1))
+            roots.append((Path(local) / "JetBrains" / "Toolbox" / "apps" / "AndroidStudio" / "ch-0", "Android Studio", 2))
+    elif plat == "darwin":
+        roots.append((Path("/Library/Java/JavaVirtualMachines"), "", 1))
+        roots.append((home / "Library" / "Java" / "JavaVirtualMachines", "", 1))
+        roots.append((Path("/Applications/Android Studio.app/Contents/jbr/Contents/Home"), "Android Studio", 0))
+        roots.append((Path("/Applications/Android Studio.app/Contents/jre/Contents/Home"), "Android Studio", 0))
+    else:
+        roots.append((Path("/usr/lib/jvm"), "", 1))
+        roots.append((Path("/usr/java"), "", 1))
+        roots.append((Path("/opt/android-studio/jbr"), "Android Studio", 0))
+        roots.append((home / "android-studio" / "jbr", "Android Studio", 0))
+        roots.append((Path("/snap/android-studio/current/jbr"), "Android Studio", 0))
+        roots.append((Path("/opt"), "", 1))
+    roots.append((home / ".gradle" / "jdks", "Gradle", 1))
+    roots.append((home / ".jdks", "IntelliJ", 1))
+    roots.append((home / ".sdkman" / "candidates" / "java", "SDKMAN", 1))
+    return roots
+
+
+def _jdk_homes(folder: Path, depth: int, plat: str) -> list[Path]:
+    """JDK homes at ``folder`` (depth 0), its children (1), or grandchildren (2), macOS bundles included."""
+    if not folder.is_dir():
+        return []
+    if depth == 0:
+        return [folder] if _has_javac(folder, plat) else []
+    found: list[Path] = []
+    try:
+        children = sorted(folder.iterdir())
+    except OSError:
+        return []
+    for child in children[:80]:
+        for candidate in (child, child / "Contents" / "Home", child / "jbr", child / "jbr" / "Contents" / "Home"):
+            if _has_javac(candidate, plat):
+                found.append(candidate)
+                break
+        else:
+            if depth > 1 and child.is_dir():
+                found.extend(_jdk_homes(child, depth - 1, plat))
+            elif child.is_dir() and depth == 1:
+                try:
+                    nested = sorted(child.iterdir())[:10]
+                except OSError:
+                    nested = []
+                found.extend(item for item in nested if _has_javac(item, plat))
+    return found
+
+
+@functools.lru_cache(maxsize=8)
+def installed_jdks(plat: str | None = None) -> tuple[Jdk, ...]:
+    """Every JDK (with javac) in the usual places, newest first; Android Studio's own JDK included."""
+    plat = plat if plat is not None else sys.platform
+    seen: set[str] = set()
+    found: list[Jdk] = []
+    for folder, label, depth in _jdk_roots(plat, os.environ):
+        for home in _jdk_homes(folder, depth, plat):
+            try:
+                key = os.path.normcase(str(home.resolve()))
+            except OSError:
+                key = os.path.normcase(str(home))
+            if key in seen:
+                continue
+            seen.add(key)
+            source = label or ""
+            lowered = str(home).lower()
+            if "android studio" in lowered or "android-studio" in lowered or "androidstudio" in lowered:
+                source = "Android Studio"
+            found.append(Jdk(home, jdk_version(home), source))
+    found.sort(key=lambda jdk: -jdk.version)
+    return tuple(found)
+
+
+# Newest Java each Gradle version can run on (Gradle's compatibility matrix).
+_GRADLE_MAX_JAVA = ((5, 0, 11), (5, 4, 12), (6, 0, 13), (6, 3, 14), (6, 7, 15), (7, 0, 16), (7, 3, 17), (7, 5, 18),
+                    (7, 6, 19), (8, 3, 20), (8, 5, 21), (8, 8, 22), (8, 10, 23), (8, 14, 24))
+
+
+def _version_pair(text: str) -> tuple[int, int] | None:
+    match = re.match(r"\s*(\d+)\.(\d+)", text or "")
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def agp_version(root: Path) -> tuple[int, int] | None:
+    """The Android Gradle plugin version the project asks for (from build files or the version catalog)."""
+    root = Path(root)
+    texts: list[str] = []
+    for name in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle/libs.versions.toml"):
         try:
-            children = list(root.iterdir())
+            texts.append((root / name).read_text(encoding="utf-8", errors="replace")[:200_000])
         except OSError:
             continue
-        for child in children:
-            if _has_javac(child, plat):
-                return child
-            if not child.is_dir():
-                continue
-            try:
-                nested_items = list(child.iterdir())
-            except OSError:
-                continue
-            for nested in nested_items:
-                if _has_javac(nested, plat):
-                    return nested
+    joined = "\n".join(texts)
+    patterns = (
+        r"com\.android\.tools\.build:gradle:(\d+\.\d+)",
+        r"""id\s*\(?\s*["']com\.android\.(?:application|library|test|dynamic-feature)["']\s*\)?\s*version\s*["'](\d+\.\d+)""",
+        r"""(?im)^\s*(?:agp|androidGradlePlugin|android[-_]gradle[-_]plugin|android[-_]gradle|androidPlugin|android-agp)\s*=\s*["'](\d+\.\d+)""",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, joined)
+        if match:
+            return _version_pair(match.group(1))
     return None
+
+
+def gradle_version(root: Path) -> tuple[int, int] | None:
+    url = _wrapper_distribution(Path(root) / "gradle" / "wrapper" / "gradle-wrapper.properties")
+    match = re.search(r"gradle-(\d+\.\d+)", url)
+    return _version_pair(match.group(1)) if match else None
+
+
+def project_java_range(root: Path) -> tuple[int, int | None, str]:
+    """``(lowest, highest or None, why)`` for the JDK that runs this project's Gradle build."""
+    low, why = 0, ""
+    agp = agp_version(root)
+    if agp is not None:
+        low = 17 if agp >= (8, 0) else 11 if agp >= (7, 0) else 8
+        why = f"AGP {agp[0]}.{agp[1]} needs JDK {low}+"
+    elif _is_android_project(Path(root)):
+        low, why = 17, "Android projects need JDK 17+"
+    high: int | None = None
+    gradle = gradle_version(root)
+    if gradle is not None:
+        high = 8 if gradle < (5, 0) else max(java for major, minor, java in _GRADLE_MAX_JAVA if gradle >= (major, minor))
+        why = (why + "; " if why else "") + f"Gradle {gradle[0]}.{gradle[1]} runs on JDK {high} at most"
+    return low, high, why
+
+
+def choose_jdk(environ: dict[str, str], root: Path, plat: str | None = None) -> tuple[Jdk | None, str]:
+    """The JDK to run this project's build with, and a note when it differs from JAVA_HOME.
+
+    JAVA_HOME wins when it has javac and fits the project (AGP 8 needs 17+,
+    the wrapper's Gradle caps the newest). Otherwise Android Studio's own JDK
+    when it fits, else the oldest installed JDK that fits (older Gradle
+    versions break on new Java).
+    """
+    plat = plat if plat is not None else sys.platform
+    low, high, why = project_java_range(root)
+    raw = str(environ.get("JAVA_HOME") or "").strip()
+    current: Jdk | None = None
+    if raw and _has_javac(Path(raw), plat):
+        current = Jdk(Path(raw), jdk_version(Path(raw)), "JAVA_HOME")
+
+    def fits(jdk: Jdk) -> bool:
+        if jdk.version == 0:
+            return low == 0
+        return jdk.version >= low and (high is None or jdk.version <= high)
+
+    if current is not None and (fits(current) or (low == 0 and high is None)):
+        return current, ""
+    if low == 0:
+        # Not an Android build: JAVA_HOME, else javac on PATH, as before (see _prefer_compiler).
+        return current, ""
+    candidates = [jdk for jdk in installed_jdks(plat) if fits(jdk)]
+    if not candidates:
+        if current is not None:
+            return current, (f"JAVA_HOME is JDK {current.version} but {why}; no fitting JDK is installed" if why else "")
+        found = installed_jdks(plat)
+        return (found[0] if found else None), (f"{why}; no fitting JDK is installed" if why and low else "")
+    studio = [jdk for jdk in candidates if jdk.source == "Android Studio"]
+    chosen = studio[0] if studio else sorted(candidates, key=lambda jdk: jdk.version)[0]
+    if current is not None:
+        return chosen, f"JAVA_HOME is JDK {current.version} but {why}; commands use JDK {chosen.version}"
+    return chosen, ""
+
+
+def project_toolchain(env: dict[str, str], root: Path, plat: str | None = None) -> dict[str, str]:
+    """``env`` with JAVA_HOME (and PATH) set to the project's JDK and ANDROID_HOME to its SDK."""
+    plat = plat if plat is not None else sys.platform
+    out = dict(env)
+    try:
+        jdk, _note = choose_jdk(out, root, plat)
+    except Exception:  # noqa: BLE001 - a broken scan must not stop a command
+        jdk = None
+    if jdk is not None and str(out.get("JAVA_HOME") or "") != str(jdk.home):
+        out["JAVA_HOME"] = str(jdk.home)
+        out["PATH"] = str(jdk.home / "bin") + os.pathsep + out.get("PATH", "")
+    sdk = android_sdk(out, scan=True, workspace=root)
+    if sdk:
+        out.setdefault("ANDROID_HOME", sdk)
+        if not str(out.get("ANDROID_HOME") or "").strip() or not Path(out["ANDROID_HOME"]).is_dir():
+            out["ANDROID_HOME"] = sdk
+        if not str(out.get("ANDROID_SDK_ROOT") or "").strip() or not Path(out["ANDROID_SDK_ROOT"]).is_dir():
+            out["ANDROID_SDK_ROOT"] = sdk
+    return out
 
 
 def cached_gradle() -> Path | None:
@@ -875,18 +1083,59 @@ def _prefer_gradle(env: dict[str, str]) -> None:
     env["PATH"] = str(binary.parent) + os.pathsep + env.get("PATH", "")
 
 
-def android_sdk(environ: dict[str, str], *, scan: bool) -> str:
-    """The Android SDK path. A scan looks in the usual home folder when unset."""
+def android_sdk(environ: dict[str, str], *, scan: bool, workspace: Path | None = None) -> str:
+    """The Android SDK path: ANDROID_HOME, ANDROID_SDK_ROOT, ``sdk.dir`` in local.properties, then a scan.
+
+    The scan looks where Android Studio installs it: ``%LOCALAPPDATA%\\Android\\Sdk``
+    on Windows, ``~/Library/Android/sdk`` on macOS, ``~/Android/Sdk`` on Linux.
+    A variable naming a folder that does not exist is passed over when a scan
+    finds a real one.
+    """
+    named = ""
     for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
         raw = str(environ.get(key) or "").strip()
         if raw:
-            return raw
+            if not scan or Path(raw).is_dir():
+                return raw
+            named = named or raw
     if not scan:
         return ""
-    for candidate in (Path.home() / "Android" / "Sdk", Path.home() / "Android" / "sdk"):
-        if (candidate / "platforms").is_dir():
+    if workspace is not None:
+        local = _local_properties_sdk(Path(workspace))
+        if local:
+            return local
+    for candidate in _sdk_candidates(environ):
+        if (candidate / "platforms").is_dir() or (candidate / "platform-tools").is_dir():
             return str(candidate)
-    return ""
+    return named
+
+
+def _local_properties_sdk(root: Path) -> str:
+    try:
+        text = (root / "local.properties").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"^\s*sdk\.dir\s*[=:]\s*(.+?)\s*$", text, re.M)
+    if not match:
+        return ""
+    value = re.sub(r"\\(.)", r"\1", match.group(1))
+    return value if Path(value).is_dir() else ""
+
+
+def _sdk_candidates(environ: Any) -> list[Path]:
+    home = Path.home()
+    candidates: list[Path] = []
+    local = _env_get(environ, "LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Android" / "Sdk")
+    candidates += [home / "AppData" / "Local" / "Android" / "Sdk", home / "Library" / "Android" / "sdk",
+                   home / "Android" / "Sdk", home / "Android" / "sdk"]
+    if sys.platform == "win32":
+        candidates += [Path("C:\\Android\\Sdk"), Path("C:\\Android\\sdk"),
+                       Path("C:\\Program Files (x86)\\Android\\android-sdk")]
+    else:
+        candidates += [Path("/opt/android-sdk"), Path("/usr/lib/android-sdk"), Path("/opt/android/sdk")]
+    return candidates
 
 
 def _prefer_compiler(env: dict[str, str], platform_name: str | None = None) -> None:
@@ -909,11 +1158,27 @@ _GRADLEW_RE = re.compile(
 )
 
 
-def adjust_command(command: str) -> str:
-    """Add ``--console=plain`` after each gradle wrapper invoked as a command."""
-    if "--console" in command:
-        return command
-    return _GRADLEW_RE.sub(lambda m: m.group(0) + " --console=plain", command)
+_BARE_WRAPPER_RE = re.compile(
+    r"(?P<lead>(?:^|[;&|({\n])\s*(?:&\s*)?)(?P<exe>(?:\./)?gradlew(?:\.bat)?)(?=\s|$|[;&|)])", re.IGNORECASE
+)
+
+
+def adjust_command(command: str, shell: "Shell | None" = None, cwd: Path | None = None) -> str:
+    """Make a gradle wrapper call run as intended in ``shell``.
+
+    Adds ``--console=plain``. On Windows, PowerShell runs a file in the current
+    folder only with a ``.\\`` prefix and cmd does not understand ``./``, so a
+    bare ``gradlew`` or ``./gradlew`` becomes ``.\\gradlew.bat`` (``gradlew.bat``
+    in cmd) when that file is in ``cwd``.
+    """
+    text = command
+    if shell is not None and cwd is not None and _is_windows_shell(shell) and (Path(cwd) / "gradlew.bat").is_file():
+        replacement = ".\\gradlew.bat" if shell.is_powershell else "gradlew.bat"
+        if shell.is_powershell or shell.kind == "cmd":
+            text = _BARE_WRAPPER_RE.sub(lambda m: m.group("lead") + replacement, text)
+    if "--console" in text:
+        return text
+    return _GRADLEW_RE.sub(lambda m: m.group(0) + " --console=plain", text)
 
 
 def tool_hints(
@@ -970,11 +1235,30 @@ def tool_hints(
         hints.append("gradle on PATH: not installed")
     java_home = str(env.get("JAVA_HOME") or "").strip()
     compiler = compiler_home(env, plat, which)
-    if java_home and compiler is not None and not _has_javac(Path(java_home), plat):
+    if which is None and environ is None:
+        try:
+            chosen, note = choose_jdk(dict(env), root, plat)
+        except Exception:  # noqa: BLE001
+            chosen, note = None, ""
+        if chosen is not None and (note or str(chosen.home) != java_home):
+            version = f"JDK {chosen.version}, " if chosen.version else ""
+            source = f"{chosen.source}, " if chosen.source and chosen.source != "JAVA_HOME" else ""
+            hints.append(
+                f"java: JAVA_HOME={chosen.home} ({version}{source}run_command uses it"
+                + (f"; {note}" if note else "") + ")"
+            )
+            java_home = ""
+            compiler = None
+            others = [jdk for jdk in installed_jdks(plat) if jdk.home != chosen.home][:3]
+            if others:
+                hints.append("other JDKs: " + "; ".join(f"JDK {jdk.version}: {jdk.home}" for jdk in others))
+    if not any(line.startswith("java:") for line in hints) and java_home and compiler is not None and not _has_javac(Path(java_home), plat):
         hints.append(
             f"java: JAVA_HOME={compiler} "
             f"(JAVA_HOME={java_home} has no javac; commands use this JDK)"
         )
+    elif any(line.startswith("java:") for line in hints):
+        pass
     elif java_home:
         hints.append(f"java: JAVA_HOME={java_home}")
     elif compiler is not None:
@@ -983,8 +1267,11 @@ def tool_hints(
         java_names = ("java.exe", "java") if plat == "win32" else ("java",)
         java_path = _which_first(find, java_names)
         hints.append(f"java: {java_path}" if java_path else "java: not installed")
-    sdk = android_sdk(env, scan=environ is None)
-    hints.append(f"android sdk: {sdk}" if sdk else "android sdk: not set")
+    sdk = android_sdk(env, scan=environ is None, workspace=root if environ is None else None)
+    if sdk:
+        hints.append(f"android sdk: {sdk}" + ("" if str(env.get("ANDROID_HOME") or "") == sdk else " (run_command sets ANDROID_HOME to it)"))
+    else:
+        hints.append("android sdk: not found (ANDROID_HOME unset, no local.properties sdk.dir, nothing in the default folder)")
     if _is_android_project(root):
         hints.append(
             "android project: yes. Sync with the gradle wrapper before COMPLETED. "
@@ -1401,7 +1688,7 @@ class _Launch:
         folder = _private_dir()
         token = uuid.uuid4().hex
         self.marker = os.path.join(folder, f"{token}.cwd") if want_cwd else None
-        suffix, data = _script(shell, adjust_command(command), self.marker)
+        suffix, data = _script(shell, adjust_command(command, shell, cwd), self.marker)
         self.script = os.path.join(folder, f"{token}{suffix}")
         with open(self.script, "wb") as handle:
             handle.write(data)
@@ -1496,6 +1783,8 @@ class CommandResult:
     timed_out: bool
     interrupted: bool
     shell: Shell
+    #: Set when a timed-out command was left running as this background job instead of being killed.
+    job_id: str | None = None
 
 
 def _execute(
@@ -1508,7 +1797,10 @@ def _execute(
     on_output: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
     want_cwd: bool = False,
+    detach_on_timeout: bool = False,
 ) -> tuple[_Launch, bool, bool]:
+    """Run until exit, timeout, or cancel. With ``detach_on_timeout`` a command that is
+    still producing work at the deadline is left running (the caller adopts it)."""
     launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd)
     timed_out = interrupted = False
     deadline = launch.started + max(0.0, timeout)
@@ -1546,6 +1838,9 @@ def _execute(
                 break
             if now >= deadline:
                 timed_out = True
+                if detach_on_timeout and not _launch_waits_for_input(launch):
+                    flush(final=True)
+                    return launch, timed_out, interrupted
                 launch.kill()
                 break
             if now - last_flush >= 0.1:
@@ -1558,6 +1853,14 @@ def _execute(
         launch.cleanup()
         raise
     return launch, timed_out, interrupted
+
+
+def _launch_waits_for_input(launch: _Launch) -> bool:
+    try:
+        text = launch.stdout.text()[-2000:] + "\n" + launch.stderr.text()[-2000:]
+    except Exception:  # noqa: BLE001
+        return False
+    return waiting_for_input(tidy(text))
 
 
 # --------------------------------------------------------------------------- session
@@ -1611,6 +1914,10 @@ class ShellSession:
         self._jobs: dict[str, _Job] = {}
         self._counter = 0
         self._lock = threading.Lock()
+        #: One entry per foreground command: command, shell, exit, seconds, cwd, and how it ended.
+        self.history: list[dict[str, Any]] = []
+        #: A foreground command still running at its timeout becomes a background job instead of being killed.
+        self.detach_on_timeout = True
         if self.shell.is_posix and sys.platform != "win32":
             prewarm_login_environment()
         _SESSIONS.add(self)
@@ -1622,7 +1929,10 @@ class ShellSession:
             base = dict(os.environ)
             if sys.platform != "win32":
                 base = merge_login_environment(base, login_environment())
-            self._env = environment(self.env_extra, base=base)
+            env = environment(self.env_extra, base=base)
+            if "JAVA_HOME" not in self.env_extra:
+                env = project_toolchain(env, self.workspace)
+            self._env = env
         return self._env
 
     def resolve(self, name: str | None) -> Shell:
@@ -1682,7 +1992,23 @@ class ShellSession:
             on_output=on_output,
             cancel=cancel,
             want_cwd=True,
+            detach_on_timeout=self.detach_on_timeout,
         )
+        if timed_out and launch.poll() is None and not launch.killed:
+            job_id = self._adopt(command, launch, chosen)
+            result = CommandResult(
+                exit_code=None,
+                stdout=tidy(launch.stdout.text()),
+                stderr=tidy(launch.stderr.text()),
+                seconds=time.monotonic() - launch.started,
+                cwd=self.cwd,
+                timed_out=True,
+                interrupted=False,
+                shell=chosen,
+                job_id=job_id,
+            )
+            self._remember(command, result, start)
+            return result
         try:
             final = launch.final_cwd()
             if final is not None:
@@ -1694,7 +2020,7 @@ class ShellSession:
                     self.cwd = final
             elif cwd is not None:
                 self.cwd = start
-            return CommandResult(
+            result = CommandResult(
                 exit_code=launch.exit_code(),
                 stdout=tidy(launch.stdout.text()),
                 stderr=tidy(launch.stderr.text()),
@@ -1704,8 +2030,46 @@ class ShellSession:
                 interrupted=interrupted,
                 shell=chosen,
             )
+            self._remember(command, result, start)
+            return result
         finally:
             launch.cleanup()
+
+    def _adopt(self, command: str, launch: _Launch, shell: Shell) -> str:
+        """Keep a still-running foreground command as a background job."""
+        with self._lock:
+            self._counter += 1
+            job_id = f"b{self._counter}"
+            self._jobs[job_id] = _Job(job_id, command, launch, shell)
+        return job_id
+
+    def _remember(self, command: str, result: CommandResult, start: Path) -> None:
+        if result.interrupted:
+            how = "interrupted"
+        elif result.job_id:
+            how = f"moved to background {result.job_id}"
+        elif result.timed_out:
+            how = "timed out"
+        else:
+            how = f"exit {result.exit_code}"
+        entry = {
+            "command": command,
+            "shell": result.shell.label,
+            "exit": result.exit_code,
+            "seconds": round(result.seconds, 1),
+            "cwd": str(start),
+            "result": how,
+            "at": time.time(),
+        }
+        with self._lock:
+            self.history.append(entry)
+            del self.history[:-200]
+
+    def note_retry(self, reason: str) -> None:
+        """Mark the last history entry as retried (the next entry is the retry)."""
+        with self._lock:
+            if self.history:
+                self.history[-1]["retried"] = reason
 
     # -- background
 
@@ -1934,13 +2298,42 @@ def clean_clixml(text: str) -> str:
     return "\n".join(lines)
 
 
+# Windows PowerShell 5.1 wraps a native program's first stderr line in an error record:
+#   gradlew.bat : warning: ...           <- kept, without the "gradlew.bat : " prefix
+#   At line:1 char:1                     <- dropped
+#   + .\gradlew.bat assembleDebug 2>&1    <- dropped
+#   + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~     <- dropped
+#       + CategoryInfo : NotSpecified: (...) [], RemoteException   <- dropped
+#       + FullyQualifiedErrorId : NativeCommandError               <- dropped
+_PS_NOISE_RE = re.compile(
+    r"^(?:At (?:line:\d+ char:\d+|[^\n]*:\d+ char:\d+)|\+ [~ ]+|\s+\+ (?:CategoryInfo|FullyQualifiedErrorId)\s*:.*)$"
+)
+
+
+def _strip_ps_noise(lines: list[str]) -> list[str]:
+    if not any("NativeCommandError" in line or "RemoteException" in line for line in lines):
+        return lines
+    out: list[str] = []
+    skip_echo = False
+    for line in lines:
+        if _PS_NOISE_RE.match(line):
+            skip_echo = line.startswith("At ")
+            continue
+        if skip_echo and line.startswith("+ "):
+            continue
+        skip_echo = False
+        out.append(re.sub(r"^[\w.\\/:-]+\.(?:bat|cmd|exe) : ", "", line))
+    return out
+
+
 def tidy(text: str) -> str:
-    """Strip ANSI, carriage-return progress redraws, and runs of repeated lines."""
+    """Strip ANSI, carriage-return progress redraws, PowerShell error decoration, and repeated lines."""
     text = clean_clixml(_ANSI_RE.sub("", text))
     out: list[str] = []
     for raw in text.replace("\r\n", "\n").split("\n"):
         line = raw.rsplit("\r", 1)[-1]
         out.append(line.rstrip())
+    out = _strip_ps_noise(out)
     collapsed: list[str] = []
     repeat = 0
     for line in out:

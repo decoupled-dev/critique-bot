@@ -327,6 +327,7 @@ class BashSessionTests(unittest.TestCase):
     def test_timeout_kills_the_tree_and_keeps_output(self) -> None:
         pid_file = self.root / "pid"
         lines: list[str] = []
+        self.session.detach_on_timeout = False
         result = self.session.run(
             f"echo partial; sh -c 'echo $$ > {pid_file}; sleep 60' & wait", timeout=1.5, on_output=lines.append
         )
@@ -339,6 +340,26 @@ class BashSessionTests(unittest.TestCase):
         while _alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertFalse(_alive(pid))
+
+    def test_timeout_moves_the_command_to_the_background(self) -> None:
+        lines: list[str] = []
+        result = self.session.run("echo first; sleep 2; echo second", timeout=0.8, on_output=lines.append)
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.job_id, "b1")
+        self.assertIn("first", result.stdout)
+        text, running, code = self.session.read_background("b1", wait=5)
+        while running:
+            more, running, code = self.session.read_background("b1", wait=5)
+            text += more
+        self.assertIn("second", text)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.session.history[-1]["result"], "moved to background b1")
+
+    def test_a_prompt_at_the_timeout_is_still_killed(self) -> None:
+        result = self.session.run("printf 'Overwrite? [y/n] '; sleep 30", timeout=1.0)
+        self.assertTrue(result.timed_out)
+        self.assertIsNone(result.job_id)
+        self.assertEqual(self.session.history[-1]["result"], "timed out")
 
     def test_cancel_and_daemon_grandchild(self) -> None:
         cancel = threading.Event()
@@ -487,6 +508,7 @@ class RealPowerShellTests(unittest.TestCase):
     @unittest.skipUnless(POSIX, "uses sh for the grandchild")
     def test_timeout_kills_tree(self) -> None:
         pid_file = self.root / "pid"
+        self.session.detach_on_timeout = False
         result = self.run_ps(f"'partial'; sh -c 'echo $$ > {pid_file}; sleep 60'", timeout=4)
         self.assertTrue(result.timed_out)
         self.assertIn("partial", result.stdout)
@@ -495,6 +517,17 @@ class RealPowerShellTests(unittest.TestCase):
         while _alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertFalse(_alive(pid))
+
+    def test_timeout_keeps_a_slow_command_running(self) -> None:
+        result = self.run_ps("'first'; Start-Sleep -Seconds 4; 'second'; exit 3", timeout=2)
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.job_id, "b1")
+        text, running, code = self.session.read_background("b1", wait=15)
+        while running:
+            more, running, code = self.session.read_background("b1", wait=15)
+            text += more
+        self.assertIn("second", text)
+        self.assertEqual(code, 3)
 
     def test_background_job(self) -> None:
         job = self.session.start_background("'ready'; Start-Sleep -Seconds 30")

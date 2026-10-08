@@ -323,7 +323,7 @@ class SeedMessageTests(unittest.TestCase):
             missing = "\n".join(tool_hints(root, "win32", which=lambda name: None, environ={}))
             self.assertIn("gradle on PATH: not installed", missing)
             self.assertIn("java: not installed", missing)
-            self.assertIn("android sdk: not set", missing)
+            self.assertIn("android sdk: not found", missing)
 
 
 class ToolTests(unittest.TestCase):
@@ -644,7 +644,8 @@ class ToolTests(unittest.TestCase):
             skill.parent.mkdir(parents=True)
             skill.write_text("---\ndescription: Cut a release\n---\nTag the commit.\n", encoding="utf-8")
             listed = execute_tool("skill", {}, workspace=root)
-            self.assertIn("release: Cut a release", listed["output"])
+            self.assertIn("release (project): Cut a release", listed["output"])
+            self.assertIn("aosp (built-in)", listed["output"])
             loaded = execute_tool("skill", {"name": "release"}, workspace=root)
             self.assertIn("Tag the commit.", loaded["output"])
 
@@ -1406,7 +1407,7 @@ class RobustLoopTests(unittest.TestCase):
             return "SQLite"
 
         session = _Scripted(["Which backend should the cache use: Redis or SQLite?", "COMPLETED", "COMPLETED"])
-        _loop(session, Path(tempfile.mkdtemp()), "add caching to the service", ask_user=ask)
+        _loop(session, Path(tempfile.mkdtemp()), "add caching to the service", ask_user=ask, approve_mode="ask")
         self.assertEqual(len(asked), 1)
         self.assertIn("The user answered your question", session.sent[1])
         self.assertIn("SQLite", session.sent[1])

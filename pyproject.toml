@@ -42,4 +42,4 @@ index = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-critique_bot = ["prompts/*.txt"]
+critique_bot = ["prompts/*.txt", "skills/*/SKILL.md"]

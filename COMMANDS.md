@@ -99,7 +99,9 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model (visible dropdown label). |
 | `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
-| `--yes` / `--auto` (`crit -y`) | agent | Run edits, commands, and web fetches without asking. Same as `"permissions": "auto"` in `.bot/settings.json`. |
+| `--yes` / `--auto` (`crit -y`) | agent | Auto mode: run edits, commands, and web fetches without asking; risky commands still ask. Same as `"permissions": "auto"` in `.bot/settings.json`. |
+| `--plan` | agent | Plan mode: read the code and send a plan; you approve it before anything changes. |
+| `--permission-mode MODE` | agent | Start in `ask`, `edits` (accept file edits), `auto`, or `plan`. |
 | `--max-rounds N` | agent | Optional cap on tool rounds per task. Omit to run until the model stops. |
 | `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `--label NAME` | submit | Override the job slug in the queue filename. Default: GitLab MR IID, CI job id, or `local`. |
@@ -147,7 +149,8 @@ The script's `crit` and `bot-agent` always pass `--config`. Without the script, 
 | --- | --- |
 | `crit` | Open the session screen and wait for a task |
 | `crit "TASK"` | Run that task, then wait for the next one |
-| `crit --yes "TASK"` | No approval prompts (also `--auto`, `-y`) |
+| `crit --yes "TASK"` | Auto mode: no approval prompts except risky commands (also `--auto`, `-y`) |
+| `crit --plan "TASK"` | Plan first; approve the plan, then crit carries it out |
 | `crit --headed "TASK"` | Show the browser window |
 | `crit undo` | Restore the files the last task changed. Run again to step back further |
 | `crit init` | Create `.bot/`, or rebuild the index without replacing settings |
@@ -184,8 +187,12 @@ Inside a session (the `>` prompt):
 | `/new` | Start a fresh chat |
 | `/clear` | Clear the screen |
 | `/undo` | Restore the files the last task changed |
-| `/permissions` | Switch between asking and not asking for this session |
-| `/status` | Model, shell, folder, permission mode, background commands |
+| Shift+Tab, Alt+M | Switch mode: ask, accept edits, auto, plan |
+| `/mode [name]` | List the modes or switch (`/permissions` is the same) |
+| `/plan`, `/auto` | Switch to plan mode or auto mode |
+| `/skills [name ...]` | List skills, or pin some for this session (`/skills off name` unpins) |
+| `/status` | Model, shell, folder, mode, pinned skills, background commands |
+| `/commands` | Shell commands run this session, with exit codes, times, and retries |
 | `/shell [name]` | List the shells, or switch the default for this session |
 | `/tools` | The tools the model can call |
 | `/theme` | Change the text style |

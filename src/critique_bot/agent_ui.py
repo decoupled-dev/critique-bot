@@ -36,6 +36,28 @@ from rich.theme import Theme
 from critique_bot import log
 
 NEW_CHAT = "/new"
+
+#: Shift+Tab cycles through these, in this order.
+MODES = ("ask", "edits", "auto", "plan")
+MODE_LABELS = {
+    "ask": "ask before edits and commands",
+    "edits": "accept edits on (commands still ask)",
+    "auto": "auto mode on (asks only for risky commands)",
+    "plan": "plan mode on (reads only, then a plan to approve)",
+}
+_MODE_ALIASES = {
+    "default": "ask", "ask": "ask", "normal": "ask", "manual": "ask",
+    "edits": "edits", "edit": "edits", "accept": "edits", "accept-edits": "edits", "acceptedits": "edits",
+    "accept_edits": "edits",
+    "auto": "auto", "yes": "auto", "yolo": "auto", "bypass": "auto", "bypasspermissions": "auto", "allow": "auto",
+    "plan": "plan", "planning": "plan",
+}
+
+
+def normalize_mode(raw: Any, default: str = "ask") -> str:
+    """``ask``, ``edits``, ``auto``, or ``plan`` from a setting, flag, or command word."""
+    key = str(raw or "").strip().lower().replace(" ", "-")
+    return _MODE_ALIASES.get(key, default)
 _QUIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit", "/q"})
 
 # --------------------------------------------------------------------------- theme
@@ -167,10 +189,15 @@ SLASH_COMMANDS: dict[str, str] = {
     "/new": "Start a fresh chat",
     "/clear": "Clear the screen",
     "/undo": "Restore the files the last task changed",
-    "/permissions": "Toggle asking before edits and commands (this session)",
+    "/mode": "Show or switch the mode: ask, edits, auto, plan (Shift+Tab cycles)",
+    "/plan": "Plan mode: read and propose a plan; you approve before anything changes",
+    "/auto": "Auto mode: edits and commands run without asking (risky ones still ask)",
+    "/permissions": "Same as /mode",
+    "/skills": "List skills; /skills <name> pins one for this session, /skills off <name> unpins",
     "/status": "Model, shell, folder, and background commands",
     "/shell": "Show or switch the default shell",
     "/tools": "List the tools the model can call",
+    "/commands": "The shell commands run this session, with exit codes and times",
     "/theme": "Change the text style",
     "/exit": "Leave crit",
 }
@@ -178,6 +205,7 @@ SLASH_COMMANDS: dict[str, str] = {
 SHORTCUTS = (
     ("Enter", "send the message"),
     ("Alt+Enter, Ctrl+J, or \\ at line end", "new line"),
+    ("Shift+Tab or Alt+M", "switch mode: ask, accept edits, auto, plan"),
     ("/", "commands"),
     ("@", "mention a file"),
     ("Up / Down", "history"),
@@ -212,6 +240,8 @@ class UIState:
     #: A shell chosen with /shell that the model has not been told about yet.
     shell_changed: Any = None
     tools: tuple[str, ...] = ()
+    #: Skills /skills pinned for this session; they go with every task.
+    pinned_skills: list[str] = field(default_factory=list)
     last_error: str = ""
     # live region
     waiting_explicit: bool = False
@@ -221,6 +251,9 @@ class UIState:
     tool_title: Text | None = None
     tool_tail: list[str] = field(default_factory=list)
     tool_partial: str = ""
+    #: Tools running now, by name, and when the first of them started (for "Running 1 shell command… 12s").
+    active: dict[str, int] = field(default_factory=dict)
+    active_since: float = 0.0
 
 
 _lock = threading.RLock()
@@ -268,7 +301,7 @@ def configure(
             _state.shell_label = str(getattr(shell, "label", "") or shell)
             _state.shell_kind = str(getattr(shell, "kind", "") or "")
         if approve_mode is not None:
-            _state.approve_mode = "auto" if approve_mode == "auto" else "ask"
+            _state.approve_mode = normalize_mode(approve_mode)
         if theme is not None:
             _state.theme_id = theme_id_for(theme)
             if _console is not None:
@@ -286,8 +319,29 @@ def configure(
 
 
 def approve_mode() -> str:
-    """``ask`` or ``auto``; ``/permissions`` flips it during a session."""
+    """``ask``, ``edits``, ``auto``, or ``plan``. Shift+Tab and /mode change it during a session."""
     return _state.approve_mode
+
+
+def set_mode(mode: str, *, announce: bool = True) -> str:
+    chosen = normalize_mode(mode, _state.approve_mode)
+    with _lock:
+        _state.approve_mode = chosen
+    if announce:
+        note("note", f"Mode: {MODE_LABELS[chosen]}.")
+    return chosen
+
+
+def cycle_mode() -> str:
+    """The next mode in :data:`MODES`."""
+    with _lock:
+        index = MODES.index(_state.approve_mode) if _state.approve_mode in MODES else 0
+        _state.approve_mode = MODES[(index + 1) % len(MODES)]
+        return _state.approve_mode
+
+
+def pinned_skills() -> list[str]:
+    return list(_state.pinned_skills)
 
 
 def set_console(console: Console | None) -> None:
@@ -361,14 +415,14 @@ def welcome_header(*, version: str | None = None) -> None:
         from critique_bot import __version__ as version
     g = glyphs()
     st = _state
-    mode = "auto (no prompts)" if st.approve_mode == "auto" else "ask before edits and commands"
+    mode = MODE_LABELS.get(st.approve_mode, st.approve_mode)
     if not is_tty():
         parts = [f"crit v{version}", str(st.workspace)]
         if st.model:
             parts.append(f"model: {st.model}")
         if st.shell_label:
             parts.append(f"shell: {st.shell_label}")
-        parts.append(f"permissions: {st.approve_mode}")
+        parts.append(f"mode: {st.approve_mode}")
         _print(Text(" · ".join(parts)))
         return
     body = Text()
@@ -382,7 +436,7 @@ def welcome_header(*, version: str | None = None) -> None:
         rows.append(("model", st.model))
     if st.shell_label:
         rows.append(("shell", st.shell_label))
-    rows.append(("permissions", mode))
+    rows.append(("mode", mode + " · shift+tab to switch"))
     for index, (label, value) in enumerate(rows):
         body.append(f"  {label}: ", style=_style("dim"))
         body.append(value)
@@ -680,12 +734,53 @@ def tool_result_lines(
     return rows
 
 
+# (verb, singular, plural) for the "Running 1 shell command…" line.
+_ACTIVITY = {
+    "run_command": ("Running", "shell command", "shell commands"),
+    "command_output": ("Waiting for", "background command", "background commands"),
+    "kill_command": ("Stopping", "background command", "background commands"),
+    "read_files": ("Reading", "file", "files"),
+    "list_files": ("Listing", "folder", "folders"),
+    "find_files": ("Finding", "file pattern", "file patterns"),
+    "search_code": ("Searching", "pattern", "patterns"),
+    "edit_file": ("Editing", "file", "files"),
+    "write_files": ("Writing", "file", "files"),
+    "apply_patch": ("Patching", "file", "files"),
+    "delete_file": ("Deleting", "file", "files"),
+    "move_file": ("Moving", "file", "files"),
+    "web_fetch": ("Fetching", "page", "pages"),
+    "code_graph": ("Querying", "code graph", "code graph"),
+    "git_status": ("Running", "git command", "git commands"),
+    "git_diff": ("Running", "git command", "git commands"),
+    "git_log": ("Running", "git command", "git commands"),
+    "git_show": ("Running", "git command", "git commands"),
+}
+
+
+def activity_text(active: dict[str, int]) -> str:
+    """``Running 1 shell command`` / ``Reading 3 files, searching 1 pattern`` for the tools running now."""
+    groups: dict[tuple[str, str, str], int] = {}
+    for name, count in active.items():
+        if count <= 0:
+            continue
+        key = _ACTIVITY.get(name, ("Running", name.replace("_", " "), name.replace("_", " ")))
+        groups[key] = groups.get(key, 0) + count
+    phrases = [f"{verb} {count} {one if count == 1 else many}" for (verb, one, many), count in groups.items()]
+    if not phrases:
+        return ""
+    text = ", ".join([phrases[0]] + [phrase[:1].lower() + phrase[1:] for phrase in phrases[1:]])
+    return text
+
+
 def tool_start(name: str, args: dict[str, Any] | None) -> None:
     """Show the running tool in the live region (TTY) — nothing is printed for pipes."""
     with _lock:
         _state.tool_title = tool_header(name, args, status="pending")
         _state.tool_tail = []
         _state.tool_partial = ""
+        if not any(count > 0 for count in _state.active.values()):
+            _state.active_since = time.monotonic()
+        _state.active[name] = _state.active.get(name, 0) + 1
         _refresh_live()
 
 
@@ -706,9 +801,13 @@ def tool_output(chunk: str) -> None:
 
 def tool_done(name: str, args: dict[str, Any] | None, result: dict[str, Any], *, friendly: str = "") -> None:
     with _lock:
-        _state.tool_title = None
-        _state.tool_tail = []
-        _state.tool_partial = ""
+        if _state.active.get(name, 0) > 0:
+            _state.active[name] -= 1
+        if not any(count > 0 for count in _state.active.values()):
+            _state.active.clear()
+            _state.tool_title = None
+            _state.tool_tail = []
+            _state.tool_partial = ""
         _refresh_live()
         status = "ok" if result.get("ok") else "err"
         _print(tool_header(name, args, status=status))
@@ -748,6 +847,15 @@ def live_renderable(now: float | None = None) -> RenderableType:
             tail = (tail + [partial])[-5:]
         for index, line in enumerate(tail):
             parts.append(_elbow(_short(line, 160), style=_style("dim"), first=index == 0))
+    doing = activity_text(dict(st.active))
+    if doing and not (st.waiting_explicit or st.waiting_depth > 0):
+        elapsed = max(0, int(now - st.active_since))
+        frame = g.frames[int(now * 8) % len(g.frames)]
+        line = Text()
+        line.append(f"{frame} ", style=_style("accent"))
+        line.append(f"{doing}{g.ellipsis} ", style=_style("accent"))
+        line.append(f"({_elapsed(elapsed)} · ctrl+c to interrupt)", style=_style("dim"))
+        parts.append(line)
     if st.waiting_explicit or st.waiting_depth > 0:
         elapsed = max(0, int(now - st.waiting_since))
         frame = g.frames[int(now * 8) % len(g.frames)]
@@ -761,11 +869,19 @@ def live_renderable(now: float | None = None) -> RenderableType:
     return Group(*parts)
 
 
+def _elapsed(seconds: int) -> str:
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m {seconds % 60:02d}s"
+    return f"{seconds}s"
+
+
 def _refresh_live() -> None:
     """Start, update, or stop the one live region to match the state."""
     global _live
     with _lock:
-        wanted = _state.tool_title is not None or _waiting_active()
+        wanted = _state.tool_title is not None or _waiting_active() or any(c > 0 for c in _state.active.values())
         if not wanted or not is_tty():
             if _live is not None:
                 live, _live = _live, None
@@ -930,17 +1046,23 @@ def _always_label(permission: Any) -> str:
     return key
 
 
-def approval_options(permission: Any) -> list[tuple[str, str]]:
-    """``[(answer, label)]`` in display order."""
+def approval_options(permission: Any, *, risky: str = "") -> list[tuple[str, str]]:
+    """``[(answer, label)]`` in display order. A risky command gets only yes and no.
+
+    Yes, Yes-and-don't-ask-again (when the call has a key), No, then Yes-and-switch-to-auto.
+    """
     options = [("yes", "Yes")]
     key = str(getattr(permission, "key", "") or "")
-    if key and getattr(permission, "kind", "") != "outside":
+    if not risky and key and getattr(permission, "kind", "") != "outside":
         options.append(("always", f"Yes, and don't ask again for {_always_label(permission)} this session"))
     options.append(("no", "No, and tell crit what to do differently (esc)"))
+    if not risky:
+        # Last, so the numbers of yes / always / no stay what people are used to.
+        options.append(("auto", "Yes, and switch to auto mode (stop asking this session)"))
     return options
 
 
-def approval_panel(permission: Any) -> Panel:
+def approval_panel(permission: Any, *, risky: str = "") -> Panel:
     summary = str(getattr(permission, "summary", "") or permission)
     detail = str(getattr(permission, "detail", "") or "")
     kind = str(getattr(permission, "kind", "") or "")
@@ -954,12 +1076,96 @@ def approval_panel(permission: Any) -> Panel:
             lines = detail.strip().splitlines()
             shown = "\n".join(lines[:12]) + (f"\n{glyphs().ellipsis} +{len(lines) - 12} lines" if len(lines) > 12 else "")
             parts.append(Padding(Text(shown, style=_style("dim")), (0, 0, 0, 2)))
+    if risky:
+        parts.extend([Text(), Text(f"! This command {risky}.", style=f"bold {_style('warn')}")])
+        if _state.approve_mode == "auto":
+            parts.append(Text("Auto mode still asks before risky commands.", style=_style("dim")))
     parts.extend([Text(), Text("Do you want to proceed?")])
     return Panel(Group(*parts), border_style=_style("accent"), expand=True, padding=(0, 1))
 
 
-def _choose(options: list[tuple[str, str]], *, pt_input: Any = None, pt_output: Any = None) -> int:
-    """Arrow keys / digits / y-a-n pick an option. Esc or Ctrl+C returns -1."""
+# Words a person might type for each approval answer. Longest phrase wins, so
+# "yes, always" is "always" and "don't ask again" is not "don't".
+_ANSWER_WORDS: dict[str, tuple[str, ...]] = {
+    "yes": (
+        "y", "yes", "yeah", "yep", "yup", "ya", "ok", "okay", "k", "sure", "proceed", "go", "go ahead",
+        "approve", "approved", "allow", "continue", "do it", "run it", "accept", "confirm", "true",
+    ),
+    "always": (
+        "a", "always", "always allow", "allow always", "yes always", "yes and always", "yes, always",
+        "yes, and don't ask again", "yes and don't ask again", "don't ask again", "dont ask again",
+        "yes to all", "all",
+    ),
+    "auto": (
+        "auto", "auto mode", "switch to auto", "switch to auto mode", "yes auto", "yes, auto", "yes and auto",
+        "yes, auto mode", "start in auto mode", "yes, start in auto mode",
+    ),
+    "edits": ("edits", "accept edits", "auto-accept edits", "yes, accept edits", "accept"),
+    "ask": ("ask", "ask me", "ask first", "yes, ask", "yes but ask", "ask before"),
+    "no": (
+        "n", "no", "nope", "nah", "deny", "denied", "decline", "reject", "cancel", "stop", "abort",
+        "don't", "dont", "do not", "false", "skip",
+    ),
+}
+_CHOICE_NUMBER = re.compile(r"(?:option|choice|#|\()?\s*(\d{1,2})(?!\d)\s*[.):\]]*\s*[,;:\-]?\s*", re.I)
+
+
+def parse_choice(text: str, options: list[tuple[str, str]]) -> tuple[int, str]:
+    """Read a typed answer: ``1``, ``1.``, ``(2)``, ``yes``, ``Yes``, ``always``, ``no, use X``, or a label.
+
+    Returns ``(index, rest)`` where ``rest`` is whatever followed the answer
+    (``"use X"`` above, the reason for a no). ``(-1, "")`` when nothing matches.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return (-1, "")
+    number = _CHOICE_NUMBER.match(raw)
+    if number:
+        index = int(number.group(1)) - 1
+        if 0 <= index < len(options):
+            return (index, raw[number.end():].strip())
+        return (-1, "")
+    low = raw.lower().replace("\u2019", "'")
+    bare = low.rstrip(".!?")
+    for index, (_answer, label) in enumerate(options):
+        if bare == " ".join(label.lower().split()).rstrip(".!?"):
+            return (index, "")
+    phrases = sorted(
+        ((phrase, answer) for answer, words in _ANSWER_WORDS.items() for phrase in words),
+        key=lambda item: -len(item[0]),
+    )
+    answers = [answer for answer, _label in options]
+    for phrase, answer in phrases:
+        if low == phrase or (low.startswith(phrase) and not low[len(phrase)].isalnum()):
+            if answer not in answers and answer == "yes" and answers and answers[0] != "no":
+                answer = answers[0]  # "yes" to a list without a plain yes picks the first choice
+            if answer not in answers:
+                return (-1, "")
+            rest = raw[len(phrase):].strip().lstrip(",;:.!-").strip()
+            return (answers.index(answer), rest)
+    return (-1, "")
+
+
+def _choice_hint(options: list[tuple[str, str]]) -> str:
+    answers = {answer for answer, _label in options}
+    words = [word for word in ("yes", "always", "auto", "no") if word in answers]
+    numbers = f"1-{len(options)}" if len(options) > 1 else "1"
+    return f"type {numbers}" + (f" or {', '.join(words)}" if words else "")
+
+
+def _choose(
+    options: list[tuple[str, str]],
+    *,
+    pt_input: Any = None,
+    pt_output: Any = None,
+    free_text: int | None = None,
+) -> tuple[int, str]:
+    """Pick an option with the arrows, or type ``1``, ``2.``, ``yes``, ``No``, ``always`` and press Enter.
+
+    Returns ``(index, rest)``; ``rest`` is text typed after the answer. Esc or
+    Ctrl+C gives ``(-1, "")``. With ``free_text`` set, typing that matches no
+    option picks that row and returns the typed text as ``rest``.
+    """
     from prompt_toolkit.application import Application
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
@@ -969,35 +1175,66 @@ def _choose(options: list[tuple[str, str]], *, pt_input: Any = None, pt_output: 
 
     pointer = glyphs().pointer
     cursor = [0]
+    typed = [""]
+    note = [""]
     bindings = KeyBindings()
 
+    def _sync() -> None:
+        note[0] = ""
+        index, _rest = parse_choice(typed[0], options)
+        if index >= 0:
+            cursor[0] = index
+
     @bindings.add("up")
-    @bindings.add("k")
+    @bindings.add("s-tab")
     def _up(event: Any) -> None:
+        typed[0] = ""
+        note[0] = ""
         cursor[0] = (cursor[0] - 1) % len(options)
 
     @bindings.add("down")
-    @bindings.add("j")
     @bindings.add("tab")
     def _down(event: Any) -> None:
+        typed[0] = ""
+        note[0] = ""
         cursor[0] = (cursor[0] + 1) % len(options)
 
+    @bindings.add("backspace")
+    def _back(event: Any) -> None:
+        typed[0] = typed[0][:-1]
+        _sync()
+
+    @bindings.add("c-u")
+    def _clear(event: Any) -> None:
+        typed[0] = ""
+        note[0] = ""
+
     @bindings.add("enter")
+    @bindings.add("c-j")
     def _enter(event: Any) -> None:
-        event.app.exit(result=cursor[0])
+        if not typed[0].strip():
+            event.app.exit(result=(cursor[0], ""))
+            return
+        index, rest = parse_choice(typed[0], options)
+        if index >= 0:
+            event.app.exit(result=(index, rest))
+        elif free_text is not None:
+            event.app.exit(result=(free_text, typed[0].strip()))
+        else:
+            note[0] = f"Didn't understand {typed[0].strip()!r}: {_choice_hint(options)}"
+            typed[0] = ""
 
     @bindings.add("escape", eager=True)
     @bindings.add("c-c")
     def _cancel(event: Any) -> None:
-        event.app.exit(result=-1)
+        event.app.exit(result=(-1, ""))
 
-    letters = {"yes": "y", "always": "a", "no": "n"}
-    for index, (answer, _label) in enumerate(options):
-        keys = [str(index + 1)] if index < 9 else []
-        if answer in letters:
-            keys.append(letters[answer])
-        for key in keys:
-            bindings.add(key)(lambda event, index=index: event.app.exit(result=index))
+    @bindings.add("<any>")
+    def _type(event: Any) -> None:
+        data = str(getattr(event, "data", "") or "")
+        if data.isprintable():
+            typed[0] += data
+            _sync()
 
     def text() -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = []
@@ -1006,20 +1243,28 @@ def _choose(options: list[tuple[str, str]], *, pt_input: Any = None, pt_output: 
                 rows.append(("class:selected", f" {pointer} {index + 1}. {label}\n"))
             else:
                 rows.append(("", f"   {index + 1}. {label}\n"))
+        if note[0]:
+            rows.append(("class:error", f"   {note[0]}\n"))
+        elif typed[0]:
+            rows.append(("", f"   > {typed[0]}\n"))
+        else:
+            rows.append(("class:hint", f"   Enter to confirm \u00b7 {_choice_hint(options)} \u00b7 Esc to cancel\n"))
         return rows
 
     accent = _pt_color(_PALETTES[_state.theme_id]["accent"])
-    app: Application[int] = Application(
+    app: Application[tuple[int, str]] = Application(
         layout=Layout(Window(FormattedTextControl(text, show_cursor=False), dont_extend_height=True)),
         key_bindings=bindings,
         full_screen=False,
         erase_when_done=True,
-        style=Style.from_dict({"selected": f"bold {accent}".strip()}),
+        style=Style.from_dict({"selected": f"bold {accent}".strip(), "hint": "#888888", "error": "ansired"}),
         input=pt_input,
         output=pt_output,
     )
     result = app.run()
-    return -1 if result is None else int(result)
+    if not result:
+        return (-1, "")
+    return (int(result[0]), str(result[1] or ""))
 
 
 def _pt_color(rich_style: str) -> str:
@@ -1030,27 +1275,30 @@ def _pt_color(rich_style: str) -> str:
     return names.get(first, "")
 
 
-def approve(permission: Any, *, pt_input: Any = None, pt_output: Any = None) -> tuple[str, str]:
+def approve(
+    permission: Any, *, risky: str = "", pt_input: Any = None, pt_output: Any = None
+) -> tuple[str, str]:
     """Ask before an edit, command, fetch, or outside-workspace step.
 
-    Returns ``("yes" | "always" | "no", reason)``. Auto mode answers yes. No
-    terminal answers no.
+    Returns ``("yes" | "always" | "no", reason)``. Auto mode answers yes,
+    except for a ``risky`` command. "Yes, and switch to auto mode" switches
+    the mode and answers yes. No terminal answers no.
     """
-    if _state.approve_mode == "auto":
+    if _state.approve_mode == "auto" and not risky:
         return ("yes", "")
     interactive = pt_input is not None or (_stdin_tty() and is_tty())
     if not interactive:
-        return ("no", "no terminal to approve")
+        return ("no", "no terminal to approve" + (f" a command that {risky}" if risky else ""))
     _pause_live()
-    options = approval_options(permission)
-    _print(approval_panel(permission))
+    options = approval_options(permission, risky=risky)
+    _print(approval_panel(permission, risky=risky))
     try:
-        index = _choose(options, pt_input=pt_input, pt_output=pt_output)
+        index, rest = _choose(options, pt_input=pt_input, pt_output=pt_output)
     except (EOFError, KeyboardInterrupt):
-        index = -1
+        index, rest = -1, ""
     except Exception as exc:  # no usable console (e.g. mintty without winpty)
         log.warn(f"approval prompt failed: {exc}")
-        index = _choose_plain(options)
+        index, rest = _choose_plain(options)
     g = glyphs()
     if index < 0:
         _print(_elbow("Declined", style=_style("err")))
@@ -1058,27 +1306,89 @@ def approve(permission: Any, *, pt_input: Any = None, pt_output: Any = None) -> 
         return ("no", "")
     answer, _label = options[index]
     if answer == "no":
-        reason = _ask_reason(pt_input=pt_input, pt_output=pt_output)
+        reason = rest or _ask_reason(pt_input=pt_input, pt_output=pt_output)
         _print(_elbow("Declined" + (f": {reason}" if reason else ""), style=_style("err")))
         _refresh_live()
         return ("no", reason)
+    if answer == "auto":
+        set_mode("auto", announce=False)
+        _print(_elbow(f"{g.check} Approved. Auto mode on: edits and commands run without asking.", style=_style("ok")))
+        _refresh_live()
+        return ("yes", "")
     _print(_elbow(f"{g.check} " + ("Approved for this session" if answer == "always" else "Approved"), style=_style("ok")))
     _refresh_live()
     return (answer, "")
 
 
-def _choose_plain(options: list[tuple[str, str]]) -> int:
+PLAN_OPTIONS = [
+    ("auto", "Yes, start now in auto mode (no more prompts, risky commands still ask)"),
+    ("edits", "Yes, start and auto-accept edits (commands ask)"),
+    ("ask", "Yes, start and ask before each edit and command"),
+    ("no", "No, keep planning (tell crit what to change)"),
+]
+
+
+def review_plan(*, pt_input: Any = None, pt_output: Any = None) -> tuple[str, str]:
+    """After a plan in plan mode: ``("auto" | "edits" | "ask", "")`` to start, ``("no", feedback)``
+    to plan again, ``("stop", "")`` on Esc, ``("none", "")`` with no terminal."""
+    interactive = pt_input is not None or (_stdin_tty() and is_tty())
+    if not interactive:
+        return ("none", "")
+    _pause_live()
+    _print(
+        Panel(
+            Text("Ready to code? crit will carry out the plan above.", style="bold"),
+            title=Text("Plan ready", style=_style("accent")),
+            title_align="left",
+            border_style=_style("accent"),
+            expand=True,
+            padding=(0, 1),
+        )
+    )
+    try:
+        index, rest = _choose(PLAN_OPTIONS, pt_input=pt_input, pt_output=pt_output)
+    except (EOFError, KeyboardInterrupt):
+        index, rest = -1, ""
+    except Exception as exc:
+        log.warn(f"plan prompt failed: {exc}")
+        index, rest = _choose_plain(PLAN_OPTIONS)
+    g = glyphs()
+    if index < 0:
+        _print(_elbow("Kept the plan; nothing was changed", style=_style("warn")))
+        _refresh_live()
+        return ("stop", "")
+    answer = PLAN_OPTIONS[index][0]
+    if answer == "no":
+        feedback = rest or _free_text("  What should change in the plan? ", pt_input=pt_input, pt_output=pt_output)
+        if not feedback:
+            _print(_elbow("Kept the plan; nothing was changed", style=_style("warn")))
+            _refresh_live()
+            return ("stop", "")
+        _print(_elbow(f"Revising: {feedback}", style=_style("accent")))
+        _refresh_live()
+        return ("no", feedback)
+    set_mode(answer, announce=False)
+    _print(_elbow(f"{g.check} Plan approved. {MODE_LABELS[answer][:1].upper()}{MODE_LABELS[answer][1:]}.", style=_style("ok")))
+    _refresh_live()
+    return (answer, "")
+
+
+def _choose_plain(options: list[tuple[str, str]], *, tries: int = 3) -> tuple[int, str]:
+    """Numbered list and ``input()``, for consoles prompt_toolkit cannot drive."""
     for index, (_answer, label) in enumerate(options):
         log.print_safe(f"   {index + 1}. {label}", flush=True)
-    try:
-        line = input("  Choose: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return -1
-    letters = {"y": "yes", "a": "always", "n": "no"}
-    for index, (answer, _label) in enumerate(options):
-        if line == str(index + 1) or letters.get(line) == answer:
-            return index
-    return -1
+    for _ in range(max(1, tries)):
+        try:
+            line = input(f"  Choose ({_choice_hint(options)}): ")
+        except (EOFError, KeyboardInterrupt):
+            return (-1, "")
+        if not line.strip():
+            continue
+        index, rest = parse_choice(line, options)
+        if index >= 0:
+            return (index, rest)
+        log.print_safe(f"   Didn't understand {line.strip()!r}.", flush=True)
+    return (-1, "")
 
 
 def _ask_reason(*, pt_input: Any = None, pt_output: Any = None) -> str:
@@ -1125,13 +1435,13 @@ def ask_question(
         if choices:
             rows = [(f"option{index}", label) for index, label in enumerate(choices)]
             rows.append(("other", "Type something else"))
-            index = _choose(rows, pt_input=pt_input, pt_output=pt_output)
+            index, rest = _choose(rows, pt_input=pt_input, pt_output=pt_output, free_text=len(choices))
             if index < 0:
                 answer = None
             elif index < len(choices):
                 answer = choices[index]
             else:
-                answer = _free_text("  Answer: ", pt_input=pt_input, pt_output=pt_output)
+                answer = rest or _free_text("  Answer: ", pt_input=pt_input, pt_output=pt_output)
         else:
             answer = _free_text("  Answer: ", pt_input=pt_input, pt_output=pt_output)
     except (EOFError, KeyboardInterrupt):
@@ -1298,9 +1608,19 @@ def _toolbar_text(armed_until: list[float]) -> Any:
     def render() -> list[tuple[str, str]]:
         if time.monotonic() < armed_until[0]:
             return [("class:hint.warn", "  Press Ctrl+C again to exit")]
-        mode = "auto-approve on" if _state.approve_mode == "auto" else "ask before edits"
-        parts = [p for p in (_state.shell_label, mode, "? for shortcuts") if p]
-        return [("class:hint", "  " + " · ".join(parts))]
+        mode = _state.approve_mode
+        badge = {"ask": "", "edits": "\u23f5\u23f5 accept edits on", "auto": "\u23f5\u23f5 auto mode on", "plan": "\u23f8 plan mode on"}
+        if glyphs() is ASCII_GLYPHS:
+            badge = {"ask": "", "edits": ">> accept edits on", "auto": ">> auto mode on", "plan": "|| plan mode on"}
+        rows: list[tuple[str, str]] = []
+        if badge.get(mode):
+            rows.append((f"class:mode.{mode}", f"  {badge[mode]}"))
+            rows.append(("class:hint", " (shift+tab to cycle)"))
+        else:
+            rows.append(("class:hint", "  ask before edits · shift+tab to cycle"))
+        parts = [p for p in (_state.shell_label, "? for shortcuts") if p]
+        rows.append(("class:hint", " · " + " · ".join(parts)))
+        return rows
 
     return render
 
@@ -1362,6 +1682,12 @@ def _build_prompt_session(*, pt_input: Any = None, pt_output: Any = None) -> Any
 
         threading.Thread(target=_disarm, daemon=True).start()
 
+    @bindings.add("s-tab", filter=Condition(lambda: not _completing()))
+    @bindings.add("escape", "m")
+    def _mode(event: Any) -> None:
+        cycle_mode()
+        event.app.invalidate()
+
     @bindings.add("?", filter=Condition(lambda: not _current_text()))
     def _shortcuts(event: Any) -> None:
         from prompt_toolkit.application import run_in_terminal
@@ -1375,6 +1701,9 @@ def _build_prompt_session(*, pt_input: Any = None, pt_output: Any = None) -> Any
             "bottom-toolbar": "noreverse",
             "hint": "#888888",
             "hint.warn": "ansiyellow",
+            "mode.edits": "ansimagenta",
+            "mode.auto": f"bold {accent}",
+            "mode.plan": "ansicyan",
             "continuation": "#888888",
         }
     )
@@ -1392,6 +1721,15 @@ def _build_prompt_session(*, pt_input: Any = None, pt_output: Any = None) -> Any
         output=pt_output,
     )
     return session
+
+
+def _completing() -> bool:
+    try:
+        from prompt_toolkit.application import get_app
+
+        return get_app().current_buffer.complete_state is not None
+    except Exception:
+        return False
 
 
 def _current_text() -> str:
@@ -1528,19 +1866,98 @@ def handle_command(word: str, rest: str = "") -> None:
         _pause_live()
         reopen_theme(_state.workspace)
         _reload_theme()
-    elif word == "/permissions":
-        with _lock:
-            _state.approve_mode = "ask" if _state.approve_mode == "auto" else "auto"
-        if _state.approve_mode == "auto":
-            note("note", "Edits and commands now run without asking (this session).")
-        else:
-            note("note", "crit will ask before edits and commands.")
+    elif word in {"/mode", "/permissions"}:
+        _mode_command(rest)
+    elif word == "/plan":
+        set_mode("plan")
+    elif word == "/auto":
+        set_mode("auto")
+    elif word == "/skills":
+        _skills_command(rest)
     elif word == "/status":
         print_status_table()
     elif word == "/shell":
         _shell_command(rest)
     elif word == "/tools":
         _print_tools()
+    elif word == "/commands":
+        print_commands()
+
+
+def _mode_command(rest: str) -> None:
+    word = rest.strip().lower()
+    if not word:
+        for name in MODES:
+            mark = glyphs().pointer if name == _state.approve_mode else " "
+            _print(Text(f" {mark} {name:<6} {MODE_LABELS[name]}", style="bold" if name == _state.approve_mode else _style("dim")))
+        _print(Text("   /mode <name> or Shift+Tab to switch", style=_style("dim")))
+        return
+    if word not in _MODE_ALIASES:
+        note("bad", f"Unknown mode {word}. Use one of: {', '.join(MODES)}.")
+        return
+    set_mode(word)
+
+
+def _skills_command(rest: str) -> None:
+    from critique_bot.agent_tools import discover_skills
+
+    found = discover_skills(_state.workspace)
+    names = {item["name"].lower(): item["name"] for item in found}
+    words = rest.split()
+    if words and words[0].lower() in {"off", "unpin", "remove"}:
+        for word in words[1:] or list(_state.pinned_skills):
+            name = names.get(word.lower(), word)
+            with _lock:
+                if name in _state.pinned_skills:
+                    _state.pinned_skills.remove(name)
+            note("note", f"Unpinned {name}.")
+        return
+    if words:
+        for word in words:
+            name = names.get(word.lower())
+            if name is None:
+                note("bad", f"No skill named {word}. Type /skills for the list.")
+                continue
+            with _lock:
+                if name not in _state.pinned_skills:
+                    _state.pinned_skills.append(name)
+            note("note", f"Pinned {name}: it goes with every task this session.")
+        return
+    if not found:
+        note("note", "No skills found.")
+        return
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(style=_style("dim"), no_wrap=True)
+    table.add_column(style=_style("dim"))
+    for item in found:
+        pinned = " (pinned)" if item["name"] in _state.pinned_skills else ""
+        table.add_row(item["name"] + pinned, item.get("source", ""), _short(item.get("description", ""), 90))
+    _print(Text("Skills (matched to each task automatically; /skills <name> to pin)", style="bold"))
+    _print(Padding(table, (0, 0, 0, 2)))
+
+
+def print_commands(limit: int = 20) -> None:
+    """The last shell commands of this session: exit code, time, shell, and how each ended."""
+    history = list(getattr(_state.session_shell, "history", None) or [])
+    if not history:
+        note("note", "No shell commands have run in this session.")
+        return
+    g = glyphs()
+    shown = history[-limit:]
+    failed = sum(1 for item in history if item.get("exit") not in (0,) )
+    _print(Text(f"Shell commands ({len(history)} run, {failed} not exit 0)", style="bold"))
+    for item in shown:
+        code = item.get("exit")
+        ok = code == 0
+        mark = g.check if ok else g.cross
+        line = Text("  ")
+        line.append(f"{mark} ", style=_style("ok") if ok else _style("err"))
+        line.append(_short(str(item.get("command") or ""), 70))
+        line.append(f"  {item.get('result')} · {item.get('seconds')}s · {item.get('shell')}", style=_style("dim"))
+        if item.get("retried"):
+            line.append(f" · retried: {item['retried']}", style=_style("warn"))
+        _print(line)
 
 
 def _undo() -> None:
@@ -1576,7 +1993,13 @@ def print_status_table() -> None:
     table.add_row("shell", _state.shell_label or "(default)")
     table.add_row("cwd", str(getattr(_state.session_shell, "cwd", None) or _state.workspace))
     table.add_row("workspace", str(_state.workspace))
-    table.add_row("permissions", _state.approve_mode)
+    table.add_row("mode", MODE_LABELS.get(_state.approve_mode, _state.approve_mode))
+    if _state.pinned_skills:
+        table.add_row("skills", ", ".join(_state.pinned_skills))
+    history = list(getattr(_state.session_shell, "history", None) or [])
+    if history:
+        failed = sum(1 for item in history if item.get("exit") != 0)
+        table.add_row("commands", f"{len(history)} run, {failed} not exit 0 (/commands)")
     jobs = _jobs()
     if jobs is not None:
         running = [job for job in jobs if job.get("running")]

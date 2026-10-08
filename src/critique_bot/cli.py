@@ -562,7 +562,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit\n"
             "  crit \"update the test cases\"\n"
             "  crit undo    (restore the files the last task changed)\n"
-            "  crit --yes \"fix the build\"   (no approval prompts)\n"
+            "  crit --yes \"fix the build\"   (auto mode: no approval prompts)\n"
+            "  crit --plan \"add dark mode\"  (plan first, approve, then build)\n"
             "\n"
             "The first crit in a folder creates .bot, asks which text style\n"
             "looks right, then asks to sign in and opens Edge.\n"
@@ -677,6 +678,19 @@ def build_parser() -> argparse.ArgumentParser:
             "agent mode: run edits, commands, and fetches without asking "
             '(same as "permissions": "auto" in .bot/settings.json)'
         ),
+    )
+    parser.add_argument(
+        "--plan",
+        dest="plan_mode",
+        action="store_true",
+        help="agent mode: start in plan mode (read and propose a plan; you approve before anything changes)",
+    )
+    parser.add_argument(
+        "--permission-mode",
+        dest="agent_mode",
+        choices=("ask", "edits", "auto", "plan"),
+        default=None,
+        help="agent mode: ask (default), edits (auto-accept file edits), auto (no prompts except risky commands), plan",
     )
     parser.add_argument(
         "--logs",
@@ -1240,8 +1254,19 @@ def _main_agent(args: argparse.Namespace) -> int:
         max_rounds=rounds,
         output_dir=output_dir,
         headed=bool(args.headed),
-        approve_mode="auto" if getattr(args, "auto_approve", False) else None,
+        approve_mode=_agent_mode(args),
     )
+
+
+def _agent_mode(args: argparse.Namespace) -> str | None:
+    """--permission-mode, --plan, or --yes; None reads "permissions" from .bot/settings.json."""
+    if getattr(args, "agent_mode", None):
+        return str(args.agent_mode)
+    if getattr(args, "plan_mode", False):
+        return "plan"
+    if getattr(args, "auto_approve", False):
+        return "auto"
+    return None
 
 
 def _welcome_login(config: BotConfig) -> bool:
