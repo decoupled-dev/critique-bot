@@ -61,6 +61,7 @@ ALLOWED_TOOLS = (
     "ask_user",
     "command_output",
     "kill_command",
+    "delegate",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -219,6 +220,8 @@ class ToolContext:
     on_output: Callable[[str], None] | None = None
     ask_user: Callable[[str], str] | None = None
     cancel: threading.Event | None = None
+    #: Runs briefs in helper chat tabs at the same time (see agent_helpers). None when there are none.
+    delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
@@ -351,6 +354,12 @@ _ALIASES = {
     "kill_shell": "kill_command",
     "killshell": "kill_command",
     "kill": "kill_command",
+    "task": "delegate",
+    "spawn": "delegate",
+    "subagent": "delegate",
+    "sub_agent": "delegate",
+    "parallel": "delegate",
+    "dispatch_agent": "delegate",
 }
 
 
@@ -1360,13 +1369,17 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
     version = agent_edit.file_version(path)
     if ctx.state is not None:
         ctx.state.note_write(name, version)
-    if ctx.index_path is not None:
-        refresh_path(ctx.workspace, ctx.index_path, path)
-    try:
-        code_graph.sync_after_edit(ctx.workspace)
-    except Exception:
-        pass
+    with _INDEX_LOCK:  # helper tabs write at the same time; the index and graph are shared
+        if ctx.index_path is not None:
+            refresh_path(ctx.workspace, ctx.index_path, path)
+        try:
+            code_graph.sync_after_edit(ctx.workspace)
+        except Exception:
+            pass
     return version
+
+
+_INDEX_LOCK = threading.Lock()
 
 
 def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
@@ -2512,6 +2525,77 @@ def _skill_description(text: str) -> str:
     return ""
 
 
+# --------------------------------------------------------------------------- delegate
+
+MAX_DELEGATE_BRIEFS = 6
+
+
+def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[str, Any]], str]:
+    """``[{name, brief, files}]`` from a delegate call, or a problem for the model.
+
+    Accepts ``tasks`` (or ``briefs``/``subtasks``) as a list of objects
+    ``{brief, files, name}`` or of plain strings, or one ``brief`` at the top
+    level. ``files`` are the files that helper may change; a file can belong to
+    one helper only. Paths must be inside the workspace.
+    """
+    raw = args.get("tasks")
+    for key in ("briefs", "subtasks", "agents", "jobs"):
+        if raw is None:
+            raw = args.get(key)
+    if isinstance(raw, str):
+        parsed = _maybe_json(raw)
+        raw = parsed if isinstance(parsed, list) else [raw]
+    if raw is None and (args.get("brief") or args.get("prompt") or args.get("description")):
+        raw = [args]
+    if not isinstance(raw, list) or not raw:
+        return [], 'tasks is required: a list of {"brief": "...", "files": ["path"]}'
+    if len(raw) > MAX_DELEGATE_BRIEFS:
+        return [], f"at most {MAX_DELEGATE_BRIEFS} briefs per delegate call"
+    briefs: list[dict[str, Any]] = []
+    owner: dict[str, str] = {}
+    for index, item in enumerate(raw, start=1):
+        if isinstance(item, str):
+            item = {"brief": item}
+        if not isinstance(item, dict):
+            return [], "each task must be an object with brief (and files)"
+        text = item.get("brief") or item.get("prompt") or item.get("description") or item.get("task") or ""
+        if not isinstance(text, str) or len(text.strip()) < 15:
+            return [], f"task {index} needs a self-contained brief (the helper cannot see this chat)"
+        name = str(item.get("name") or f"helper {index}").strip()[:40] or f"helper {index}"
+        files = item.get("files") or item.get("paths") or []
+        if isinstance(files, str):
+            files = [part.strip() for part in re.split(r"[,\n]", files) if part.strip()]
+        if not isinstance(files, list):
+            return [], f"task {index}: files must be a list of paths"
+        cleaned: list[str] = []
+        for raw_path in files:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            path = resolve(ctx.workspace, raw_path)
+            if not inside(ctx.workspace, path):
+                return [], f"task {index}: {raw_path} is outside the workspace; helpers change workspace files only"
+            shown = rel(ctx.workspace, path)
+            if shown in owner:
+                return [], f"{shown} is given to both {owner[shown]} and {name}; give each file to one helper"
+            owner[shown] = name
+            cleaned.append(shown)
+        briefs.append({"name": name, "brief": text.strip(), "files": cleaned})
+    return briefs, ""
+
+
+def _delegate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    briefs, problem = delegate_briefs(args, ctx)
+    if problem:
+        return err("delegate", problem)
+    if ctx.delegate is None:
+        return err(
+            "delegate",
+            "no helper tabs in this session (helper_sessions is 0, or the browser has no remote debugging); "
+            "do the work here with the other tools",
+        )
+    return ctx.delegate(briefs)
+
+
 # --------------------------------------------------------------------------- web_fetch
 
 
@@ -2836,6 +2920,19 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             return Permission("outside", f"{label} (cwd outside the workspace: {outside[0]})", "", command)
         program = command_key(command)
         return Permission("command", label, f"command:{program}" if program else "", command)
+    if tool == "delegate":
+        briefs, problem = delegate_briefs(args, ctx)
+        if problem or not briefs:
+            return Permission("read", "Delegate", "")
+        owned = [name for brief in briefs for name in brief["files"]]
+        label = f"Split into {len(briefs)} helper tab{'s' if len(briefs) != 1 else ''}"
+        detail = "\n\n".join(
+            f"{brief['name']}: {_one_line(brief['brief'], 200)}" + (f"\n  may change: {', '.join(brief['files'])}" if brief["files"] else "")
+            for brief in briefs
+        )
+        if not owned:
+            return Permission("read", label + " (read only)", "delegate", detail)
+        return Permission("edit", label + "; they may change " + ", ".join(owned[:6]) + (" ..." if len(owned) > 6 else ""), "edit", detail)
     if tool == "web_fetch":
         url = str(args.get("url") or "").strip().strip("<>\"'` ")
         if url and "://" not in url:
@@ -3155,6 +3252,9 @@ def _tool_label(tool: str, args: dict[str, Any]) -> str:
     def path_of(value: Any) -> str:
         return clean_path(value) if isinstance(value, str) and value.strip() else "?"
 
+    if tool == "delegate":
+        count = len(args.get("tasks") or []) if isinstance(args.get("tasks"), list) else 1
+        return f"Split into {count} helper tab{'s' if count != 1 else ''}"
     if tool == "edit_file":
         return f"Edit {path_of(args.get('path'))}"
     if tool == "write_files":
@@ -3218,4 +3318,5 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "ask_user": _ask_user,
     "command_output": _command_output,
     "kill_command": _kill_command,
+    "delegate": _delegate,
 }

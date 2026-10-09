@@ -171,6 +171,7 @@ _TOOL_TITLES = {
     "code_graph": "Graph",
     "skill": "Skill",
     "ask_user": "Ask",
+    "delegate": "Delegate",
     "command_output": "Output",
     "kill_command": "Kill",
 }
@@ -547,6 +548,10 @@ def arg_summary(name: str, args: dict[str, Any] | None) -> str:
     if not path and isinstance(files, list) and files:
         first = files[0].get("path", "") if isinstance(files[0], dict) else str(files[0])
         path = str(first) + (f", +{len(files) - 1}" if len(files) > 1 else "")
+    if name == "delegate":
+        tasks = args.get("tasks")
+        count = len(tasks) if isinstance(tasks, list) else 1
+        return f"{count} brief{'s' if count != 1 else ''} in parallel"
     if name == "run_command":
         return _short(args.get("command") or "", 100)
     if name == "search_code":
@@ -754,6 +759,7 @@ _ACTIVITY = {
     "git_diff": ("Running", "git command", "git commands"),
     "git_log": ("Running", "git command", "git commands"),
     "git_show": ("Running", "git command", "git commands"),
+    "delegate": ("Running", "helper tab", "helper tabs"),
 }
 
 
@@ -770,6 +776,14 @@ def activity_text(active: dict[str, int]) -> str:
         return ""
     text = ", ".join([phrases[0]] + [phrase[:1].lower() + phrase[1:] for phrase in phrases[1:]])
     return text
+
+
+def set_active(name: str, count: int) -> None:
+    """Show ``count`` of ``name`` as running (a delegate call runs one helper tab per brief)."""
+    with _lock:
+        if name in _state.active:
+            _state.active[name] = max(0, int(count))
+        _refresh_live()
 
 
 def tool_start(name: str, args: dict[str, Any] | None) -> None:

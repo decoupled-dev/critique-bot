@@ -16,6 +16,7 @@ import locale
 import os
 import re
 import shutil
+import threading
 import tempfile
 import time
 from dataclasses import dataclass
@@ -578,6 +579,8 @@ class Checkpoints:
         self.task_dir: Path | None = None
         self._step = 0
         self._saved: set[str] = set()
+        # Helper tabs edit their own files at the same time; the step counter is shared.
+        self._lock = threading.Lock()
 
     def start_task(self) -> None:
         if self.root is None:
@@ -629,11 +632,13 @@ class Checkpoints:
             rel = target.relative_to(self.workspace).as_posix()
         except ValueError:
             rel = str(target)
-        if rel in self._saved:
-            return
-        self._saved.add(rel)
-        self._step += 1
-        folder = self.task_dir / f"{self._step:03d}"
+        with self._lock:
+            if rel in self._saved:
+                return
+            self._saved.add(rel)
+            self._step += 1
+            step = self._step
+        folder = self.task_dir / f"{step:03d}"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "path.txt").write_text(rel + "\n", encoding="utf-8")
         if target.is_file():

@@ -392,6 +392,18 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 
 Every command is listed by `/commands` and saved in `.bot/sessions/<stamp>/agent.json` under `commands`.
 
+### Split one task across chat tabs
+
+A task with independent parts runs faster in several chats at once. The main chat (the coordinator) calls the `delegate` tool with one self-contained brief per part. crit sends each brief to a **helper tab** in the same signed-in browser, and all of them work at the same time. For example, three briefs could be "add the permission to `AndroidManifest.xml`", "add the strings to `res/values/strings.xml`", and "find where the camera is opened in the Kotlin code".
+
+- **The tabs cannot see each other.** crit is what they share. Every helper works on the same folder through crit's tools, and its final report goes back to the coordinator as the result of the `delegate` call.
+- **Each file has one owner.** A brief lists the files that helper may change, and crit refuses an edit to any other file. Two helpers never get the same file, and a brief with no files is read only. Helpers read anything, run only read-only commands (no builds or tests), and cannot ask you anything.
+- **The coordinator finishes the job.** It reviews the helpers' changes (`git_diff`), fixes what does not fit together, and runs the build once. The diff at the end, the check command, and `/undo` cover the helpers' changes too.
+- **One approval.** In ask mode the split is approved once, for the files it lists. A read-only split runs without asking, also in plan mode, so planning can investigate several places at once.
+- **Tabs stay open.** A helper tab opens on its first brief and keeps its chat for the session, so later splits skip the page load and the instructions. The status line shows `Running 2 helper tabs…` with each helper's current step.
+
+`"helper_sessions"` in `.bot/settings.json` sets how many helper tabs (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same ChatGPT account limits. Helper tabs need the browser's remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one tab and `delegate` says so.
+
 ### How replies are read
 
 crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so the "ChatGPT said:" heading is never taken for the reply.
@@ -475,6 +487,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | `skills` | Skills sent with every task, for example `["aosp", "aaos"]`. |
 | `auto_skills` | `false` stops choosing skills from the task and project files; pinned skills still go. Default `true`. |
 | `max_skills` | How many skills go with one task. Default 2. |
+| `helper_sessions` | Helper chat tabs one task can be split across with `delegate` (see [Split one task across chat tabs](#split-one-task-across-chat-tabs)). Default 2, at most 4; 0 turns it off. |
 | `build_timeout` | Seconds a build (gradle, mvn, m, npm install, ...) runs before it moves to the background. Default 1800. |
 | `command_retries` | Automatic retries of a build that failed for a passing reason (locked files, a dropped download). Default 1; 0 turns it off. |
 | `background_on_timeout` | `false` stops a command at its timeout instead of keeping it as a background job. Default `true`. |

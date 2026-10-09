@@ -129,6 +129,9 @@ _STATUS_WORDS = {
     "blocked": "BLOCKED",
 }
 _STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
+#: Helper chat tabs a task can be split across (the delegate tool). 0 turns it off.
+DEFAULT_HELPER_SESSIONS = 2
+MAX_HELPER_SESSIONS = 4
 MAX_PLAN_REVISIONS = 5
 _FAIL_HEAD = re.compile(r"^(FAILED|BLOCKED)\b\s*[:\-—]?\s*(.*)$")
 MAX_REFUSALS = 3
@@ -204,6 +207,13 @@ _FALLBACKS = {
     "HAND_BACK": (
         "Do not hand the work to the user. run_command runs on the user's machine, so run the build or "
         "command yourself now. If it fails, read SUMMARY and HINTS in its result, fix the cause, and run it again."
+    ),
+    "HELPER": (
+        "You are {name}, a helper tab working on one part of a larger task that another chat coordinates. "
+        "It cannot see this chat; your final reply is all it gets.\nBrief:\n{brief}\n"
+        "Files you may change: {files}. You may read any file. Do not build or run tests. "
+        "When done, reply COMPLETED and then a short report: what you found or changed, with paths and line numbers, "
+        "and what the coordinator still has to do."
     ),
     "AUTO_DECIDE": (
         "Auto mode is on and the user is not answering questions. Decide yourself: pick the safest reasonable "
@@ -1349,6 +1359,7 @@ def seed_message(
     persistent_cwd: bool = True,
     available: dict[str, agent_shell.Shell] | None = None,
     skills: list[str] | None = None,
+    helpers: int = 0,
 ) -> str:
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
@@ -1359,6 +1370,13 @@ def seed_message(
     ]
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
     lines.append(code_graph.hint(workspace))
+    if helpers > 0:
+        lines.append(
+            f"helper tabs: {helpers}. Split a task with independent parts across them with one delegate call; "
+            "they work at the same time."
+        )
+    else:
+        lines.append("helper tabs: none (do not call delegate; do the work here)")
     if skills:
         lines.append(
             "skills: " + ", ".join(skills) + ". The ones that fit a task come with it under SKILLS; "
@@ -1518,8 +1536,11 @@ class _Chat:
         seed: str = "",
         retries: int = DEFAULT_REPLY_RETRIES,
         compact_after: int = DEFAULT_COMPACT_AFTER_CHARS,
+        quiet: bool = False,
     ) -> None:
         self.session = session
+        #: A helper tab's chat: no spinner and no notes in the terminal.
+        self.quiet = quiet
         self.seed = (seed or "").strip()
         self.retries = max(0, retries)
         self.compact_after = compact_after
@@ -1544,14 +1565,16 @@ class _Chat:
             self.prefix = ""
         attempt = 0
         while True:
-            _waiting(True)
+            if not self.quiet:
+                _waiting(True)
             try:
                 reply = self.session.send(payload)
                 problem = _provider_error(reply)
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
             finally:
-                _waiting(False)
+                if not self.quiet:
+                    _waiting(False)
             self.chars += len(payload) + len(reply or "")
             if problem is None:
                 return reply
@@ -1559,11 +1582,15 @@ class _Chat:
                 raise _ProviderFailed(problem)
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
             attempt += 1
-            _ui("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
+            self._note("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
             # A timed-out reply may still be streaming; resending over it
             # duplicates the message and crosses the two answers.
             _stop_reply(self.session)
             _sleep(delay)
+
+    def _note(self, kind: str, message: str) -> None:
+        if not self.quiet:
+            _ui(kind, message)
 
     def too_long(self) -> bool:
         return self.can_restart and self.chars > self.compact_after
@@ -1583,13 +1610,29 @@ class _Chat:
         if started is False:
             self.can_restart = False
             return False
-        _ui("note", f"Starting a new chat: {reason}.")
+        self._note("note", f"Starting a new chat: {reason}.")
         self.chars = 0
         self.violations = 0
         self.map_sent = False
         self.skills_sent = set()
         self.prefix = _without_ready(self.seed) if self.seed else ""
         return True
+
+
+class _Hooks:
+    """Where a task run reports to. The terminal by default; helper tabs pass quiet ones."""
+
+    def ui(self, kind: str, message: str) -> None:
+        _ui(kind, message)
+
+    def tool_start(self, call: ToolCall) -> None:
+        _tool_start(call)
+
+    def tool_done(self, call: ToolCall, result: dict[str, Any]) -> None:
+        _tool_done(call, result)
+
+    def status(self, code: str) -> None:
+        _print_status(code)
 
 
 class _TaskRun:
@@ -1613,7 +1656,9 @@ class _TaskRun:
         ask: Callable[[str], str | None] | None = None,
         ui_mode_at_start: str | None = None,
         confirm_risky: bool = True,
+        hooks: "_Hooks | None" = None,
     ) -> None:
+        self.hooks = hooks or _Hooks()
         self.chat = chat
         self.task = task
         self.ctx = ctx
@@ -1712,12 +1757,12 @@ class _TaskRun:
             self._present(shown)
         if fabricated:
             self.chat.violations += 1
-            _ui("note", "The reply made up a tool result. Only real results are used.")
+            self.hooks.ui("note", "The reply made up a tool result. Only real results are used.")
         if unclosed or _idle_tool_reply(detail, reply):
             self.truncations += 1
             if self.truncations > MAX_TRUNCATIONS:
                 return self._end("FAILED", "the reply was cut off before it finished")
-            _ui("note", "The reply was cut off. Asking for the rest.")
+            self.hooks.ui("note", "The reply was cut off. Asking for the rest.")
             dangling = _OPEN_RE.search(_BLOCK_RE.sub("", reply))
             label = _cut_call_label(_BLOCK_RE.sub("", reply)[dangling.end() :]) if dangling else ""
             self._send_message("TRUNCATED", call=label)
@@ -1751,7 +1796,7 @@ class _TaskRun:
         ):
             self.hand_backs += 1
             self.chat.violations += 1
-            _ui("note", "The model asked you to do it yourself. Sending it back to run it.")
+            self.hooks.ui("note", "The model asked you to do it yourself. Sending it back to run it.")
             last = ""
             if self.state.last_command and self.last_failed:
                 last = f"The last command was {_one_line(self.state.last_command, 160)} ({self.state.last_exit}). "
@@ -1771,14 +1816,14 @@ class _TaskRun:
                     return self._end(
                         "FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}"
                     )
-                _ui("note", "Still working on it.")
+                self.hooks.ui("note", "Still working on it.")
                 self._send_message("ANSWER")
                 return None
             self.chat.violations = 0
             return self._finish("COMPLETED")
         if plan and self.plan_notes < 2:
             self.plan_notes += 1
-            _ui("note", "About to make that change.")
+            self.hooks.ui("note", "About to make that change.")
             self._send_message("PLAN_NOTED")
             return None
         question = _real_question(reply)
@@ -1797,13 +1842,13 @@ class _TaskRun:
             self.nudges += 1
             if reply.strip().upper() != "READY":
                 self.chat.violations += 1
-            _ui("note", "Still working on it.")
+            self.hooks.ui("note", "Still working on it.")
             self._send_message("NUDGE")
             return None
         if self.last_failed and self.recoveries < 2:
             self.recoveries += 1
             self.chat.violations += 1
-            _ui("note", "Picking up where it left off.")
+            self.hooks.ui("note", "Picking up where it left off.")
             self._send_message("RECOVER")
             return None
         return self._finish("COMPLETED")
@@ -1818,7 +1863,7 @@ class _TaskRun:
             self.plan_asks += 1
             if self.plan_asks > 2:
                 return self._end("FAILED", "plan mode: the model did not send a plan")
-            _ui("note", "Asking for the plan.")
+            self.hooks.ui("note", "Asking for the plan.")
             self._send_message("PLAN_NEEDED")
             return None
         self.plans += 1
@@ -1831,8 +1876,8 @@ class _TaskRun:
         if choice == "no" and feedback and self.plans <= MAX_PLAN_REVISIONS:
             self._send_message("PLAN_REVISE", feedback=feedback)
             return None
-        _ui("note", "Plan only; no files were changed. Switch modes with Shift+Tab or /mode to carry it out.")
-        _print_status("COMPLETED")
+        self.hooks.ui("note", "Plan only; no files were changed. Switch modes with Shift+Tab or /mode to carry it out.")
+        self.hooks.status("COMPLETED")
         return "COMPLETED"
 
     def _refuse(self, reply: str) -> str | None:
@@ -1841,7 +1886,7 @@ class _TaskRun:
         self.chat.violations += 1
         if self.refusals > MAX_REFUSALS:
             return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
-        _ui("note", "Still working on it.")
+        self.hooks.ui("note", "Still working on it.")
         self._send_message("RECOVER" if self.tools_ran else "NUDGE")
         return None
 
@@ -1853,7 +1898,7 @@ class _TaskRun:
         extras = [extra] if extra else []
         if self._is_loop(signature) and all((self.history.get(key) or {}).get("ok") for key in signature):
             self.chat.violations += 1
-            _ui("note", "The same calls came back again. Not running them.")
+            self.hooks.ui("note", "The same calls came back again. Not running them.")
             results = [
                 {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": "not run: the same calls as your previous replies"}
                 for call in calls
@@ -1870,7 +1915,7 @@ class _TaskRun:
                 slots[index] = self._execute_one(call)
             elif batch:
                 for _, call in batch:
-                    _tool_start(call)
+                    self.hooks.tool_start(call)
                 with ThreadPoolExecutor(max_workers=min(PARALLEL_WORKERS, len(batch))) as pool:
                     futures = [
                         (index, call, pool.submit(_execute, call.tool, call.arguments, self.ctx))
@@ -1878,7 +1923,7 @@ class _TaskRun:
                     ]
                     for index, call, future in futures:
                         result = future.result()
-                        _tool_done(call, result)
+                        self.hooks.tool_done(call, result)
                         self._record(call, result)
                         slots[index] = result
             batch.clear()
@@ -1889,13 +1934,13 @@ class _TaskRun:
             if call.error:
                 flush()
                 slots[index] = {"tool": call.tool, "ok": False, "error": call.error}
-                _ui("bad", _friendly_error(call.error))
+                self.hooks.ui("bad", _friendly_error(call.error))
                 continue
             repeat = self._repeat_result(call)
             if repeat is not None:
                 flush()
-                _tool_start(call)
-                _tool_done(call, repeat)
+                self.hooks.tool_start(call)
+                self.hooks.tool_done(call, repeat)
                 slots[index] = repeat
                 continue
             perm = self._permission(call)
@@ -1911,8 +1956,8 @@ class _TaskRun:
                     "error": "not run: plan mode is on. Read only for now, then reply with the plan",
                     "planned": True,
                 }
-                _tool_start(call)
-                _tool_done(call, result)
+                self.hooks.tool_start(call)
+                self.hooks.tool_done(call, result)
                 slots[index] = result
                 plan_blocked = True
                 continue
@@ -1927,8 +1972,8 @@ class _TaskRun:
                     + ". Do not send it again; change the approach or use ask_user"
                 )
                 result = {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": error, "denied": True}
-                _tool_start(call)
-                _tool_done(call, result)
+                self.hooks.tool_start(call)
+                self.hooks.tool_done(call, result)
                 slots[index] = result
                 continue
             allowed, reason = self._approved(perm)
@@ -1939,7 +1984,7 @@ class _TaskRun:
                     self.denied_reason = reason
                 error = "denied by the user" + (f": {reason}" if reason else "")
                 result = {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": error, "denied": True}
-                _tool_done(call, result)
+                self.hooks.tool_done(call, result)
                 slots[index] = result
                 continue
             slots[index] = self._execute_one(call)
@@ -1962,9 +2007,9 @@ class _TaskRun:
         self._send_results(results, extra="\n\n".join(extras))
 
     def _execute_one(self, call: ToolCall) -> dict[str, Any]:
-        _tool_start(call)
+        self.hooks.tool_start(call)
         result = _execute(call.tool, call.arguments, self.ctx)
-        _tool_done(call, result)
+        self.hooks.tool_done(call, result)
         self._record(call, result)
         return result
 
@@ -2058,7 +2103,7 @@ class _TaskRun:
             self.last_output = str(result.get("output") or result.get("error") or "")[-1_500:]
         if ok:
             self.tools_ran = True
-            if name in MUTATING:
+            if name in MUTATING or (name == "delegate" and result.get("changed")):
                 self.check_passed = False
                 self.verified = False
             if name not in _read_only_tools():
@@ -2166,23 +2211,23 @@ class _TaskRun:
             reason = _failure_reason(reply)
             if not reason and not self.reason_asked:
                 self.reason_asked = True
-                _ui("note", "Asking why that failed.")
+                self.hooks.ui("note", "Asking why that failed.")
                 self._send_message("WHY_FAILED")
                 return None
             if reason:
-                _ui("bad", reason)
+                self.hooks.ui("bad", reason)
         if status in _STATUS_OK:
             changed = self._files_changed()
             if changed and self.check_command and not self.check_passed:
                 result = self._run_check()
                 if result.get("ok"):
                     self.check_passed = True
-                    _ui("good", "The check passed.")
+                    self.hooks.ui("good", "The check passed.")
                 else:
                     self.check_cycles += 1
                     if self.check_cycles > MAX_CHECK_CYCLES:
                         return self._end("FAILED", f"the check still fails: {self.check_command}")
-                    _ui("bad", "The check failed. Sending the failure back.")
+                    self.hooks.ui("bad", "The check failed. Sending the failure back.")
                     self._send_results([result], extra=self.sections["CHECK_FAILED"])
                     return None
             elif (
@@ -2193,7 +2238,7 @@ class _TaskRun:
                 and _has_checks(self.ctx.workspace)
             ):
                 self.verify_asked = True
-                _ui("note", "Nothing was run after the edits. Asking for a check.")
+                self.hooks.ui("note", "Nothing was run after the edits. Asking for a check.")
                 self._send_message("VERIFY")
                 return None
             if (
@@ -2203,11 +2248,11 @@ class _TaskRun:
                 and _asks_for_change(self.task)
             ):
                 self.nothing_nudged = True
-                _ui("note", "Nothing changed yet. Asking once more.")
+                self.hooks.ui("note", "Nothing changed yet. Asking once more.")
                 self._send_message("NOTHING_CHANGED")
                 return None
         self._show_disk_once()
-        _print_status(status)
+        self.hooks.status(status)
         return status
 
     def _note_shell_change(self) -> None:
@@ -2227,21 +2272,21 @@ class _TaskRun:
 
     def _run_check(self) -> dict[str, Any]:
         """The project check. It always runs again after a change, with its own long timeout."""
-        _ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
+        self.hooks.ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
         call = ToolCall(
             "run_command",
             {"command": self.check_command, "timeout": self.check_timeout, "cwd": str(self.ctx.workspace)},
         )
         session = self.ctx.session
         before = getattr(session, "cwd", None)
-        _tool_start(call)
+        self.hooks.tool_start(call)
         try:
             result = _execute(call.tool, call.arguments, self.ctx)
         finally:
             if before is not None:
                 # The check runs in the workspace and leaves the session's cwd where the model put it.
                 session.cwd = before
-        _tool_done(call, result)
+        self.hooks.tool_done(call, result)
         self.last_output = str(result.get("output") or result.get("error") or "")[-1_500:]
         return result
 
@@ -2270,30 +2315,30 @@ class _TaskRun:
             return
         if not diff.strip():
             return
-        _ui("good", "On disk, this task changed:")
+        self.hooks.ui("good", "On disk, this task changed:")
         lines = diff.splitlines()
         if not _show_diff_in_ui(diff):
             for line in lines[:_REVIEW_LINES]:
                 log.print_safe(f"  {line}", file=sys.stderr, flush=True)
         if len(lines) > _REVIEW_LINES:
-            _ui("note", f"{len(lines) - _REVIEW_LINES} more lines in the diff")
+            self.hooks.ui("note", f"{len(lines) - _REVIEW_LINES} more lines in the diff")
 
     def _show_diffstat(self) -> None:
         changed = ", ".join(self.state.edits) or "none"
-        _ui("good", f"Changed: {_one_line(changed, 160)}")
+        self.hooks.ui("good", f"Changed: {_one_line(changed, 160)}")
         if not is_git_repo(self.ctx.workspace):
             return
         result = _execute("git_diff", {"stat": True}, self.ctx)
         if result.get("ok"):
             for line in str(result.get("output", "")).splitlines()[1:21]:
-                _ui("good", line)
+                self.hooks.ui("good", line)
 
     def _end(self, code: str, message: str) -> str:
         log.warn(message)
-        _ui("bad", message)
+        self.hooks.ui("bad", message)
         self.turns.append({"role": "assistant", "content": message})
         self._show_disk_once()
-        _print_status(code)
+        self.hooks.status(code)
         return code
 
     # ----------------------------------------------------------------- messages
@@ -2365,6 +2410,8 @@ def run_agent_loop(
     ask_user: Callable[[str], str | None] | None = None,
     settings: dict[str, Any] | None = None,
     seed_first: bool = False,
+    helper_factory: Callable[[], Any] | None = None,
+    helper_count: int = 0,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
@@ -2430,6 +2477,49 @@ def run_agent_loop(
         command_retries=command_retries,
     )
     outcome_code = "COMPLETED"
+    pool_box: list[Any] = []
+
+    def make_delegate(
+        cancel: threading.Event, checkpoints_now: Any, state: TaskState
+    ) -> Callable[[list[dict[str, Any]]], dict[str, Any]] | None:
+        """The delegate tool's runner for one task: briefs go to helper tabs, all at once."""
+        if helper_factory is None or helper_count < 1:
+            return None
+        from critique_bot import agent_helpers
+
+        def delegate(briefs: list[dict[str, Any]]) -> dict[str, Any]:
+            if not pool_box:
+                pool_box.append(
+                    agent_helpers.HelperPool(
+                        helper_factory,
+                        helper_count,
+                        seed=seed or "",
+                        sections=sections,
+                        base=base,
+                        max_result_chars=max_result_chars,
+                        retries=_int_setting(options, "reply_retries", DEFAULT_REPLY_RETRIES, 0),
+                        compact_after=_int_setting(options, "compact_after_chars", DEFAULT_COMPACT_AFTER_CHARS, 10_000),
+                    )
+                )
+            started = time.monotonic()
+            _set_active("delegate", len(briefs))
+            try:
+                reports = pool_box[0].run(
+                    briefs,
+                    cancel=cancel,
+                    progress=lambda line: _tool_output(line + "\n"),
+                    context={"checkpoints": checkpoints_now},
+                )
+            finally:
+                _set_active("delegate", 1)
+            result = agent_helpers.format_reports(reports, time.monotonic() - started)
+            for name in result.get("changed") or []:
+                # The coordinator's task owns these changes: the diff, the check, and undo cover them.
+                state.edits[name] = state.edits.get(name, 0) + 1
+            return result
+
+        return delegate
+
     if seed and seed.strip():
         if seed_first:
             _seed_session(
@@ -2476,7 +2566,14 @@ def run_agent_loop(
         mode_note = sections["PLAN_MODE"] if mode_now == "plan" and not _answer_only(task) else ""
         checkpoints.start_task()
         cancel = threading.Event()
-        ctx = _tool_context(**base, state=TaskState(task=task), checkpoints=checkpoints, cancel=cancel)
+        task_state = TaskState(task=task)
+        ctx = _tool_context(
+            **base,
+            state=task_state,
+            checkpoints=checkpoints,
+            cancel=cancel,
+            delegate=make_delegate(cancel, checkpoints, task_state),
+        )
         run = _TaskRun(
             chat,
             task,
@@ -2522,6 +2619,11 @@ def run_agent_loop(
                 "its last reply was not acted on. The new task follows."
             )
         chat.history.append(f"{_one_line(task, 80)} -> {outcome_code}")
+    for pool in pool_box:
+        try:
+            pool.close()
+        except Exception as exc:  # the session is over; a stuck tab must not hang the exit
+            log.debug(f"closing helper tabs failed: {exc}")
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns
@@ -2762,6 +2864,11 @@ def run_agent(
         approve_mode = agent_ui.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
+    helpers = _int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0)
+    helpers = min(helpers, MAX_HELPER_SESSIONS)
+    if helpers and config.max_parallel_tabs < helpers + 1:
+        # Extra tabs are opened over the browser's remote debugging port, which this turns on.
+        config = dataclasses.replace(config, max_parallel_tabs=helpers + 1)
     _prewarm_shell_environment()
     shell = agent_shell.detect_shell(preference=_shell_preference(settings))
     available = _available_shells()
@@ -2784,7 +2891,9 @@ def run_agent(
     except Exception as exc:
         log.debug(f"listing skills failed: {exc}")
         skill_names = []
-    seed = seed_message(home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names)
+    seed = seed_message(
+        home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names, helpers=helpers
+    )
     code = 1
     try:
         _ensure_code_graph(home.root)
@@ -2808,6 +2917,7 @@ def run_agent(
                 "turns": turns,
                 "settings": settings,
                 "ask_user": _ask_user,
+                "helper_count": helpers,
             },
             turns=turns,
         )
@@ -2907,6 +3017,11 @@ def _run_session(
     try:
         with open_provider(config, headed=headed) as provider:
             with provider.session() as session:
+                if kwargs.get("helper_count") and getattr(provider, "can_parallelize", False):
+                    kwargs["helper_factory"] = lambda: provider.session(isolated=True)
+                elif kwargs.get("helper_count"):
+                    log.info("helper tabs need the browser's remote debugging; the task runs in one tab")
+                    kwargs["helper_count"] = 0
                 try:
                     result = run_agent_loop(session, first_task=task, **kwargs)
                     if "turns" not in kwargs and result is not turns:
@@ -3132,6 +3247,12 @@ def _tool_done(call: ToolCall, result: dict[str, Any]) -> None:
 
 def _tool_output(text: str) -> None:
     agent_ui.tool_output(text)
+
+
+def _set_active(name: str, count: int) -> None:
+    setter = getattr(agent_ui, "set_active", None)
+    if callable(setter):
+        setter(name, count)
 
 
 def _waiting(active: bool, label: str = "Thinking") -> None:

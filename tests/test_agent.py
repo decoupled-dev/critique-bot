@@ -603,7 +603,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(tidy("\x1b[32mok\x1b[0m\nsame\nsame\nsame"), "ok\nsame\n... previous line repeated 2 more times")
 
     def test_tool_count(self) -> None:
-        self.assertEqual(len(ALLOWED_TOOLS), 21)
+        self.assertEqual(len(ALLOWED_TOOLS), 22)
 
     def test_opencode_names_run_the_same_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
