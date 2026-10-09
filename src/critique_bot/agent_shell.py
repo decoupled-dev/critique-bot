@@ -108,6 +108,27 @@ QUIET_ENV = {
     "GH_NO_UPDATE_NOTIFIER": "1",
 }
 
+# "offline": true in .bot/settings.json. Commands crit runs then reach nothing at all:
+# web proxies point at a closed local port (curl, pip, npm, git, and most tools honor
+# them), package managers run in their offline modes, git may use local repositories
+# only, and the Gradle wrapper gets --offline. Builds then need their dependencies in
+# the local caches (one online build beforehand, or a company mirror on this PC).
+_DEAD_PROXY = "http://127.0.0.1:9"
+OFFLINE_ENV = {
+    "HTTP_PROXY": _DEAD_PROXY, "HTTPS_PROXY": _DEAD_PROXY, "ALL_PROXY": _DEAD_PROXY,
+    "http_proxy": _DEAD_PROXY, "https_proxy": _DEAD_PROXY, "all_proxy": _DEAD_PROXY,
+    "NO_PROXY": "", "no_proxy": "",
+    "GIT_ALLOW_PROTOCOL": "file",
+    "npm_config_offline": "true", "YARN_ENABLE_OFFLINE_MODE": "1", "PNPM_OFFLINE": "true",
+    "PIP_NO_INDEX": "1", "UV_OFFLINE": "1",
+    "CARGO_NET_OFFLINE": "true", "GOPROXY": "off", "GOFLAGS": "-mod=mod",
+    "MAVEN_ARGS": "-o", "NUGET_OFFLINE": "1",
+}
+_OFFLINE_JVM = (
+    "-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=9 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=9 "
+    "-Dhttp.nonProxyHosts="
+)
+
 SHELL_NAMES = ("auto", "bash", "sh", "zsh", "pwsh", "powershell", "cmd")
 
 
@@ -1184,7 +1205,7 @@ _BARE_WRAPPER_RE = re.compile(
 )
 
 
-def adjust_command(command: str, shell: "Shell | None" = None, cwd: Path | None = None) -> str:
+def adjust_command(command: str, shell: "Shell | None" = None, cwd: Path | None = None, *, offline: bool = False) -> str:
     """Make a gradle wrapper call run as intended in ``shell``.
 
     Adds ``--console=plain``. On Windows, PowerShell runs a file in the current
@@ -1197,6 +1218,8 @@ def adjust_command(command: str, shell: "Shell | None" = None, cwd: Path | None 
         replacement = ".\\gradlew.bat" if shell.is_powershell else "gradlew.bat"
         if shell.is_powershell or shell.kind == "cmd":
             text = _BARE_WRAPPER_RE.sub(lambda m: m.group("lead") + replacement, text)
+    if offline and "--offline" not in text:
+        text = _GRADLEW_RE.sub(lambda m: m.group(0) + " --offline", text)
     if "--console" in text:
         return text
     return _GRADLEW_RE.sub(lambda m: m.group(0) + " --console=plain", text)
@@ -1703,13 +1726,13 @@ def kill_tree(proc: subprocess.Popen) -> None:
 class _Launch:
     """One running script: process, reader threads, temp files."""
 
-    def __init__(self, shell: Shell, command: str, cwd: Path, env: dict[str, str], *, want_cwd: bool) -> None:
+    def __init__(self, shell: Shell, command: str, cwd: Path, env: dict[str, str], *, want_cwd: bool, offline: bool = False) -> None:
         self.shell = shell
         self.command = command
         folder = _private_dir()
         token = uuid.uuid4().hex
         self.marker = os.path.join(folder, f"{token}.cwd") if want_cwd else None
-        suffix, data = _script(shell, adjust_command(command, shell, cwd), self.marker)
+        suffix, data = _script(shell, adjust_command(command, shell, cwd, offline=offline), self.marker)
         self.script = os.path.join(folder, f"{token}{suffix}")
         with open(self.script, "wb") as handle:
             handle.write(data)
@@ -1819,10 +1842,11 @@ def _execute(
     cancel: threading.Event | None = None,
     want_cwd: bool = False,
     detach_on_timeout: bool = False,
+    offline: bool = False,
 ) -> tuple[_Launch, bool, bool]:
     """Run until exit, timeout, or cancel. With ``detach_on_timeout`` a command that is
     still producing work at the deadline is left running (the caller adopts it)."""
-    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd)
+    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd, offline=offline)
     timed_out = interrupted = False
     deadline = launch.started + max(0.0, timeout)
     last_flush = 0.0
@@ -1925,8 +1949,11 @@ class ShellSession:
         *,
         available: dict[str, Shell] | None = None,
         env_extra: dict[str, str | None] | None = None,
+        offline: bool = False,
     ) -> None:
         self.workspace = Path(workspace).resolve()
+        #: Commands may reach nothing at all (see OFFLINE_ENV).
+        self.offline = offline
         self.shell = shell or detect_shell()
         self.available = dict(available) if available is not None else available_shells()
         self.env_extra = dict(env_extra or {})
@@ -1953,6 +1980,10 @@ class ShellSession:
             env = environment(self.env_extra, base=base)
             if "JAVA_HOME" not in self.env_extra:
                 env = project_toolchain(env, self.workspace)
+            if self.offline:
+                env.update(OFFLINE_ENV)
+                for name in ("GRADLE_OPTS", "JAVA_TOOL_OPTIONS"):
+                    env[name] = (env.get(name, "") + " " + _OFFLINE_JVM).strip()
             self._env = env
         return self._env
 
@@ -2014,6 +2045,7 @@ class ShellSession:
             cancel=cancel,
             want_cwd=True,
             detach_on_timeout=self.detach_on_timeout,
+            offline=self.offline,
         )
         if timed_out and launch.poll() is None and not launch.killed:
             job_id = self._adopt(command, launch, chosen)
@@ -2098,7 +2130,7 @@ class ShellSession:
         """Start a long-running command; returns its job id (``b1``, ``b2``...)."""
         chosen = self.resolve(shell)
         start = self._start_dir(cwd)
-        launch = _Launch(chosen, command, start, self.environment(), want_cwd=False)
+        launch = _Launch(chosen, command, start, self.environment(), want_cwd=False, offline=self.offline)
         with self._lock:
             self._counter += 1
             job_id = f"b{self._counter}"

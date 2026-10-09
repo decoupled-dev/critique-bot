@@ -662,7 +662,7 @@ class WebFetchTests(unittest.TestCase):
         self.assertIn("redirect", self.fetch("/loop")["error"])
         self.assertIn("binary content", self.fetch("/bin")["output"])
         bad = execute("web_fetch", {"url": "file:///etc/passwd"}, _ctx(Path(tempfile.mkdtemp())))
-        self.assertIn("only https", bad["error"])
+        self.assertFalse(bad["ok"])
 
     def test_redirect_to_another_host_is_not_followed(self) -> None:
         result = self.fetch("/elsewhere")
@@ -696,7 +696,7 @@ class OutboundTests(unittest.TestCase):
         ]:
             with self.subTest(url=url[:50]):
                 self.assertIn(why, outbound_problem(url, DEFAULT_WEB_HOSTS))
-        self.assertIn("turned off", outbound_problem("https://kotlinlang.org/", ()))
+        self.assertIn("web_fetch is off", outbound_problem("https://kotlinlang.org/", ()))
         result = execute("web_fetch", {"url": "https://evil.example/?d=x"}, _ctx(Path(tempfile.mkdtemp())))
         self.assertFalse(result["ok"])
 
@@ -728,6 +728,16 @@ class OutboundTests(unittest.TestCase):
         result = execute("run_command", {"command": "python send.py"}, _ctx(root))
         self.assertFalse(result["ok"])
         self.assertIn("send.py, which opens network connections", result["error"])
+
+    def test_web_fetch_is_off_unless_turned_on(self) -> None:
+        from critique_bot import agent
+
+        result = execute("web_fetch", {"url": "https://developer.android.com/guide"}, _ctx(Path(tempfile.mkdtemp())))
+        self.assertFalse(result["ok"])
+        self.assertIn("web_fetch is off", result["error"])
+        self.assertEqual(agent._web_hosts({}), ())
+        self.assertIn("developer.android.com", agent._web_hosts({"web_fetch": True}))
+        self.assertEqual(agent._web_hosts({"web_fetch": True, "offline": True}), ())
 
     def test_ask_setting_turns_block_into_a_risky_approval(self) -> None:
         from critique_bot.agent_tools import permission_for

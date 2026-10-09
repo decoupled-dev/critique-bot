@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import socket
@@ -56,6 +57,9 @@ EDGE_NO_THROTTLE_ARGS = (
 # No --remote-allow-origins: without it a web page cannot connect to the debugging
 # port (it sends an Origin header); crit's own connection sends none.
 EDGE_PRIVATE_ARGS = (
+    # WebRTC may not open UDP to STUN/TURN servers (it would reach any host, past the filter).
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--dns-prefetch-disable",
     "--disable-background-networking",
     "--disable-sync",
     "--disable-component-update",
@@ -1088,9 +1092,11 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
         except Exception as exc:
             log.debug(f"route abort failed {log.preview(url, 180)}: {exc}")
         return
-    # A navigation (Cloudflare challenge, SSO) is let through; anything else, websockets
-    # included, only to the chat's own hosts.
-    if rtype == "document" or request_is_allowed(url, chat_url):
+    # Every request, page loads in any frame included, goes only to the chat's own hosts:
+    # a third-party iframe or a form posted into one would otherwise carry data out.
+    # (Cloudflare's challenge and the chat's login are in the chat's host family; any
+    # other sign-in happens in the plain sign-in window, which is not filtered.)
+    if request_is_allowed(url, chat_url):
         try:
             route.continue_()
         except Exception as exc:
@@ -1112,6 +1118,51 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
         log.debug(f"route abort failed {log.preview(url, 180)}: {exc}")
 
 
+def _filter_web_socket(ws, chat_url: str) -> None:
+    url = str(getattr(ws, "url", "") or "")
+    if request_is_allowed(url, chat_url):
+        try:
+            ws.connect_to_server()
+        except Exception as exc:
+            log.debug(f"websocket connect failed {log.preview(url, 180)}: {exc}")
+        return
+    log.info(f"blocking a WebSocket to {(urlsplit(url).hostname or url)} (outside the chat URL)")
+    try:
+        ws.close()
+    except Exception as exc:
+        log.debug(f"websocket close failed: {exc}")
+
+
+_NO_SERVICE_WORKER_JS = """
+(() => {
+  try {
+    const sw = navigator.serviceWorker;
+    if (!sw) return;
+    const refuse = () => Promise.reject(new DOMException('service workers are disabled', 'SecurityError'));
+    Object.defineProperty(sw, 'register', { value: refuse, configurable: false });
+    sw.getRegistrations && sw.getRegistrations().then(list => list.forEach(r => r.unregister())).catch(() => {});
+  } catch (e) {}
+})();
+"""
+
+
+def _block_service_workers(page: Page) -> None:
+    """Refuse service-worker registration in this tab (and its later documents), and drop any already registered."""
+    context = getattr(page, "context", None)
+    for target in (context, page):
+        add = getattr(target, "add_init_script", None)
+        if callable(add):
+            try:
+                add(_NO_SERVICE_WORKER_JS)
+                break
+            except Exception as exc:
+                log.debug(f"service-worker block: {exc}")
+    try:
+        page.evaluate(_NO_SERVICE_WORKER_JS)
+    except Exception:
+        pass
+
+
 def guard_page_network(page: Page, chat_url: str) -> None:
     """Abort later Edge XHR/fetch that are not for the configured chat URL.
 
@@ -1130,6 +1181,27 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     except Exception as exc:
         log.warn(f"could not restrict browser network to the chat URL: {exc}")
         return
+    # The same filter on the whole context: a popup (window.open) or a new tab is
+    # covered from its first request, before a per-page route could be added to it.
+    context = getattr(page, "context", None)
+    if context is not None and getattr(context, "_critique_chat_guard", None) != chat_url:
+        try:
+            context.route("**/*", handle)
+            route_ctx_ws = getattr(context, "route_web_socket", None)
+            if callable(route_ctx_ws):
+                route_ctx_ws(re.compile(".*"), lambda ws: _filter_web_socket(ws, chat_url))
+            context._critique_chat_guard = chat_url  # type: ignore[attr-defined]
+        except Exception as exc:
+            log.debug(f"context-wide filter not installed: {exc}")
+    # page.route never sees WebSockets; they get their own filter.
+    route_ws = getattr(page, "route_web_socket", None)
+    if callable(route_ws):
+        try:
+            route_ws(re.compile(".*"), lambda ws: _filter_web_socket(ws, chat_url))
+        except Exception as exc:
+            log.warn(f"could not restrict WebSockets to the chat URL: {exc}")
+    # A service worker's requests bypass page.route; no service worker may register.
+    _block_service_workers(page)
     try:
         page._critique_chat_guard = chat_url  # type: ignore[attr-defined]
     except Exception:
@@ -1468,7 +1540,7 @@ def launch_edge(
         profile_dir.mkdir(parents=True, exist_ok=True)
         existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
-        args = _launch_args()
+        args = _launch_args() + [flag for flag in EDGE_PRIVATE_ARGS if flag.startswith(("--force-webrtc", "--dns-prefetch"))]
         no_sandbox = sandbox_disabled()
         debug_url = ""
         if cdp_out is not None:
@@ -1499,6 +1571,7 @@ def launch_edge(
             "channel": channel,
             "headless": not headed,
             "chromium_sandbox": not no_sandbox,
+            "service_workers": "block",
             "args": args,
             "ignore_default_args": ["--enable-automation"],
         }

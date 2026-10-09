@@ -220,8 +220,8 @@ class ToolContext:
     cancel: threading.Event | None = None
     #: Commands that can send data off this machine: "block" (the default) or "ask".
     network_commands: str = "block"
-    #: Sites web_fetch may read (documentation). None means DEFAULT_WEB_HOSTS; empty turns web_fetch off.
-    web_hosts: tuple[str, ...] | None = None
+    #: Sites web_fetch may read. Empty (the default) means web_fetch is off; "web_fetch": true sets the list.
+    web_hosts: tuple[str, ...] = ()
     #: Runs briefs in helper chat tabs at the same time (see agent_helpers). None when there are none.
     delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
 
@@ -2664,13 +2664,16 @@ _DATA_RUN_RE = re.compile(r"[A-Za-z0-9+/=_%-]{48,}|[0-9a-fA-F]{32,}")
 
 
 def web_hosts(ctx: ToolContext) -> tuple[str, ...]:
-    return DEFAULT_WEB_HOSTS if ctx.web_hosts is None else tuple(ctx.web_hosts)
+    return tuple(ctx.web_hosts or ())
 
 
 def outbound_problem(url: str, hosts: tuple[str, ...]) -> str:
     """Why fetching ``url`` could send data out, or "" when it is a plain read of an allowed site."""
     if not hosts:
-        return "web_fetch is turned off (web_fetch_hosts is empty); nothing leaves this machine but the chat"
+        return (
+            "web_fetch is off: nothing leaves this machine but the chat. "
+            'It reads documentation sites only when .bot/settings.json has "web_fetch": true'
+        )
     try:
         parts = urllib.parse.urlsplit(url)
         port = parts.port

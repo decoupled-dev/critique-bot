@@ -361,6 +361,21 @@ class BashSessionTests(unittest.TestCase):
         self.assertIsNone(result.job_id)
         self.assertEqual(self.session.history[-1]["result"], "timed out")
 
+    def test_offline_mode_reaches_nothing(self) -> None:
+        offline = ShellSession(self.root, self.session.shell, available={}, offline=True)
+        try:
+            env = offline.environment()
+            self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:9")
+            self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
+            self.assertIn("-Dhttps.proxyPort=9", env["GRADLE_OPTS"])
+            result = offline.run("git ls-remote https://example.invalid/repo.git", timeout=30)
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("not allowed", (result.stderr + result.stdout).lower())
+        finally:
+            offline.close()
+        self.assertIn("--offline", agent_shell.adjust_command("./gradlew assembleDebug", offline=True))
+        self.assertNotIn("--offline", agent_shell.adjust_command("./gradlew assembleDebug"))
+
     def test_cancel_and_daemon_grandchild(self) -> None:
         cancel = threading.Event()
         threading.Timer(0.5, cancel.set).start()

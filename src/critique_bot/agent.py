@@ -1375,6 +1375,7 @@ def seed_message(
     skills: list[str] | None = None,
     helpers: int = 0,
     web_hosts: tuple[str, ...] | None = None,
+    offline: bool = False,
 ) -> str:
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
@@ -1384,7 +1385,13 @@ def seed_message(
         f"workspace: {workspace}",
     ]
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
-    sites = agent_tools.DEFAULT_WEB_HOSTS if web_hosts is None else web_hosts
+    if offline:
+        lines.append(
+            "network: offline. Commands reach no other machine: package managers run offline, the Gradle "
+            "wrapper gets --offline, and git works with local repositories only. A build that needs a "
+            "dependency that is not in the local cache fails; say which one in your report."
+        )
+    sites = () if web_hosts is None else web_hosts
     if sites:
         lines.append("web_fetch sites (https, plain page addresses only): " + ", ".join(sites))
     else:
@@ -1457,8 +1464,11 @@ def skills_block(items: list[dict[str, Any]], *, max_chars: int = MAX_SKILL_CHAR
 
 
 def _web_hosts(settings: dict[str, Any]) -> tuple[str, ...]:
-    """web_fetch's sites: the documentation defaults plus web_fetch_hosts; "web_fetch": false turns it off."""
-    if settings.get("web_fetch") is False:
+    """web_fetch's sites, or none. Off unless "web_fetch": true: even a read tells a site what is being looked at.
+
+    With it on: the documentation defaults plus web_fetch_hosts. "offline": true keeps it off.
+    """
+    if settings.get("web_fetch") is not True or settings.get("offline") is True:
         return ()
     extra = [host.lower().strip().strip(".") for host in _setting_list(settings, "web_fetch_hosts")]
     return tuple(dict.fromkeys([*agent_tools.DEFAULT_WEB_HOSTS, *[host for host in extra if host]]))
@@ -2581,7 +2591,9 @@ def run_agent_loop(
         ask_user=lambda question: ask(question) or "",
         build_timeout=float(build_timeout),
         command_retries=command_retries,
-        network_commands="ask" if str(options.get("network_commands") or "").lower() == "ask" else "block",
+        network_commands=(
+            "ask" if str(options.get("network_commands") or "").lower() == "ask" and options.get("offline") is not True else "block"
+        ),
         web_hosts=_web_hosts(options),
     )
     outcome_code = "COMPLETED"
@@ -2983,7 +2995,8 @@ def run_agent(
     _prewarm_shell_environment()
     shell = agent_shell.detect_shell(preference=_shell_preference(settings))
     available = _available_shells()
-    session_shell = _open_shell_session(home.root, shell, available)
+    offline = settings.get("offline") is True
+    session_shell = _open_shell_session(home.root, shell, available, offline=offline)
     agent_ui.configure(
         workspace=home.root,
         model=config.model or "",
@@ -3004,7 +3017,7 @@ def run_agent(
         skill_names = []
     seed = seed_message(
         home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names, helpers=helpers,
-        web_hosts=_web_hosts(settings),
+        web_hosts=_web_hosts(settings), offline=settings.get("offline") is True,
     )
     code = 1
     try:
@@ -3087,13 +3100,19 @@ def _available_shells() -> dict[str, agent_shell.Shell]:
 
 
 def _open_shell_session(
-    workspace: Path, shell: agent_shell.Shell, available: dict[str, agent_shell.Shell] | None = None
+    workspace: Path,
+    shell: agent_shell.Shell,
+    available: dict[str, agent_shell.Shell] | None = None,
+    *,
+    offline: bool = False,
 ) -> Any:
     """A persistent ShellSession when agent_shell provides one, else ``None``."""
     factory = getattr(agent_shell, "ShellSession", None)
     if factory is None:
         return None
     try:
+        return factory(workspace, shell, available=available, offline=offline)
+    except TypeError:
         return factory(workspace, shell, available=available)
     except Exception as exc:
         log.warn(f"shell session unavailable: {exc}")
@@ -3180,6 +3199,8 @@ def _save_transcript(
     if not turns:
         return
     finished = datetime.now(timezone.utc)
+    # The transcript holds what went to the chat: secrets removed, as they were from the messages.
+    turns = [{**turn, "content": agent_tools.redact_secrets(str(turn.get("content") or ""))[0]} for turn in turns]
     body = format_transcript(turns)
     payload = {
         "mode": "agent",

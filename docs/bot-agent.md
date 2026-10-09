@@ -426,7 +426,7 @@ Before moving, crit asks the old chat for a **handoff note** in its own words: t
 
 ### Privacy
 
-Only the conversation with the chat URL leaves this PC. The browser is filtered to the chat's hosts, `web_fetch` only reads listed documentation sites, commands that can send data out do not run, tool telemetry is off, and known secrets are redacted before a message goes to the chat. Details and limits: [security.md](security.md).
+Only the conversation with the chat URL leaves this PC. The browser is filtered to the chat's hosts on every channel (page loads, WebSockets, popups, service workers, WebRTC), `web_fetch` is off unless turned on, commands that can send data out do not run, tool telemetry is off, and known secrets are redacted before a message goes to the chat. Builds may still download dependencies unless `"offline": true`. Details and limits: [security.md](security.md).
 
 ### How replies are read
 
@@ -512,8 +512,9 @@ On Linux and macOS the same lines use `./gradlew`.
 | `auto_skills` | `false` stops choosing skills from the task and project files; pinned skills still go. Default `true`. |
 | `max_skills` | How many skills go with one task. Default 2. |
 | `network_commands` | `"block"` (the default): commands that can send data off the PC do not run. `"ask"`: they run after a yes, asked in every mode. See [security.md](security.md). |
-| `web_fetch_hosts` | More documentation sites `web_fetch` may read, for example `["docs.example.com"]`. |
-| `web_fetch` | `false` turns `web_fetch` off. |
+| `web_fetch` | `true` lets `web_fetch` read documentation sites (off by default: nothing leaves the PC but the chat). |
+| `web_fetch_hosts` | More documentation sites `web_fetch` may read once it is on, for example `["docs.example.com"]`. |
+| `offline` | `true`: commands reach no other machine. Package managers run offline, the Gradle wrapper gets `--offline`, git uses local repositories only, and `web_fetch` stays off. Builds then need their dependencies already cached. See [security.md](security.md). |
 | `helper_sessions` | Helper chat tabs one task can be split across with `delegate` (see [Split one task across chat tabs](#split-one-task-across-chat-tabs)). Default 2, at most 4; 0 turns it off. |
 | `build_timeout` | Seconds a build (gradle, mvn, m, npm install, ...) runs before it moves to the background. Default 1800. |
 | `command_retries` | Automatic retries of a build that failed for a passing reason (locked files, a dropped download). Default 1; 0 turns it off. |
