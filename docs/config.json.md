@@ -181,7 +181,18 @@ Placeholder `YOUR_MODEL_NAME` in `model` is rejected.
 | Type | integer > 0 |
 | Default | `180000` (3 minutes) |
 
-Budget for: page load, finding the prompt, selecting the model, sending, and waiting for the reply to **start and finish**. Slow models or large patches need more. CI job timeout is 1 hour; submit wait default is 1800s — keep `timeout_ms` below that.
+Budget for page load, finding the prompt, selecting the model, and sending. Waiting for the reply is not cut off by it while the reply makes progress; see the four settings below.
+
+### Waiting for a reply
+
+A reply is waited for as long as it shows signs of life, not for a fixed time. Each case that ends the wait raises an error, and the agent retries it: first in the same chat, then in a new chat that carries a summary of the task (`reply_retries` in `.bot/settings.json`).
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `reply_start_ms` | `60000` | After a send, no new reply and no generating signal for this long. If the prompt is still in the input box, the send did not go out, so it is sent once more and gets the same time again. If the box is empty, the page is not answering. |
+| `reply_stall_ms` | `90000` | A reply started, then no text and no generating signal for this long: it stalled. |
+| `thinking_max_ms` | `600000` | The page shows "generating" with no text yet (a thinking model) for at most this long. A long think is allowed; a stuck one is not. |
+| `reply_max_ms` | `1200000` | Upper limit for one reply that keeps making progress. The larger of this and `timeout_ms` applies. |
 
 ### `idle_ms`
 

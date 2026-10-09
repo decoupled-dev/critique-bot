@@ -1604,6 +1604,69 @@ def _continue_cut_reply(
     return head + "\n" + more
 
 
+class ReplyNotStarted(ChatError):
+    """The page showed no reply and no generating signal after the send (and a second send)."""
+
+
+class ReplyStalled(ChatError):
+    """A reply started, then nothing arrived: no text and no generating signal for too long."""
+
+
+_COMPOSER_TEXT_JS = """
+(el) => {
+  if (!el) return '';
+  if (typeof el.value === 'string') return el.value;
+  return (el.innerText || el.textContent || '').replace(/\u200b/g, '');
+}
+"""
+
+
+def _composer_text(page: Page, selectors: Selectors) -> str:
+    try:
+        return str(page.locator(selectors.prompt_input).first.evaluate(_COMPOSER_TEXT_JS) or "")
+    except Exception as exc:
+        log.debug(f"could not read the prompt box: {exc}")
+        return ""
+
+
+def _reply_started(page: Page, selectors: Selectors, previous_count: int) -> bool:
+    state = _reply_state(page, selectors.assistant_messages, selectors)
+    if state is not None:
+        return int(state.get("count") or 0) > previous_count or bool(state.get("generating"))
+    if _stream_state(page, selectors)[0]:
+        return True
+    return _visible_count(page.locator(selectors.assistant_messages)) > previous_count
+
+
+def _wait_started(page: Page, selectors: Selectors, previous_count: int, start_ms: int) -> bool:
+    """True once a new reply or a generating signal shows, within ``start_ms``."""
+    deadline = time.monotonic() + max(start_ms, POLL_MS) / 1000
+    while time.monotonic() < deadline:
+        if _reply_started(page, selectors, previous_count):
+            return True
+        page.wait_for_timeout(POLL_MS)
+    return _reply_started(page, selectors, previous_count)
+
+
+def _ensure_started(page: Page, selectors: Selectors, prompt: str, previous_count: int, config: BotConfig) -> None:
+    """After a send: wait for the reply to start. A send that did not go out is sent once more.
+
+    The prompt still sitting in the box means the click or Enter did not
+    register; a cleared box with no reply means the page is not answering,
+    which the caller retries (in a new chat after the first retry).
+    """
+    if _wait_started(page, selectors, previous_count, config.reply_start_ms):
+        return
+    waited = config.reply_start_ms // 1000
+    pending = _composer_text(page, selectors).strip()
+    if pending and prompt.strip()[:40] and prompt.strip()[:40] in pending.replace("\r\n", "\n"):
+        log.warn(f"no reply {waited}s after the send and the prompt is still in the box; sending it again")
+        _send(page, selectors, config.timeout_ms)
+        if _wait_started(page, selectors, previous_count, config.reply_start_ms):
+            return
+    raise ReplyNotStarted(f"the chat page did not start a reply within {waited}s of the send")
+
+
 def _wait_for_reply(
     page: Page,
     selector: str,
@@ -1613,6 +1676,8 @@ def _wait_for_reply(
     idle_ms: int,
     selectors: Selectors | None = None,
     detail: dict[str, object] | None = None,
+    stall_ms: int = 90_000,
+    thinking_ms: int = 600_000,
 ) -> str:
     """Wait for the new reply to appear and finish; return its text.
 
@@ -1628,6 +1693,8 @@ def _wait_for_reply(
             idle_ms=idle_ms,
             selectors=selectors,
             detail=detail,
+            stall_ms=stall_ms,
+            thinking_ms=thinking_ms,
         )
     return _wait_for_reply_locators(
         page,
@@ -1637,6 +1704,8 @@ def _wait_for_reply(
         idle_ms=idle_ms,
         selectors=selectors,
         detail=detail,
+        stall_ms=stall_ms,
+        thinking_ms=thinking_ms,
     )
 
 
@@ -1649,8 +1718,15 @@ def _wait_for_reply_fast(
     idle_ms: int,
     selectors: Selectors | None,
     detail: dict[str, object] | None,
+    stall_ms: int = 90_000,
+    thinking_ms: int = 600_000,
 ) -> str:
-    """:func:`_wait_for_reply` with one evaluate per poll and innerText read once, at the end."""
+    """:func:`_wait_for_reply` with one evaluate per poll and innerText read once, at the end.
+
+    A reply with no text yet is alive while the page shows its generating
+    signal (a thinking model), up to ``thinking_ms``. With no signal and no
+    text for ``stall_ms`` it has stalled. Both raise, and the caller retries.
+    """
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
     log.info(
@@ -1664,7 +1740,7 @@ def _wait_for_reply_fast(
         log.debug("reply probe stopped answering; switching to the locator path")
         return _wait_for_reply_locators(
             page, selector, previous_count=previous_count, timeout_ms=remaining,
-            idle_ms=idle_ms, selectors=selectors, detail=detail,
+            idle_ms=idle_ms, selectors=selectors, detail=detail, stall_ms=stall_ms, thinking_ms=thinking_ms,
         )
 
     last_status_log = 0.0
@@ -1753,6 +1829,11 @@ def _wait_for_reply_fast(
             continue
 
         idle_so_far = (now - last_change) * 1000
+        if not last_length:
+            if generating and (now - last_change) * 1000 >= thinking_ms:
+                raise ReplyStalled(f"the page showed generating for {thinking_ms // 1000}s without any text")
+            if not generating and idle_so_far >= stall_ms:
+                raise ReplyStalled(f"the reply stalled: no text and no generating signal for {stall_ms // 1000}s")
         if saw_generating and not generating:
             if last_length and idle_so_far >= stop_settle and clear_polls >= 2:
                 log.info(
@@ -1765,7 +1846,9 @@ def _wait_for_reply_fast(
 
         if generating:
             stalled_ms = (now - generating_since) * 1000
-            if stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, 1):
+            # With text on screen, a signal that stays on while nothing changes is stuck;
+            # with no text yet, the model is thinking (handled above).
+            if last_length and stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, _SIGNAL_STALL_MS):
                 log.warn(
                     f"generation signal ({signal_name}) has been on for "
                     f"{int(stalled_ms)}ms with no new text; ignoring it for the "
@@ -1799,6 +1882,8 @@ def _wait_for_reply_locators(
     idle_ms: int,
     selectors: Selectors | None = None,
     detail: dict[str, object] | None = None,
+    stall_ms: int = 90_000,
+    thinking_ms: int = 600_000,
 ) -> str:
     """The per-element path: for a selector only Playwright understands, or a page without evaluate."""
     deadline = time.monotonic() + timeout_ms / 1000
@@ -1879,6 +1964,11 @@ def _wait_for_reply_locators(
             continue
 
         idle_so_far = (now - last_change) * 1000
+        if not last_text.strip():
+            if generating and idle_so_far >= thinking_ms:
+                raise ReplyStalled(f"the page showed generating for {thinking_ms // 1000}s without any text")
+            if not generating and idle_so_far >= stall_ms:
+                raise ReplyStalled(f"the reply stalled: no text and no generating signal for {stall_ms // 1000}s")
         if saw_generating and not generating:
             # The UI stopped generating: this reply really is finished.
             if last_text.strip() and idle_so_far >= settle_ms:
@@ -1894,7 +1984,7 @@ def _wait_for_reply_locators(
             # Still generating. A quiet stretch here is a pause, not the end,
             # so do not cut the reply short -- unless the signal looks stuck.
             stalled_ms = (now - generating_since) * 1000
-            if stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, 1):
+            if last_text.strip() and stalled_ms >= _SIGNAL_STALL_MS and idle_so_far >= max(idle_ms, 1):
                 log.warn(
                     f"generation signal ({signal_name}) has been on for "
                     f"{int(stalled_ms)}ms with no new text; ignoring it for the "
@@ -2047,15 +2137,18 @@ def send_turn(
         _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
         _send(page, selectors, timeout_ms)
         detail["send_seconds"] = round(time.monotonic() - started, 2)
+        _ensure_started(page, selectors, prompt, previous_count, config)
 
         reply = _wait_for_reply(
             page,
             selectors.assistant_messages,
             previous_count=previous_count,
-            timeout_ms=timeout_ms,
+            timeout_ms=max(timeout_ms, config.reply_max_ms),
             idle_ms=config.idle_ms,
             selectors=selectors,
             detail=detail,
+            stall_ms=config.reply_stall_ms,
+            thinking_ms=config.thinking_max_ms,
         )
         if detail.get("completion") == COMPLETION_STOPPED:
             reply = _continue_cut_reply(

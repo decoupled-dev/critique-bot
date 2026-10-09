@@ -85,6 +85,14 @@ class BotConfig:
     model: str = ""
     timeout_ms: int = 180_000
     idle_ms: int = 4_000
+    #: No sign of a reply this long after a send: send again once if the text is still in the box, then fail (the caller retries).
+    reply_start_ms: int = 60_000
+    #: A started reply with no text and no generating signal for this long has stalled.
+    reply_stall_ms: int = 90_000
+    #: The page may show "generating" with no text yet (a thinking model) for this long.
+    thinking_max_ms: int = 600_000
+    #: Hard cap on one reply while it keeps making progress.
+    reply_max_ms: int = 1_200_000
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
@@ -285,6 +293,10 @@ def load_config(
         model=model,
         timeout_ms=_positive_int("timeout_ms", raw.get("timeout_ms"), 180_000),
         idle_ms=_positive_int("idle_ms", raw.get("idle_ms"), 4_000),
+        reply_start_ms=_positive_int("reply_start_ms", raw.get("reply_start_ms"), 60_000),
+        reply_stall_ms=_positive_int("reply_stall_ms", raw.get("reply_stall_ms"), 90_000),
+        thinking_max_ms=_positive_int("thinking_max_ms", raw.get("thinking_max_ms"), 600_000),
+        reply_max_ms=_positive_int("reply_max_ms", raw.get("reply_max_ms"), 1_200_000),
         storage_state=storage_state,
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,

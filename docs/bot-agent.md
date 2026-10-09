@@ -404,6 +404,26 @@ A task with independent parts runs faster in several chats at once. The main cha
 
 `"helper_sessions"` in `.bot/settings.json` sets how many helper tabs (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same ChatGPT account limits. Helper tabs need the browser's remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one tab and `delegate` says so.
 
+### Long sessions and replies that never come
+
+**A reply that never comes.** crit waits for a reply as long as it shows signs of life, not for a fixed time. A thinking model that shows "generating" for minutes before writing is left alone, up to 10 minutes. These cases count as no reply:
+
+- **The send did not go out.** No reply and no generating signal within 60 seconds while the prompt is still in the input box. crit sends it once more.
+- **The page does not answer.** No reply 60 seconds after a send that went out.
+- **The reply stalled.** It started, then nothing for 90 seconds.
+- **The page returned an empty reply, or showed its own error.**
+
+crit then stops whatever the page is still writing and tries again: once in the same chat, then in a **new chat** that gets the instructions, a summary of the task (files read and changed, the to-do list, the last command and its output), and the message it was waiting on. A broken conversation therefore cannot block the task. The timing settings are in [`docs/config.json.md`](config.json.md#waiting-for-a-reply).
+
+**A long session.** A web chat slows down and forgets early instructions as it grows. crit starts a new chat when any of these happens:
+
+- the chat holds about 300,000 characters (`compact_after_chars`);
+- it has had 60 messages (`compact_after_turns`);
+- it has been open 60 minutes (`compact_after_minutes`);
+- the model breaks the tool format twice in a row.
+
+Before moving, crit asks the old chat for a **handoff note** in its own words: the task, what it learned about the code (files, symbols, line numbers), what it changed and why, what is left, and what failed. The new chat gets the instructions, crit's summary of the task, that note, the message in progress, and a list of the earlier tasks of the session with the files each one changed. At a task boundary only the list is needed. `"handoff_notes": false` skips the note and saves one round trip.
+
 ### How replies are read
 
 crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so the "ChatGPT said:" heading is never taken for the reply.
@@ -494,8 +514,11 @@ On Linux and macOS the same lines use `./gradlew`.
 | `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 | `shell` | Default shell for `run_command`: `auto` (the default: PowerShell 7, then Windows PowerShell 5.1 on Windows; bash, then sh elsewhere), `pwsh`, `powershell`, `cmd`, `bash` (Git Bash on Windows), `sh`, or `zsh`. A shell that is not installed falls back to `auto`. `/shell` changes it for one session. |
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
-| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat with the instructions and a summary of the task so far. It also does this when the model breaks the tool format twice in a row. Default 300000; values under 10000 are ignored. |
-| `reply_retries` | How many times a failed or empty reply from the chat page is retried before the task ends. Default 3. |
+| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 300000; values under 10000 are ignored. |
+| `compact_after_turns` | Start a new chat after this many messages in one chat. Default 60; at least 5. |
+| `compact_after_minutes` | Start a new chat after it has been open this many minutes. Default 60; at least 5. |
+| `handoff_notes` | `false` skips asking the old chat for a handoff note before moving to a new one. Default `true`. |
+| `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same chat, the next ones to a new chat with a summary of the task. Default 3. |
 
 ### Use a ChatGPT Project for the instructions
 

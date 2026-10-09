@@ -179,6 +179,15 @@ Brief:
 Files you may change: {files}. You may read and search any file. Do not run builds or tests, and do not call delegate or ask_user; read-only commands are fine. Do only this brief.
 When done, reply COMPLETED and then a short report: what you found or changed, with file paths and line numbers, anything that did not fit, and the build or test the coordinator should run. If you cannot do it, reply BLOCKED and why.
 
+<<<HANDOFF>>>
+This chat is about to be replaced by a new one, which will not see this conversation. Write a handoff note for it now, with no tool_call:
+- the task, and what done means;
+- what you learned about the code: files, symbols, line numbers, conventions;
+- what you changed, and why;
+- what is left, in order;
+- what failed or must be avoided.
+At most 300 words.
+
 <<<AUTO_DECIDE>>>
 Auto mode is on and the user is not answering questions. Decide yourself: pick the safest reasonable option that fits the task and the codebase, say which in one line, and continue.
 

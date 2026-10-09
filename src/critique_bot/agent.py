@@ -149,6 +149,12 @@ LOOP_REPLIES = 3
 AMNESIA_VIOLATIONS = 2
 DEFAULT_CHECK_TIMEOUT = 600
 DEFAULT_COMPACT_AFTER_CHARS = 300_000
+#: A chat also moves to a new one after this many messages or minutes: a long chat
+#: slows the page down and the model loses track of early instructions.
+DEFAULT_COMPACT_AFTER_TURNS = 60
+DEFAULT_COMPACT_AFTER_MINUTES = 60
+#: After this many failed tries in one chat, the next try goes to a new chat.
+RETRIES_BEFORE_NEW_CHAT = 1
 DEFAULT_REPLY_RETRIES = 3
 #: Seconds between resends when the chat page shows an error instead of a reply.
 RETRY_DELAYS = (5.0, 15.0, 45.0)
@@ -214,6 +220,12 @@ _FALLBACKS = {
         "Files you may change: {files}. You may read any file. Do not build or run tests. "
         "When done, reply COMPLETED and then a short report: what you found or changed, with paths and line numbers, "
         "and what the coordinator still has to do."
+    ),
+    "HANDOFF": (
+        "This chat is about to be replaced by a new one, which will not see this conversation. Write a handoff "
+        "note for it now, with no tool_call: the task and what done means; what you learned about the code "
+        "(files, symbols, line numbers, conventions); what you changed and why; what is left, in order; and "
+        "what failed or must be avoided. At most 300 words."
     ),
     "AUTO_DECIDE": (
         "Auto mode is on and the user is not answering questions. Decide yourself: pick the safest reasonable "
@@ -1537,6 +1549,8 @@ class _Chat:
         retries: int = DEFAULT_REPLY_RETRIES,
         compact_after: int = DEFAULT_COMPACT_AFTER_CHARS,
         quiet: bool = False,
+        compact_turns: int = DEFAULT_COMPACT_AFTER_TURNS,
+        compact_minutes: int = DEFAULT_COMPACT_AFTER_MINUTES,
     ) -> None:
         self.session = session
         #: A helper tab's chat: no spinner and no notes in the terminal.
@@ -1546,6 +1560,13 @@ class _Chat:
         self.compact_after = compact_after
         self.chars = 0
         self.violations = 0
+        self.compact_turns = max(1, int(compact_turns or DEFAULT_COMPACT_AFTER_TURNS))
+        self.compact_seconds = max(60, int(compact_minutes or DEFAULT_COMPACT_AFTER_MINUTES) * 60)
+        #: Messages answered in this chat, and when it started.
+        self.sends = 0
+        self.born = time.monotonic()
+        #: Set by the running task: what a new chat needs to carry on (see _TaskRun._resume_text).
+        self.resume: Callable[[], str] | None = None
         self.map_sent = False
         #: Skills already sent in this chat; a new chat sends them again.
         self.skills_sent: set[str] = set()
@@ -1560,32 +1581,56 @@ class _Chat:
         return getattr(self.session, "last_detail", None)
 
     def send(self, payload: str) -> str:
-        if self.prefix:
-            payload = self.prefix + "\n\n" + payload
-            self.prefix = ""
+        """Send and return the reply, retrying when the page fails or never answers.
+
+        The first retry goes to the same chat. After that the conversation
+        itself may be broken, so the next try opens a new chat with the
+        instructions and the running task's summary in front of the message.
+        """
         attempt = 0
+        moved = False
+        # A retry in the same chat resends exactly the same text, instructions included:
+        # a message that never went out must not lose them.
+        prefix, self.prefix = self.prefix, ""
         while True:
+            outgoing = prefix + "\n\n" + payload if prefix else payload
             if not self.quiet:
                 _waiting(True)
             try:
-                reply = self.session.send(payload)
+                reply = self.session.send(outgoing)
                 problem = _provider_error(reply)
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
             finally:
                 if not self.quiet:
                     _waiting(False)
-            self.chars += len(payload) + len(reply or "")
+            self.chars += len(outgoing) + len(reply or "")
             if problem is None:
+                self.sends += 1
                 return reply
             if attempt >= self.retries:
                 raise _ProviderFailed(problem)
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
             attempt += 1
-            self._note("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
             # A timed-out reply may still be streaming; resending over it
             # duplicates the message and crosses the two answers.
             _stop_reply(self.session)
+            if attempt > RETRIES_BEFORE_NEW_CHAT and not moved and self.can_restart:
+                if self.restart("the chat stopped answering"):
+                    moved = True
+                    prefix, self.prefix = self.prefix, ""
+                    summary = ""
+                    if callable(self.resume):
+                        try:
+                            summary = self.resume() or ""
+                        except Exception as exc:  # the retry still goes out without the summary
+                            log.debug(f"could not build the summary for the new chat: {exc}")
+                    if summary:
+                        payload = summary + "\n\n" + payload
+                    self._note("note", f"{problem[:1].upper()}{problem[1:]}. Trying again in a new chat ({attempt}/{self.retries}).")
+                    _sleep(min(delay, 5.0))
+                    continue
+            self._note("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
             _sleep(delay)
 
     def _note(self, kind: str, message: str) -> None:
@@ -1593,7 +1638,20 @@ class _Chat:
             _ui(kind, message)
 
     def too_long(self) -> bool:
-        return self.can_restart and self.chars > self.compact_after
+        return self.can_restart and bool(self.rotation_reason(size_only=True))
+
+    def rotation_reason(self, *, size_only: bool = False) -> str:
+        """Why this chat should move to a new one now, or ""."""
+        if self.chars > self.compact_after:
+            return "the chat grew long"
+        if self.sends >= self.compact_turns:
+            return f"the chat reached {self.sends} messages"
+        minutes = (time.monotonic() - self.born) / 60
+        if self.sends and minutes * 60 >= self.compact_seconds:
+            return f"the chat has been open {minutes:.0f} minutes"
+        if not size_only and self.violations >= AMNESIA_VIOLATIONS:
+            return "the model lost track of the instructions"
+        return ""
 
     def wants_restart(self) -> bool:
         return self.can_restart and (self.too_long() or self.violations >= AMNESIA_VIOLATIONS)
@@ -1613,9 +1671,16 @@ class _Chat:
         self._note("note", f"Starting a new chat: {reason}.")
         self.chars = 0
         self.violations = 0
+        self.sends = 0
+        self.born = time.monotonic()
         self.map_sent = False
         self.skills_sent = set()
         self.prefix = _without_ready(self.seed) if self.seed else ""
+        if self.history:
+            earlier = "EARLIER IN THIS SESSION (tasks done in the previous chat, newest last):\n- " + "\n- ".join(
+                self.history[-8:]
+            )
+            self.prefix = (self.prefix + "\n\n" + earlier).strip()
         return True
 
 
@@ -1680,6 +1745,8 @@ class _TaskRun:
         self.plan_asks = 0
         self.plans = 0
         self.hand_backs = 0
+        #: Ask the old chat for a handoff note before moving to a new one.
+        self.handoff = True
         self.tools_ran = False
         self.last_failed = False
         self.nudges = 0
@@ -1714,15 +1781,16 @@ class _TaskRun:
 
     def run(self, first_payload: str) -> str:
         self.payload = first_payload
+        self.chat.resume = self._resume_text
         rounds = 0
         while self.max_rounds is None or rounds < self.max_rounds:
             rounds += 1
             if self.chat.wants_restart():
-                reason = (
-                    "the chat grew long" if self.chat.too_long() else "the model lost track of the instructions"
-                )
+                reason = self.chat.rotation_reason() or "the chat grew long"
+                # A chat that is merely long still works: ask it for a handoff note first.
+                note = self._handoff_note() if self.chat.too_long() and self.handoff else ""
                 if self.chat.restart(reason):
-                    self.payload = self._resume_text() + "\n\n" + self.payload
+                    self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
             try:
                 reply = self.chat.send(self.payload)
@@ -2346,8 +2414,22 @@ class _TaskRun:
     def _state_text(self) -> str:
         return self.state.render(self.sections["STATE"])
 
-    def _resume_text(self) -> str:
-        """What a fresh chat needs to carry on: the task, progress, and the last result."""
+    def _handoff_note(self) -> str:
+        """The old chat's own summary for its successor (one extra round trip), or "" if it fails."""
+        self.hooks.ui("note", "Asking this chat for a handoff note before moving to a new one.")
+        try:
+            reply = self.chat.send(self.sections["HANDOFF"] + "\n\n" + self._state_text())
+        except _ProviderFailed as exc:
+            log.debug(f"no handoff note: {exc}")
+            return ""
+        self.turns.append({"role": "assistant", "content": reply})
+        note = _hide_tool_markup(reply).strip()
+        if _status_code(note) and len(note) < 40:
+            return ""
+        return note[:5_000]
+
+    def _resume_text(self, note: str = "") -> str:
+        """What a fresh chat needs to carry on: the task, progress, the last result, and the old chat's note."""
         lines = [self.sections["RESUME"], f"Task: {self.task.strip()}"]
         if self.state.todos:
             lines.append(
@@ -2368,8 +2450,8 @@ class _TaskRun:
             lines.append(f"Last command: {self.state.last_command} -> {self.state.last_exit}")
             if self.last_output.strip():
                 lines.append("Its output ended with:\n" + self.last_output.strip())
-        if self.chat.history:
-            lines.append("Earlier tasks in this session: " + "; ".join(self.chat.history[-5:]))
+        if note:
+            lines.append("Handoff note from the previous chat (its own words):\n" + note)
         lines.append("The latest message from the program follows.")
         return "\n".join(lines)
 
@@ -2448,7 +2530,10 @@ def run_agent_loop(
         seed=seed or "",
         retries=_int_setting(options, "reply_retries", DEFAULT_REPLY_RETRIES, 0),
         compact_after=_int_setting(options, "compact_after_chars", DEFAULT_COMPACT_AFTER_CHARS, 10_000),
+        compact_turns=_int_setting(options, "compact_after_turns", DEFAULT_COMPACT_AFTER_TURNS, 5),
+        compact_minutes=_int_setting(options, "compact_after_minutes", DEFAULT_COMPACT_AFTER_MINUTES, 5),
     )
+    handoff_notes = options.get("handoff_notes") is not False
     check_timeout = _int_setting(options, "check_timeout", DEFAULT_CHECK_TIMEOUT, 1)
     build_timeout = _int_setting(options, "build_timeout", int(agent_build.DEFAULT_BUILD_TIMEOUT), 60)
     command_retries = _int_setting(options, "command_retries", 1, 0)
@@ -2555,7 +2640,7 @@ def run_agent_loop(
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
         if chat.too_long():
-            chat.restart("the chat grew long")
+            chat.restart(chat.rotation_reason() or "the chat grew long")
         repo_map = _prepare_index(workspace, index_path, task)
         if chat.map_sent:
             repo_map = ""
@@ -2593,6 +2678,7 @@ def run_agent_loop(
         )
         if mode_now != "plan" or _answer_only(task):
             run.plan_done = True
+        run.handoff = handoff_notes
         message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note)
         if carry:
             message = carry + "\n\n" + message
@@ -2618,7 +2704,11 @@ def run_agent_loop(
                 "The user interrupted the previous task. Stop working on it; "
                 "its last reply was not acted on. The new task follows."
             )
-        chat.history.append(f"{_one_line(task, 80)} -> {outcome_code}")
+        changed = list(task_state.edits)
+        chat.history.append(
+            f"{_one_line(task, 100)} -> {outcome_code}"
+            + (f" (changed {', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})" if changed else "")
+        )
     for pool in pool_box:
         try:
             pool.close()

@@ -1353,7 +1353,7 @@ class RobustLoopTests(unittest.TestCase):
             root,
             "change note.txt",
             seed="INSTRUCTIONS\n\nReply with exactly READY.",
-            settings={"compact_after_chars": 10_000},
+            settings={"compact_after_chars": 10_000, "handoff_notes": False},
         )
         self.assertEqual(session.chat_starts, [1])
         resumed = session.sent[1]
