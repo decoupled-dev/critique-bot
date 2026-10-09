@@ -15,8 +15,9 @@ from critique_bot.code_index import IndexStats, rebuild_index
 BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
-_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".codegraph/", "graphify-out/")
-_LOCAL_GITIGNORE = "cache/\nsessions/\n"
+# Transcripts, the prompt history, and caches hold code and tasks: never committed.
+_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history", ".codegraph/", "graphify-out/")
+_LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
 Lines below the marker are sent to the chat at the start of every session,

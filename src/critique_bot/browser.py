@@ -50,6 +50,22 @@ EDGE_NO_THROTTLE_ARGS = (
     "--disable-backgrounding-occluded-windows",
 )
 
+# The browser's own traffic (not the page's): sync, component and safe-browsing
+# updates, crash and usage reports, metrics. Playwright passes these itself when it
+# launches the browser; desktop Edge, started as a plain process, needs them too.
+# No --remote-allow-origins: without it a web page cannot connect to the debugging
+# port (it sends an Origin header); crit's own connection sends none.
+EDGE_PRIVATE_ARGS = (
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-component-update",
+    "--disable-domain-reliability",
+    "--disable-client-side-phishing-detection",
+    "--disable-breakpad",
+    "--metrics-recording-only",
+    "--no-pings",
+)
+
 # Headless only: what the chat page would download just to look nice. Reading a
 # reply needs the DOM, scripts, CSS, and the network calls; none of these.
 LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifest"})
@@ -57,8 +73,6 @@ LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifes
 _CHALLENGE_MARKERS = ("challenges.cloudflare.com", "turnstile", "arkoselabs", "funcaptcha", "hcaptcha", "recaptcha", "captcha")
 #: True while launch_edge opens a headless browser it started itself (not --headed, not an attached browser).
 _lean_launch = False
-#: True while launch_edge shows a window: a person is at the controls, so the network is not filtered.
-_visible_launch = False
 
 
 def lean_headless_enabled() -> bool:
@@ -141,12 +155,6 @@ _CHAT_PAGE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "funcaptcha.com",
         ),
     ),
-)
-# Sign-in pages a chat site redirects to. Blocking their scripts and styles leaves a white page.
-SIGN_IN_HOSTS = (
-    "accounts.google.com", "gstatic.com", "googleusercontent.com", "apis.google.com", "googleapis.com",
-    "login.microsoftonline.com", "login.microsoft.com", "login.live.com", "live.com", "msauth.net", "msftauth.net",
-    "microsoftonline-p.com", "appleid.apple.com", "cdn-apple.com", "auth0.com",
 )
 _BLOCKED_BY_CLIENT = ("blockedbyclient", "err_blocked_by_client", "net::err_blocked_by_client")
 
@@ -853,11 +861,11 @@ def _start_desktop_edge(
         f"--user-data-dir={user_data_dir}",
         f"--remote-debugging-port={port}",
         "--remote-debugging-address=127.0.0.1",
-        "--remote-allow-origins=*",
         "--hide-crash-restore-bubble",
         "--no-first-run",
         "--no-default-browser-check",
         *EDGE_NO_THROTTLE_ARGS,
+        *EDGE_PRIVATE_ARGS,
     ]
     if headed:
         cmd.append("--start-maximized")
@@ -1050,7 +1058,6 @@ def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     for root, family in _CHAT_PAGE_FAMILIES:
         if _host_matches_suffix(host, root):
             hosts.update(family)
-            hosts.update(SIGN_IN_HOSTS)
     return frozenset(hosts)
 
 
@@ -1081,7 +1088,9 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
         except Exception as exc:
             log.debug(f"route abort failed {log.preview(url, 180)}: {exc}")
         return
-    if rtype in {"document", "websocket"} or request_is_allowed(url, chat_url):
+    # A navigation (Cloudflare challenge, SSO) is let through; anything else, websockets
+    # included, only to the chat's own hosts.
+    if rtype == "document" or request_is_allowed(url, chat_url):
         try:
             route.continue_()
         except Exception as exc:
@@ -1110,11 +1119,6 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     Playwright's sync API when Cloudflare or login redirects are aborted.
     """
     if not chat_url or getattr(page, "_critique_chat_guard", None) == chat_url:
-        return
-    if _visible_launch:
-        # Sign-in in a visible window goes through pages on other hosts (Google,
-        # Microsoft, company SSO); filtering them leaves a white page.
-        log.info("visible window: browser network is not restricted, so sign-in pages load")
         return
     lean = _lean_launch and lean_headless_enabled()
 
@@ -1251,6 +1255,9 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
         page.bring_to_front()
     except Exception as exc:
         log.debug(f"bring_to_front failed: {exc}")
+    # Filter from the first request, so the page's own trackers never load. Navigations
+    # (Cloudflare, SSO) always go through, which is what kept goto from hanging.
+    guard_page_network(page, url)
     log.info(f"navigating to {url} (from {current or 'unknown'})")
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -1386,7 +1393,7 @@ def launch_edge(
             "Playwright is required. Install with: pip install -r requirements.txt"
         ) from exc
 
-    global _lean_launch, _visible_launch
+    global _lean_launch
     playwright = None
     context = None
     attached_page = None
@@ -1399,14 +1406,18 @@ def launch_edge(
     if not cdp_url and promote_missing_profile:
         # Cookie files can sign in without a window. The dedicated desktop
         # profile ignores storage_state, so a missing one still opens Edge.
-        headed = _open_headed_if_profile_missing(
+        wants_window = _open_headed_if_profile_missing(
             headed,
             profile_dir,
             storage_state=None if use_system_profile else storage_state,
         )
-    # A browser the user started (cdp_url) and a visible window keep everything.
+        if wants_window and not headed and start_url:
+            # Sign in in a plain browser (no automation, no filter), then continue as asked.
+            sign_in_with_plain_browser(start_url, profile_dir.expanduser().resolve())
+        elif wants_window:
+            headed = True
+    # Images and fonts are skipped only in a headless browser crit started itself.
     _lean_launch = not headed and not cdp_url
-    _visible_launch = bool(headed) and not cdp_url
     try:
         log.info("starting Playwright")
         playwright = sync_playwright().start()
@@ -1467,7 +1478,6 @@ def launch_edge(
                 [
                     f"--remote-debugging-port={port}",
                     "--remote-debugging-address=127.0.0.1",
-                    "--remote-allow-origins=*",
                 ]
             )
         if headed:
@@ -1538,7 +1548,6 @@ def launch_edge(
         yield page
     finally:
         _lean_launch = False
-        _visible_launch = False
         log.info("closing Playwright connection")
         if attached_page is not None and not started_desktop_edge:
             try:

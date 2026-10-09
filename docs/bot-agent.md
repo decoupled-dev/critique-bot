@@ -424,6 +424,10 @@ crit then stops whatever the page is still writing and tries again: once in the 
 
 Before moving, crit asks the old chat for a **handoff note** in its own words: the task, what it learned about the code (files, symbols, line numbers), what it changed and why, what is left, and what failed. The new chat gets the instructions, crit's summary of the task, that note, the message in progress, and a list of the earlier tasks of the session with the files each one changed. At a task boundary only the list is needed. `"handoff_notes": false` skips the note and saves one round trip.
 
+### Privacy
+
+Only the conversation with the chat URL leaves this PC. The browser is filtered to the chat's hosts, `web_fetch` only reads listed documentation sites, commands that can send data out do not run, tool telemetry is off, and known secrets are redacted before a message goes to the chat. Details and limits: [security.md](security.md).
+
 ### How replies are read
 
 crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so the "ChatGPT said:" heading is never taken for the reply.
@@ -507,6 +511,9 @@ On Linux and macOS the same lines use `./gradlew`.
 | `skills` | Skills sent with every task, for example `["aosp", "aaos"]`. |
 | `auto_skills` | `false` stops choosing skills from the task and project files; pinned skills still go. Default `true`. |
 | `max_skills` | How many skills go with one task. Default 2. |
+| `network_commands` | `"block"` (the default): commands that can send data off the PC do not run. `"ask"`: they run after a yes, asked in every mode. See [security.md](security.md). |
+| `web_fetch_hosts` | More documentation sites `web_fetch` may read, for example `["docs.example.com"]`. |
+| `web_fetch` | `false` turns `web_fetch` off. |
 | `helper_sessions` | Helper chat tabs one task can be split across with `delegate` (see [Split one task across chat tabs](#split-one-task-across-chat-tabs)). Default 2, at most 4; 0 turns it off. |
 | `build_timeout` | Seconds a build (gradle, mvn, m, npm install, ...) runs before it moves to the background. Default 1800. |
 | `command_retries` | Automatic retries of a build that failed for a passing reason (locked files, a dropped download). Default 1; 0 turns it off. |

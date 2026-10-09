@@ -1372,6 +1372,7 @@ def seed_message(
     available: dict[str, agent_shell.Shell] | None = None,
     skills: list[str] | None = None,
     helpers: int = 0,
+    web_hosts: tuple[str, ...] | None = None,
 ) -> str:
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
@@ -1382,6 +1383,11 @@ def seed_message(
     ]
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
     lines.append(code_graph.hint(workspace))
+    sites = agent_tools.DEFAULT_WEB_HOSTS if web_hosts is None else web_hosts
+    if sites:
+        lines.append("web_fetch sites (https, plain page addresses only): " + ", ".join(sites))
+    else:
+        lines.append("web_fetch: off (nothing leaves this machine but the chat)")
     if helpers > 0:
         lines.append(
             f"helper tabs: {helpers}. Split a task with independent parts across them with one delegate call; "
@@ -1447,6 +1453,14 @@ def skills_block(items: list[dict[str, Any]], *, max_chars: int = MAX_SKILL_CHAR
         "SKILLS (expert guidance for this task's domain; apply it unless the task or PROJECT NOTES say otherwise)\n"
         + "\n\n".join(parts)
     )
+
+
+def _web_hosts(settings: dict[str, Any]) -> tuple[str, ...]:
+    """web_fetch's sites: the documentation defaults plus web_fetch_hosts; "web_fetch": false turns it off."""
+    if settings.get("web_fetch") is False:
+        return ()
+    extra = [host.lower().strip().strip(".") for host in _setting_list(settings, "web_fetch_hosts")]
+    return tuple(dict.fromkeys([*agent_tools.DEFAULT_WEB_HOSTS, *[host for host in extra if host]]))
 
 
 def _setting_list(settings: dict[str, Any], key: str) -> list[str]:
@@ -1594,6 +1608,9 @@ class _Chat:
         prefix, self.prefix = self.prefix, ""
         while True:
             outgoing = prefix + "\n\n" + payload if prefix else payload
+            outgoing, hidden = agent_tools.redact_secrets(outgoing)
+            if hidden:
+                self._note("note", f"Kept {hidden} secret{'s' if hidden != 1 else ''} out of the message to the chat.")
             if not self.quiet:
                 _waiting(True)
             try:
@@ -2126,6 +2143,9 @@ class _TaskRun:
         return False, (reason or "").strip()
 
     def _risk(self, perm: Any) -> str:
+        declared = str(getattr(perm, "risk", "") or "")
+        if declared:
+            return declared
         if getattr(perm, "kind", "") not in {"command", "outside"}:
             return ""
         check = getattr(agent_tools, "risky_command", None)
@@ -2560,6 +2580,8 @@ def run_agent_loop(
         ask_user=lambda question: ask(question) or "",
         build_timeout=float(build_timeout),
         command_retries=command_retries,
+        network_commands="ask" if str(options.get("network_commands") or "").lower() == "ask" else "block",
+        web_hosts=_web_hosts(options),
     )
     outcome_code = "COMPLETED"
     pool_box: list[Any] = []
@@ -2982,7 +3004,8 @@ def run_agent(
         log.debug(f"listing skills failed: {exc}")
         skill_names = []
     seed = seed_message(
-        home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names, helpers=helpers
+        home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names, helpers=helpers,
+        web_hosts=_web_hosts(settings),
     )
     code = 1
     try:

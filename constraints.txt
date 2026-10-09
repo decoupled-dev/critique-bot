@@ -1,0 +1,13 @@
+# Exact versions crit is tested with. The setup scripts install with
+# "pip install -c constraints.txt", so a new release of a dependency (or one
+# of theirs) is never pulled in unreviewed. Update deliberately: bump, test, commit.
+playwright==1.63.0
+pyee==13.0.1
+greenlet==3.5.6
+rich==15.0.0
+pygments==2.21.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+prompt_toolkit==3.0.53
+wcwidth==0.9.2
+typing_extensions==4.16.0

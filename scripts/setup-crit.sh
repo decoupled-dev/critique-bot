@@ -229,13 +229,24 @@ else
         target=$repo
         say "Installing critique-bot (pip install -e)"
     fi
+    # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
+    pins=""
+    [ -f "$repo/constraints.txt" ] && pins=$repo/constraints.txt
     if [ "$use_uv" = 1 ]; then
-        uv pip install --quiet --python "$venv_python" -e "$target"
+        if [ -n "$pins" ]; then
+            uv pip install --quiet --python "$venv_python" -c "$pins" -e "$target"
+        else
+            uv pip install --quiet --python "$venv_python" -e "$target"
+        fi
     else
         info "upgrading pip"
         run_pip install --quiet --upgrade pip \
             || warn "pip upgrade failed; continuing with the installed pip"
-        run_pip install --quiet -e "$target"
+        if [ -n "$pins" ]; then
+            run_pip install --quiet -c "$pins" -e "$target"
+        else
+            run_pip install --quiet -e "$target"
+        fi
     fi
 fi
 for exe in crit bot-agent critique-bot; do

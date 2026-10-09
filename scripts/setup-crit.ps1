@@ -346,9 +346,13 @@ function Invoke-Setup {
         } else {
             Write-Step "Installing critique-bot (pip install -e)"
         }
+        # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
+        $pins = @()
+        $constraints = Join-Path $repo "constraints.txt"
+        if (Test-Path -LiteralPath $constraints) { $pins = @("-c", $constraints) }
         if ($uv) {
             # uv reads HTTP_PROXY / HTTPS_PROXY, set above from -Proxy.
-            $rc = Invoke-Native $uv.Path @("pip", "install", "--quiet", "--python", $venvPython, "-e", $target)
+            $rc = Invoke-Native $uv.Path (@("pip", "install", "--quiet", "--python", $venvPython) + $pins + @("-e", $target))
         } else {
             Write-Info "upgrading pip"
             $upgradeArgs = @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
@@ -356,7 +360,7 @@ function Invoke-Setup {
             if ((Invoke-Native $venvPython $upgradeArgs) -ne 0) {
                 Write-Warn "pip upgrade failed; continuing with the installed pip"
             }
-            $installArgs = @("-m", "pip", "install", "--quiet", "-e", $target)
+            $installArgs = @("-m", "pip", "install", "--quiet") + $pins + @("-e", $target)
             if ($Proxy) { $installArgs += @("--proxy", $Proxy) }
             $rc = Invoke-Native $venvPython $installArgs
         }

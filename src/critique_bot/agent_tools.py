@@ -220,6 +220,10 @@ class ToolContext:
     on_output: Callable[[str], None] | None = None
     ask_user: Callable[[str], str] | None = None
     cancel: threading.Event | None = None
+    #: Commands that can send data off this machine: "block" (the default) or "ask".
+    network_commands: str = "block"
+    #: Sites web_fetch may read (documentation). None means DEFAULT_WEB_HOSTS; empty turns web_fetch off.
+    web_hosts: tuple[str, ...] | None = None
     #: Runs briefs in helper chat tabs at the same time (see agent_helpers). None when there are none.
     delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
 
@@ -239,6 +243,8 @@ class Permission:
     summary: str
     key: str
     detail: str = ""
+    #: Why this needs a person's yes in every mode, auto included ("" when it does not).
+    risk: str = ""
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -1443,6 +1449,12 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             continue
         like = agent_edit.load_text(path) if existed else None
         before = like.text if like is not None else ""
+        if REDACTED in contents and REDACTED not in before:
+            errors.append(
+                f"{name} not written: the contents hold a {REDACTED}...] marker, which stands for a secret the chat "
+                "never sees. Edit the other lines with edit_file instead of rewriting the file"
+            )
+            continue
         if existed and Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES:
             new_check = agent_edit.syntax_check(name, contents)
             if new_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
@@ -1542,6 +1554,12 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         total += result.count
         if result.note:
             notes.append(result.note)
+    if REDACTED in text and REDACTED not in loaded.text:
+        return err(
+            "edit_file",
+            f"edit not applied: it would write a {REDACTED}...] marker into {name}. That marker stands for a secret "
+            "the chat never sees; leave the lines that hold it unchanged",
+        )
     before_check = agent_edit.syntax_check(name, loaded.text)
     after_check = agent_edit.syntax_check(name, text)
     diff = agent_edit.hunk_diff(loaded.text, text, name)
@@ -1764,6 +1782,18 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     background = args.get("background")
     if background is not None and not isinstance(background, bool):
         return err("run_command", "background must be true or false")
+    reach = network_command(command)
+    if not reach:
+        current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+        script = network_script(command, ctx.workspace, current)
+        if script:
+            reach = f"runs {script}, which opens network connections"
+    if reach and str(ctx.network_commands or "block").lower() != "ask":
+        return err(
+            "run_command",
+            f"not run: this command {reach}, and nothing may leave this machine except the chat. "
+            "Read documentation with web_fetch; builds may still download their dependencies",
+        )
     if ctx.session is None:
         return _run_plain(args, ctx, command, timeout, wanted, bool(background))
     return _run_in_session(args, ctx, command, timeout, wanted, bool(background))
@@ -2599,6 +2629,119 @@ def _delegate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 # --------------------------------------------------------------------------- web_fetch
 
 
+# --------------------------------------------------------------------------- secrets
+
+#: What a redacted secret looks like in a message to the chat.
+REDACTED = "[REDACTED:"
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("aws key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("github token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b")),
+    ("gitlab token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    ("slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("google api key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("api key", re.compile(r"\bsk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{32,}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
+    ("storage key", re.compile(r"(?i)(?<=AccountKey=)[A-Za-z0-9+/=]{40,}")),
+    ("url password", re.compile(r"(?<=://)[^/\s:@'\"<>]+:[^/\s@'\"<>]{3,}(?=@)")),
+)
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?im)\b([\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
+    r"client[_-]?secret|auth[_-]?key|storepass|keypass)[\w.-]*)(\s*[:=]\s*)([\"']?)([^\s\"'<>{}()$;,`]{6,})\3(?=$|[\s\"',;])"
+)
+_SECRET_XML_RE = re.compile(
+    r"(?i)(name=\"[^\"]*(?:password|secret|token|api[_-]?key|apikey|client[_-]?secret)[^\"]*\"[^>]*>)([^<\s]{8,})(<)"
+)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*$")
+
+
+def redact_secrets(text: str) -> tuple[str, int]:
+    """``text`` with credentials replaced by ``[REDACTED:kind]``, and how many were replaced.
+
+    Applied to every message before it goes to the chat. A value that reads
+    like code (``BuildConfig.API_KEY``, ``getToken``) is left alone; a quoted
+    literal or a properties value with digits or symbols is not.
+    """
+    if not text:
+        return text, 0
+    count = 0
+    for kind, pattern in _SECRET_PATTERNS:
+        text, hits = pattern.subn(f"{REDACTED}{kind}]", text)
+        count += hits
+
+    def assignment(match: re.Match[str]) -> str:
+        nonlocal count
+        value = match.group(4)
+        if value.startswith(REDACTED) or (not match.group(3) and _IDENTIFIER_RE.match(value)):
+            return match.group(0)
+        if value.lower() in {"true", "false", "null", "none", "required", "optional", "password", "changeit!"}:
+            return match.group(0)
+        count += 1
+        return f"{match.group(1)}{match.group(2)}{match.group(3)}{REDACTED}{match.group(1).lower()}]{match.group(3)}"
+
+    text = _SECRET_ASSIGN_RE.sub(assignment, text)
+
+    def xml_value(match: re.Match[str]) -> str:
+        nonlocal count
+        if match.group(2).startswith(("@string/", "@", REDACTED)):
+            return match.group(0)
+        count += 1
+        return f"{match.group(1)}{REDACTED}secret]{match.group(3)}"
+
+    text = _SECRET_XML_RE.sub(xml_value, text)
+    return text, count
+
+
+# web_fetch reads documentation; it must never carry data out. A request can only
+# reach these sites (and subdomains), as a plain https GET with no query string,
+# no credentials, no cookies, and no body. A path that looks like it encodes data
+# (a long token, base64, or hex run, or anything that looks like a secret) is refused.
+DEFAULT_WEB_HOSTS = (
+    "developer.android.com", "source.android.com", "android.googlesource.com", "android-developers.googleblog.com",
+    "kotlinlang.org", "docs.gradle.org", "docs.oracle.com", "openjdk.org", "junit.org", "mockk.io",
+    "maven.apache.org", "docs.python.org", "peps.python.org", "learn.microsoft.com", "developer.mozilla.org",
+    "docs.github.com", "git-scm.com", "cmake.org", "en.cppreference.com", "stackoverflow.com",
+)
+FETCH_MAX_URL = 300
+_DATA_RUN_RE = re.compile(r"[A-Za-z0-9+/=_%-]{48,}|[0-9a-fA-F]{32,}")
+
+
+def web_hosts(ctx: ToolContext) -> tuple[str, ...]:
+    return DEFAULT_WEB_HOSTS if ctx.web_hosts is None else tuple(ctx.web_hosts)
+
+
+def outbound_problem(url: str, hosts: tuple[str, ...]) -> str:
+    """Why fetching ``url`` could send data out, or "" when it is a plain read of an allowed site."""
+    if not hosts:
+        return "web_fetch is turned off (web_fetch_hosts is empty); nothing leaves this machine but the chat"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError as exc:
+        return f"not a valid URL: {exc}"
+    if parts.scheme.lower() != "https":
+        return "only https URLs are fetched"
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not any(host == allowed or host.endswith("." + allowed) for allowed in hosts):
+        return (
+            f"{host or url} is not one of the documentation sites web_fetch may read ({', '.join(hosts[:8])}"
+            + (", ..." if len(hosts) > 8 else "")
+            + "); add it to web_fetch_hosts in .bot/settings.json if it is needed"
+        )
+    if parts.username or parts.password:
+        return "a URL with a user name or password is not fetched"
+    if port not in (None, 443):
+        return "only the standard https port is used"
+    if parts.query:
+        return "a URL with a query string (?...) is not fetched: it could carry data out. Use the plain page address"
+    if len(url) > FETCH_MAX_URL:
+        return f"the URL is longer than {FETCH_MAX_URL} characters; use the plain page address"
+    path = urllib.parse.unquote(parts.path or "")
+    if _DATA_RUN_RE.search(path) or redact_secrets(path)[1]:
+        return "the URL path looks like it carries data (a long token or encoded text); it is not fetched"
+    return ""
+
+
 class _CrossHostRedirect(urllib.error.URLError):
     """A redirect to another host: the approval covered one host, so the model must ask again."""
 
@@ -2736,9 +2879,10 @@ def _web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     url = url.strip().strip("<>\"'` ")
     if "://" not in url:
         url = "https://" + url
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
-        return err("web_fetch", f"only http and https URLs are fetched, not {url}")
+    url = url.split("#", 1)[0]
+    problem = outbound_problem(url, web_hosts(ctx))
+    if problem:
+        return err("web_fetch", problem)
     try:
         limit = int(args.get("max_chars") or DEFAULT_FETCH_CHARS)
         start = max(0, int(args.get("offset") or 0))
@@ -2897,6 +3041,17 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
         if outside:
             shown = ", ".join(str(item) for item in outside[:3])
             return Permission("outside", f"Read outside the workspace: {shown}", "", _tool_label(tool, args))
+        if tool == "read_files":
+            secret = [item for item in _paths_of(tool, args, ctx) if sensitive_file(item)]
+            if secret:
+                shown = ", ".join(rel(ctx.workspace, item) for item in secret[:3])
+                return Permission(
+                    "outside",
+                    f"Read a file that usually holds secrets: {shown}",
+                    "",
+                    _tool_label(tool, args),
+                    risk="reads a file that usually holds secrets (its contents go to the chat, with known secret formats redacted)",
+                )
         return Permission("read", _tool_label(tool, args), tool)
     if tool in MUTATING:
         summary = _tool_label(tool, args)
@@ -2918,6 +3073,9 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
                 outside = [current]
         if outside:
             return Permission("outside", f"{label} (cwd outside the workspace: {outside[0]})", "", command)
+        reach = network_command(command)
+        if reach:
+            return Permission("network", f"{label} (it {reach})", "", command, risk=f"{reach}, which can send data off this machine")
         program = command_key(command)
         return Permission("command", label, f"command:{program}" if program else "", command)
     if tool == "delegate":
@@ -3069,6 +3227,95 @@ _RISKY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"\bsetx\b[^;&|\n]*\s/m\b|setenvironmentvariable\([^)]*['\"]machine['\"]", "changes machine-wide settings"),
     )
 )
+
+
+# Commands that can send data off this machine. Only the chat may receive data, so
+# these do not run (or, with "network_commands": "ask", run only after a yes).
+# Builds and package managers may still download their dependencies; uploads and
+# arbitrary-URL tools, remote shells, file servers, and scripts that open sockets may not.
+_NETWORK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern, re.I), reason)
+    for pattern, reason in (
+        (r"(?:^|[\s;&|({])(?:curl|wget|wget2|aria2c|httpie|http|xh)(?:\.exe)?(?=\s|$)", "makes web requests"),
+        (r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm|start-bitstransfer|bitsadmin)\b", "makes web requests"),
+        (r"\b(?:net\.webclient|system\.net\.webclient|system\.net\.http|httpclient|webrequest\]|downloadstring|downloadfile|uploadstring|uploadfile|uploaddata|uploadvalues)\b", "makes web requests"),
+        (r"\bcertutil\b[^;&|\n]*-urlcache", "downloads with certutil"),
+        (r"(?:^|[\s;&|({])(?:scp|sftp|ftp|tftp|ssh|telnet|rsh|nc|ncat|netcat|socat|plink|pscp|psftp)(?:\.exe)?(?=\s|$)", "opens a remote connection"),
+        (r"\brsync\b[^;&|\n]*(?:\S+@)?[\w.-]+::?[\w/~.-]", "copies to a remote host"),
+        (r"\b(?:send-mailmessage|sendmail|mailx?|mutt)\b", "sends mail"),
+        (r"\bgit\b[^;&|\n]*\b(?:push|send-email|request-pull)\b", "sends code to a remote"),
+        (r"(?:^|[\s;&|({])(?:gh|glab|hub|az|aws|gcloud|gsutil|azcopy|rclone|s3cmd|oci|doctl|heroku|vercel|netlify|firebase)(?:\.exe|\.cmd)?\s", "talks to a cloud service"),
+        (r"\bdocker\b[^;&|\n]*\b(?:push|login)\b", "pushes to a registry"),
+        (r"\b(?:npm|pnpm|yarn)\s+(?:publish|login|adduser)\b|\btwine\s+upload\b|\bmvnw?\b[^;&|\n]*\bdeploy\b|\bgradlew?(?:\.bat)?\b[^;&|\n]*(?:\bpublish(?!ToMavenLocal\b)\w*|(?<!\w)--scan\b)|\brepo\s+upload\b", "publishes or uploads"),
+        (r"\b(?:python3?|py)\b[^;&|\n]*-m\s+http\.server\b|\bphp\s+-S\b|\b(?:npx\s+)?(?:http-server|serve)\s|\bsimplehttpserver\b", "serves files on the network"),
+        (r"\b(?:nslookup|dig|host|resolve-dnsname)\s", "sends DNS queries"),
+        (r"(?:python3?|py|node|ruby|perl|php|pwsh|powershell)\b[^\n]*\s-(?:c|e|command)\s[^\n]*(?:urllib|requests\.|http\.client|socket\.|fetch\(|https?\.request|net\.connect|xmlhttprequest|invoke-webrequest|net\.webclient)", "opens a network connection from a script"),
+        (r"\b(?:send-|test-)?netconnection\b|\btest-connection\b[^;&|\n]*-tcpport", "opens a network connection"),
+    )
+)
+
+
+_SENSITIVE_NAMES = re.compile(
+    r"(?i)^(?:\.env(?:\..+)?|.+\.(?:pem|key|p8|p12|pfx|jks|keystore|bks|kdbx|ovpn|asc|gpg)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|"
+    r"\.netrc|_netrc|\.npmrc|\.pypirc|\.git-credentials|\.htpasswd|credentials(?:\.json|\.xml)?|"
+    r"(?:keystore|signing|secrets?|release-signing)\.properties|secrets?\.(?:json|ya?ml|toml|xml)|service-account.*\.json)$"
+)
+
+
+def sensitive_file(path: Path | str) -> bool:
+    """True for a file that usually holds credentials: .env, keys and keystores, .netrc, signing properties."""
+    target = Path(path)
+    if any(part in {".ssh", ".aws", ".gnupg", ".azure", ".kube"} for part in target.parts):
+        return True
+    return bool(_SENSITIVE_NAMES.match(target.name))
+
+
+_SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".psm1", ".sh", ".bash", ".rb", ".pl", ".php", ".bat", ".cmd")
+_SCRIPT_NET_RE = re.compile(
+    r"(?i)\b(?:urllib\.request|urllib3|requests\.(?:get|post|put|patch|request|session)|http\.client|httpx|aiohttp|"
+    r"socket\.(?:socket|create_connection)|smtplib|ftplib|paramiko|fetch\(|axios|https?\.(?:request|get)\(|net\.(?:connect|socket)|"
+    r"xmlhttprequest|websocket|invoke-webrequest|invoke-restmethod|net\.webclient|system\.net\.http|"
+    r"(?:^|[\s;&|(])(?:curl|wget|scp|ssh|nc|ncat|ftp)\s)"
+)
+
+
+def network_script(command: str, workspace: Path, cwd: Path | None = None) -> str:
+    """The script a command runs, when that script opens network connections; "" otherwise.
+
+    The command text can look harmless (``python send.py``) while the file it
+    runs talks to the network, so the file itself is read (first 256 KB).
+    """
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    base = Path(cwd or workspace)
+    for token in tokens:
+        name = token.strip("\"'").lstrip("&").strip()
+        if not name.lower().endswith(_SCRIPT_SUFFIXES):
+            continue
+        path = Path(name)
+        if not path.is_absolute():
+            path = base / path
+        try:
+            if not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                text = handle.read(256 * 1024).decode("utf-8", "replace")
+        except OSError:
+            continue
+        if _SCRIPT_NET_RE.search(text):
+            return name
+    return ""
+
+
+def network_command(command: str) -> str:
+    """Why ``command`` could send data off this machine, or "" when it does not look like it can."""
+    text = " ".join(str(command or "").split())
+    for pattern, reason in _NETWORK_PATTERNS:
+        if pattern.search(text):
+            return reason
+    return ""
 
 
 def risky_command(command: str) -> str:

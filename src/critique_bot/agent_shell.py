@@ -85,6 +85,31 @@ QUIET_ENV = {
     "npm_config_yes": "true",
     "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
     "POWERSHELL_TELEMETRY_OPTOUT": "1",
+    # Nothing leaves this machine except the chat itself: telemetry, usage
+    # analytics, and update checks of the tools crit and the model run are off.
+    "DO_NOT_TRACK": "1",
+    "CODEGRAPH_TELEMETRY": "0",
+    "CODEGRAPH_NO_UPDATE_CHECK": "1",
+    # Belt and braces: if CodeGraph telemetry were ever on, it would post to a closed local port.
+    "CODEGRAPH_TELEMETRY_ENDPOINT": "http://127.0.0.1:9/telemetry-disabled",
+    "POWERSHELL_UPDATECHECK": "Off",
+    "DOTNET_NOLOGO": "1",
+    "npm_config_audit": "false",
+    "npm_config_fund": "false",
+    "npm_config_update_notifier": "false",
+    "YARN_ENABLE_TELEMETRY": "0",
+    "NEXT_TELEMETRY_DISABLED": "1",
+    "NUXT_TELEMETRY_DISABLED": "1",
+    "GATSBY_TELEMETRY_DISABLED": "1",
+    "STORYBOOK_DISABLE_TELEMETRY": "1",
+    "HOMEBREW_NO_ANALYTICS": "1",
+    "AZURE_CORE_COLLECT_TELEMETRY": "0",
+    "SAM_CLI_TELEMETRY": "0",
+    "VCPKG_DISABLE_METRICS": "1",
+    "CHECKPOINT_DISABLE": "1",
+    "FLUTTER_SUPPRESS_ANALYTICS": "true",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "GH_NO_UPDATE_NOTIFIER": "1",
 }
 
 SHELL_NAMES = ("auto", "bash", "sh", "zsh", "pwsh", "powershell", "cmd")

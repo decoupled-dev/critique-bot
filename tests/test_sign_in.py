@@ -90,21 +90,31 @@ if __name__ == "__main__":
 
 
 class GuardTests(unittest.TestCase):
-    def test_visible_window_is_not_filtered(self) -> None:
+    def test_every_window_is_filtered(self) -> None:
         page = MagicMock()
         page._critique_chat_guard = None
-        with patch.object(browser, "_visible_launch", True):
-            browser.guard_page_network(page, "https://chatgpt.com/")
-        page.route.assert_not_called()
+        browser.guard_page_network(page, "https://chatgpt.com/")
+        page.route.assert_called_once()
 
-    def test_sign_in_hosts_are_allowed_headless(self) -> None:
+    def test_headless_reaches_only_the_chat_hosts(self) -> None:
+        self.assertTrue(browser.request_is_allowed("https://chatgpt.com/backend-api/x", "https://chatgpt.com/"))
         for url in (
             "https://accounts.google.com/gsi/client",
             "https://www.gstatic.com/x.js",
             "https://login.microsoftonline.com/common/oauth2",
-            "https://aadcdn.msftauth.net/x.css",
-            "https://auth.openai.com/log-in",
+            "https://www.google-analytics.com/g/collect",
         ):
             with self.subTest(url=url):
-                self.assertTrue(browser.request_is_allowed(url, "https://chatgpt.com/"))
-        self.assertFalse(browser.request_is_allowed("https://www.google-analytics.com/g/collect", "https://chatgpt.com/"))
+                self.assertFalse(browser.request_is_allowed(url, "https://chatgpt.com/"))
+
+    def test_websocket_to_another_host_is_blocked(self) -> None:
+        route = MagicMock()
+        route.request.url = "wss://tracker.example/socket"
+        route.request.resource_type = "websocket"
+        browser._filter_chat_route(route, "https://chatgpt.com/")
+        route.abort.assert_called_once()
+        route.continue_.assert_not_called()
+
+    def test_debug_port_is_not_open_to_web_pages(self) -> None:
+        self.assertNotIn("--remote-allow-origins", " ".join(browser.EDGE_LAUNCH_ARGS + browser.EDGE_PRIVATE_ARGS))
+        self.assertIn("--disable-background-networking", browser.EDGE_PRIVATE_ARGS)
