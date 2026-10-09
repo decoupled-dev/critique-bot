@@ -107,6 +107,20 @@ class GuardTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(browser.request_is_allowed(url, "https://chatgpt.com/"))
 
+    def test_internal_chat_allowed_hosts(self) -> None:
+        from critique_bot.config import _host_list
+
+        url = "https://ai-chat.company.net/"
+        self.assertTrue(browser.request_is_allowed("https://ai-chat.company.net/api", url))
+        self.assertFalse(browser.request_is_allowed("https://api.company.net/v1", url))
+        try:
+            browser.set_allowed_hosts(_host_list(["https://api.company.net/x", "*.cdn.company.net"]))
+            self.assertTrue(browser.request_is_allowed("https://api.company.net/v1", url))
+            self.assertTrue(browser.request_is_allowed("https://img.cdn.company.net/a.png", url))
+            self.assertFalse(browser.request_is_allowed("https://tracker.example/x", url))
+        finally:
+            browser.set_allowed_hosts(())
+
     def test_websocket_to_another_host_is_blocked(self) -> None:
         route = MagicMock()
         route.request.url = "wss://tracker.example/socket"

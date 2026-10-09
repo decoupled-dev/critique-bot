@@ -245,8 +245,15 @@ class BrowserBridge:
             self.pick = None
 
     def _run(self, config: Any) -> None:
-        from critique_bot.browser import launch_edge, login_profile_dir, needs_visible_login, sign_in_with_plain_browser
+        from critique_bot.browser import (
+            launch_edge,
+            login_profile_dir,
+            needs_visible_login,
+            set_allowed_hosts,
+            sign_in_with_plain_browser,
+        )
 
+        set_allowed_hosts(getattr(config, "allowed_hosts", ()))
         try:
             if not config.cdp_url and needs_visible_login(config.user_data_dir, config.storage_state):
                 # Sign in first in a plain browser; the picker window is filtered to the chat's hosts.

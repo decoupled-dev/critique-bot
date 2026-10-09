@@ -1,6 +1,6 @@
 # Security and data leaving the PC
 
-**Rule: the only data that leaves this PC is the conversation with the configured chat URL.** Everything below enforces that rule, and the last section lists what it cannot cover.
+**Rule: the only data that leaves this PC is the conversation with the configured chat URL.** With an internal chat URL (a company-hosted model), that conversation stays inside the company network too. The chat site's own extra hosts (API, static files, sign-in) go in `allowed_hosts` in `config.json`; nothing else is reachable. Everything below enforces that rule, and the last section lists what it cannot cover.
 
 ## Verified
 

@@ -93,6 +93,9 @@ class BotConfig:
     thinking_max_ms: int = 600_000
     #: Hard cap on one reply while it keeps making progress.
     reply_max_ms: int = 1_200_000
+    #: More hosts the chat page may reach (an internal chat's API, static files, or sign-in host).
+    #: Each also covers its subdomains. Everything else is blocked.
+    allowed_hosts: tuple[str, ...] = ()
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
@@ -141,6 +144,30 @@ class BotConfig:
             return base
         # instructions + each file + the patch paste
         return max(base, (extra + 2) * per_turn + 60.0)
+
+
+def _host_list(value: object) -> tuple[str, ...]:
+    """``allowed_hosts``: host names (a URL is reduced to its host), lowercased, without duplicates."""
+    if value is None or value == "":
+        return ()
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        raise ConfigError("allowed_hosts must be a list of host names, for example [\"api.company.net\"]")
+    hosts: list[str] = []
+    for item in items:
+        text = str(item or "").strip().lower()
+        if "://" in text:
+            from urllib.parse import urlsplit
+
+            text = urlsplit(text).hostname or ""
+        text = text.strip().strip(".").lstrip("*.")
+        if not text:
+            continue
+        if "/" in text or " " in text:
+            raise ConfigError(f"allowed_hosts: {item!r} is not a host name")
+        if text not in hosts:
+            hosts.append(text)
+    return tuple(hosts)
 
 
 def _clean(value: object) -> str:
@@ -300,6 +327,7 @@ def load_config(
         storage_state=storage_state,
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
+        allowed_hosts=_host_list(raw.get("allowed_hosts")),
         queue_dir=queue_dir,
         min_interval_seconds=_non_negative_float(
             "min_interval_seconds",

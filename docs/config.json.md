@@ -72,6 +72,22 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 
 ---
 
+## `allowed_hosts`
+
+| | |
+| --- | --- |
+| Type | list of host names |
+| Default | `[]` |
+
+The browser may reach only the chat URL's host and its subdomains (for chatgpt.com, also its own CDNs and challenge hosts). Everything else is blocked: page loads in any frame, scripts, API calls, WebSockets, and popups. An internal chat site often needs neighbouring hosts, such as its API, its static files, or the company sign-in. List them here; each also covers its subdomains:
+
+```json
+"url": "https://ai-chat.company.net/",
+"allowed_hosts": ["api.company.net", "static.company.net", "login.microsoftonline.com"]
+```
+
+When crit blocks a host for a non-ChatGPT URL, it prints the host and this setting. Add only hosts the chat page needs. See [security.md](security.md).
+
 ## `selectors` (object, required for `browser`)
 
 | Key | Required | Meaning |

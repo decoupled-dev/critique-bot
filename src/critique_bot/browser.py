@@ -1051,12 +1051,22 @@ def _host_matches_suffix(host: str, suffix: str) -> bool:
     return host == suffix or (bool(suffix) and host.endswith("." + suffix))
 
 
+#: config.json "allowed_hosts": more hosts the chat page may reach (set by the provider).
+_extra_hosts: frozenset[str] = frozenset()
+
+
+def set_allowed_hosts(hosts) -> None:
+    """The chat page may also reach these hosts and their subdomains (config.json ``allowed_hosts``)."""
+    global _extra_hosts
+    _extra_hosts = frozenset(str(item).lower().strip(".") for item in (hosts or ()) if str(item).strip())
+
+
 def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     """Host suffixes Edge may contact for this chat URL."""
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
     if not host:
         return frozenset()
-    hosts = {host}
+    hosts = {host, *_extra_hosts}
     if host.startswith("www."):
         hosts.add(host[4:])
     for root, family in _CHAT_PAGE_FAMILIES:
@@ -1112,6 +1122,14 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
     if host not in seen:
         seen.add(host)
         log.info(f"blocking requests to {host} (outside chat URL)")
+        chat_host = (urlsplit(chat_url).hostname or "").lower()
+        if not any(_host_matches_suffix(chat_host, root) for root, _family in _CHAT_PAGE_FAMILIES):
+            log.print_safe(
+                f"crit blocked the chat page from reaching {host}. If the chat page does not work and needs it "
+                f'(its API, files, or sign-in), add "{host}" to "allowed_hosts" in config.json.',
+                file=sys.stderr,
+                flush=True,
+            )
     try:
         route.abort("blockedbyclient")
     except Exception as exc:
