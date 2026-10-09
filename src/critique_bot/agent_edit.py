@@ -469,12 +469,51 @@ def syntax_check(path: str, text: str) -> str:
         except json.JSONDecodeError as exc:
             return f"error: line {exc.lineno}: {exc.msg}"
         return "ok"
+    if suffix in XML_SUFFIXES:
+        return _xml_check(text)
     if suffix in _BRACE_SUFFIXES:
         balance = _brace_balance(text)
         if balance != 0:
             return f"error: braces unbalanced ({balance:+d})"
         return "ok"
     return ""
+
+
+#: Files checked for well-formed XML (Android manifests, layouts, resources, Maven, .NET projects).
+XML_SUFFIXES = frozenset(
+    {".xml", ".xsd", ".xsl", ".xslt", ".svg", ".plist", ".resx", ".csproj", ".vbproj", ".props", ".targets",
+     ".fxml", ".iml", ".xaml", ".wsdl"}
+)
+#: An edit or rewrite that would break these is not applied (when the file was valid before).
+STRICT_SUFFIXES = frozenset({".py", ".json"}) | XML_SUFFIXES
+
+
+def _xml_check(text: str) -> str:
+    """``ok`` or ``error: line N: ...`` for well-formed XML, with a hint for the usual slips."""
+    from xml.parsers import expat
+
+    body = text.lstrip("\ufeff")
+    if not body.strip():
+        return ""
+    parser = expat.ParserCreate(namespace_separator=" ")
+    try:
+        parser.Parse(body, True)
+    except expat.ExpatError as exc:
+        message = expat.ErrorString(exc.code)
+        line = body.split("\n")[exc.lineno - 1] if 0 < exc.lineno <= body.count("\n") + 1 else ""
+        hint = ""
+        if "not well-formed" in message and "&" in line:
+            hint = " (in XML text write & as &amp; and < as &lt;)"
+        elif "mismatched tag" in message:
+            hint = " (a tag is closed with a different name, or one is left open)"
+        elif "unbound prefix" in message:
+            hint = " (declare the namespace, e.g. xmlns:android=\"http://schemas.android.com/apk/res/android\", or fix the prefix)"
+        elif "junk after document element" in message:
+            hint = " (there is more than one root element)"
+        elif "no element found" in message:
+            hint = " (the file ends before the root element is closed)"
+        return f"error: line {exc.lineno}, column {exc.offset + 1}: {message}{hint}"
+    return "ok"
 
 
 def _brace_balance(text: str) -> int:

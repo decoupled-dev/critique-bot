@@ -77,25 +77,19 @@ def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
 
 
 def login_in_edge(config: BotConfig) -> None:
-    """Open a visible Edge window and wait until the chat box shows a signed-in session."""
-    from critique_bot.browser import launch_edge, wait_until_signed_in
+    """Open a plain browser window (no automation) and wait until the user has signed in.
 
-    log.info(
-        "no saved Edge login; opening a visible window. "
-        "It closes after you sign in, then this run continues headless."
+    The headless run that follows reuses the same profile. A run with
+    ``storage_state`` or ``cdp_url`` has its own login and never gets here.
+    """
+    from critique_bot.browser import login_profile_dir, sign_in_with_plain_browser
+
+    log.info("no saved login; opening a browser window to sign in, then this run continues headless")
+    sign_in_with_plain_browser(
+        config.url,
+        login_profile_dir(config.user_data_dir),
+        timeout_s=max(config.timeout_ms, _LOGIN_WINDOW_MS) / 1000,
     )
-    with launch_edge(
-        headed=True,
-        storage_state=config.storage_state,
-        user_data_dir=config.user_data_dir,
-        start_url=config.url,
-        timeout_ms=config.timeout_ms,
-    ) as page:
-        wait_until_signed_in(
-            page,
-            prompt_selector=config.selectors.prompt_input,
-            timeout_ms=max(config.timeout_ms, _LOGIN_WINDOW_MS),
-        )
     log.info("closed the login window; continuing headless")
 
 

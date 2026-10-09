@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -1263,8 +1264,71 @@ def _stream_state(page: Page, selectors: Selectors | None) -> tuple[bool, str]:
 # generating, and a fingerprint of the newest reply (length and hash of its
 # textContent, which needs no layout). innerText is read only when asked, at the end.
 # Visibility follows Playwright's is_visible: a non-empty box and not visibility:hidden.
+_REPLY_TEXT_FN = r"""
+// The reply exactly as the model wrote it. innerText is not: in a paragraph it
+// collapses runs of spaces and tabs (white-space: normal / pre-line), which
+// strips the indentation from every old_string and new_string. This walk keeps
+// text nodes byte for byte, puts a line break between blocks and at <br>,
+// copies <pre> code verbatim without its header (language label, Copy button),
+// and puts back the backticks of inline code and the * of emphasis.
+const replyText = (root) => {
+  if (!root) return '';
+  const SKIP = new Set(['BUTTON', 'SVG', 'STYLE', 'SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'IMG']);
+  const BLOCK = new Set(['P', 'DIV', 'LI', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE',
+    'TABLE', 'THEAD', 'TBODY', 'TR', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'HR', 'DL', 'DT', 'DD', 'FIGURE']);
+  const MARK = { CODE: '`', EM: '*', I: '*', STRONG: '**', B: '**', DEL: '~~', S: '~~' };
+  let out = '';
+  const breakLine = () => { if (out && !out.endsWith('\n')) out += '\n'; };
+  const walk = (node) => {
+    if (node.nodeType === 3) { out += node.data; return; }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toUpperCase();
+    if (SKIP.has(tag)) return;
+    if (node.getAttribute && (node.getAttribute('aria-hidden') === 'true' || node.getAttribute('role') === 'button'
+        || node.hasAttribute('data-message-attribution') || node.hasAttribute('hidden'))) return;
+    if (/(^|\s)(sr-only|visually-hidden)(\s|$)/.test(String(node.className || ''))) return;
+    if (tag === 'BR') { out += '\n'; return; }
+    if (tag === 'PRE') {
+      const code = node.querySelector('code');
+      const fence = /\blanguage-([\w+#.-]+)/.exec((code && code.className) || '');
+      breakLine();
+      out += '```' + (fence ? fence[1] : '') + '\n';
+      out += (code || node).textContent.replace(/\n$/, '');
+      out += '\n```';
+      breakLine();
+      return;
+    }
+    if (tag === 'LI' && node !== root) {
+      breakLine();
+      const list = node.parentElement;
+      if (list && list.tagName.toUpperCase() === 'OL') {
+        const start = parseInt(list.getAttribute('start') || '1', 10) || 1;
+        out += (start + Array.prototype.indexOf.call(list.children, node)) + '. ';
+      } else {
+        out += '- ';
+      }
+      for (const child of node.childNodes) walk(child);
+      breakLine();
+      return;
+    }
+    const block = BLOCK.has(tag);
+    if (block) breakLine();
+    const mark = MARK[tag] || '';
+    out += mark;
+    for (const child of node.childNodes) walk(child);
+    out += mark;
+    if (block) breakLine();
+  };
+  walk(root);
+  return out.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+};
+"""
+
+#: ``element.evaluate(_ELEMENT_TEXT_JS)``: the reply text of one element (see _REPLY_TEXT_FN).
+_ELEMENT_TEXT_JS = "(el) => {" + _REPLY_TEXT_FN + " return replyText(el); }"
+
 _REPLY_STATE_JS = """
-(payload) => {
+(payload) => {""" + _REPLY_TEXT_FN + """
   let nodes;
   try {
     nodes = Array.from(document.querySelectorAll(payload.selector));
@@ -1283,11 +1347,12 @@ _REPLY_STATE_JS = """
     if (style.display === 'none' || parseFloat(style.opacity || '1') === 0) return false;
     return el.getAttribute('aria-hidden') !== 'true';
   };
-  let count = 0;
-  let last = null;
-  for (const node of nodes) {
-    if (shown(node)) { count += 1; last = node; }
-  }
+  // A selector list can match a reply twice: its outer turn (with the "ChatGPT said:"
+  // heading) and the markdown inside it. Keep only the innermost match of each reply.
+  const visible = nodes.filter(shown);
+  const inner = visible.filter((node) => !visible.some((other) => other !== node && node.contains(other)));
+  const count = inner.length;
+  const last = inner.length ? inner[inner.length - 1] : null;
   let generating = false;
   let signal = '';
   if (payload.stream) {
@@ -1318,16 +1383,29 @@ _REPLY_STATE_JS = """
   let hash = 0;
   let text = null;
   if (last) {
-    const raw = last.textContent || '';
+    const raw = replyText(last);
     length = raw.length;
     let h = 2166136261;
     for (let i = 0; i < raw.length; i += 1) h = Math.imul(h ^ raw.charCodeAt(i), 16777619);
     hash = h >>> 0;
-    if (payload.withText) text = last.innerText;
+    if (payload.withText) text = replyText(last);
   }
   return { ok: true, count, generating, signal, length, hash, text };
 }
 """
+
+
+def _element_text(target: Locator | None) -> str:
+    """One reply's text with its whitespace intact; innerText only if the walk fails."""
+    if target is None:
+        return ""
+    try:
+        text = target.evaluate(_ELEMENT_TEXT_JS)
+        if isinstance(text, str):
+            return text
+    except Exception as exc:
+        log.debug(f"reply text walk failed, using innerText: {exc}")
+    return target.inner_text() or ""
 
 
 def _reply_state(
@@ -1632,8 +1710,7 @@ def _wait_for_reply_fast(
         final = _reply_state(page, selector, selectors, with_text=True)
         text = str(final.get("text") or "") if final is not None else ""
         if final is None or (not text.strip() and last_length):
-            target = _last_visible(page.locator(selector))
-            text = target.inner_text() if target is not None else ""
+            text = _element_text(_last_visible(page.locator(selector)))
         if detail is not None:
             detail["completion"] = reason
             detail["complete"] = reason == COMPLETION_STOPPED
@@ -1786,7 +1863,7 @@ def _wait_for_reply_locators(
             signal_name = signal
 
         target = _last_visible(messages)
-        text = target.inner_text() if target is not None else ""
+        text = _element_text(target)
         now = time.monotonic()
         if text != last_text:
             last_text = text
@@ -1872,6 +1949,30 @@ def _raise_if_cloudflare(page: Page, prompt_selector: str) -> None:
     log.info("Cloudflare challenge cleared; the chat box is visible")
 
 
+_SIGNED_OUT_SELECTORS = (
+    "[data-testid='login-button']",
+    "button[data-testid='login-button']",
+    "a[href*='/auth/login']",
+)
+
+
+def _warn_if_signed_out(page: Page) -> None:
+    """ChatGPT answers signed-out visitors too, with a smaller model. Say so plainly."""
+    for selector in _SIGNED_OUT_SELECTORS:
+        try:
+            if page.locator(selector).first.is_visible():
+                message = (
+                    "The chat page is NOT signed in (it shows a Log in button), so it answers with a smaller "
+                    "model and forgets the chat. Run with --headed once and sign in, or delete the profile "
+                    "folder in user_data_dir so crit opens the sign-in window."
+                )
+                log.warn(message)
+                log.print_safe(f"warning: {message}", file=sys.stderr, flush=True)
+                return
+        except Exception:
+            continue
+
+
 def prepare_chat(page: Page, config: BotConfig) -> None:
     from critique_bot.browser import BrowserError, describe_page, navigate, warn_if_login_page
 
@@ -1909,6 +2010,7 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
         timeout_ms,
         "prompt input after navigation",
     )
+    _warn_if_signed_out(page)
     _select_model(page, selectors, config.model, timeout_ms)
     log.info("chat UI is ready")
 

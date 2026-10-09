@@ -1430,6 +1430,11 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             continue
         like = agent_edit.load_text(path) if existed else None
         before = like.text if like is not None else ""
+        if existed and Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES:
+            new_check = agent_edit.syntax_check(name, contents)
+            if new_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
+                errors.append(f"{name} not replaced: the new contents have a syntax {new_check}")
+                continue
         if ctx.checkpoints is not None:
             ctx.checkpoints.save(path)
         try:
@@ -1527,7 +1532,7 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     before_check = agent_edit.syntax_check(name, loaded.text)
     after_check = agent_edit.syntax_check(name, text)
     diff = agent_edit.hunk_diff(loaded.text, text, name)
-    strict = Path(name).suffix.lower() in {".py", ".json"}
+    strict = Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES
     if strict and before_check == "ok" and after_check.startswith("error"):
         return err(
             "edit_file",

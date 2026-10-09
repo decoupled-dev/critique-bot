@@ -95,14 +95,14 @@ class BrowserProviderTests(unittest.TestCase):
 
         with patch("critique_bot.browser.needs_visible_login", return_value=True):
             with patch("critique_bot.browser.launch_edge", fake_launch):
-                with patch("critique_bot.browser.wait_until_signed_in") as wait:
+                with patch("critique_bot.browser.sign_in_with_plain_browser") as sign_in:
                     provider = BrowserProvider(_config(), headed=False)
                     with provider:
                         self.assertIsNotNone(provider._home)
-        self.assertEqual([item["headed"] for item in launches], [True, False])
-        self.assertNotIn("promote_missing_profile", launches[0])
-        self.assertFalse(launches[1]["promote_missing_profile"])
-        wait.assert_called_once()
+        # The sign-in window is a plain browser (no automation); only the headless run is launched by Playwright.
+        sign_in.assert_called_once()
+        self.assertEqual([item["headed"] for item in launches], [False])
+        self.assertFalse(launches[0]["promote_missing_profile"])
 
     def test_saved_profile_stays_headless(self) -> None:
         launches: list[bool] = []

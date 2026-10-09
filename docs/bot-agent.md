@@ -265,7 +265,7 @@ crit
 crit "create a hello.txt file that says hello"
 ```
 
-The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens the browser for the login, and the window closes after you sign in. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
+The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. For chatgpt.com the window closes by itself once the session cookie is saved; for other sites, close it when you are signed in. If the chat page later shows a **Log in** button, crit warns that it is not signed in: a signed-out ChatGPT answers with a smaller model and may return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
 
 The task uses the chat URL, selectors, and browser profile from the clone's `config.json`. Tasks stay headless. Add `--headed` when you want the window on a later task:
 
@@ -391,6 +391,14 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 - **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
 
 Every command is listed by `/commands` and saved in `.bot/sessions/<stamp>/agent.json` under `commands`.
+
+### How replies are read
+
+crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so the "ChatGPT said:" heading is never taken for the reply.
+
+Edits and whole-file rewrites of XML (`.xml`, layouts, `AndroidManifest.xml`, `.csproj`, `.svg`, ...) are checked like Python and JSON: a change that would make a well-formed file malformed (an unescaped `&`, a mismatched tag, a missing `xmlns:android`) is not applied, and the model gets the line and the reason. Line endings (CRLF), a BOM, and the encoding of the file are kept.
+
+Environment switches: `CRIT_NO_SANDBOX=1` adds `--no-sandbox` (needed only on Linux as root or in a container, where crit adds it by itself); `CRIT_LEAN_HEADLESS=0` keeps images and fonts in headless runs.
 
 ### Skills
 

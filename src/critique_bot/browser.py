@@ -28,9 +28,10 @@ class BrowserError(RuntimeError):
 
 
 # Used only for the isolated bot profile (not the desktop system profile).
+# No sandbox flags here: Edge and Chrome show "You are using an unsupported
+# command-line flag" for them, and Windows and macOS never need them. See
+# sandbox_disabled() for the Linux cases that do.
 EDGE_LAUNCH_ARGS = (
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--hide-crash-restore-bubble",
     "--disable-session-crashed-bubble",
@@ -56,11 +57,37 @@ LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifes
 _CHALLENGE_MARKERS = ("challenges.cloudflare.com", "turnstile", "arkoselabs", "funcaptcha", "hcaptcha", "recaptcha", "captcha")
 #: True while launch_edge opens a headless browser it started itself (not --headed, not an attached browser).
 _lean_launch = False
+#: True while launch_edge shows a window: a person is at the controls, so the network is not filtered.
+_visible_launch = False
 
 
 def lean_headless_enabled() -> bool:
     """``CRIT_LEAN_HEADLESS=0`` keeps images and fonts in headless runs."""
     return os.environ.get("CRIT_LEAN_HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def sandbox_disabled() -> bool:
+    """True only where Chromium's sandbox cannot start: Linux as root, in a container, or CRIT_NO_SANDBOX=1."""
+    forced = os.environ.get("CRIT_NO_SANDBOX", "").strip().lower()
+    if forced in {"1", "true", "yes", "on"}:
+        return True
+    if forced in {"0", "false", "no", "off"}:
+        return False
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        if os.geteuid() == 0:
+            return True
+    except AttributeError:
+        return False
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def _launch_args() -> list[str]:
+    args = list(EDGE_LAUNCH_ARGS)
+    if sandbox_disabled():
+        args.insert(0, "--no-sandbox")
+    return args
 
 
 _BROWSER_PROCESS_TOKENS = (
@@ -114,6 +141,12 @@ _CHAT_PAGE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "funcaptcha.com",
         ),
     ),
+)
+# Sign-in pages a chat site redirects to. Blocking their scripts and styles leaves a white page.
+SIGN_IN_HOSTS = (
+    "accounts.google.com", "gstatic.com", "googleusercontent.com", "apis.google.com", "googleapis.com",
+    "login.microsoftonline.com", "login.microsoft.com", "login.live.com", "live.com", "msauth.net", "msftauth.net",
+    "microsoftonline-p.com", "appleid.apple.com", "cdn-apple.com", "auth0.com",
 )
 _BLOCKED_BY_CLIENT = ("blockedbyclient", "err_blocked_by_client", "net::err_blocked_by_client")
 
@@ -225,6 +258,127 @@ def needs_visible_login(
 
 
 _LOGIN_POLL_MS = 500
+
+# Cookies that mean a real signed-in session (ChatGPT shows a chat box when signed out too).
+_SESSION_COOKIES = (
+    (("chatgpt.com", "openai.com"), "next-auth.session-token"),
+)
+
+
+def login_profile_dir(user_data_dir: str | None) -> Path:
+    """The profile folder launch_edge uses for ``user_data_dir`` (absolute)."""
+    profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
+    if _is_system_profile(str(profile_dir)):
+        profile_dir = dedicated_edge_user_data_dir()
+    return profile_dir.resolve()
+
+
+def session_cookie_present(profile_dir: Path, url: str) -> bool | None:
+    """True/False when the profile's cookie store says whether ``url``'s site is signed in.
+
+    None when crit does not know the site's session cookie, or the store cannot be
+    read (Windows keeps it locked while the browser runs).
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    wanted = next((name for hosts, name in _SESSION_COOKIES if any(_host_matches_suffix(host, h) for h in hosts)), "")
+    if not wanted:
+        return None
+    import sqlite3
+
+    for candidate in (profile_dir / "Default" / "Network" / "Cookies", profile_dir / "Default" / "Cookies"):
+        if not candidate.is_file():
+            continue
+        try:
+            uri = candidate.resolve().as_uri() + "?mode=ro&immutable=1"
+            with sqlite3.connect(uri, uri=True, timeout=1) as db:
+                row = db.execute(
+                    "select count(*) from cookies where name like ? and (host_key like ? or host_key like ?)",
+                    (f"%{wanted}%", "%chatgpt.com", "%openai.com"),
+                ).fetchone()
+            return bool(row and row[0])
+        except Exception as exc:  # noqa: BLE001 - locked or a different schema
+            log.debug(f"cookie store {candidate} not readable: {exc}")
+            return None
+    return False
+
+
+def sign_in_with_plain_browser(url: str, profile_dir: Path, *, timeout_s: float = 900.0) -> None:
+    """Open a normal browser window (no automation, no extra flags) on ``profile_dir`` for sign-in.
+
+    Google and Microsoft sign-in refuse a browser that is being automated, and
+    the automation flags put a warning bar on the window. This window is the
+    browser as the user starts it. It ends when the site's session cookie
+    appears (crit then closes the window) or when the user closes it.
+    """
+    executable, _channel = resolve_browser()
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    close_existing_edge_sessions(profile_dir=profile_dir)
+    cmd = [
+        executable,
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-mode",
+        "--new-window",
+    ]
+    if sandbox_disabled():
+        cmd.append("--no-sandbox")
+    cmd.append(url)
+    kwargs: dict[str, object] = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kwargs["start_new_session"] = True
+    log.info(f"opening a plain browser window to sign in: {log.kv(exe=executable, profile=str(profile_dir))}")
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+    known = session_cookie_present(profile_dir, url) is not None
+    log.print_safe(
+        "Sign in in the browser window that just opened."
+        + (" crit continues by itself once you are signed in." if known else " Close the window when you are signed in."),
+        file=sys.stderr,
+        flush=True,
+    )
+    deadline = time.monotonic() + timeout_s
+    signed_in = False
+    try:
+        with log.loading("Waiting for sign-in..."):
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                if session_cookie_present(profile_dir, url):
+                    signed_in = True
+                    log.print_safe("Signed in. Closing the sign-in window.", file=sys.stderr, flush=True)
+                    time.sleep(2)  # let the page finish writing the profile
+                    break
+                time.sleep(1)
+            else:
+                raise BrowserError("timed out waiting for sign-in in the browser window")
+    finally:
+        if proc.poll() is None:
+            _close_gracefully(proc)
+        close_existing_edge_sessions(profile_dir=profile_dir)
+    if not signed_in and session_cookie_present(profile_dir, url) is False:
+        raise BrowserError(
+            "the sign-in window was closed before the site saw a signed-in session; run again and sign in"
+        )
+
+
+def _close_gracefully(proc: subprocess.Popen[bytes], timeout_s: float = 15.0) -> None:
+    """Ask the browser to quit (so it saves the profile), then force it."""
+    try:
+        if sys.platform == "win32":
+            _run_quiet(["taskkill", "/PID", str(proc.pid), "/T"])
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def wait_until_signed_in(
@@ -715,8 +869,8 @@ def _start_desktop_edge(
                 "--window-size=1920,1080",
             ]
         )
-        if sys.platform.startswith("linux"):
-            cmd.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+        if sandbox_disabled():
+            cmd.append("--no-sandbox")
         log.info("launching desktop Edge headless (--headed not passed)")
     if start_url:
         cmd.append(start_url)
@@ -896,6 +1050,7 @@ def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     for root, family in _CHAT_PAGE_FAMILIES:
         if _host_matches_suffix(host, root):
             hosts.update(family)
+            hosts.update(SIGN_IN_HOSTS)
     return frozenset(hosts)
 
 
@@ -955,6 +1110,11 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     Playwright's sync API when Cloudflare or login redirects are aborted.
     """
     if not chat_url or getattr(page, "_critique_chat_guard", None) == chat_url:
+        return
+    if _visible_launch:
+        # Sign-in in a visible window goes through pages on other hosts (Google,
+        # Microsoft, company SSO); filtering them leaves a white page.
+        log.info("visible window: browser network is not restricted, so sign-in pages load")
         return
     lean = _lean_launch and lean_headless_enabled()
 
@@ -1226,7 +1386,7 @@ def launch_edge(
             "Playwright is required. Install with: pip install -r requirements.txt"
         ) from exc
 
-    global _lean_launch
+    global _lean_launch, _visible_launch
     playwright = None
     context = None
     attached_page = None
@@ -1246,6 +1406,7 @@ def launch_edge(
         )
     # A browser the user started (cdp_url) and a visible window keep everything.
     _lean_launch = not headed and not cdp_url
+    _visible_launch = bool(headed) and not cdp_url
     try:
         log.info("starting Playwright")
         playwright = sync_playwright().start()
@@ -1296,7 +1457,8 @@ def launch_edge(
         profile_dir.mkdir(parents=True, exist_ok=True)
         existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
-        args = list(EDGE_LAUNCH_ARGS)
+        args = _launch_args()
+        no_sandbox = sandbox_disabled()
         debug_url = ""
         if cdp_out is not None:
             port = _free_port()
@@ -1316,7 +1478,7 @@ def launch_edge(
                 channel=channel,
                 headed=headed,
                 headless=not headed,
-                chromium_sandbox=False,
+                chromium_sandbox=not no_sandbox,
                 user_data_dir=str(profile_dir),
                 profile_has_data=existing,
                 storage_state=storage_state,
@@ -1326,7 +1488,7 @@ def launch_edge(
         launch_kwargs: dict[str, object] = {
             "channel": channel,
             "headless": not headed,
-            "chromium_sandbox": False,
+            "chromium_sandbox": not no_sandbox,
             "args": args,
             "ignore_default_args": ["--enable-automation"],
         }
@@ -1341,8 +1503,19 @@ def launch_edge(
                 **launch_kwargs,
             )
         except Exception as exc:
-            log.exception(f"browser launch failed: {exc}")
-            raise _helpful_edge_error(exc) from exc
+            if not no_sandbox and "sandbox" in str(exc).lower():
+                # A Linux box whose kernel blocks the sandbox: the flag is needed after all.
+                log.warn(f"the browser sandbox could not start ({exc}); retrying without it")
+                launch_kwargs["chromium_sandbox"] = False
+                launch_kwargs["args"] = ["--no-sandbox", *args]
+                try:
+                    context = playwright.chromium.launch_persistent_context(str(profile_dir), **launch_kwargs)
+                except Exception as again:
+                    log.exception(f"browser launch failed: {again}")
+                    raise _helpful_edge_error(again) from again
+            else:
+                log.exception(f"browser launch failed: {exc}")
+                raise _helpful_edge_error(exc) from exc
         _log_context(context, via="persistent")
         if debug_url and cdp_out is not None:
             try:
@@ -1365,6 +1538,7 @@ def launch_edge(
         yield page
     finally:
         _lean_launch = False
+        _visible_launch = False
         log.info("closing Playwright connection")
         if attached_page is not None and not started_desktop_edge:
             try:
