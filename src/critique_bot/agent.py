@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
+import os
 import re
 import sys
 import threading
@@ -22,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_graph, code_index, log
+from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_index, log
 from critique_bot.agent_tools import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
@@ -167,7 +169,7 @@ _PARALLEL_SAFE = frozenset(
     {"list_files", "find_files", "read_files", "search_code", "git_status", "git_diff", "git_log", "git_show"}
 )
 _READ_ONLY_FALLBACK = frozenset(
-    _PARALLEL_SAFE | {"skill", "code_graph", "todo", "command_output", "ask_user", "web_fetch"}
+    _PARALLEL_SAFE | {"skill", "todo", "command_output", "ask_user", "web_fetch"}
 )
 #: Tools whose result changes over time, so repeating them is not a loop.
 _POLLING = frozenset({"command_output", "ask_user"})
@@ -1382,7 +1384,6 @@ def seed_message(
         f"workspace: {workspace}",
     ]
     lines.extend(agent_shell.tool_hints(workspace, platform_name))
-    lines.append(code_graph.hint(workspace))
     sites = agent_tools.DEFAULT_WEB_HOSTS if web_hosts is None else web_hosts
     if sites:
         lines.append("web_fetch sites (https, plain page addresses only): " + ", ".join(sites))
@@ -2838,40 +2839,38 @@ def _stop_background(session_shell: Any) -> None:
                 log.debug(f"killing background job failed: {exc}")
 
 
-def _ensure_code_graph(workspace: Path) -> None:
-    """Download CodeGraph and build the project graph before the chat opens."""
-    _ui("note", "Setting up the code graph.")
-    try:
-        note = code_graph.prepare(workspace, timeout=600)
-    except Exception as exc:
-        _ui("bad", f"Code graph setup failed: {exc}")
+def _remove_old_codegraph() -> None:
+    """Delete the CodeGraph copy earlier versions unpacked (crit's own folder; nothing else uses it)."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        folder = base / "critique-bot" / "codegraph"
+    elif sys.platform == "darwin":
+        folder = Path.home() / "Library" / "Application Support" / "critique-bot" / "codegraph"
+    else:
+        folder = Path.home() / ".config" / "critique-bot" / "codegraph"
+    if not folder.is_dir():
         return
-    if note:
-        _ui("note", note)
+    try:
+        shutil.rmtree(folder)
+        log.info(f"removed the old CodeGraph copy at {folder}")
+    except OSError as exc:
+        log.debug(f"could not remove {folder}: {exc}")
 
 
 def _prepare_index(workspace: Path, index_path: Path | None, task: str) -> str:
     """Bring the index up to date with the disk and build the repo map."""
     if index_path is None or not Path(index_path).is_file():
         return ""
-    graph = ""
-    try:
-        graph = code_graph.prepare(workspace)
-    except Exception as exc:  # the graph is a hint; a missing CLI must not stop the task
-        log.debug(f"code graph refresh failed: {exc}")
     try:
         code_index.refresh_index(workspace, index_path)
-        mapped = code_index.repo_map(index_path, keywords=_keywords(task), budget_chars=REPO_MAP_CHARS)
+        return code_index.repo_map(index_path, keywords=_keywords(task), budget_chars=REPO_MAP_CHARS)
     except Exception as exc:  # the map is a hint; a broken index must not stop the task
         log.debug(f"index refresh failed: {exc}")
-        return graph
-    if graph and mapped:
-        return graph + "\n\n" + mapped
-    return graph or mapped
+        return ""
 
 
 #: Tools the reply to the instructions may run before there is a task.
-_SEED_TOOLS = _PARALLEL_SAFE | {"skill", "code_graph"}
+_SEED_TOOLS = _PARALLEL_SAFE | {"skill"}
 
 
 def _seed_needs_approval(name: str, call: ToolCall, ctx: ToolContext) -> bool:
@@ -3009,7 +3008,7 @@ def run_agent(
     )
     code = 1
     try:
-        _ensure_code_graph(home.root)
+        _remove_old_codegraph()
         code = _run_session(
             config,
             home,
@@ -3297,7 +3296,6 @@ def _activity(call: ToolCall) -> str:
         "apply_patch": "Applying the changes",
         "todo": "Updating the task list",
         "skill": f"Loading {_one_line(str(args.get('name') or args.get('skill') or 'skills'), 40)}",
-        "code_graph": f"Tracing {_one_line(str(args.get('query') or args.get('symbol') or 'the code'), 50)}",
     }
     return messages.get(name, "Working on the next step")
 

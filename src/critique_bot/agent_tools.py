@@ -35,7 +35,7 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from critique_bot import agent_build, agent_edit, agent_shell, code_graph, code_index
+from critique_bot import agent_build, agent_edit, agent_shell, code_index
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 
@@ -55,7 +55,6 @@ ALLOWED_TOOLS = (
     "apply_patch",
     "todo",
     "skill",
-    "code_graph",
     "move_file",
     "web_fetch",
     "ask_user",
@@ -76,8 +75,7 @@ READ_ONLY = frozenset(
         "git_show",
         "todo",
         "skill",
-        "code_graph",
-        "ask_user",
+            "ask_user",
         "command_output",
         "kill_command",
     }
@@ -295,8 +293,6 @@ def _default_ui(name: str, result: dict[str, Any]) -> dict[str, Any]:
         return _ui(f"Todos ({len(rows)})", lines=rows[:8])
     if name == "skill":
         return _ui("Loaded skill" if "\n" in output else "Listed skills", lines=_preview(output, 3))
-    if name == "code_graph":
-        return _ui("Queried code graph", lines=_preview(output, 3))
     if name.startswith("git_"):
         body = output.split("\n", 1)[1] if output.startswith("exit ") and "\n" in output else output
         return _ui(f"Ran git {name[4:]}", lines=_preview(body))
@@ -340,10 +336,6 @@ _ALIASES = {
     "todoread": "todo",
     "todos": "todo",
     "patch": "apply_patch",
-    "codegraph": "code_graph",
-    "codegraph_explore": "code_graph",
-    "graphify": "code_graph",
-    "query_graph": "code_graph",
     "mv": "move_file",
     "move": "move_file",
     "rename_file": "move_file",
@@ -1375,13 +1367,9 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
     version = agent_edit.file_version(path)
     if ctx.state is not None:
         ctx.state.note_write(name, version)
-    with _INDEX_LOCK:  # helper tabs write at the same time; the index and graph are shared
+    with _INDEX_LOCK:  # helper tabs write at the same time; the index is shared
         if ctx.index_path is not None:
             refresh_path(ctx.workspace, ctx.index_path, path)
-        try:
-            code_graph.sync_after_edit(ctx.workspace)
-        except Exception:
-            pass
     return version
 
 
@@ -2180,37 +2168,6 @@ def _kill_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     row = next((item for item in session.jobs() if item.get("id") == job_id), {})
     code = row.get("exit_code")
     return ok("kill_command", f"{job_id} had already exited (exit {code})", ctx, _ui(f"{job_id} had already exited"))
-
-
-def _code_graph(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    query = args.get("query") or args.get("question") or args.get("symbol") or args.get("name")
-    if not isinstance(query, str) or not query.strip():
-        return err("code_graph", "query is required")
-    action = args.get("action") or args.get("mode") or "explore"
-    if not isinstance(action, str):
-        return err("code_graph", "action must be a string")
-    target = args.get("target") or args.get("to") or ""
-    if not isinstance(target, str):
-        return err("code_graph", "target must be a string")
-    try:
-        timeout = float(args.get("timeout") or 60)
-    except (TypeError, ValueError):
-        return err("code_graph", "timeout must be a number")
-    timeout = min(max(timeout, 1), 120)
-    code, text = code_graph.query(
-        ctx.workspace,
-        query,
-        action=action,
-        target=target,
-        runner=ctx.runner,
-        timeout=timeout,
-    )
-    body = agent_shell.head_tail(text, max_chars=ctx.max_chars)
-    if code == 0:
-        return ok("code_graph", body or "exit 0", ctx)
-    if code == 127:
-        return err("code_graph", body or "code graph is not installed", ctx=ctx)
-    return err("code_graph", "graph query failed", output=body, ctx=ctx)
 
 
 def _git_status(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -3559,7 +3516,6 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "apply_patch": _apply_patch,
     "todo": _todo,
     "skill": _skill,
-    "code_graph": _code_graph,
     "move_file": _move_file,
     "web_fetch": _web_fetch,
     "ask_user": _ask_user,

@@ -88,10 +88,6 @@ QUIET_ENV = {
     # Nothing leaves this machine except the chat itself: telemetry, usage
     # analytics, and update checks of the tools crit and the model run are off.
     "DO_NOT_TRACK": "1",
-    "CODEGRAPH_TELEMETRY": "0",
-    "CODEGRAPH_NO_UPDATE_CHECK": "1",
-    # Belt and braces: if CodeGraph telemetry were ever on, it would post to a closed local port.
-    "CODEGRAPH_TELEMETRY_ENDPOINT": "http://127.0.0.1:9/telemetry-disabled",
     "POWERSHELL_UPDATECHECK": "Off",
     "DOTNET_NOLOGO": "1",
     "npm_config_audit": "false",

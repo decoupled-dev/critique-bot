@@ -168,7 +168,6 @@ _TOOL_TITLES = {
     "git_diff": "Git",
     "git_log": "Git",
     "git_show": "Git",
-    "code_graph": "Graph",
     "skill": "Skill",
     "ask_user": "Ask",
     "delegate": "Delegate",
@@ -576,8 +575,6 @@ def arg_summary(name: str, args: dict[str, Any] | None) -> str:
         return f"{src} → {dst}" if dst else str(src)
     if name in {"command_output", "kill_command"}:
         return str(args.get("id") or args.get("job_id") or "")
-    if name == "code_graph":
-        return _short(args.get("query") or args.get("symbol") or "", 60)
     if name == "skill":
         return _short(args.get("name") or args.get("skill") or "", 40)
     if name == "ask_user":
@@ -754,7 +751,6 @@ _ACTIVITY = {
     "delete_file": ("Deleting", "file", "files"),
     "move_file": ("Moving", "file", "files"),
     "web_fetch": ("Fetching", "page", "pages"),
-    "code_graph": ("Querying", "code graph", "code graph"),
     "git_status": ("Running", "git command", "git commands"),
     "git_diff": ("Running", "git command", "git commands"),
     "git_log": ("Running", "git command", "git commands"),

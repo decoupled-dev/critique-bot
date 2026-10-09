@@ -9,7 +9,7 @@ Build **on the OS you want to ship**. A Linux binary will not run on Windows, an
 | Linux | bash / zsh | `critique-bot` |
 | Windows | PowerShell | `critique-bot.exe` |
 
-The zip bundles Python, Playwright’s Node driver, `rich` and `prompt_toolkit` (the `crit` agent screen), `config.example.json`, the review and agent prompts, and CodeGraph. It does **not** bundle Edge, and it does not bundle Playwright’s Chromium/Firefox/WebKit downloads. The bot drives system Edge (`channel=msedge`).
+The zip bundles Python, Playwright’s Node driver, `rich` and `prompt_toolkit` (the `crit` agent screen), `config.example.json`, and the review and agent prompts. It does **not** bundle Edge, and it does not bundle Playwright’s Chromium/Firefox/WebKit downloads. The bot drives system Edge (`channel=msedge`).
 
 ## Target requirements
 
@@ -73,7 +73,6 @@ python scripts/build.py --skip-smoke
 critique-bot-<version>-linux-x64/
   critique-bot
   _internal/
-  codegraph/
   config.example.json
   prompts/review.txt
   prompts/agent.txt
@@ -86,7 +85,6 @@ critique-bot-<version>-linux-x64/
 critique-bot-<version>-windows-x64\
   critique-bot.exe
   _internal\
-  codegraph\
   config.example.json
   prompts\review.txt
   prompts\agent.txt

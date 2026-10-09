@@ -49,7 +49,8 @@ Files that usually hold secrets need your yes before they are read, in every mod
 
   A command that runs a script file is checked too: if the script uses network APIs (`requests`, `urllib`, `socket`, `fetch`, `Invoke-WebRequest`, ...), it does not run. `"network_commands": "ask"` turns the block into a yes/no question that is asked in every mode.
 - **Builds and package managers may still download dependencies.** Gradle, Maven, npm, and pip fetch from their configured repositories. `npm install` no longer uploads the dependency list for an audit (`npm_config_audit=false`).
-- **Tool telemetry is off** in every command crit runs (`DO_NOT_TRACK=1` and the tool-specific switches). That includes the bundled CodeGraph, which otherwise sends telemetry to telemetry.getcodegraph.com on every index build and checks GitHub for updates. Verified with `strace`: with crit's environment, CodeGraph makes no external connection. Also covered: PowerShell's update check, .NET, Next.js, Homebrew, Azure, Flutter, Hugging Face, and the GitHub CLI.
+- **Tool telemetry is off** in every command crit runs (`DO_NOT_TRACK=1` and the tool-specific switches): PowerShell's update check, .NET, npm, Next.js, Homebrew, Azure, Flutter, Hugging Face, and the GitHub CLI.
+- **CodeGraph is gone.** Earlier versions bundled CodeGraph, which sent usage telemetry (no code: language names, size ranges, command counts, a random install ID) to telemetry.getcodegraph.com when it built an index. It is removed, and crit deletes the copy it had unpacked (`critique-bot/codegraph` in the app-data folder). CodeGraph's own settings in `~/.codegraph` and any `.codegraph/` folder in a project are left alone; delete them if no other tool uses them.
 
 ## On disk
 
@@ -57,7 +58,7 @@ Files that usually hold secrets need your yes before they are read, in every mod
 
 ## Dependencies
 
-crit depends on three packages: `playwright`, `rich`, and `prompt_toolkit`. With what they pull in, that is ten packages, pinned to exact tested versions in [`constraints.txt`](../constraints.txt). Both setup scripts install with those pins, so a new release of any of them is never installed unreviewed. CodeGraph ships in `vendor/codegraph` and is checked against its SHA-256 before it is unpacked. Nothing is downloaded at run time. To check the pinned versions for known vulnerabilities, run `pip-audit -r constraints.txt` on a machine where sending the package list to the vulnerability database is acceptable.
+crit depends on three packages: `playwright`, `rich`, and `prompt_toolkit`. With what they pull in, that is ten packages, pinned to exact tested versions in [`constraints.txt`](../constraints.txt). Both setup scripts install with those pins, so a new release of any of them is never installed unreviewed. No other program is bundled, and nothing is downloaded at run time. To check the pinned versions for known vulnerabilities, run `pip-audit -r constraints.txt` on a machine where sending the package list to the vulnerability database is acceptable.
 
 ## What this cannot guarantee
 

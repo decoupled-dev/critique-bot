@@ -361,3 +361,19 @@ class ActivityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OldCodeGraphCleanupTests(unittest.TestCase):
+    def test_the_unpacked_copy_is_removed_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old = home / ".config" / "critique-bot" / "codegraph" / "current" / "bin"
+            old.mkdir(parents=True)
+            (old / "codegraph").write_text("x")
+            keep = home / ".config" / "critique-bot" / "other.txt"
+            keep.write_text("keep")
+            with mock.patch.object(agent.sys, "platform", "linux"), mock.patch.object(agent.Path, "home", return_value=home):
+                agent._remove_old_codegraph()
+                agent._remove_old_codegraph()  # nothing left: no error
+            self.assertFalse((home / ".config" / "critique-bot" / "codegraph").exists())
+            self.assertTrue(keep.exists())

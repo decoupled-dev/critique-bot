@@ -547,7 +547,7 @@ class RunAgentTests(_Base):
 
         with patch("critique_bot.provider.open_provider", return_value=_Provider()), patch.object(
             agent, "run_agent_loop", loop
-        ), patch.object(agent, "_ensure_code_graph"), patch.object(agent, "_open_shell_session", return_value=None):
+        ), patch.object(agent, "_remove_old_codegraph"), patch.object(agent, "_open_shell_session", return_value=None):
             return agent.run_agent(
                 self.config, self.home, "do it", max_rounds=None, output_dir=None, headed=False, **kwargs
             )

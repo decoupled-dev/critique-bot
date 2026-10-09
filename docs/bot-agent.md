@@ -555,7 +555,6 @@ The model has 21 tools. `/tools` lists them in a session.
 | `ask_user` | Ask you one question when the task needs your decision. |
 | `todo` | The task list for a job with several steps. |
 | `skill` | Load a built-in skill or a `SKILL.md` from `.bot/skills`, `.agents/skills`, or `.opencode/skills`. With no name, list them. |
-| `code_graph` | Callers, callees, and impact from the project's code graph. |
 
 ### Shells
 

@@ -16,7 +16,7 @@ BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
 # Transcripts, the prompt history, and caches hold code and tasks: never committed.
-_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history", ".codegraph/", "graphify-out/")
+_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history")
 _LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
