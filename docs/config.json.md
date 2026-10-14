@@ -6,6 +6,7 @@ Copy a starter to `config.json` next to the binary (CI default: `/opt/critique-b
 | --- | --- |
 | [`config.example.json`](../config.example.json) | Generic chat UI |
 | [`config.chatgpt.example.json`](../config.chatgpt.example.json) | ChatGPT |
+| [`config.local.example.json`](../config.local.example.json) | A model on this PC (Ollama, llama.cpp, LM Studio, vLLM) |
 
 `--config` is required on every command. The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
 
@@ -13,7 +14,47 @@ GitLab runner layout and the worker/submit split: [`gitlab-ci.md`](gitlab-ci.md)
 
 ## `backend`
 
-Optional. If present it must be `browser` (aliases: `web` / `playwright` / `ui`). HTTP backends (`ollama`, `openai`, `openai-compatible`) are not supported in this build.
+Optional. Which model crit talks to; everything above this layer (the agent, the review prompts, the queue) is the same for both.
+
+| Value | Meaning |
+| --- | --- |
+| `browser` (default; also `web`, `playwright`, `ui`, `chat`) | The chat page at `url`, driven in Edge. Needs `selectors` and a signed-in profile. |
+| `local` (also `ollama`, `llama.cpp`, `lmstudio`, `vllm`, `openai-compatible`) | A model served on this PC over HTTP, such as Qwen or Gemma in Ollama. Needs `model`; `selectors` are ignored. See [Local model](#local-model-backend-local). |
+
+Hosted APIs (`openai`, `anthropic`, ...) are not a backend: the only data that leaves the PC is the conversation with the configured chat URL ([security.md](security.md)).
+
+## Local model (`backend: local`)
+
+The model runs on this machine and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`.
+
+```json
+{
+  "backend": "local",
+  "url": "http://127.0.0.1:11434",
+  "model": "qwen2.5-coder:14b",
+  "local": { "api": "ollama", "num_ctx": 32768 }
+}
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `url` | `http://127.0.0.1:11434` | Base URL of the server. For llama.cpp's `llama-server` that is usually `http://127.0.0.1:8080`, for LM Studio `http://127.0.0.1:1234`. A path such as `/v1` may be included. |
+| `model` | first model the server lists | The model name as the server knows it: `qwen2.5-coder:14b`, `gemma3:12b`, `deepseek-coder-v2:16b`. `--model` and `CRITIQUE_MODEL` override it, as for the browser. |
+| `local.api` | `ollama` on port 11434, else `openai` | `ollama` uses Ollama's `/api/chat`; `openai` uses `/v1/chat/completions`, which llama.cpp, LM Studio, vLLM, and most other servers offer. |
+| `local.num_ctx` | 32768 for `ollama`, server default otherwise | Context window in tokens asked for per request (Ollama's `num_ctx`). Ollama's own default is a few thousand tokens, smaller than the agent's instructions, so leave this at 32768 or more if the model and the memory allow. Servers using the `openai` API set their context at startup instead. |
+| `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
+| `local.keep_alive_seconds` | server default | How long Ollama keeps the model loaded after a reply. |
+
+Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
+
+The agent's chat-size defaults are scaled to the context window: a new chat starts at about `num_ctx × 2` characters instead of 300,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
+
+A quick check that the server answers, before using the agent:
+
+```bash
+ollama pull qwen2.5-coder:14b
+critique-bot --config config.local.json --mode general --prompt "Reply with exactly one word: PONG."
+```
 
 ## Minimal file that will start
 
@@ -56,7 +97,7 @@ Comma-separated lists are OR: the first matching node is used.
 
 ---
 
-## `url` (required for `browser`)
+## `url` (required for `browser`; the server address for `local`)
 
 | | |
 | --- | --- |
@@ -182,9 +223,11 @@ Placeholder `YOUR_MODEL_NAME` in `model` is rejected.
 | Type | string |
 | Env | `CRITIQUE_MODEL` |
 | CLI | `--model` (wins over env and file) |
-| Default | `""` (browser: skip picker) |
+| Default | `""` (browser: skip picker; local: the first model the server lists) |
 
 **browser:** visible dropdown label. Empty is valid (uses whatever the signed-in session already has selected). Placeholder `YOUR_MODEL_NAME` is rejected.
+
+**local:** the model name the server knows (`ollama list` shows them), for example `qwen2.5-coder:14b` or `gemma3:12b`.
 
 ---
 
@@ -455,8 +498,9 @@ Do not commit this file if it contains a private chat URL or a `storage_state` p
 ## Validation the loader enforces
 
 - File exists and is a JSON object.
-- If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui`).
-- `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
+- If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui` / `chat`) or `local` (or `ollama` / `llama.cpp` / `lmstudio` / `vllm` / `openai-compatible`).
+- `browser`: `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
+- `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `ollama` or `openai`; `local.num_ctx` and `local.keep_alive_seconds` are > 0 when set.
 - If `storage_state` is set, that path is a file.
 - Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 

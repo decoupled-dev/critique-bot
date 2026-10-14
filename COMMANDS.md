@@ -83,7 +83,7 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 
 | Flag | Modes | Meaning |
 | --- | --- | --- |
-| `--config PATH` | all | JSON config (required, except `crit` after `.bot/settings.json` has stored it). See [`config.example.json`](config.example.json). |
+| `--config PATH` | all | JSON config (required, except `crit` after `.bot/settings.json` has stored it). See [`config.example.json`](config.example.json), or [`config.local.example.json`](config.local.example.json) for a model served on this PC (`backend: local`). |
 | `--mode {review,general,chat,agent}` | all | Mode. Default: `review`, or `general` if `--prompt` / `--prompt-file` is set. `crit` is `--mode agent`. |
 | `--prompt TEXT` | general, chat, agent | Prompt text. First message in chat; the task in agent. |
 | `--prompt-file PATH` | general, chat, agent | Read prompt text from a file. |
@@ -95,13 +95,14 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--write-patch PATH` | review | Where to write a generated git diff (default: `diff.patch`). |
 | `--prompt-template PATH` | review | Template with a `{patch}` placeholder. |
 | `--output-dir DIR` | all | Where replies and failure screenshots go. Default: `out`. |
-| `--headed` | all | Show the Edge window. A missing profile does this on its own. |
+| `--headed` | all | Show the Edge window. A missing profile does this on its own. Does nothing with `backend: local`. |
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
-| `--model NAME` | all | Override the config/env model (visible dropdown label). |
+| `--model NAME` | all | Override the config/env model (visible dropdown label, or the local model's name such as `qwen2.5-coder:14b`). |
 | `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
 | `--yes` / `--auto` (`crit -y`) | agent | Auto mode: run edits, commands, and web fetches without asking; risky commands still ask. Same as `"permissions": "auto"` in `.bot/settings.json`. |
 | `--plan` | agent | Plan mode: read the code and send a plan; you approve it before anything changes. |
 | `--permission-mode MODE` | agent | Start in `ask`, `edits` (accept file edits), `auto`, or `plan`. |
+| `--role NAME` | agent | The role crit plays: `code-reviewer`, `aosp-expert`, `expert-developer`, `ai-expert`, `test-engineer`, `android-app-engineer`, or `generic` (any spelling, e.g. `AOSPExpert`). Stored in `.bot/settings.json` when the project has none yet; otherwise for this run only. The first interactive `crit` in a folder asks. |
 | `--max-rounds N` | agent | Optional cap on tool rounds per task. Omit to run until the model stops. |
 | `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `--label NAME` | submit | Override the job slug in the queue filename. Default: GitLab MR IID, CI job id, or `local`. |
@@ -191,7 +192,8 @@ Inside a session (the `>` prompt):
 | `/mode [name]` | List the modes or switch (`/permissions` is the same) |
 | `/plan`, `/auto` | Switch to plan mode or auto mode |
 | `/skills [name ...]` | List skills, or pin some for this session (`/skills off name` unpins) |
-| `/status` | Model, shell, folder, mode, pinned skills, background commands |
+| `/role [name]` | List the roles, or switch this project's role (kept in `.bot/settings.json`; the next task starts a new chat) |
+| `/status` | Model, shell, folder, mode, role, pinned skills, background commands |
 | `/commands` | Shell commands run this session, with exit codes, times, and retries |
 | `/shell [name]` | List the shells, or switch the default for this session |
 | `/tools` | The tools the model can call |

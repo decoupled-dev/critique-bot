@@ -693,6 +693,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="agent mode: ask (default), edits (auto-accept file edits), auto (no prompts except risky commands), plan",
     )
     parser.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "agent mode: the role crit plays in this project, which shapes the instructions: "
+            "code-reviewer, aosp-expert, expert-developer, ai-expert, test-engineer, android-app-engineer, or generic "
+            '(stored as "role" in .bot/settings.json the first time; the first interactive run asks)'
+        ),
+    )
+    parser.add_argument(
         "--logs",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -712,6 +721,7 @@ def _log_config(config) -> None:
     log.info(
         "config loaded "
         + log.kv(
+            backend=config.backend,
             url=config.url or None,
             model=config.model or "(none)",
             timeout_ms=config.timeout_ms,
@@ -1139,7 +1149,14 @@ def _main_agent(args: argparse.Namespace) -> int:
     """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
     from critique_bot.agent import run_agent
     from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home, update_settings
-    from critique_bot.welcome import pick_theme, stdio_is_tty
+    from critique_bot.roles import ROLE_IDS, normalize_role
+    from critique_bot.welcome import pick_role, pick_theme, stdio_is_tty
+
+    role_flag: str | None = None
+    if getattr(args, "role", None):
+        role_flag = normalize_role(args.role)
+        if role_flag is None:
+            return _config_error(ConfigError(f"--role {args.role!r} is not one of: {', '.join(ROLE_IDS)}"))
 
     workspace = Path(args.repo_dir).resolve()
     words = [part for part in (args.paths or []) if part]
@@ -1193,6 +1210,15 @@ def _main_agent(args: argparse.Namespace) -> int:
         update_settings(home, theme=theme_id, syntax_preview=syntax)
     if args.config and not home.settings.get("config"):
         update_settings(home, config=str(Path(args.config).resolve()))
+    # The role is asked once per project. --role on a project without one stores it; a later
+    # --role only applies to that run. Esc on the screen means Generic for now and ask again next time.
+    if not home.settings.get("role"):
+        if role_flag is not None:
+            update_settings(home, role=role_flag)
+        elif stdio_is_tty():
+            picked = pick_role()
+            if picked is not None:
+                update_settings(home, role=picked)
 
     has_task = bool(args.prompt or args.prompt_file or words or args.files)
     config_path = Path(args.config) if args.config else home.config_file()
@@ -1206,7 +1232,7 @@ def _main_agent(args: argparse.Namespace) -> int:
             return 0
         return _config_error(
             ConfigError(
-                "no Edge config. Place config.json in the repo, or pass --config"
+                "no config.json. Place config.json in the repo, or pass --config"
             )
         )
     try:
@@ -1220,7 +1246,8 @@ def _main_agent(args: argparse.Namespace) -> int:
         return _config_error(exc)
 
     if welcome:
-        if not _welcome_login(config):
+        # A local model has no sign-in: the first run goes straight to the task.
+        if not config.is_local and not _welcome_login(config):
             return 0 if not has_task else 1
         update_settings(home, welcomed=True)
 
@@ -1255,6 +1282,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         output_dir=output_dir,
         headed=bool(args.headed),
         approve_mode=_agent_mode(args),
+        role=role_flag,
     )
 
 

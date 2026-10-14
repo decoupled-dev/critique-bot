@@ -32,6 +32,15 @@ ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
 ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
 
 BACKEND_BROWSER = "browser"
+#: A model served on this PC (Ollama, llama.cpp, LM Studio, vLLM, ...) over its HTTP API.
+BACKEND_LOCAL = "local"
+
+#: Where Ollama listens by default; the ``url`` of a local backend when none is given.
+DEFAULT_LOCAL_URL = "http://127.0.0.1:11434"
+#: ``local.api``: Ollama's own chat API, or the OpenAI-compatible chat completions API.
+LOCAL_API_OLLAMA = "ollama"
+LOCAL_API_OPENAI = "openai"
+LOCAL_APIS = (LOCAL_API_OLLAMA, LOCAL_API_OPENAI)
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
@@ -44,7 +53,11 @@ DEFAULT_MAX_ATTEMPTS = 3
 ABSOLUTE_MAX_ATTEMPTS = 20
 DEFAULT_RESULT_RETENTION = 200
 
-_BROWSER_ALIASES = frozenset({"", "browser", "web", "playwright", "ui"})
+_BROWSER_ALIASES = frozenset({"", "browser", "web", "playwright", "ui", "chat"})
+_LOCAL_ALIASES = frozenset(
+    {"local", "ollama", "llama.cpp", "llamacpp", "llama-cpp", "lmstudio", "lm-studio", "vllm", "openai-compatible", "http"}
+)
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
 class ConfigError(ValueError):
@@ -76,6 +89,21 @@ class Selectors:
     #: Optional "Continue generating" control. When set and shown after a
     #: reply ends, it is clicked once and the rest is merged into the reply.
     continue_button: str = ""
+
+
+@dataclass(frozen=True)
+class LocalConfig:
+    """The ``local`` object of ``config.json``: how a model on this PC is called."""
+
+    #: ``ollama`` (Ollama's ``/api/chat``) or ``openai`` (``/v1/chat/completions``, as llama.cpp,
+    #: LM Studio, and vLLM serve it). Empty means: ollama on port 11434, openai elsewhere.
+    api: str = ""
+    #: Context window asked for (Ollama ``num_ctx``). 0 leaves the server's default.
+    num_ctx: int = 0
+    #: Sampling temperature sent with every request. None leaves the server's default.
+    temperature: float | None = None
+    #: Seconds the model stays loaded after a reply (Ollama ``keep_alive``). 0 leaves the default.
+    keep_alive_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -112,7 +140,13 @@ class BotConfig:
     max_files: int = DEFAULT_MAX_FILES
     max_read_bytes: int = DEFAULT_MAX_READ_BYTES
     backend: str = BACKEND_BROWSER
+    local: LocalConfig = LocalConfig()
     gitlab: GitLabConfig = GitLabConfig()
+
+    @property
+    def is_local(self) -> bool:
+        """The model runs on this PC (``backend: local``): no browser, no sign-in."""
+        return self.backend == BACKEND_LOCAL
 
     @property
     def input_limits(self) -> InputLimits:
@@ -232,7 +266,7 @@ def load_config(
     if not isinstance(selectors_raw, dict):
         raise ConfigError("selectors must be a JSON object")
 
-    _reject_http_backend(raw.get("backend"))
+    backend = backend_kind(raw.get("backend"))
 
     selectors = Selectors(
         prompt_input=_clean(selectors_raw.get("prompt_input")),
@@ -302,17 +336,22 @@ def load_config(
             "model is still a placeholder. Set model in config.json "
             "or pass --model / CRITIQUE_MODEL."
         )
-    if not selectors.prompt_input:
-        raise ConfigError("selectors.prompt_input is required")
-    if not selectors.assistant_messages:
-        raise ConfigError("selectors.assistant_messages is required")
-    if not url:
-        raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
-    if PLACEHOLDER_URL in url:
-        raise ConfigError(
-            "url is still a placeholder. Copy config.example.json to config.json "
-            "and set the real chat UI URL (or set CRITIQUE_CHAT_URL)."
-        )
+    local = LocalConfig()
+    if backend == BACKEND_LOCAL:
+        url = _local_url(url or DEFAULT_LOCAL_URL, _host_list(raw.get("allowed_hosts")))
+        local = _load_local(raw.get("local"), url)
+    else:
+        if not selectors.prompt_input:
+            raise ConfigError("selectors.prompt_input is required")
+        if not selectors.assistant_messages:
+            raise ConfigError("selectors.assistant_messages is required")
+        if not url:
+            raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
+        if PLACEHOLDER_URL in url:
+            raise ConfigError(
+                "url is still a placeholder. Copy config.example.json to config.json "
+                "and set the real chat UI URL (or set CRITIQUE_CHAT_URL)."
+            )
 
     return BotConfig(
         url=url,
@@ -386,19 +425,89 @@ def load_config(
             DEFAULT_MAX_READ_BYTES,
             ABSOLUTE_MAX_READ_BYTES,
         ),
-        backend=BACKEND_BROWSER,
+        backend=backend,
+        local=local,
         gitlab=_load_gitlab(raw),
     )
 
 
-def _reject_http_backend(value: object) -> None:
-    """This build only drives a web chat UI; reject leftover HTTP backend keys."""
+def backend_kind(value: object) -> str:
+    """``browser`` or ``local`` for the ``backend`` key; anything else is an error.
+
+    ``browser`` (also ``web``, ``playwright``, ``ui``, ``chat``, or nothing) drives the chat
+    page in Edge. ``local`` (also ``ollama``, ``llama.cpp``, ``lmstudio``, ``vllm``,
+    ``openai-compatible``) calls a model served on this PC.
+    """
     key = _clean(value).lower().replace("_", "-").replace(" ", "-")
     if key in _BROWSER_ALIASES:
-        return
+        return BACKEND_BROWSER
+    if key in _LOCAL_ALIASES:
+        return BACKEND_LOCAL
     raise ConfigError(
-        f"backend {value!r} is not supported. This build only drives a web "
-        "chat UI (omit backend, or set it to browser)."
+        f"backend {value!r} is not supported. Use browser (the chat page in Edge) or local "
+        "(a model served on this PC, such as Ollama)."
+    )
+
+
+def _local_url(url: str, allowed_hosts: tuple[str, ...]) -> str:
+    """The base URL of a local model server: http(s), on this PC unless the host is in allowed_hosts.
+
+    Nothing leaves the PC but the conversation with the configured URL. A model on another
+    machine is opted into by listing its host in ``allowed_hosts``, like an internal chat site.
+    """
+    from urllib.parse import urlsplit
+
+    value = url.strip().rstrip("/")
+    if "://" not in value:
+        value = "http://" + value
+    try:
+        parts = urlsplit(value)
+    except ValueError as exc:
+        raise ConfigError(f"url {url!r} is not a valid URL: {exc}") from exc
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ConfigError(f"url {url!r} must be the http(s) address of the local model server, e.g. {DEFAULT_LOCAL_URL}")
+    if parts.username or parts.password:
+        raise ConfigError("url must not carry a user name or password")
+    host = parts.hostname.lower().strip("[]")
+    if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
+        return value
+    if any(host == allowed or host.endswith("." + allowed) for allowed in allowed_hosts):
+        log.warn(f"backend local: the model at {host} is on another machine; the conversation goes there")
+        return value
+    raise ConfigError(
+        f"backend local: {host} is not this PC. A local model is reached at localhost or 127.0.0.1 "
+        f"(e.g. {DEFAULT_LOCAL_URL}); a model on another machine must be listed in allowed_hosts."
+    )
+
+
+def _load_local(raw: object, url: str) -> LocalConfig:
+    """The ``local`` object, with ``api`` guessed from the URL when it is not set."""
+    from urllib.parse import urlsplit
+
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError("local must be a JSON object")
+    api = _clean(raw.get("api")).lower()
+    if api in ("openai-compatible", "openai_compatible", "chat-completions", "completions"):
+        api = LOCAL_API_OPENAI
+    if api and api not in LOCAL_APIS:
+        raise ConfigError(f"local.api {raw.get('api')!r} is not one of: {', '.join(LOCAL_APIS)}")
+    if not api:
+        port = urlsplit(url).port
+        api = LOCAL_API_OLLAMA if port == 11434 else LOCAL_API_OPENAI
+    temperature: float | None = None
+    if raw.get("temperature") is not None and _clean(raw.get("temperature")) != "":
+        temperature = _non_negative_float("local.temperature", raw.get("temperature"), 0.0)
+    return LocalConfig(
+        api=api,
+        num_ctx=_positive_int("local.num_ctx", raw.get("num_ctx"), 0) if _clean(raw.get("num_ctx")) else 0,
+        temperature=temperature,
+        keep_alive_seconds=(
+            _positive_int("local.keep_alive_seconds", raw.get("keep_alive_seconds"), 0)
+            if _clean(raw.get("keep_alive_seconds"))
+            else 0
+        ),
     )
 
 

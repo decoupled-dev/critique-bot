@@ -102,17 +102,16 @@ class BackendConfigTests(unittest.TestCase):
         config = load_config(path)
         self.assertEqual(config.backend, "browser")
 
-    def test_http_backend_is_rejected(self) -> None:
-        from critique_bot.config import ConfigError
-
+    def test_ollama_backend_is_local(self) -> None:
         path = self.folder / "config.json"
         path.write_text(
             json.dumps({"backend": "ollama", "model": "llama3"}),
             encoding="utf-8",
         )
-        with self.assertRaises(ConfigError) as ctx:
-            load_config(path)
-        self.assertIn("not supported", str(ctx.exception))
+        config = load_config(path)
+        self.assertEqual(config.backend, "local")
+        self.assertEqual(config.url, "http://127.0.0.1:11434")
+        self.assertEqual(config.local.api, "ollama")
 
     def test_unknown_backend_rejected(self) -> None:
         path = _write_config(self.folder, {"backend": "palm"})

@@ -1,8 +1,9 @@
-"""First-run terminal welcome: text style, then the Edge sign-in window.
+"""First-run terminal welcome: text style, the role for this project, then the Edge sign-in window.
 
 The screen is the same shape as a coding agent's first launch: a banner,
 a small scene, a style list, and a live preview of a diff. Arrow keys move
 the list. Enter keeps the highlighted style. ``/theme`` opens it again.
+The role screen that follows has the same shape; ``/role`` changes the role later.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from critique_bot import log
+from critique_bot import log, roles
 
 COMMAND = "crit"
 _RESET = "\033[0m"
@@ -245,6 +246,83 @@ def pick_theme(
                 syntax = not syntax
             elif key == "enter":
                 return THEMES[cursor].id, syntax
+            elif key == "cancel":
+                return None
+    finally:
+        if clear:
+            emit("\033[?25h")
+
+
+def render_roles(*, cursor: int, committed: int | None) -> str:
+    """The role frame. ``cursor`` is the highlighted role; ``committed`` the one stored, if any."""
+    from critique_bot import __version__
+
+    lines = [
+        _fg(217, 119, 87) + "✻ " + _RESET + _BOLD + f"Welcome to {COMMAND}" + _RESET + _DIM + f" v{__version__}" + _RESET,
+        _DIM + ("·" * 48) + _RESET,
+        "",
+        _BOLD + "Choose the role " + COMMAND + " plays in this project" + _RESET,
+        _DIM + "It shapes the instructions the model gets. Asked once per project; /role changes it later" + _RESET,
+        "",
+    ]
+    for index, role in enumerate(roles.ROLES):
+        if index == cursor:
+            mark = ">"
+        elif committed is not None and index == committed:
+            mark = "✓"
+        else:
+            mark = " "
+        label = role.label
+        if index == cursor:
+            label = _BOLD + label + _RESET
+        lines.append(f" {mark} {label}")
+    lines.extend(
+        [
+            "",
+            _DIM + ("─" * 48) + _RESET,
+            roles.ROLES[cursor].summary,
+            _DIM + ("─" * 48) + _RESET,
+            _DIM + "Up/Down to move · Enter to keep · Esc for Generic" + _RESET,
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def pick_role(
+    *,
+    selected: str | None = None,
+    read_key: Callable[[], str] | None = None,
+    write: Callable[[str], None] | None = None,
+) -> str | None:
+    """Let the user highlight a role. Enter returns its id; Esc returns ``None``."""
+    ids = list(roles.ROLE_IDS)
+    stored = roles.normalize_role(selected) if selected else None
+    committed = ids.index(stored) if stored in ids else None
+    cursor = committed if committed is not None else ids.index(roles.GENERIC)
+    reader = read_key or _read_key
+    clear = write is None and stdio_is_tty()
+
+    def emit(text: str) -> None:
+        if write is not None:
+            write(text)
+            return
+        log.print_safe(text, end="", flush=True)
+
+    try:
+        if clear:
+            emit("\033[?25l")
+        while True:
+            frame = render_roles(cursor=cursor, committed=committed)
+            if clear:
+                emit("\033[H\033[2J")
+            emit(frame)
+            key = reader()
+            if key == "up":
+                cursor = max(0, cursor - 1)
+            elif key == "down":
+                cursor = min(len(ids) - 1, cursor + 1)
+            elif key == "enter":
+                return ids[cursor]
             elif key == "cancel":
                 return None
     finally:

@@ -1,7 +1,11 @@
-"""Browser chat UI backend.
+"""The model behind crit: a web chat page in Edge, or a model served on this PC.
 
-Prompt composition, the job queue, and output writing stay above this layer.
-The session is ``send(prompt) -> reply`` against a web chat page in Edge.
+Prompt composition, the agent loop, the job queue, and output writing stay above
+this layer. They see one interface: :class:`ChatProvider` opens the backend and
+hands out :class:`ChatSession` objects, and a session is ``send(prompt) -> reply``
+plus ``new_chat`` and ``stop_generation``. :func:`open_provider` picks the backend
+from ``backend`` in ``config.json``: ``browser`` (this module) or ``local``
+(:mod:`critique_bot.local_model`: Ollama, llama.cpp, LM Studio, vLLM, ...).
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from dataclasses import replace
 from typing import Any
 
 from critique_bot import log
-from critique_bot.config import BotConfig
+from critique_bot.config import BACKEND_LOCAL, BotConfig
 
 #: How long the first-login window stays open. Longer than a normal turn so
 #: SSO and a second factor can finish before the window closes.
@@ -21,7 +25,7 @@ _LOGIN_WINDOW_MS = 600_000
 
 
 class ChatSession:
-    """One conversation (one browser tab)."""
+    """One conversation: one browser tab, or one message list sent to a local model."""
 
     page: Any = None
     #: How the last reply ended. Callers can distinguish a reply the UI
@@ -50,8 +54,9 @@ class ChatSession:
 
 
 class ChatProvider:
-    """Process-level Edge resources."""
+    """Process-level backend resources: the Edge process, or nothing for a local model."""
 
+    #: More than one session may run at the same time (helper tabs, parallel review jobs).
     can_parallelize: bool = False
 
     def session(
@@ -73,6 +78,13 @@ class ChatProvider:
 
 
 def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
+    """The backend ``config.backend`` names, not started yet (use it as a context manager)."""
+    if config.backend == BACKEND_LOCAL:
+        from critique_bot.local_model import LocalModelProvider
+
+        if headed:
+            log.info("--headed does nothing with a local model: there is no browser")
+        return LocalModelProvider(config)
     return BrowserProvider(config, headed=headed)
 
 

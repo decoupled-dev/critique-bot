@@ -1,0 +1,20 @@
+{
+  "backend": "local",
+  "url": "http://127.0.0.1:11434",
+  "model": "qwen2.5-coder:14b",
+  "local": {
+    "api": "ollama",
+    "num_ctx": 32768,
+    "temperature": 0.2
+  },
+  "reply_start_ms": 120000,
+  "reply_stall_ms": 90000,
+  "reply_max_ms": 1200000,
+  "max_prompt_chars": 60000,
+  "max_file_chars": 16000,
+  "max_files": 40,
+  "queue_dir": ".critique-queue",
+  "min_interval_seconds": 0,
+  "interval_jitter_seconds": 0,
+  "max_parallel_tabs": 1
+}

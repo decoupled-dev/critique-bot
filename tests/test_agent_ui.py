@@ -277,16 +277,20 @@ class TextTests(_Base):
         agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5", approve_mode="auto")
         agent_ui.welcome_header(version="1.2")
         self.assertEqual(self.text(), f"crit v1.2 · {Path('/w')} · model: ChatGPT 5.5 · mode: auto\n")
+        agent_ui.configure(role="AOSPExpert")
+        agent_ui.welcome_header(version="1.2")
+        self.assertTrue(self.text().endswith("· mode: auto · role: AOSP Expert\n"))
 
     def test_header_box_on_a_terminal(self) -> None:
         con = _console(terminal=True)
         agent_ui.set_console(con)
-        agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5")
+        agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5", role="code-reviewer")
         agent_ui.welcome_header(version="1.2")
         text = con.export_text()
         self.assertIn("✻ Welcome to crit v1.2", text)
         self.assertIn("/help for commands", text)
         self.assertIn("model: ChatGPT 5.5", text)
+        self.assertIn("role: Code Reviewer · /role to change", text)
         self.assertIn("╭", text)
 
     def test_no_color_keeps_layout_without_escape_colors(self) -> None:
@@ -342,6 +346,29 @@ class InputTests(_Base):
         self.assertIn("auto mode on", text)
         self.assertEqual(agent_ui.approve_mode(), "auto")
         self.assertIn("Update", text)
+
+    def test_role_command_lists_sets_and_queues_a_reseed(self) -> None:
+        (self.root / ".bot").mkdir(exist_ok=True)
+        (self.root / ".bot" / "settings.json").write_text("{}", encoding="utf-8")
+        reader = self._reader("/role", "/role wizard", "/role AOSPExpert", "/role aosp-expert", "fix it")
+        self.assertEqual(agent_ui.read_message(reader=reader), "fix it")
+        text = self.text()
+        self.assertIn("code-reviewer", text)
+        self.assertIn("Unknown role wizard", text)
+        self.assertIn("Role: AOSP Expert, kept in .bot/settings.json", text)
+        self.assertIn("(already)", text)
+        self.assertEqual(agent_ui.current_role(), "aosp-expert")
+        self.assertEqual(agent_ui.take_role_change(), "aosp-expert")
+        self.assertIsNone(agent_ui.take_role_change())
+        import json
+
+        settings = json.loads((self.root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(settings["role"], "aosp-expert")
+
+    def test_role_command_without_a_bot_folder_keeps_it_for_the_session(self) -> None:
+        self.assertEqual(agent_ui.read_message(reader=self._reader("/role test-engineer", "go")), "go")
+        self.assertIn("Role: Test Engineer, for this session", self.text())
+        self.assertEqual(agent_ui.current_role(), "test-engineer")
 
     def test_new_and_exit_tokens(self) -> None:
         self.assertEqual(agent_ui.read_message(reader=self._reader("/new")), agent_ui.NEW_CHAT)

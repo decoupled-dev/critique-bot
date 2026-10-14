@@ -265,7 +265,7 @@ crit
 crit "create a hello.txt file that says hello"
 ```
 
-The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. For chatgpt.com the window closes by itself once the session cookie is saved; for other sites, close it when you are signed in. If the chat page later shows a **Log in** button, crit warns that it is not signed in: a signed-out ChatGPT answers with a smaller model and may return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
+The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, asks which role crit plays in this project (see [Roles](#roles)), then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. For chatgpt.com the window closes by itself once the session cookie is saved; for other sites, close it when you are signed in. If the chat page later shows a **Log in** button, crit warns that it is not signed in: a signed-out ChatGPT answers with a smaller model and may return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
 
 The task uses the chat URL, selectors, and browser profile from the clone's `config.json`. Tasks stay headless. Add `--headed` when you want the window on a later task:
 
@@ -286,7 +286,7 @@ crit undo
 
 ## The crit screen
 
-Each session opens with a box that shows the folder, model, shell, and mode. Type at the `>` prompt:
+Each session opens with a box that shows the folder, model (and, for a local model, the server it runs on), shell, mode, and role. Type at the `>` prompt:
 
 | Key | Effect |
 | --- | --- |
@@ -310,7 +310,8 @@ Each session opens with a box that shows the folder, model, shell, and mode. Typ
 | `/plan` | Plan mode for the next tasks. |
 | `/auto` | Auto mode for the rest of the session. |
 | `/skills [name ...]` | List the skills, or pin some for every task this session. `/skills off name` unpins. |
-| `/status` | Model, shell, folder, mode, pinned skills, and background commands. |
+| `/role [name]` | Show the roles, or switch this project's role (see [Roles](#roles)). The choice is kept in `.bot/settings.json`, and the next task starts a new chat with the role's instructions. |
+| `/status` | Model, shell, folder, mode, role, pinned skills, and background commands. |
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |
 | `/commands` | The shell commands run this session: exit code, time, shell, and whether one was retried or moved to the background. |
@@ -323,13 +324,29 @@ Ctrl+C during a task ends that task as INTERRUPTED. It stops the running command
 
 ### How a task runs
 
-The instructions from [`prompts/agent.txt`](../prompts/agent.txt) go out in front of the first task, in the same message, so the first reply already works on it. The model answers with `<tool_call>` blocks. crit runs them and sends the results back, each followed by a short STATE block (files read, files changed, last command), until the model finishes.
+The instructions from [`prompts/agent.txt`](../prompts/agent.txt) go out in front of the first task, in the same message, so the first reply already works on it. The role's paragraph (see [Roles](#roles)) follows them. The model answers with `<tool_call>` blocks. crit runs them and sends the results back, each followed by a short STATE block (files read, files changed, last command), until the model finishes.
 
 - A question with no file change is answered in words, and that task ends.
 - A reply that answers and also prints tool calls shows the answer and runs the calls.
 - A refusal, a "what should I change?", or a promise to keep working is sent back until the model calls a tool or finishes. Three in a row are sent back; the next one ends the task as FAILED.
 - A real question that needs your decision is shown to you, and your answer goes back to the model. The model can also ask with the `ask_user` tool. With no terminal, the model is told no user is available and decides itself.
 - COMPLETED, DONE, or a reply that no edit is needed ends the task. After an edit, a set check command runs first (see `check_command` below).
+
+### Roles
+
+A role is the persona the instructions are shaped around. The first interactive `crit` in a folder asks for one on a screen like the text-style one (arrows move, Enter keeps, Esc means Generic for now and asks again next time), and stores it as `"role"` in `.bot/settings.json`, so it is asked once per project. The role's paragraph goes out right after the standard instructions in every new chat. The header box and `/status` show the current role.
+
+| Role | `"role"` | What changes |
+| --- | --- | --- |
+| Code Reviewer | `code-reviewer` | Reads the diff, callers, and tests; reports findings by severity (correctness, security, API breaks, missing tests, conventions) with file, line, and the smallest fix. Rewrites code only when the task asks for a fix. |
+| AOSP Expert | `aosp-expert` | Android platform work: frameworks, system services, HALs, SELinux, Soong, vendor partitions, Automotive. Keeps changes in the owning layer and respects the Treble boundary. Pins the `aosp` skill. |
+| Expert Developer | `expert-developer` | Complete, production-grade changes that follow the codebase's own patterns, with tests and a passing build. |
+| AI Expert | `ai-expert` | Software that uses ML models and LLM APIs: prompts, tool calling, agents, retrieval, evaluation, on-device inference. Treats model output as untrusted. |
+| Test Engineer | `test-engineer` | Tests that prove behavior in the project's framework; a failing test first for a bug; production code changes only when a test exposes a bug. |
+| Android App Engineer | `android-app-engineer` | Kotlin, Jetpack, Compose, Hilt, coroutines, Gradle; lifecycle, permissions, process death. Pins the `android` skill. |
+| Generic | `generic` | The standard instructions only. The default when nothing is stored. |
+
+`crit --role NAME` sets the role for one run (`AOSPExpert`, `aosp-expert`, and `aosp expert` all work). On a project with no stored role it is stored too; later it applies to that run only. `/role NAME` during a session stores the role and starts a new chat for the next task. A piped run (no terminal) never asks: it uses the stored role or Generic. The text of each role is a `<<<ROLE_...>>>` section of [`prompts/agent.txt`](../prompts/agent.txt).
 
 ### Modes
 
@@ -424,9 +441,23 @@ crit then stops whatever the page is still writing and tries again: once in the 
 
 Before moving, crit asks the old chat for a **handoff note** in its own words: the task, what it learned about the code (files, symbols, line numbers), what it changed and why, what is left, and what failed. The new chat gets the instructions, crit's summary of the task, that note, the message in progress, and a list of the earlier tasks of the session with the files each one changed. At a task boundary only the list is needed. `"handoff_notes": false` skips the note and saves one round trip.
 
+### Use a local model instead of the chat page
+
+The model behind crit is an adapter chosen by `backend` in `config.json`. `browser` (the default) drives the chat page in Edge. `local` calls a model served on this PC, such as Qwen or Gemma in Ollama, or anything behind an OpenAI-compatible server (llama.cpp, LM Studio, vLLM). The agent, the roles, the skills, the modes, and the review commands are the same with both; only the way a message reaches the model changes.
+
+```bash
+ollama pull qwen2.5-coder:14b
+cp config.local.example.json config.json
+crit "explain the build setup"
+```
+
+With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder:14b · local at 127.0.0.1:11434`). The first run in a folder still asks for the text style and the role. Helper chat tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new chat is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
+
+A local model has a smaller context window than a hosted one, so crit starts a new chat sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). Set `local.num_ctx` in `config.json` to what the model and the memory allow; `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
+
 ### Privacy
 
-Only the conversation with the chat URL leaves this PC. The browser is filtered to the chat's hosts on every channel (page loads, WebSockets, popups, service workers, WebRTC), `web_fetch` is off unless turned on, commands that can send data out do not run, tool telemetry is off, and known secrets are redacted before a message goes to the chat. Builds may still download dependencies unless `"offline": true`. Details and limits: [security.md](security.md).
+Only the conversation with the chat URL leaves this PC. With `backend: local` nothing leaves it at all: the model is called on localhost, and a model on another machine must be opted into through `allowed_hosts`. The browser is filtered to the chat's hosts on every channel (page loads, WebSockets, popups, service workers, WebRTC), `web_fetch` is off unless turned on, commands that can send data out do not run, tool telemetry is off, and known secrets are redacted before a message goes to the chat. Builds may still download dependencies unless `"offline": true`. Details and limits: [security.md](security.md).
 
 ### How replies are read
 
@@ -502,13 +533,14 @@ On Linux and macOS the same lines use `./gradlew`.
 | Key | Effect |
 | --- | --- |
 | `check_command` | The finish line after a real edit. A `Test with:` or `Test command:` line in `AGENT.md` is used when this key is absent; this key wins when both are set. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. When the task ends, the program prints the on-disk diff once. Example: `".\\gradlew.bat testDebugUnitTest"` or `"./gradlew testDebugUnitTest"`. |
-| `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller. Values under 4000 are ignored. |
+| `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller; with a local model, `num_ctx / 2`. Values under 4000 are ignored. |
 | `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first task then goes out with only the environment and project notes in front of it. |
 | `theme` | Text style chosen on the welcome screen: `auto`, `dark`, `light`, `dark-colorblind`, `light-colorblind`, `dark-ansi`, or `light-ansi`. The session screen uses the same colors. `/theme` changes it. |
 | `permissions` | The starting mode: `"ask"` (the default), `"edits"`, `"auto"` (like `--yes`), or `"plan"`. See [Modes](#modes). |
 | `confirm_risky` | `false` lets auto mode run risky commands (a broad delete, `git reset --hard`, a push, a flash) without asking. Default `true`. |
 | `auto_questions` | `"ask"` keeps showing the model's questions in auto mode. The default, `"decide"`, tells the model to choose itself. |
-| `skills` | Skills sent with every task, for example `["aosp", "aaos"]`. |
+| `skills` | Skills sent with every task, for example `["aosp", "aaos"]`. The role's own skills (see [Roles](#roles)) are added to these. |
+| `role` | The role crit plays in this project: `code-reviewer`, `aosp-expert`, `expert-developer`, `ai-expert`, `test-engineer`, `android-app-engineer`, or `generic`. Asked on the first interactive run; `/role` and `--role` change it. See [Roles](#roles). |
 | `auto_skills` | `false` stops choosing skills from the task and project files; pinned skills still go. Default `true`. |
 | `max_skills` | How many skills go with one task. Default 2. |
 | `network_commands` | `"block"` (the default): commands that can send data off the PC do not run. `"ask"`: they run after a yes, asked in every mode. See [security.md](security.md). |
@@ -522,7 +554,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 | `shell` | Default shell for `run_command`: `auto` (the default: PowerShell 7, then Windows PowerShell 5.1 on Windows; bash, then sh elsewhere), `pwsh`, `powershell`, `cmd`, `bash` (Git Bash on Windows), `sh`, or `zsh`. A shell that is not installed falls back to `auto`. `/shell` changes it for one session. |
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
-| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 300000; values under 10000 are ignored. |
+| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 300000, or `num_ctx × 2` with a local model; values under 10000 are ignored. |
 | `compact_after_turns` | Start a new chat after this many messages in one chat. Default 60; at least 5. |
 | `compact_after_minutes` | Start a new chat after it has been open this many minutes. Default 60; at least 5. |
 | `handoff_notes` | `false` skips asking the old chat for a handoff note before moving to a new one. Default `true`. |

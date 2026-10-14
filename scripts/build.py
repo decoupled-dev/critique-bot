@@ -148,9 +148,9 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     if internal.is_dir():
         shutil.copytree(internal, payload / "_internal", symlinks=True)
     shutil.copy2(ROOT / "config.example.json", payload / "config.example.json")
-    extra_cfg = ROOT / "config.chatgpt.example.json"
-    if extra_cfg.is_file():
-        shutil.copy2(extra_cfg, payload / extra_cfg.name)
+    for extra_cfg in (ROOT / "config.chatgpt.example.json", ROOT / "config.local.example.json"):
+        if extra_cfg.is_file():
+            shutil.copy2(extra_cfg, payload / extra_cfg.name)
     for extra in (
         ROOT / "packaging" / "critique-bot-worker.service",
         ROOT / "packaging" / "worker-start.ps1",

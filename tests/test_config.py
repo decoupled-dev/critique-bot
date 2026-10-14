@@ -25,7 +25,7 @@ from critique_bot.config import (
     _frozen_root,
     _non_negative_float,
     _positive_int,
-    _reject_http_backend,
+    backend_kind,
     _resolve_queue_dir,
     _resolve_user_data_dir,
 )
@@ -215,15 +215,14 @@ class ParseHelpersTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             _non_negative_float("n", -0.1, 1.0)
 
-    def test_reject_http_backends(self) -> None:
-        _reject_http_backend("")
-        _reject_http_backend(None)
-        _reject_http_backend("browser")
-        _reject_http_backend("WEB")
-        _reject_http_backend("playwright")
-        for value in ("ollama", "openai", "openai-compatible", "palm"):
+    def test_backend_kind(self) -> None:
+        for value in ("", None, "browser", "WEB", "playwright", "ui", "chat"):
+            self.assertEqual(backend_kind(value), "browser", value)
+        for value in ("local", "Ollama", "llama.cpp", "lmstudio", "vllm", "openai-compatible"):
+            self.assertEqual(backend_kind(value), "local", value)
+        for value in ("openai", "anthropic", "palm"):
             with self.assertRaises(ConfigError) as ctx:
-                _reject_http_backend(value)
+                backend_kind(value)
             self.assertIn("not supported", str(ctx.exception))
 
     def test_resolve_queue_dir(self) -> None:
@@ -337,8 +336,8 @@ class LoadConfigErrorTests(EnvIsolated):
             load_config(path)
         self.assertIn("storage_state", str(ctx.exception))
 
-    def test_http_backend_rejected(self) -> None:
-        path = self._write({"backend": "ollama", "model": "llama3"})
+    def test_hosted_api_backend_rejected(self) -> None:
+        path = self._write({"backend": "openai", "model": "gpt-4o"})
         with self.assertRaises(ConfigError) as ctx:
             load_config(path)
         self.assertIn("not supported", str(ctx.exception))

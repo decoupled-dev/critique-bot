@@ -355,5 +355,74 @@ class SkillTests(unittest.TestCase):
         self.assertNotIn("android-testing", session.sent[0])
 
 
+class _Restartable(_Scripted):
+    """A scripted chat page that can open a new conversation."""
+
+    def __init__(self, replies: list[str]) -> None:
+        super().__init__(replies)
+        self.restarts = 0
+
+    def new_chat(self) -> bool:
+        self.restarts += 1
+        return True
+
+
+class RoleTests(_Base):
+    def setUp(self) -> None:
+        super().setUp()
+        # /role saves to the UI's workspace; keep that in the temp folder, never the repo's .bot.
+        agent_ui.configure(workspace=self.root)
+
+    def test_role_skills_go_with_every_task(self) -> None:
+        session = _Scripted(["Fine."])
+        _loop(session, self.root, "what does this file do?", approve_mode="auto", settings={"role": "AOSPExpert"})
+        self.assertIn("=== skill: aosp ===", session.sent[0])
+        session = _Scripted(["Fine."])
+        _loop(session, self.root, "what does this file do?", approve_mode="auto", settings={"role": "aosp-expert"}, role="generic")
+        self.assertNotIn("=== skill: aosp ===", session.sent[0])
+
+    def test_role_command_reseeds_the_next_task_in_a_new_chat(self) -> None:
+        tasks = iter(["/role test-engineer", "what test is missing?", None])
+        session = _Restartable(["Fine.", "Also fine."])
+        seeds: list[str] = []
+
+        def reseed(role_id: str) -> str:
+            seeds.append(role_id)
+            return f"SEED FOR {role_id}\n\nReply with exactly READY."
+
+        _loop(
+            session,
+            self.root,
+            "what does this file do?",
+            approve_mode="auto",
+            seed="SEED FOR generic\n\nReply with exactly READY.",
+            reseed=reseed,
+            read_message=lambda: next(tasks),
+            settings={"role": "generic"},
+        )
+        self.assertEqual(seeds, ["test-engineer"])
+        self.assertEqual(session.restarts, 1)
+        self.assertTrue(session.sent[0].startswith("SEED FOR generic"))
+        self.assertTrue(session.sent[1].startswith("SEED FOR test-engineer"), session.sent[1][:80])
+        self.assertNotIn("exactly READY", session.sent[1])
+        self.assertIn("what test is missing?", session.sent[1])
+        self.assertEqual(agent_ui.current_role(), "test-engineer")
+
+    def test_role_command_without_a_new_chat_prefixes_the_next_task(self) -> None:
+        tasks = iter(["/role code-reviewer", "what does the diff do?", None])
+        session = _Scripted(["Fine.", "Also fine."])
+        _loop(
+            session,
+            self.root,
+            "what does this file do?",
+            approve_mode="auto",
+            seed="SEED FOR generic\n\nReply with exactly READY.",
+            reseed=lambda role_id: f"SEED FOR {role_id}",
+            read_message=lambda: next(tasks),
+        )
+        self.assertTrue(session.sent[1].startswith("SEED FOR code-reviewer"), session.sent[1][:80])
+        self.assertIn("what does the diff do?", session.sent[1])
+
+
 if __name__ == "__main__":
     unittest.main()

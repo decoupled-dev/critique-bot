@@ -33,7 +33,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from critique_bot import log
+from critique_bot import log, roles
 
 NEW_CHAT = "/new"
 
@@ -194,6 +194,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/auto": "Auto mode: edits and commands run without asking (risky ones still ask)",
     "/permissions": "Same as /mode",
     "/skills": "List skills; /skills <name> pins one for this session, /skills off <name> unpins",
+    "/role": "Show or set the role for this project: code-reviewer, aosp-expert, expert-developer, ai-expert, test-engineer, android-app-engineer, generic",
     "/status": "Model, shell, folder, and background commands",
     "/shell": "Show or switch the default shell",
     "/tools": "List the tools the model can call",
@@ -242,6 +243,10 @@ class UIState:
     tools: tuple[str, ...] = ()
     #: Skills /skills pinned for this session; they go with every task.
     pinned_skills: list[str] = field(default_factory=list)
+    #: The role (roles.ROLE_IDS) the instructions are shaped around.
+    role: str = "generic"
+    #: A role chosen with /role that the chat has not been re-seeded for yet.
+    role_changed: str | None = None
     last_error: str = ""
     # live region
     waiting_explicit: bool = False
@@ -288,6 +293,7 @@ def configure(
     cache_dir: Path | None = None,
     session_shell: Any = None,
     tools: Iterable[str] | None = None,
+    role: Any = None,
 ) -> UIState:
     """Set what the header, toolbar, and slash commands show. ``None`` keeps a value."""
     global _console, _prompt_session, _file_index
@@ -315,6 +321,8 @@ def configure(
             _state.session_shell = session_shell
         if tools is not None:
             _state.tools = tuple(tools)
+        if role is not None:
+            _state.role = roles.normalize_role(role) or roles.GENERIC
     return _state
 
 
@@ -342,6 +350,18 @@ def cycle_mode() -> str:
 
 def pinned_skills() -> list[str]:
     return list(_state.pinned_skills)
+
+
+def current_role() -> str:
+    """The role id the session runs as (``generic`` until configured)."""
+    return _state.role
+
+
+def take_role_change() -> str | None:
+    """The role /role switched to since the last call, or None. The agent loop re-seeds the chat."""
+    with _lock:
+        chosen, _state.role_changed = _state.role_changed, None
+    return chosen
 
 
 def set_console(console: Console | None) -> None:
@@ -423,6 +443,8 @@ def welcome_header(*, version: str | None = None) -> None:
         if st.shell_label:
             parts.append(f"shell: {st.shell_label}")
         parts.append(f"mode: {st.approve_mode}")
+        if st.role != roles.GENERIC:
+            parts.append(f"role: {roles.role_label(st.role)}")
         _print(Text(" · ".join(parts)))
         return
     body = Text()
@@ -437,6 +459,7 @@ def welcome_header(*, version: str | None = None) -> None:
     if st.shell_label:
         rows.append(("shell", st.shell_label))
     rows.append(("mode", mode + " · shift+tab to switch"))
+    rows.append(("role", roles.role_label(st.role) + " · /role to change"))
     for index, (label, value) in enumerate(rows):
         body.append(f"  {label}: ", style=_style("dim"))
         body.append(value)
@@ -1884,6 +1907,8 @@ def handle_command(word: str, rest: str = "") -> None:
         set_mode("auto")
     elif word == "/skills":
         _skills_command(rest)
+    elif word == "/role":
+        _role_command(rest)
     elif word == "/status":
         print_status_table()
     elif word == "/shell":
@@ -1906,6 +1931,48 @@ def _mode_command(rest: str) -> None:
         note("bad", f"Unknown mode {word}. Use one of: {', '.join(MODES)}.")
         return
     set_mode(word)
+
+
+def _role_command(rest: str) -> None:
+    """``/role`` lists the roles; ``/role <name>`` stores it for this project and re-seeds the next chat."""
+    word = rest.strip()
+    if not word:
+        for role in roles.ROLES:
+            current = role.id == _state.role
+            mark = glyphs().pointer if current else " "
+            line = Text(f" {mark} {role.id:<21}", style="bold" if current else _style("dim"))
+            line.append(role.summary, style=_style("dim"))
+            _print(line)
+        _print(Text("   /role <name> to switch; it is kept in .bot/settings.json", style=_style("dim")))
+        return
+    chosen = roles.normalize_role(word)
+    if chosen is None:
+        note("bad", f"Unknown role {word}. Use one of: {', '.join(roles.ROLE_IDS)}.")
+        return
+    if chosen == _state.role:
+        note("note", f"Role: {roles.role_label(chosen)} (already).")
+        return
+    with _lock:
+        _state.role = chosen
+        _state.role_changed = chosen
+    saved = _save_setting(role=chosen)
+    where = "kept in .bot/settings.json" if saved else "for this session"
+    note("note", f"Role: {roles.role_label(chosen)}, {where}. The next task starts a new chat with its instructions.")
+
+
+def _save_setting(**values: Any) -> bool:
+    """Write ``values`` to this project's ``.bot/settings.json``; False when there is none."""
+    try:
+        from critique_bot.bot_home import find_bot_home, update_settings
+
+        home = find_bot_home(_state.workspace)
+        if home is None:
+            return False
+        update_settings(home, **values)
+        return True
+    except Exception as exc:
+        log.warn(f"could not save settings: {exc}")
+        return False
 
 
 def _skills_command(rest: str) -> None:
@@ -2004,6 +2071,7 @@ def print_status_table() -> None:
     table.add_row("cwd", str(getattr(_state.session_shell, "cwd", None) or _state.workspace))
     table.add_row("workspace", str(_state.workspace))
     table.add_row("mode", MODE_LABELS.get(_state.approve_mode, _state.approve_mode))
+    table.add_row("role", roles.role_label(_state.role))
     if _state.pinned_skills:
         table.add_row("skills", ", ".join(_state.pinned_skills))
     history = list(getattr(_state.session_shell, "history", None) or [])

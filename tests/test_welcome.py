@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from critique_bot.welcome import ask_login, pick_theme, render_welcome
+from critique_bot.welcome import ask_login, pick_role, pick_theme, render_roles, render_welcome
 
 
 class WelcomeTests(unittest.TestCase):
@@ -35,6 +35,41 @@ class WelcomeTests(unittest.TestCase):
         self.assertTrue(ask_login(prompt=lambda _label: "y", write=lambda _text: None))
         self.assertFalse(ask_login(prompt=lambda _label: "n", write=lambda _text: None))
         self.assertFalse(ask_login(prompt=lambda _label: "no", write=lambda _text: None))
+
+
+class RoleScreenTests(unittest.TestCase):
+    def test_frame_lists_the_roles_and_the_highlighted_summary(self) -> None:
+        frame = render_roles(cursor=1, committed=6)
+        self.assertIn("Welcome to crit", frame)
+        self.assertIn("Choose the role crit plays in this project", frame)
+        self.assertIn("/role changes it later", frame)
+        self.assertIn("> \033[1mAOSP Expert\033[0m", frame)
+        self.assertIn("✓ Generic", frame)
+        self.assertIn("Android platform work", frame)
+        for label in ("Code Reviewer", "Expert Developer", "AI Expert", "Test Engineer", "Android App Engineer"):
+            self.assertIn(label, frame)
+        fresh = render_roles(cursor=0, committed=None)
+        self.assertNotIn("✓", fresh)
+
+    def test_arrows_move_and_enter_returns_the_id(self) -> None:
+        # The cursor starts on Generic (the last row), so Enter alone keeps the default.
+        keys = iter(["down", "up", "up", "up", "enter"])
+        chunks: list[str] = []
+        chosen = pick_role(read_key=lambda: next(keys), write=chunks.append)
+        self.assertEqual(chosen, "ai-expert")
+        self.assertIn("> \033[1mAI Expert\033[0m", chunks[-1])
+        self.assertIn("LLM APIs", chunks[-1])
+
+    def test_starts_on_generic_or_on_the_stored_role(self) -> None:
+        self.assertEqual(pick_role(read_key=lambda: "enter", write=lambda _text: None), "generic")
+        chosen = pick_role(selected="AOSPExpert", read_key=lambda: "enter", write=lambda _text: None)
+        self.assertEqual(chosen, "aosp-expert")
+        keys = iter(["up", "enter"])
+        chosen = pick_role(selected="generic", read_key=lambda: next(keys), write=lambda _text: None)
+        self.assertEqual(chosen, "android-app-engineer")
+
+    def test_escape_leaves_without_a_choice(self) -> None:
+        self.assertIsNone(pick_role(read_key=lambda: "cancel", write=lambda _text: None))
 
 
 class KeyDecodeTests(unittest.TestCase):

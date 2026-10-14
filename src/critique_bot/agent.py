@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_index, log
+from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_index, log, roles
 from critique_bot.agent_tools import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
@@ -1343,6 +1343,11 @@ def load_agent_instructions() -> str:
     return load_prompt_sections()["SYSTEM"]
 
 
+def load_role_instructions(role_id: object) -> str:
+    """The ``ROLE_...`` section of prompts/agent.txt for a role; "" for Generic or a role without one."""
+    return load_prompt_sections().get(roles.section_key(role_id), "").strip()
+
+
 def task_message(task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "") -> str:
     """The task with the short protocol reminder, the repo map, skills, and the mode note."""
     body = task.strip()
@@ -1376,7 +1381,9 @@ def seed_message(
     helpers: int = 0,
     web_hosts: tuple[str, ...] | None = None,
     offline: bool = False,
+    role: str = "",
 ) -> str:
+    """The first message of a chat: SHELL, the instructions, the ROLE text, ENVIRONMENT, and the notes."""
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
         "ENVIRONMENT",
@@ -1423,6 +1430,8 @@ def seed_message(
     text = agent_shell.shell_preamble(chosen, available) + "\n\n"
     if instructions.strip():
         text += instructions.rstrip() + "\n\n"
+    if role.strip():
+        text += role.strip() + "\n\n"
     text += "\n".join(lines) + "\n"
     if notes.strip():
         text += "\nPROJECT NOTES (from .bot/AGENT.md; follow them)\n" + notes.strip() + "\n"
@@ -2525,11 +2534,16 @@ def run_agent_loop(
     seed_first: bool = False,
     helper_factory: Callable[[], Any] | None = None,
     helper_count: int = 0,
+    role: str | None = None,
+    reseed: Callable[[str], str] | None = None,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
     ``seed`` (the instructions) goes in front of the first task, so the first
     reply already works on it; ``seed_first`` sends it alone first instead.
+    ``role`` is the role the seed was built for (``"role"`` in settings when
+    not given); its skills go with every task. ``reseed(role_id)`` builds the
+    seed for another role: after ``/role`` the next task starts a new chat with it.
     Each task gets fresh working memory and an undo checkpoint. COMPLETED,
     FINISHED, DONE, FAILED, BLOCKED, a direct answer to a question, or a plain
     answer after a tool has run ends that task; the same chat waits for the
@@ -2556,6 +2570,7 @@ def run_agent_loop(
     checkpoints = agent_edit.Checkpoints(cache_dir, workspace)
     chosen = shell or getattr(session_shell, "shell", None) or agent_shell.detect_shell()
     options = settings if isinstance(settings, dict) else {}
+    role_now = roles.normalize_role(role) or roles.normalize_role(options.get("role")) or roles.GENERIC
     chat = _Chat(
         session,
         seed=seed or "",
@@ -2613,7 +2628,7 @@ def run_agent_loop(
                     agent_helpers.HelperPool(
                         helper_factory,
                         helper_count,
-                        seed=seed or "",
+                        seed=chat.seed or seed or "",
                         sections=sections,
                         base=base,
                         max_result_chars=max_result_chars,
@@ -2672,6 +2687,13 @@ def run_agent_loop(
             if not chat.restart("you asked for one"):
                 _ui("note", "This chat page cannot open a new conversation; staying in this one.")
             continue
+        if task.lower().split(None, 1)[0] == "/role":
+            # A reader without the slash-command layer: handle it here rather than send it as a task.
+            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            if callable(handler):
+                handler("/role", task.split(None, 1)[1] if " " in task.strip() else "")
+            continue
+        role_now = _apply_role_change(chat, reseed) or role_now
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
         if chat.too_long():
@@ -2681,7 +2703,7 @@ def run_agent_loop(
             repo_map = ""
         elif repo_map.strip():
             chat.map_sent = True
-        skills = _task_skills(task, workspace, chat, options, auto=auto_skills, limit=max_skills)
+        skills = _task_skills(task, workspace, chat, options, auto=auto_skills, limit=max_skills, role=role_now)
         mode_now = _current_mode(approve_mode, ui_mode_at_start)
         mode_note = sections["PLAN_MODE"] if mode_now == "plan" and not _answer_only(task) else ""
         checkpoints.start_task()
@@ -2762,14 +2784,48 @@ def _current_mode(default: str, at_start: str | None = None) -> str:
     return default if default in _MODES else "ask"
 
 
+def _apply_role_change(chat: Any, reseed: Callable[[str], str] | None) -> str | None:
+    """After ``/role``, the next task goes to a new chat seeded for that role. Returns the new role id."""
+    taker = getattr(globals().get("agent_ui"), "take_role_change", None)
+    if not callable(taker):
+        return None
+    try:
+        changed = taker()
+    except Exception:
+        return None
+    if not changed:
+        return None
+    if reseed is None:
+        return changed
+    try:
+        chat.seed = (reseed(changed) or "").strip()
+    except Exception as exc:  # the old seed still works
+        log.warn(f"could not rebuild the instructions for role {changed}: {exc}")
+        return changed
+    if chat.restart(f"the role is now {roles.role_label(changed)}"):
+        return changed
+    # No new chat: the next message carries the new instructions in front of it.
+    chat.prefix = _without_ready(chat.seed) if chat.seed else ""
+    _ui("note", "This chat page cannot open a new conversation; the new role goes in front of the next task.")
+    return changed
+
+
 def _task_skills(
-    task: str, workspace: Path, chat: Any, settings: dict[str, Any], *, auto: bool, limit: int
+    task: str,
+    workspace: Path,
+    chat: Any,
+    settings: dict[str, Any],
+    *,
+    auto: bool,
+    limit: int,
+    role: str | None = None,
 ) -> str:
-    """The SKILLS block for this task: pinned skills and the ones that match, each sent once per chat."""
+    """The SKILLS block for this task: pinned skills, the role's skills, and the ones that match, each sent once per chat."""
     select = getattr(agent_tools, "select_skills", None)
     if not callable(select):
         return ""
     pinned = _setting_list(settings, "skills")
+    pinned += [name for name in roles.role_skills(role if role is not None else settings.get("role")) if name not in pinned]
     getter = getattr(globals().get("agent_ui"), "pinned_skills", None)
     if callable(getter):
         try:
@@ -2964,12 +3020,14 @@ def run_agent(
     output_dir: Path | None,
     headed: bool,
     approve_mode: str | None = None,
+    role: str | None = None,
 ) -> int:
     """Open the Edge session, run the tool loop, and write the transcript.
 
     ``approve_mode`` is ``"ask"``, ``"edits"``, ``"auto"`` (``--yes``), or ``"plan"``
-    (``--plan``); ``None`` reads ``"permissions"`` from ``.bot/settings.json``. The transcript is saved even
-    when Ctrl+C or an error ends the session.
+    (``--plan``); ``None`` reads ``"permissions"`` from ``.bot/settings.json``. ``role`` is the
+    persona for this run (``--role``); ``None`` reads ``"role"`` from the settings, and Generic
+    is the default. The transcript is saved even when Ctrl+C or an error ends the session.
     """
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
@@ -2983,6 +3041,7 @@ def run_agent(
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
+    role_id = _resolve_role(role, settings)
     if approve_mode not in _MODES:
         approve_mode = agent_ui.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
@@ -2999,7 +3058,7 @@ def run_agent(
     session_shell = _open_shell_session(home.root, shell, available, offline=offline)
     agent_ui.configure(
         workspace=home.root,
-        model=config.model or "",
+        model=_model_label(config),
         shell=shell,
         approve_mode=approve_mode,
         theme=settings.get("theme") or "dark",
@@ -3007,6 +3066,7 @@ def run_agent(
         cache_dir=home.cache_dir,
         session_shell=session_shell,
         tools=ALLOWED_TOOLS,
+        role=role_id,
     )
     agent_ui.welcome_header()
     agent_ui.install_log_bridge()
@@ -3015,10 +3075,22 @@ def run_agent(
     except Exception as exc:
         log.debug(f"listing skills failed: {exc}")
         skill_names = []
-    seed = seed_message(
-        home.root, instructions, shell=shell, notes=notes, available=available, skills=skill_names, helpers=helpers,
-        web_hosts=_web_hosts(settings), offline=settings.get("offline") is True,
-    )
+
+    def build_seed(chosen_role: str) -> str:
+        return seed_message(
+            home.root,
+            instructions,
+            shell=shell,
+            notes=notes,
+            available=available,
+            skills=skill_names,
+            helpers=helpers,
+            web_hosts=_web_hosts(settings),
+            offline=settings.get("offline") is True,
+            role=load_role_instructions(chosen_role),
+        )
+
+    seed = build_seed(role_id)
     code = 1
     try:
         _remove_old_codegraph()
@@ -3040,9 +3112,11 @@ def run_agent(
                 "approve_mode": approve_mode,
                 "session_shell": session_shell,
                 "turns": turns,
-                "settings": settings,
+                "settings": _loop_settings(config, settings),
                 "ask_user": _ask_user,
                 "helper_count": helpers,
+                "role": role_id,
+                "reseed": build_seed,
             },
             turns=turns,
         )
@@ -3069,6 +3143,46 @@ def run_agent(
     if code != 0:
         return code
     return 0 if outcome[-1] in _STATUS_OK else 1
+
+
+def _model_label(config: BotConfig) -> str:
+    """What the header and /status call the model: the name, and where it runs when local."""
+    if not config.is_local:
+        return config.model or ""
+    from critique_bot.local_model import server_label
+
+    return f"{config.model or '(first served model)'} · local at {server_label(config.url)}"
+
+
+def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings the loop reads, with chat-size defaults that fit a local model's context window.
+
+    The browser defaults (a 300000-character chat, 40000-character tool results) assume a
+    hosted model with a large context. A local model has ``local.num_ctx`` tokens; a chat
+    bigger than that is silently truncated, so a new chat starts well before that.
+    """
+    if not config.is_local:
+        return settings
+    from critique_bot.local_model import DEFAULT_NUM_CTX
+
+    num_ctx = config.local.num_ctx or DEFAULT_NUM_CTX
+    merged = dict(settings)
+    # about 3 characters per token of code; leave room for the reply and the instructions
+    merged.setdefault("compact_after_chars", max(10_000, int(num_ctx * 2)))
+    merged.setdefault("max_result_chars", max(4_000, min(40_000, int(num_ctx / 2))))
+    return merged
+
+
+def _resolve_role(flag: str | None, settings: dict[str, Any]) -> str:
+    """The role id for this run: ``--role``, then ``"role"`` in settings, then Generic. Unknown names warn."""
+    for source, raw in (("--role", flag), ('settings "role"', settings.get("role"))):
+        if raw is None or str(raw).strip() == "":
+            continue
+        found = roles.normalize_role(raw)
+        if found is not None:
+            return found
+        log.warn(f"{source}: {raw!r} is not one of {', '.join(roles.ROLE_IDS)}; using {roles.GENERIC}")
+    return roles.GENERIC
 
 
 _SHELL_SETTINGS = ("auto", "pwsh", "powershell", "cmd", "bash", "sh", "zsh", "gitbash", "git-bash")
@@ -3227,7 +3341,7 @@ def _save_transcript(
 
 def _result_budget(config: BotConfig, settings: dict[str, Any]) -> int:
     """Characters per message sent back to the chat. Smaller keeps the task in view."""
-    raw = settings.get("max_result_chars")
+    raw = _loop_settings(config, settings).get("max_result_chars")
     if isinstance(raw, int) and raw >= 4_000:
         return raw
     return min(40_000, config.max_prompt_chars)

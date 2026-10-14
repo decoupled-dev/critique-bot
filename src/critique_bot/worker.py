@@ -126,19 +126,20 @@ def _browser_provider_loop(
         if not _wait_for_jobs(queue, stop):
             return
         try:
-            log.info("opening browser for queued work")
+            log.info("opening the model server for queued work" if config.is_local else "opening browser for queued work")
             with open_provider(config, headed=headed) as provider:
                 _session_loop(provider, config, queue, limiter, stop)
             if not stop() and not queue.has_waiting():
-                log.info("queue drained; closing browser")
-        except BrowserError as exc:
-            log.error(f"browser error: {exc}")
+                log.info("queue drained; closing the backend" if config.is_local else "queue drained; closing browser")
+        except (BrowserError, ChatError) as exc:
+            # A ChatError here comes from opening the backend (a local model server that is down).
+            log.error(f"browser error: {exc}" if isinstance(exc, BrowserError) else f"model server: {exc}")
             if stop():
                 break
             if not queue.has_waiting():
                 log.info("queue empty after browser error; not relaunching")
                 continue
-            log.info(f"restarting Edge in {BROWSER_RESTART_SEC:.0f}s")
+            log.info(f"{'retrying the model server' if config.is_local else 'restarting Edge'} in {BROWSER_RESTART_SEC:.0f}s")
             _interruptible_sleep(BROWSER_RESTART_SEC, stop)
 
 
