@@ -47,7 +47,7 @@ The model runs on this machine and crit calls its HTTP API directly, so there is
 
 Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
 
-The agent's chat-size defaults are scaled to the context window: a new chat starts at about `num_ctx × 2` characters instead of 300,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
+The agent's chat-size defaults are scaled to the context window: a new chat starts at about `num_ctx × 2` characters instead of 120,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
 
 A quick check that the server answers, before using the agent:
 

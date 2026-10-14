@@ -430,14 +430,19 @@ A task with independent parts runs faster in several chats at once. The main cha
 - **The reply stalled.** It started, then nothing for 90 seconds.
 - **The page returned an empty reply, or showed its own error.**
 
-crit then stops whatever the page is still writing and tries again: once in the same chat, then in a **new chat** that gets the instructions, a summary of the task (files read and changed, the to-do list, the last command and its output), and the message it was waiting on. A broken conversation therefore cannot block the task. The timing settings are in [`docs/config.json.md`](config.json.md#waiting-for-a-reply).
+crit then stops whatever the page is still writing and tries again: once in the same chat when nothing was answered yet, then in a **new chat** that gets the instructions, a summary of the task (files read and changed, the to-do list, the last command and its output), and the message it was waiting on. A reply that started and then stalled leaves a half-written answer in the chat, so that retry goes to a new chat at once. A broken conversation therefore cannot block the task. The timing settings are in [`docs/config.json.md`](config.json.md#waiting-for-a-reply).
 
-**A long session.** A web chat slows down and forgets early instructions as it grows. crit starts a new chat when any of these happens:
+**A chat that keeps going wrong.** A web chat that has been pushed through a few retries often stays bad: replies come back cut off, the format breaks, simple steps fail, while the same step works at once in a fresh chat. crit keeps a short health record of the last six replies and leaves the chat when:
 
-- the chat holds about 300,000 characters (`compact_after_chars`);
-- it has had 60 messages (`compact_after_turns`);
-- it has been open 60 minutes (`compact_after_minutes`);
+- three of the last six replies were bad (cut off, retried, made-up results, broken tool format, a refusal, or the task handed back), even with good replies between them;
+- a reply was cut off twice in the same chat (the first time, the same chat is asked for the rest);
 - the model breaks the tool format twice in a row.
+
+**A long session.** A web chat slows down and forgets early instructions as it grows. In the middle of a task crit starts a new chat when any of these happens, and a new task starts in a new chat at half of each:
+
+- the chat holds about 120,000 characters (`compact_after_chars`);
+- it has had 30 messages (`compact_after_turns`);
+- it has been open 60 minutes (`compact_after_minutes`).
 
 Before moving, crit asks the old chat for a **handoff note** in its own words: the task, what it learned about the code (files, symbols, line numbers), what it changed and why, what is left, and what failed. The new chat gets the instructions, crit's summary of the task, that note, the message in progress, and a list of the earlier tasks of the session with the files each one changed. At a task boundary only the list is needed. `"handoff_notes": false` skips the note and saves one round trip.
 
@@ -533,7 +538,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | Key | Effect |
 | --- | --- |
 | `check_command` | The finish line after a real edit. A `Test with:` or `Test command:` line in `AGENT.md` is used when this key is absent; this key wins when both are set. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. When the task ends, the program prints the on-disk diff once. Example: `".\\gradlew.bat testDebugUnitTest"` or `"./gradlew testDebugUnitTest"`. |
-| `max_result_chars` | Characters per tool-result message sent to the chat. The default is 40000 or `max_prompt_chars` from `config.json`, whichever is smaller; with a local model, `num_ctx / 2`. Values under 4000 are ignored. |
+| `max_result_chars` | Characters per tool-result message sent to the chat. The default is 20000 or `max_prompt_chars` from `config.json`, whichever is smaller; with a local model, `num_ctx / 2`. Smaller results keep the chat sharp for longer. Values under 4000 are ignored. |
 | `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first task then goes out with only the environment and project notes in front of it. |
 | `theme` | Text style chosen on the welcome screen: `auto`, `dark`, `light`, `dark-colorblind`, `light-colorblind`, `dark-ansi`, or `light-ansi`. The session screen uses the same colors. `/theme` changes it. |
 | `permissions` | The starting mode: `"ask"` (the default), `"edits"`, `"auto"` (like `--yes`), or `"plan"`. See [Modes](#modes). |
@@ -554,11 +559,11 @@ On Linux and macOS the same lines use `./gradlew`.
 | `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 | `shell` | Default shell for `run_command`: `auto` (the default: PowerShell 7, then Windows PowerShell 5.1 on Windows; bash, then sh elsewhere), `pwsh`, `powershell`, `cmd`, `bash` (Git Bash on Windows), `sh`, or `zsh`. A shell that is not installed falls back to `auto`. `/shell` changes it for one session. |
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
-| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 300000, or `num_ctx × 2` with a local model; values under 10000 are ignored. |
-| `compact_after_turns` | Start a new chat after this many messages in one chat. Default 60; at least 5. |
+| `compact_after_chars` | When the chat holds about this many characters, crit starts a new chat in the middle of a task; a new task starts in a new chat at half of it (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 120000, or `num_ctx × 2` with a local model; values under 10000 are ignored. |
+| `compact_after_turns` | Start a new chat after this many messages in one chat (half of it between tasks). Default 30; at least 5. |
 | `compact_after_minutes` | Start a new chat after it has been open this many minutes. Default 60; at least 5. |
 | `handoff_notes` | `false` skips asking the old chat for a handoff note before moving to a new one. Default `true`. |
-| `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same chat, the next ones to a new chat with a summary of the task. Default 3. |
+| `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same chat when nothing was answered yet; a stalled reply, an unhealthy chat, and every later retry go to a new chat with a summary of the task. Default 3. |
 
 ### Use a ChatGPT Project for the instructions
 

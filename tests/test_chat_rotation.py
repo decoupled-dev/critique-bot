@@ -125,6 +125,83 @@ class RotationTests(_Base):
         self.assertIn("EARLIER IN THIS SESSION", session.sent[5])
         self.assertIn("change note.txt to two -> COMPLETED (changed note.txt)", session.sent[5])
 
+    def test_defaults_keep_a_web_chat_short(self) -> None:
+        self.assertEqual(agent.DEFAULT_COMPACT_AFTER_CHARS, 120_000)
+        self.assertEqual(agent.DEFAULT_COMPACT_AFTER_TURNS, 30)
+        self.assertEqual(agent.DEFAULT_RESULT_CHARS, 20_000)
+        from critique_bot.config import BotConfig
+
+        config = BotConfig(url="https://chat.example", selectors=None, max_prompt_chars=120_000)  # type: ignore[arg-type]
+        self.assertEqual(agent._result_budget(config, {}), 20_000)
+        self.assertEqual(agent._result_budget(config, {"max_result_chars": 30_000}), 30_000)
+
+    def test_bad_replies_with_good_ones_between_move_to_a_new_chat(self) -> None:
+        broken = "<tool_call>\n{not json\n</tool_call>"
+        look = _call("list_files", path=".")
+        session = _Session(
+            [broken, look, broken, _call("read_files", path="note.txt"), broken,
+             _call("edit_file", path="note.txt", old_string="one", new_string="two"), "COMPLETED"]
+        )
+        outcome = self._loop(session, "change note.txt to two", settings={"handoff_notes": False})
+        self.assertEqual(outcome, ["COMPLETED"])
+        # two violations were never in a row, but three of the last six replies were bad
+        self.assertEqual(session.new_chats, [5])
+        self.assertIn("CONTINUING IN A NEW CHAT", session.sent[5])
+        self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_second_cut_off_reply_moves_to_a_new_chat(self) -> None:
+        cut = "<tool_call>\n{\"tool\": \"read_files\", \"arguments\": {\"path\": \"note.txt\""
+        session = _Session([cut, cut, _call("edit_file", path="note.txt", old_string="one", new_string="two"), "COMPLETED"])
+        outcome = self._loop(session, "change note.txt to two", settings={"handoff_notes": False})
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertIn("cut off", session.sent[1].lower())  # the first time, the same chat is asked for the rest
+        self.assertEqual(session.new_chats, [2])
+        self.assertIn("CONTINUING IN A NEW CHAT", session.sent[2])
+
+    def test_a_stalled_reply_is_retried_in_a_new_chat_at_once(self) -> None:
+        session = _Session(
+            [
+                _call("read_files", path="note.txt"),
+                ReplyStalled("the reply stalled: no text and no generating signal for 90s"),
+                _call("edit_file", path="note.txt", old_string="one", new_string="two"),
+                "COMPLETED",
+            ]
+        )
+        outcome = self._loop(session, "change note.txt to two")
+        self.assertEqual(outcome, ["COMPLETED"])
+        self.assertEqual(session.new_chats, [2])  # not a second try over the half-written reply
+        self.assertIn("CONTINUING IN A NEW CHAT", session.sent[2])
+        self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "two\n")
+
+    def test_a_new_task_starts_fresh_once_the_chat_is_half_full(self) -> None:
+        session = _Session(
+            [_call("read_files", path="note.txt"), _call("edit_file", path="note.txt", old_string="one", new_string="two"), "COMPLETED", "It says two."]
+        )
+        self._loop(
+            session, "change note.txt to two", tasks=["what does note.txt say?"],
+            settings={"compact_after_turns": 6, "handoff_notes": False},
+        )
+        self.assertEqual(session.new_chats, [3])  # 3 of 6 messages used: the next task gets a fresh chat
+        self.assertTrue(session.sent[3].startswith("INSTRUCTIONS"))
+        self.assertIn("EARLIER IN THIS SESSION", session.sent[3])
+        self.assertIn("what does note.txt say?", session.sent[3])
+
+    def test_health_window(self) -> None:
+        chat = agent._Chat(_Session([]))
+        for bad in (True, False, True, False):
+            chat.note_reply(bad=bad)
+        self.assertFalse(chat.unhealthy())
+        chat.strike()
+        self.assertTrue(chat.unhealthy())
+        self.assertIn("broken replies", chat.rotation_reason())
+        self.assertEqual(chat.rotation_reason(size_only=True), "")
+        self.assertTrue(chat.restart("test"))
+        self.assertFalse(chat.unhealthy())
+        self.assertEqual(chat.violations, 0)
+        chat.note_cut()
+        chat.note_cut()
+        self.assertIn("cut off", chat.rotation_reason())
+
     def test_reasons(self) -> None:
         chat = agent._Chat(_Session([]), compact_turns=3, compact_minutes=10)
         self.assertEqual(chat.rotation_reason(), "")

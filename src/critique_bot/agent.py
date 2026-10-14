@@ -17,6 +17,7 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -39,7 +40,7 @@ from critique_bot.agent_tools import (
 )
 from critique_bot.agent_tools import execute as _execute
 from critique_bot.bot_home import BotHome, resolve_check_command
-from critique_bot.chat_client import COMPLETION_IDLE, ChatError
+from critique_bot.chat_client import COMPLETION_IDLE, ChatError, ReplyStalled
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
 
@@ -149,13 +150,26 @@ MAX_SAME_CALL = 2
 LOOP_REPLIES = 3
 #: Protocol violations in a row that make the chat start over.
 AMNESIA_VIOLATIONS = 2
+#: A chat whose replies keep going wrong is left even when the violations are not in a row:
+#: this many bad replies (cut off, made up, broken format, handed back, retried) among the
+#: last HEALTH_WINDOW, and the next message goes to a new chat.
+HEALTH_WINDOW = 6
+HEALTH_BAD_REPLIES = 3
+#: Cut-off replies in one chat before the next request for the rest goes to a new chat.
+CUT_REPLIES_PER_CHAT = 2
 DEFAULT_CHECK_TIMEOUT = 600
-DEFAULT_COMPACT_AFTER_CHARS = 300_000
-#: A chat also moves to a new one after this many messages or minutes: a long chat
-#: slows the page down and the model loses track of early instructions.
-DEFAULT_COMPACT_AFTER_TURNS = 60
+#: A web chat gets slow and forgetful well before its context is full. These are the
+#: sizes at which crit moves to a new chat in the middle of a task; between tasks it
+#: moves at half of each.
+DEFAULT_COMPACT_AFTER_CHARS = 120_000
+DEFAULT_COMPACT_AFTER_TURNS = 30
 DEFAULT_COMPACT_AFTER_MINUTES = 60
-#: After this many failed tries in one chat, the next try goes to a new chat.
+#: Share of the sizes above at which a new task starts in a new chat (cheap: only the task list is needed).
+BOUNDARY_ROTATION_SHARE = 0.5
+#: Characters per tool-result message unless "max_result_chars" says otherwise.
+DEFAULT_RESULT_CHARS = 20_000
+#: After this many failed tries in one chat, the next try goes to a new chat. A reply that
+#: started and then stalled leaves a half-written answer behind, so that one moves at once.
 RETRIES_BEFORE_NEW_CHAT = 1
 DEFAULT_REPLY_RETRIES = 3
 #: Seconds between resends when the chat page shows an error instead of a reply.
@@ -1594,6 +1608,9 @@ class _Chat:
         self.compact_after = compact_after
         self.chars = 0
         self.violations = 0
+        #: The last HEALTH_WINDOW replies, True for a bad one; and cut-off replies in this chat.
+        self.health: deque[bool] = deque(maxlen=HEALTH_WINDOW)
+        self.cut_replies = 0
         self.compact_turns = max(1, int(compact_turns or DEFAULT_COMPACT_AFTER_TURNS))
         self.compact_seconds = max(60, int(compact_minutes or DEFAULT_COMPACT_AFTER_MINUTES) * 60)
         #: Messages answered in this chat, and when it started.
@@ -1633,11 +1650,13 @@ class _Chat:
                 self._note("note", f"Kept {hidden} secret{'s' if hidden != 1 else ''} out of the message to the chat.")
             if not self.quiet:
                 _waiting(True)
+            stalled = False
             try:
                 reply = self.session.send(outgoing)
                 problem = _provider_error(reply)
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
+                stalled = isinstance(exc, ReplyStalled)
             finally:
                 if not self.quiet:
                     _waiting(False)
@@ -1645,6 +1664,7 @@ class _Chat:
             if problem is None:
                 self.sends += 1
                 return reply
+            self.note_reply(bad=True)
             if attempt >= self.retries:
                 raise _ProviderFailed(problem)
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
@@ -1652,7 +1672,10 @@ class _Chat:
             # A timed-out reply may still be streaming; resending over it
             # duplicates the message and crosses the two answers.
             _stop_reply(self.session)
-            if attempt > RETRIES_BEFORE_NEW_CHAT and not moved and self.can_restart:
+            # A stalled reply left a half-written answer in the chat, and an unhealthy chat
+            # has already shown it keeps going wrong: neither is worth another try in place.
+            move_now = stalled or self.unhealthy()
+            if (attempt > RETRIES_BEFORE_NEW_CHAT or move_now) and not moved and self.can_restart:
                 if self.restart("the chat stopped answering"):
                     moved = True
                     prefix, self.prefix = self.prefix, ""
@@ -1677,21 +1700,54 @@ class _Chat:
     def too_long(self) -> bool:
         return self.can_restart and bool(self.rotation_reason(size_only=True))
 
-    def rotation_reason(self, *, size_only: bool = False) -> str:
-        """Why this chat should move to a new one now, or ""."""
-        if self.chars > self.compact_after:
+    def stale_for_next_task(self) -> bool:
+        """Past half its size: a new task is better off in a new chat (only the task list is needed)."""
+        return self.can_restart and bool(self.rotation_reason(size_only=True, share=BOUNDARY_ROTATION_SHARE))
+
+    def note_reply(self, *, bad: bool) -> None:
+        """Remember whether the latest reply (or try) went wrong, for :meth:`unhealthy`."""
+        self.health.append(bad)
+
+    def strike(self) -> None:
+        """A protocol violation: counts toward amnesia (in a row) and toward the chat's health."""
+        self.violations += 1
+        self.note_reply(bad=True)
+
+    def good(self) -> None:
+        """A reply that followed the protocol: the in-a-row count starts over."""
+        self.violations = 0
+        self.note_reply(bad=False)
+
+    def note_cut(self) -> None:
+        """A reply that was cut off before it finished."""
+        self.cut_replies += 1
+        self.note_reply(bad=True)
+
+    def unhealthy(self) -> bool:
+        """Bad replies keep coming, even with good ones between them."""
+        return sum(1 for bad in self.health if bad) >= HEALTH_BAD_REPLIES
+
+    def rotation_reason(self, *, size_only: bool = False, share: float = 1.0) -> str:
+        """Why this chat should move to a new one now, or "". ``share`` scales the size limits."""
+        if self.chars > self.compact_after * share:
             return "the chat grew long"
-        if self.sends >= self.compact_turns:
+        if self.sends >= max(1, int(self.compact_turns * share)):
             return f"the chat reached {self.sends} messages"
         minutes = (time.monotonic() - self.born) / 60
-        if self.sends and minutes * 60 >= self.compact_seconds:
+        if self.sends and minutes * 60 >= self.compact_seconds * share:
             return f"the chat has been open {minutes:.0f} minutes"
-        if not size_only and self.violations >= AMNESIA_VIOLATIONS:
+        if size_only:
+            return ""
+        if self.violations >= AMNESIA_VIOLATIONS:
             return "the model lost track of the instructions"
+        if self.cut_replies >= CUT_REPLIES_PER_CHAT:
+            return "replies keep getting cut off in this chat"
+        if self.unhealthy():
+            return "this chat keeps giving broken replies"
         return ""
 
     def wants_restart(self) -> bool:
-        return self.can_restart and (self.too_long() or self.violations >= AMNESIA_VIOLATIONS)
+        return self.can_restart and bool(self.rotation_reason())
 
     def restart(self, reason: str) -> bool:
         """Open a new conversation. The instructions go in front of the next message."""
@@ -1708,6 +1764,8 @@ class _Chat:
         self._note("note", f"Starting a new chat: {reason}.")
         self.chars = 0
         self.violations = 0
+        self.health.clear()
+        self.cut_replies = 0
         self.sends = 0
         self.born = time.monotonic()
         self.map_sent = False
@@ -1861,10 +1919,11 @@ class _TaskRun:
         elif shown and status in _STATUS_OK:
             self._present(shown)
         if fabricated:
-            self.chat.violations += 1
+            self.chat.strike()
             self.hooks.ui("note", "The reply made up a tool result. Only real results are used.")
         if unclosed or _idle_tool_reply(detail, reply):
             self.truncations += 1
+            self.chat.note_cut()
             if self.truncations > MAX_TRUNCATIONS:
                 return self._end("FAILED", "the reply was cut off before it finished")
             self.hooks.ui("note", "The reply was cut off. Asking for the rest.")
@@ -1877,9 +1936,9 @@ class _TaskRun:
             self.refusals = 0
             self.plan_notes = 0
             if all(call.error for call in calls):
-                self.chat.violations += 1
+                self.chat.strike()
             elif not fabricated:
-                self.chat.violations = 0
+                self.chat.good()
             self._run_calls(calls, extra=self.sections["FABRICATED"] if fabricated else "")
             if self.state.failures_in_row >= MAX_FAILED_ROUNDS:
                 return self._end("BLOCKED", f"{MAX_FAILED_ROUNDS} tool rounds in a row failed")
@@ -1900,7 +1959,7 @@ class _TaskRun:
             and (status not in _STATUS_OK or self.last_failed or not self.tools_ran)
         ):
             self.hand_backs += 1
-            self.chat.violations += 1
+            self.chat.strike()
             self.hooks.ui("note", "The model asked you to do it yourself. Sending it back to run it.")
             last = ""
             if self.state.last_command and self.last_failed:
@@ -1910,7 +1969,7 @@ class _TaskRun:
         if status in {"FAILED", "BLOCKED"} and _refuses(reply):
             return self._refuse(reply)
         if status:
-            self.chat.violations = 0
+            self.chat.good()
             return self._finish(status, reply=reply)
         if _no_edit_needed(reply):
             return self._finish("COMPLETED", unchanged_ok=True)
@@ -1924,7 +1983,7 @@ class _TaskRun:
                 self.hooks.ui("note", "Still working on it.")
                 self._send_message("ANSWER")
                 return None
-            self.chat.violations = 0
+            self.chat.good()
             return self._finish("COMPLETED")
         if plan and self.plan_notes < 2:
             self.plan_notes += 1
@@ -1936,7 +1995,7 @@ class _TaskRun:
             self.questions += 1
             answer = (self.ask(question) or "").strip()
             if answer:
-                self.chat.violations = 0
+                self.chat.good()
                 self._send_message("USER_ANSWER", answer=answer)
                 return None
         if _stalls(reply):
@@ -1946,13 +2005,13 @@ class _TaskRun:
         if not self.tools_ran and self.nudges < 2:
             self.nudges += 1
             if reply.strip().upper() != "READY":
-                self.chat.violations += 1
+                self.chat.strike()
             self.hooks.ui("note", "Still working on it.")
             self._send_message("NUDGE")
             return None
         if self.last_failed and self.recoveries < 2:
             self.recoveries += 1
-            self.chat.violations += 1
+            self.chat.strike()
             self.hooks.ui("note", "Picking up where it left off.")
             self._send_message("RECOVER")
             return None
@@ -1988,7 +2047,7 @@ class _TaskRun:
     def _refuse(self, reply: str) -> str | None:
         """Send a refusal back. FAILED/BLOCKED does not finish the task when the model only claims the tools are missing."""
         self.refusals += 1
-        self.chat.violations += 1
+        self.chat.strike()
         if self.refusals > MAX_REFUSALS:
             return self._end("FAILED", f"stopped working on the task: {_one_line(_hide_tool_markup(reply), 160)}")
         self.hooks.ui("note", "Still working on it.")
@@ -2002,7 +2061,7 @@ class _TaskRun:
         signature = tuple(_call_key(call) for call in calls if not call.error)
         extras = [extra] if extra else []
         if self._is_loop(signature) and all((self.history.get(key) or {}).get("ok") for key in signature):
-            self.chat.violations += 1
+            self.chat.strike()
             self.hooks.ui("note", "The same calls came back again. Not running them.")
             results = [
                 {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": "not run: the same calls as your previous replies"}
@@ -2551,7 +2610,7 @@ def run_agent_loop(
     new chat. ``turns`` (when given) is filled as the session goes.
 
     ``settings`` keys: ``check_timeout`` (seconds, default 600),
-    ``compact_after_chars`` (default 300000), ``reply_retries`` (default 3).
+    ``compact_after_chars`` (default 120000), ``reply_retries`` (default 3).
     """
     turns = turns if turns is not None else []
     reader = read_message or _read_message
@@ -2696,8 +2755,8 @@ def run_agent_loop(
         role_now = _apply_role_change(chat, reseed) or role_now
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
-        if chat.too_long():
-            chat.restart(chat.rotation_reason() or "the chat grew long")
+        if chat.stale_for_next_task():
+            chat.restart(chat.rotation_reason(size_only=True, share=BOUNDARY_ROTATION_SHARE) or "the chat grew long")
         repo_map = _prepare_index(workspace, index_path, task)
         if chat.map_sent:
             repo_map = ""
@@ -3169,7 +3228,7 @@ def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any
     merged = dict(settings)
     # about 3 characters per token of code; leave room for the reply and the instructions
     merged.setdefault("compact_after_chars", max(10_000, int(num_ctx * 2)))
-    merged.setdefault("max_result_chars", max(4_000, min(40_000, int(num_ctx / 2))))
+    merged.setdefault("max_result_chars", max(4_000, min(DEFAULT_RESULT_CHARS, int(num_ctx / 2))))
     return merged
 
 
@@ -3344,7 +3403,7 @@ def _result_budget(config: BotConfig, settings: dict[str, Any]) -> int:
     raw = _loop_settings(config, settings).get("max_result_chars")
     if isinstance(raw, int) and raw >= 4_000:
         return raw
-    return min(40_000, config.max_prompt_chars)
+    return min(DEFAULT_RESULT_CHARS, config.max_prompt_chars)
 
 
 def format_transcript(turns: list[dict[str, str]]) -> str:
