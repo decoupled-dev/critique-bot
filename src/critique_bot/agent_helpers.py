@@ -1,14 +1,20 @@
-"""One task, several chat tabs: the coordinating session hands self-contained briefs to helper tabs.
+"""Helper chats: the coordinating session hands a self-contained brief to a short, fresh chat.
 
-The tabs cannot see each other's chats; crit is what they share. Every helper
-works on the same folder through crit's tools, reads anything, changes only
-the files its brief was given (no two helpers get the same file), and runs no
-builds. Its report goes back to the coordinating session as the delegate
-call's result, which then reviews the changes and runs the build once.
+A helper is a subagent. The main chat gives it one brief (an investigation, a
+contained change, a build to run) and gets back only a short report, so the
+files the helper reads and the output it sees never land in the main chat.
+Several briefs run at the same time, one helper each.
+
+The chats cannot see each other; crit is what they share. Every helper works
+on the same folder through crit's tools, reads anything, changes only the
+files its brief was given (no two helpers get the same file), and runs builds
+and tests only when it is the single helper of its delegate call. Its report
+goes back as the delegate call's result; the coordinator reviews the changes.
 
 Each helper tab lives on its own thread for the whole session: Playwright's
-sync API belongs to the thread that opened it, and a tab that stays open
-skips the page load and the instructions on the next brief.
+sync API belongs to the thread that opened it. The tab stays open, but every
+brief starts a fresh chat in it, so a helper never inherits an earlier brief's
+conversation.
 """
 
 from __future__ import annotations
@@ -83,9 +89,11 @@ def _helper_run_class():
     class HelperRun(agent._TaskRun):
         """A task run that never asks: it may read anything and change only its own files."""
 
-        def __init__(self, *args: Any, allowed: set[str], **kwargs: Any) -> None:
+        def __init__(self, *args: Any, allowed: set[str], commands: bool = False, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             self.allowed = allowed
+            #: May run builds and tests: only the single helper of a delegate call.
+            self.commands = commands
             self._call: Any = None
             self.plan_done = True
             self.reviewed = True  # the coordinator shows the diff once, at the end
@@ -114,8 +122,13 @@ def _helper_run_class():
                 command = str((call.arguments or {}).get("command") or "")
                 if agent_tools.read_only_command(command):
                     return True, ""
+                risky = agent_tools.risky_command(command)
+                if risky:
+                    return False, f"not run in a helper chat: {risky}. Put it in your report for the coordinator"
+                if self.commands:
+                    return True, ""
                 return False, (
-                    "helper tabs run only read-only commands; do not build or test here. "
+                    "helper chats that run alongside others use only read-only commands; do not build or test here. "
                     "Put the command the coordinator should run in your report"
                 )
             if name in agent_tools.MUTATING:
@@ -208,6 +221,9 @@ class _Slot:
             try:
                 if self.chat is None:
                     self._open()
+                elif self.chat.sends:
+                    # A fresh chat for every brief: the last brief's reading stays out of this one.
+                    self.chat.restart("a new brief")
                 report = self.pool.run_brief(
                     self.chat, job.brief, cancel=job.cancel, progress=job.progress, context=job.context
                 )
@@ -288,6 +304,8 @@ class HelperPool:
         ``context`` adds ToolContext fields for these briefs, such as the task's checkpoints.
         """
         started = time.monotonic()
+        # The only helper of a call may build and test: nothing else runs at the same time.
+        context = {**(context or {}), "commands": len(briefs) == 1}
         futures = [self.submit(brief, cancel=cancel, progress=progress, context=context) for brief in briefs]
         reports: list[Report] = []
         for brief, future in zip(briefs, futures):
@@ -320,8 +338,10 @@ class HelperPool:
         name = brief["name"]
         files = list(brief.get("files") or [])
         state = TaskState(task=brief["brief"])
+        context = dict(context or {})
+        commands = bool(context.pop("commands", False))
         fields = {key: value for key, value in self.base.items() if key not in {"session", "on_output", "ask_user", "delegate"}}
-        fields.update(context or {})
+        fields.update(context)
         ctx = agent._tool_context(
             **fields,
             state=state,
@@ -343,12 +363,18 @@ class HelperPool:
             ui_mode_at_start="__helper__",
             hooks=_QuietHooks(name, progress),
             allowed=set(files),
+            commands=commands,
         )
         message = agent.fill(
             self.sections["HELPER"],
             name=name,
             brief=brief["brief"],
             files=", ".join(files) if files else "none: this brief is read only",
+            commands=(
+                "You may run builds and tests with run_command; report their result, not their whole output."
+                if commands
+                else "Do not run builds or tests (other helpers work at the same time); read-only commands are fine."
+            ),
         )
         status = run.run(agent.task_message(message))
         text = ""
@@ -381,8 +407,12 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     """The delegate call's result for the coordinator, and its line in the terminal."""
     changed = sorted({name for report in reports for name in report.changed})
     lines = [
-        f"{len(reports)} helper tab{'s' if len(reports) != 1 else ''} finished in {seconds:.0f}s. "
-        "Review what they changed (git_diff or read_files) before building; they did not run builds or tests."
+        f"{len(reports)} helper chat{'s' if len(reports) != 1 else ''} finished in {seconds:.0f}s. "
+        + (
+            "Review what it changed (git_diff or read_files) and trust only the results it quotes."
+            if len(reports) == 1
+            else "Review what they changed (git_diff or read_files) before building; they did not run builds or tests."
+        )
     ]
     for report in reports:
         head = f"--- {report.name}: {report.status} ({report.rounds} rounds, {report.seconds:.0f}s)"
@@ -395,7 +425,7 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     if changed:
         lines.append("Files changed by helpers: " + ", ".join(changed))
     ok = any(report.status in {"COMPLETED", "FINISHED", "DONE"} for report in reports)
-    summary = f"{len(reports)} helper tabs · {seconds:.0f}s" + (f" · changed {len(changed)} file{'s' if len(changed) != 1 else ''}" if changed else "")
+    summary = f"{len(reports)} helper chat{'s' if len(reports) != 1 else ''} · {seconds:.0f}s" + (f" · changed {len(changed)} file{'s' if len(changed) != 1 else ''}" if changed else "")
     ui_lines = [
         f"{report.name}: {report.status.lower()}" + (f" · {', '.join(report.changed[:3])}" if report.changed else "")
         for report in reports

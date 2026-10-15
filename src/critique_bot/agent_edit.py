@@ -208,6 +208,60 @@ def strip_read_prefix(text: str) -> str:
     return "\n".join(_LINE_NO_RE.sub("", line, count=1) for line in text.split("\n"))
 
 
+_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\|")
+
+
+def strip_numbered_lines(text: str) -> tuple[str, bool]:
+    """Drop ``N|`` prefixes copied from read_files when every line of a file carries one, in order.
+
+    A file whose own lines happen to start with ``1|`` is left alone: the numbers must
+    count up from the first line, which real file text does not do.
+    """
+    lines = text.split("\n")
+    body = lines[:-1] if lines and lines[-1] == "" else lines
+    if len(body) < 2:
+        return text, False
+    expected = None
+    for line in body:
+        match = _NUMBERED_LINE_RE.match(line)
+        if match is None:
+            return text, False
+        number = int(match.group(1))
+        if expected is None:
+            expected = number
+        if number != expected:
+            return text, False
+        expected += 1
+    return "\n".join(_NUMBERED_LINE_RE.sub("", line, count=1) for line in lines), True
+
+
+_COMMENT_LEAD_RE = re.compile(r"^\s*(?://+|#+|/\*+|\*+|<!--|--|;+|%+|'|rem\s)", re.I)
+_ELLIPSIS_RE = re.compile(r"(?:^|[\s(\[{])(?:\.\.\.|…)(?:$|[\s)\]}])")
+_ELISION_RE = re.compile(
+    r"rest of (?:the |this )?(?:file|code|class|method|function|implementation)|"
+    r"existing (?:code|implementation|methods?|logic)|(?:code |methods? |logic |implementation )?"
+    r"(?:remains?|stays?|is|are) unchanged|unchanged (?:code|below|above)|"
+    r"omitted for brevity|(?:remaining|other) (?:code|methods?|functions?|lines)|"
+    r"same as before|no changes? (?:here|below|above)|snip\b|\betc\.?\s*$",
+    re.I,
+)
+
+
+def placeholder_line(text: str) -> tuple[int, str] | None:
+    """The first line that stands for left-out code (``// ... existing code ...``), or None.
+
+    Only comment lines count, so a bare ``...`` (an abstract Python body) and prose in
+    strings are left alone. The line number is 1-based.
+    """
+    for number, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped or not _COMMENT_LEAD_RE.match(stripped):
+            continue
+        if _ELLIPSIS_RE.search(stripped) or _ELISION_RE.search(stripped):
+            return number, stripped
+    return None
+
+
 def replace_span(
     text: str,
     old: str,

@@ -231,9 +231,9 @@ _FALLBACKS = {
         "command yourself now. If it fails, read SUMMARY and HINTS in its result, fix the cause, and run it again."
     ),
     "HELPER": (
-        "You are {name}, a helper tab working on one part of a larger task that another chat coordinates. "
+        "You are {name}, a helper chat doing one part of a larger task that another chat coordinates. "
         "It cannot see this chat; your final reply is all it gets.\nBrief:\n{brief}\n"
-        "Files you may change: {files}. You may read any file. Do not build or run tests. "
+        "Files you may change: {files}. You may read any file. {commands} "
         "When done, reply COMPLETED and then a short report: what you found or changed, with paths and line numbers, "
         "and what the coordinator still has to do."
     ),
@@ -429,7 +429,7 @@ def _parse_tagged(attrs: str, body: str) -> list[ToolCall]:
     try:
         data = _loads_lenient(raw)
     except json.JSONDecodeError as exc:
-        return [ToolCall(tool=name, arguments={}, error=f"invalid tool JSON: {exc}")]
+        return [ToolCall(tool=name, arguments={}, error=_json_error(f'"tool": "{name}"' + raw, exc))]
     if isinstance(data, dict) and any(key in data for key in ("tool", "name", "function")):
         return _calls_from_data(data)
     return [_call_from_data({"tool": name, "arguments": data})]
@@ -599,6 +599,21 @@ def _drop_trailing_prose(text: str) -> str:
     return text
 
 
+_WRITE_CALL_RE = re.compile(r'"(?:tool|name)"\s*:\s*"(?:write_files?|write|edit_file|edit)"')
+_WRITE_JSON_HINT = (
+    ". In contents, old_string, and new_string write a quote as \\\", a newline as \\n, and a backslash as \\\\; "
+    "no raw line breaks inside a string. Send a long file in parts: write_files with the first part, then edit_file"
+)
+
+
+def _json_error(text: str, exc: json.JSONDecodeError) -> str:
+    """The parse error for the model, with the escaping reminder when the call carried file text."""
+    message = f"invalid tool JSON: {exc}"
+    if _WRITE_CALL_RE.search(text):
+        message += _WRITE_JSON_HINT
+    return message
+
+
 def _parse_block(body: str) -> list[ToolCall]:
     text = body.strip()
     fenced = _FENCE_RE.match(text)
@@ -610,14 +625,14 @@ def _parse_block(body: str) -> list[ToolCall]:
         try:
             data = _loads_lenient(text)
         except json.JSONDecodeError as exc:
-            return [ToolCall(tool="", arguments={}, error=f"invalid tool JSON: {exc}")]
+            return [ToolCall(tool="", arguments={}, error=_json_error(text, exc))]
         return _calls_from_data(data)
     calls: list[ToolCall] = []
     for blob in objects:
         try:
             data = _loads_lenient(blob)
         except json.JSONDecodeError as exc:
-            calls.append(ToolCall(tool="", arguments={}, error=f"invalid tool JSON: {exc}"))
+            calls.append(ToolCall(tool="", arguments={}, error=_json_error(blob, exc)))
             continue
         calls.extend(_calls_from_data(data))
     return calls
@@ -1419,11 +1434,12 @@ def seed_message(
         lines.append("web_fetch: off (nothing leaves this machine but the chat)")
     if helpers > 0:
         lines.append(
-            f"helper tabs: {helpers}. Split a task with independent parts across them with one delegate call; "
-            "they work at the same time."
+            f"helper chats: {helpers}. Hand a self-contained part of the task to one with delegate (one brief, "
+            "or up to 6 at the same time). Each runs in a fresh chat and returns a short report, so the files it "
+            "reads and the output it sees never land in this chat."
         )
     else:
-        lines.append("helper tabs: none (do not call delegate; do the work here)")
+        lines.append("helper chats: none (do not call delegate; do the work here)")
     if skills:
         lines.append(
             "skills: " + ", ".join(skills) + ". The ones that fit a task come with it under SKILLS; "
@@ -3324,7 +3340,7 @@ def _run_session(
                 if kwargs.get("helper_count") and getattr(provider, "can_parallelize", False):
                     kwargs["helper_factory"] = lambda: provider.session(isolated=True)
                 elif kwargs.get("helper_count"):
-                    log.info("helper tabs need the browser's remote debugging; the task runs in one tab")
+                    log.info("helper chats need the browser's remote debugging; the task runs in one chat")
                     kwargs["helper_count"] = 0
                 try:
                     result = run_agent_loop(session, first_task=task, **kwargs)

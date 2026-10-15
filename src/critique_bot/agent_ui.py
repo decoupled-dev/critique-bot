@@ -778,7 +778,7 @@ _ACTIVITY = {
     "git_diff": ("Running", "git command", "git commands"),
     "git_log": ("Running", "git command", "git commands"),
     "git_show": ("Running", "git command", "git commands"),
-    "delegate": ("Running", "helper tab", "helper tabs"),
+    "delegate": ("Running", "helper chat", "helper chats"),
 }
 
 

@@ -350,6 +350,107 @@ class MutationGuardTests(unittest.TestCase):
         self.assertFalse(outside.exists())
 
 
+class WriteRobustnessTests(unittest.TestCase):
+    """Whole-file writes that would lose code are refused; copied read output is cleaned up."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.ctx = _ctx(self.root)
+        self.big = "".join(f"line {n}\n" for n in range(1, 61))
+        (self.root / "big.py").write_text(self.big, encoding="utf-8")
+        execute("read_files", {"path": "big.py"}, self.ctx)
+
+    def test_line_number_prefixes_copied_from_read_files_are_removed(self) -> None:
+        numbered = "".join(f"{n}|line {n}\n" for n in range(1, 61))
+        result = execute("write_files", {"path": "big.py", "contents": numbered}, self.ctx)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((self.root / "big.py").read_text(encoding="utf-8"), self.big)
+        self.assertIn("removed the N| line-number prefixes", result["output"])
+        # a file whose lines really start with numbers and bars is written as sent
+        table = "1|a\n3|b\n"
+        result = execute("write_files", {"path": "table.txt", "contents": table}, self.ctx)
+        self.assertEqual((self.root / "table.txt").read_text(encoding="utf-8"), table)
+        self.assertEqual(agent_edit.strip_numbered_lines("12|only one line\n"), ("12|only one line\n", False))
+
+    def test_a_rewrite_with_a_placeholder_for_left_out_code_is_refused(self) -> None:
+        for marker in ("# ... existing code ...", "// ...", "/* rest of the file unchanged */", "<!-- ... -->", "# (remaining methods omitted for brevity)"):
+            contents = "line 1\n" + marker + "\n" + self.big
+            result = execute("write_files", {"path": "big.py", "contents": contents, "overwrite": True}, self.ctx)
+            self.assertFalse(result["ok"], marker)
+            self.assertIn("placeholder for left-out code", result["error"])
+            self.assertIn("line 2", result["error"])
+        self.assertEqual((self.root / "big.py").read_text(encoding="utf-8"), self.big)
+        # a bare ... (an abstract Python body) and prose in strings are not placeholders
+        fine = "class A:\n    def f(self):\n        ...\n\nTEXT = 'the rest of the file is parsed later'\n" + self.big
+        result = execute("write_files", {"path": "big.py", "contents": fine}, self.ctx)
+        self.assertTrue(result["ok"], result)
+        # a new file is checked too
+        result = execute("write_files", {"path": "new.kt", "contents": "fun a() {}\n// ... other functions ...\n"}, self.ctx)
+        self.assertFalse(result["ok"])
+        self.assertFalse((self.root / "new.kt").exists())
+
+    def test_an_edit_whose_new_string_elides_code_is_refused(self) -> None:
+        result = execute(
+            "edit_file",
+            {"path": "big.py", "old_string": "line 2\nline 3\n", "new_string": "line 2\n# ... existing code ...\n"},
+            self.ctx,
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("placeholder for left-out code", result["error"])
+        self.assertEqual((self.root / "big.py").read_text(encoding="utf-8"), self.big)
+        # a placeholder that is already in the file (a real comment) may be edited around
+        (self.root / "c.py").write_text("x = 1\n# ... more below ...\ny = 2\n", encoding="utf-8")
+        execute("read_files", {"path": "c.py"}, self.ctx)
+        result = execute(
+            "edit_file",
+            {"path": "c.py", "old_string": "x = 1\n# ... more below ...\n", "new_string": "x = 10\n# ... more below ...\n"},
+            self.ctx,
+        )
+        self.assertTrue(result["ok"], result)
+
+    def test_a_rewrite_that_shrinks_a_file_needs_overwrite(self) -> None:
+        short = "line 1\nline 2\n"
+        result = execute("write_files", {"path": "big.py", "contents": short}, self.ctx)
+        self.assertFalse(result["ok"])
+        self.assertIn("60", result["error"])
+        self.assertIn("overwrite true", result["error"])
+        self.assertEqual((self.root / "big.py").read_text(encoding="utf-8"), self.big)
+        result = execute("write_files", {"path": "big.py", "contents": short, "overwrite": True}, self.ctx)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("shrank from 60 to 2 lines", result["output"])
+        # a short file may be rewritten freely
+        (self.root / "s.txt").write_text("a\nb\nc\n", encoding="utf-8")
+        execute("read_files", {"path": "s.txt"}, self.ctx)
+        self.assertTrue(execute("write_files", {"path": "s.txt", "contents": "a\n"}, self.ctx)["ok"])
+
+    def test_a_file_changed_on_disk_since_it_was_read_is_not_replaced_blindly(self) -> None:
+        (self.root / "big.py").write_text(self.big + "added by a helper\n", encoding="utf-8")
+        result = execute("write_files", {"path": "big.py", "contents": self.big + "mine\n"}, self.ctx)
+        self.assertFalse(result["ok"])
+        self.assertIn("changed on disk since you read it", result["error"])
+        self.assertIn("added by a helper", (self.root / "big.py").read_text(encoding="utf-8"))
+        execute("read_files", {"path": "big.py"}, self.ctx)
+        result = execute("write_files", {"path": "big.py", "contents": self.big + "mine\n"}, self.ctx)
+        self.assertTrue(result["ok"], result)
+        # our own edit keeps the record current
+        result = execute("edit_file", {"path": "big.py", "old_string": "mine\n", "new_string": "ours\n"}, self.ctx)
+        self.assertTrue(result["ok"], result)
+        result = execute("write_files", {"path": "big.py", "contents": self.big + "theirs\n"}, self.ctx)
+        self.assertTrue(result["ok"], result)
+
+    def test_invalid_json_in_a_write_call_explains_the_escaping(self) -> None:
+        from critique_bot.agent import parse_tool_calls
+
+        broken = '<tool_call>\n{"tool": "write_files", "arguments": {"path": "a.py", "contents": }}\n</tool_call>'
+        calls, _unclosed = parse_tool_calls(broken)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("invalid tool JSON", calls[0].error)
+        self.assertIn("write a quote as", calls[0].error)
+        self.assertIn("in parts", calls[0].error)
+        calls, _unclosed = parse_tool_calls('<tool_call>\n{"tool": "git_status", "arguments": {}\n</tool_call>')
+        self.assertTrue(all("write a quote" not in (call.error or "") for call in calls))
+
+
 class PatchTests(unittest.TestCase):
     def test_patched_paths_cover_deletes_and_renames(self) -> None:
         patch = (

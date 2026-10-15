@@ -1392,6 +1392,11 @@ def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
     return ""
 
 
+#: A whole-file write that leaves fewer than this share of a file this long needs overwrite true.
+SHRINK_GUARD_LINES = 40
+SHRINK_GUARD_SHARE = 0.4
+
+
 def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     files = args.get("files")
     if files is None and args.get("path") is not None:
@@ -1437,6 +1442,43 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             continue
         like = agent_edit.load_text(path) if existed else None
         before = like.text if like is not None else ""
+        notes: list[str] = []
+        contents, numbered = agent_edit.strip_numbered_lines(contents)
+        if numbered:
+            notes.append("removed the N| line-number prefixes from the contents (they are not part of a file)")
+        placeholder = agent_edit.placeholder_line(contents)
+        if placeholder is not None and (not existed or agent_edit.placeholder_line(before) != placeholder):
+            errors.append(
+                f"{name} not written: line {placeholder[0]} is a placeholder for left-out code ({placeholder[1][:60]}). "
+                "write_files replaces the whole file, so it must hold every line; change part of a file with edit_file"
+            )
+            continue
+        if (
+            existed
+            and ctx.state is not None
+            and not (overwrite or item.get("overwrite") is True)
+            and name in ctx.state.reads
+            and ctx.state.reads[name].version != agent_edit.file_version(path)
+        ):
+            errors.append(
+                f"{name} changed on disk since you read it (a helper, a build, or the user changed it). "
+                "Read it again and use edit_file, or pass overwrite true to replace it anyway"
+            )
+            continue
+        old_lines = before.count("\n") + (0 if before.endswith("\n") or not before else 1)
+        new_lines = contents.count("\n") + (0 if contents.endswith("\n") or not contents else 1)
+        if (
+            existed
+            and not (overwrite or item.get("overwrite") is True)
+            and old_lines >= SHRINK_GUARD_LINES
+            and new_lines < old_lines * SHRINK_GUARD_SHARE
+        ):
+            errors.append(
+                f"{name} not written: the new contents have {new_lines} lines, the file has {old_lines}. "
+                "A whole-file write must hold the whole file (a cut-off or shortened rewrite loses code). "
+                "Change part of it with edit_file, or pass overwrite true if the file really should shrink"
+            )
+            continue
         if REDACTED in contents and REDACTED not in before:
             errors.append(
                 f"{name} not written: the contents hold a {REDACTED}...] marker, which stands for a secret the chat "
@@ -1456,11 +1498,15 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             errors.append(f"{name}: {exc}")
             continue
         _after_write(ctx, path)
-        line_count = contents.count("\n") + (0 if contents.endswith("\n") or not contents else 1)
+        line_count = new_lines
         summary = f"{'replaced' if existed else 'created'} {name} ({line_count} lines)"
+        if existed and old_lines and line_count < old_lines * SHRINK_GUARD_SHARE:
+            notes.append(f"the file shrank from {old_lines} to {line_count} lines; undo with crit undo if that was not meant")
         check = agent_edit.syntax_check(name, contents)
         if check:
             summary += f"; syntax {check}"
+        if notes:
+            summary += "; " + "; ".join(notes)
         diff = agent_edit.hunk_diff(before, contents.replace("\r\n", "\n"), name)
         if existed and diff:
             summary += "\n" + diff
@@ -1527,6 +1573,13 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             return err("edit_file", f"edit {number}: old_string is empty. Use write_files for a new file")
         if not isinstance(new, str):
             return err("edit_file", f"edit {number}: new_string must be a string")
+        placeholder = agent_edit.placeholder_line(new)
+        if placeholder is not None and agent_edit.placeholder_line(old) is None and placeholder[1] not in loaded.text:
+            return err(
+                "edit_file",
+                f"edit {number}: new_string holds a placeholder for left-out code ({placeholder[1][:60]}). "
+                "Write the real lines; new_string replaces old_string exactly as sent",
+            )
         result = agent_edit.replace_span(text, old, new, replace_all=bool(edit.get("replace_all")))
         if result.text is None:
             label = f"edit {number} of {len(edits)}: " if len(edits) > 1 else ""
@@ -2577,7 +2630,7 @@ def _delegate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if ctx.delegate is None:
         return err(
             "delegate",
-            "no helper tabs in this session (helper_sessions is 0, or the browser has no remote debugging); "
+            "no helper chats in this session (helper_sessions is 0, or the browser has no remote debugging); "
             "do the work here with the other tools",
         )
     return ctx.delegate(briefs)
@@ -3043,7 +3096,7 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
         if problem or not briefs:
             return Permission("read", "Delegate", "")
         owned = [name for brief in briefs for name in brief["files"]]
-        label = f"Split into {len(briefs)} helper tab{'s' if len(briefs) != 1 else ''}"
+        label = f"Hand to {len(briefs)} helper chat{'s' if len(briefs) != 1 else ''}"
         detail = "\n\n".join(
             f"{brief['name']}: {_one_line(brief['brief'], 200)}" + (f"\n  may change: {', '.join(brief['files'])}" if brief["files"] else "")
             for brief in briefs
@@ -3461,7 +3514,7 @@ def _tool_label(tool: str, args: dict[str, Any]) -> str:
 
     if tool == "delegate":
         count = len(args.get("tasks") or []) if isinstance(args.get("tasks"), list) else 1
-        return f"Split into {count} helper tab{'s' if count != 1 else ''}"
+        return f"Hand to {count} helper chat{'s' if count != 1 else ''}"
     if tool == "edit_file":
         return f"Edit {path_of(args.get('path'))}"
     if tool == "write_files":

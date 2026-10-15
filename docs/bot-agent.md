@@ -409,17 +409,19 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 
 Every command is listed by `/commands` and saved in `.bot/sessions/<stamp>/agent.json` under `commands`.
 
-### Split one task across chat tabs
+### Helper chats: small sessions for parts of a task
 
-A task with independent parts runs faster in several chats at once. The main chat (the coordinator) calls the `delegate` tool with one self-contained brief per part. crit sends each brief to a **helper tab** in the same signed-in browser, and all of them work at the same time. For example, three briefs could be "add the permission to `AndroidManifest.xml`", "add the strings to `res/values/strings.xml`", and "find where the camera is opened in the Kotlin code".
+The main chat stays sharp when it stays small. A part of a task whose details the main chat does not need can go to a **helper chat**: a fresh chat that does that part and sends back only a short report. The main chat (the coordinator) calls the `delegate` tool with a self-contained brief, for example "find where the camera is opened and report the file, the class, and the line", "read `PaymentService.kt` and summarize how retries work", "add the permission to `AndroidManifest.xml`", or "run the unit tests and report only the failures". The files a helper reads and the output it sees never land in the main chat; only its report does. Several briefs run at the same time when the parts do not depend on each other.
 
-- **The tabs cannot see each other.** crit is what they share. Every helper works on the same folder through crit's tools, and its final report goes back to the coordinator as the result of the `delegate` call.
-- **Each file has one owner.** A brief lists the files that helper may change, and crit refuses an edit to any other file. Two helpers never get the same file, and a brief with no files is read only. Helpers read anything, run only read-only commands (no builds or tests), and cannot ask you anything.
-- **The coordinator finishes the job.** It reviews the helpers' changes (`git_diff`), fixes what does not fit together, and runs the build once. The diff at the end, the check command, and `/undo` cover the helpers' changes too.
+- **Every brief starts a fresh chat.** A helper tab opens on its first brief and stays open, but each new brief starts a new chat in it, with the instructions in front, so nothing of an earlier brief carries over.
+- **The chats cannot see each other.** crit is what they share. Every helper works on the same folder through crit's tools, and its final report goes back to the coordinator as the result of the `delegate` call.
+- **Each file has one owner.** A brief lists the files that helper may change, and crit refuses an edit to any other file. Two helpers never get the same file, and a brief with no files is read only.
+- **A single helper may build and test.** When a `delegate` call has one brief, nothing else runs at the same time, so that helper may run builds and tests and report the result. Helpers that run alongside others use only read-only commands. Risky commands (a broad delete, `git reset --hard`, a push) never run in a helper. Helpers cannot ask you anything.
+- **The coordinator finishes the job.** It reviews the helpers' changes (`git_diff`), fixes what does not fit together, and trusts a build or test result only when the report quotes it. The diff at the end, the check command, and `/undo` cover the helpers' changes too.
 - **One approval.** In ask mode the split is approved once, for the files it lists. A read-only split runs without asking, also in plan mode, so planning can investigate several places at once.
-- **Tabs stay open.** A helper tab opens on its first brief and keeps its chat for the session, so later splits skip the page load and the instructions. The status line shows `Running 2 helper tabs…` with each helper's current step.
+- The status line shows `Running 2 helper chats…` with each helper's current step.
 
-`"helper_sessions"` in `.bot/settings.json` sets how many helper tabs (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same ChatGPT account limits. Helper tabs need the browser's remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one tab and `delegate` says so.
+`"helper_sessions"` in `.bot/settings.json` sets how many helper chats may run at once (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same ChatGPT account limits. With the browser backend, helpers need its remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one chat and `delegate` says so. With a local model, helpers are plain extra conversations with the server.
 
 ### Long sessions and replies that never come
 
@@ -552,7 +554,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | `web_fetch` | `true` lets `web_fetch` read documentation sites (off by default: nothing leaves the PC but the chat). |
 | `web_fetch_hosts` | More documentation sites `web_fetch` may read once it is on, for example `["docs.example.com"]`. |
 | `offline` | `true`: commands reach no other machine. Package managers run offline, the Gradle wrapper gets `--offline`, git uses local repositories only, and `web_fetch` stays off. Builds then need their dependencies already cached. See [security.md](security.md). |
-| `helper_sessions` | Helper chat tabs one task can be split across with `delegate` (see [Split one task across chat tabs](#split-one-task-across-chat-tabs)). Default 2, at most 4; 0 turns it off. |
+| `helper_sessions` | Helper chats a task may hand parts to with `delegate` (see [Helper chats](#helper-chats-small-sessions-for-parts-of-a-task)). Default 2, at most 4; 0 turns it off. |
 | `build_timeout` | Seconds a build (gradle, mvn, m, npm install, ...) runs before it moves to the background. Default 1800. |
 | `command_retries` | Automatic retries of a build that failed for a passing reason (locked files, a dropped download). Default 1; 0 turns it off. |
 | `background_on_timeout` | `false` stops a command at its timeout instead of keeping it as a background job. Default `true`. |
@@ -610,6 +612,18 @@ PowerShell 7 is recommended. Install it with:
 ```powershell
 winget install --id Microsoft.PowerShell
 ```
+
+### What a write must look like
+
+Whole-file writes are where a model loses code, so `write_files` checks them before anything touches the disk:
+
+- **Line numbers copied from a read are removed.** Contents where every line starts with `N|`, counting up from the first line, are the read output pasted back; the prefixes are stripped and the result says so.
+- **A placeholder for left-out code is refused.** A comment line such as `// ... existing code ...`, `# rest of the file unchanged`, or `/* omitted for brevity */` means the model shortened the file. The write is not applied, and the result says which line and to use `edit_file` instead. The same check applies to `new_string` in `edit_file`. A bare `...` (an abstract Python body) and prose inside strings are not placeholders.
+- **A rewrite that shrinks a file a lot needs `overwrite: true`.** Replacing a file of 40 or more lines with fewer than 40% as many is almost always a cut-off or elided rewrite. The result names both line counts; a real shrink is sent again with `overwrite` true, and the result then notes the shrink so `crit undo` is one step away.
+- **A file changed on disk since it was read is not replaced blindly.** If a helper, a build, or you changed the file after the model read it, `write_files` without `overwrite` asks for a fresh read, so the model's copy never overwrites the newer one. The model's own edits keep its copy current.
+- **Invalid JSON in a write names the fix.** When a `write_files` or `edit_file` call does not parse, the result repeats the escaping rules (a quote as `\"`, a newline as `\n`, a backslash as `\\`) and says to send a long file in parts.
+
+Edits (`edit_file`) already match `old_string` exactly, then ignoring the `N|` prefixes, surrounding whitespace, and markdown punctuation, then by closest text; every loose match must be unique, and the result shows the closest block when nothing matches. Line endings, a BOM, and the file's encoding are kept, every write goes through a temporary file, and a checkpoint is saved first for `crit undo`.
 
 ### Undo
 

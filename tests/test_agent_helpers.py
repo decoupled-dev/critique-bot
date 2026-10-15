@@ -25,6 +25,7 @@ class _HelperTab:
 
     scripts: dict[str, list[str]] = {}
     threads: set[str] = set()
+    instances: list["_HelperTab"] = []
     opened = 0
     lock = threading.Lock()
 
@@ -32,8 +33,14 @@ class _HelperTab:
         self.sent: list[str] = []
         self.last_detail = {"complete": True}
         self.replies: list[str] = []
+        self.new_chats: list[int] = []
         with _HelperTab.lock:
             _HelperTab.opened += 1
+            _HelperTab.instances.append(self)
+
+    def new_chat(self) -> bool:
+        self.new_chats.append(len(self.sent))
+        return True
 
     def __enter__(self) -> "_HelperTab":
         return self
@@ -74,6 +81,7 @@ class DelegateTests(unittest.TestCase):
         (self.root / "b.kt").write_text("fun b() {\n    println(1)\n}\n", encoding="utf-8")
         _HelperTab.scripts = {}
         _HelperTab.threads = set()
+        _HelperTab.instances = []
         _HelperTab.opened = 0
 
     def tearDown(self) -> None:
@@ -128,7 +136,7 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual((self.root / "a.xml").read_text(encoding="utf-8"), "<a>\n    <x/>\n    <y/>\n</a>\n")
         self.assertEqual((self.root / "b.kt").read_text(encoding="utf-8"), "fun b() {\n    println(2)\n}\n")
         result = coordinator.sent[1]
-        self.assertIn("2 helper tabs finished", result)
+        self.assertIn("2 helper chats finished", result)
         self.assertIn("Added <y/> after <x/>", result)
         self.assertIn("Changed println(1) to println(2)", result)
         self.assertIn("Files changed by helpers: a.xml, b.kt", result)
@@ -150,14 +158,57 @@ class DelegateTests(unittest.TestCase):
         result = coordinator.sent[1]
         self.assertIn("Run ./gradlew build", result)
 
-    def test_tabs_are_reused_for_the_next_split(self) -> None:
-        _HelperTab.scripts = {"one": ["COMPLETED first"], "two": ["COMPLETED second"]}
+    def test_tabs_are_reused_but_every_brief_starts_a_fresh_chat(self) -> None:
+        _HelperTab.scripts = {
+            "one": [_call("read_files", path="a.xml"), "COMPLETED first"],
+            "two": [_call("read_files", path="b.kt"), "COMPLETED second"],
+        }
         first = _call("delegate", tasks=[{"name": "one", "brief": "Read a.xml and say what is in it."}])
         second = _call("delegate", tasks=[{"name": "two", "brief": "Read b.kt and say what is in it."}])
         coordinator = _Coordinator([first, second, "COMPLETED"])
-        self._loop(coordinator, "look at both files and tell me")
+        self._loop(coordinator, "look at both files and tell me", seed="HELPER INSTRUCTIONS\nReply with exactly READY.")
         self.assertEqual(_HelperTab.opened, 1)
+        tab = _HelperTab.instances[0]
+        self.assertEqual(tab.new_chats, [2])  # the second brief got a new chat in the same tab
+        self.assertTrue(tab.sent[0].startswith("HELPER INSTRUCTIONS"))
+        self.assertFalse(tab.sent[1].startswith("HELPER INSTRUCTIONS"))  # a tool result, same chat
+        self.assertTrue(tab.sent[2].startswith("HELPER INSTRUCTIONS"))  # sent again for the fresh chat
+        self.assertIn("You are two,", tab.sent[2])
+        self.assertNotIn("a.xml", tab.sent[2])  # nothing of the first brief carried over
         self.assertIn("COMPLETED".lower(), coordinator.sent[2].lower())
+
+    def test_a_single_helper_may_run_tests_but_not_risky_commands(self) -> None:
+        _HelperTab.scripts = {
+            "tester": [
+                _call("run_command", command="git reset --hard"),
+                _call("run_command", command="touch tested.flag"),
+                "COMPLETED the tests passed.",
+            ],
+        }
+        delegate = _call("delegate", tasks=[{"name": "tester", "brief": "Run the test suite and report the failures only."}])
+        coordinator = _Coordinator([delegate, "COMPLETED"])
+        self._loop(coordinator, "run the tests and tell me what fails")
+        tab = _HelperTab.instances[0]
+        self.assertIn("not run in a helper chat", tab.sent[1])  # the risky one was refused
+        self.assertTrue((self.root / "tested.flag").exists())  # the plain one ran
+        self.assertIn("1 helper chat finished", coordinator.sent[1])
+        self.assertIn("trust only the results it quotes", coordinator.sent[1])
+        self.assertIn("You may run builds and tests", tab.sent[0])
+
+    def test_helpers_that_run_alongside_others_stay_read_only(self) -> None:
+        _HelperTab.scripts = {
+            "left": [_call("run_command", command="./gradlew build"), "COMPLETED left done."],
+            "right": ["COMPLETED right done."],
+        }
+        delegate = _call("delegate", tasks=[
+            {"name": "left", "brief": "Investigate a.xml and report its root element."},
+            {"name": "right", "brief": "Investigate b.kt and report its function name."},
+        ])
+        coordinator = _Coordinator([delegate, "COMPLETED"])
+        self._loop(coordinator, "look at both files")
+        left = next(tab for tab in _HelperTab.instances if any("You are left," in text for text in tab.sent))
+        self.assertIn("read-only commands", left.sent[1])
+        self.assertIn("Do not run builds or tests", left.sent[0])
 
     def test_without_helpers_the_tool_says_so(self) -> None:
         ctx = agent_tools.ToolContext(workspace=self.root)
@@ -165,8 +216,8 @@ class DelegateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("do the work here", result["error"])
         seed = agent.seed_message(self.root, "", helpers=0)
-        self.assertIn("helper tabs: none", seed)
-        self.assertIn("helper tabs: 2", agent.seed_message(self.root, "", helpers=2))
+        self.assertIn("helper chats: none", seed)
+        self.assertIn("helper chats: 2", agent.seed_message(self.root, "", helpers=2))
 
     def test_file_ownership_is_validated(self) -> None:
         ctx = agent_tools.ToolContext(workspace=self.root)
@@ -191,7 +242,7 @@ class DelegateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("--- kotlin: FAILED", result["output"])
         self.assertIn("error: tab closed", result["output"])
-        self.assertEqual(result["ui"]["summary"], "2 helper tabs · 14s · changed 1 file")
+        self.assertEqual(result["ui"]["summary"], "2 helper chats · 14s · changed 1 file")
 
 
 if __name__ == "__main__":
