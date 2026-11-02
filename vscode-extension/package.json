@@ -169,14 +169,14 @@
         "crit.agentPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the agent executable. Empty uses the agent bundled with the extension, else `crit` on PATH. A path to `critique-bot` gets `--mode agent` added.",
-          "scope": "machine-overridable"
+          "markdownDescription": "Path to the agent executable. Empty uses the agent bundled with the extension, else `crit` on PATH. A path to `critique-bot` gets `--mode agent` added. User settings only: a repository's `.vscode/settings.json` cannot change it.",
+          "scope": "machine"
         },
         "crit.configPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "config.json for the agent, relative to the workspace folder. Empty lets crit find it (`.bot/settings.json`, then `config.json` in the project).",
-          "scope": "resource"
+          "markdownDescription": "config.json for the agent: an absolute path, or one relative to the workspace folder. Empty lets crit find it (`.bot/settings.json`, then `config.json` in the project; a config committed in the repository is refused). User settings only: a repository's `.vscode/settings.json` cannot change it.",
+          "scope": "machine"
         },
         "crit.permissionMode": {
           "type": "string",
@@ -188,7 +188,8 @@
             "plan"
           ],
           "default": "",
-          "markdownDescription": "Permission mode at start. Empty uses `permissions` from `.bot/settings.json` (default: ask)."
+          "markdownDescription": "Permission mode at start. Empty uses `permissions` from `.bot/settings.json` (default: ask). User settings only.",
+          "scope": "machine"
         },
         "crit.extraArgs": {
           "type": "array",
@@ -196,8 +197,8 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Extra arguments for the agent, for example `[\"--headed\"]` or `[\"--logs\"]`.",
-          "scope": "machine-overridable"
+          "markdownDescription": "Extra arguments for the agent, for example `[\"--headed\"]` or `[\"--logs\"]`. User settings only: a repository's `.vscode/settings.json` cannot change it.",
+          "scope": "machine"
         },
         "crit.mirrorCommandsInTerminal": {
           "type": "boolean",

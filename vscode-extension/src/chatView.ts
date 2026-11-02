@@ -234,7 +234,10 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.TextDo
       return;
     }
     const settings = vscode.workspace.getConfiguration("crit");
-    const command = resolveAgent(this.context.extensionPath, settings.get<string>("agentPath"));
+    // Only the user's own settings count: a repository's .vscode/settings.json must not choose
+    // the agent binary, its arguments, its config (and so the chat address), or the mode.
+    const user = <T>(key: string): T | undefined => settings.inspect<T>(key)?.globalValue;
+    const command = resolveAgent(this.context.extensionPath, user<string>("agentPath"));
     const agent = new AgentProcess(command);
     this.agent = agent;
     const workspace = folder.uri.fsPath;
@@ -252,13 +255,13 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.TextDo
       this.post({ kind: "stopped", code, reason });
     });
     this.post({ kind: "starting", source: command.source });
-    const configPath = (settings.get<string>("configPath") || "").trim();
+    const configPath = (user<string>("configPath") || "").trim();
     try {
       agent.start({
         workspace,
         config: configPath ? path.resolve(workspace, configPath) : undefined,
-        mode: this.modeOverride || (settings.get<string>("permissionMode") || "").trim() || undefined,
-        extraArgs: settings.get<string[]>("extraArgs") || [],
+        mode: this.modeOverride || (user<string>("permissionMode") || "").trim() || undefined,
+        extraArgs: user<string[]>("extraArgs") || [],
       });
     } catch (err) {
       this.post({ kind: "event", event: { type: "error", message: String(err) } });

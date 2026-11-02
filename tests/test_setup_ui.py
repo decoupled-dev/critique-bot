@@ -35,7 +35,8 @@ class _Server:
     """Runs the setup handler on a free port for the duration of a test."""
 
     def __init__(self, state: SetupState) -> None:
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+        self.token = "test-token"
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state, self.token))
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
 
@@ -44,18 +45,27 @@ class _Server:
         return f"http://127.0.0.1:{self.httpd.server_port}"
 
     def get(self, path: str):
-        with urllib.request.urlopen(self.base + path, timeout=10) as response:
+        request = urllib.request.Request(self.base + path, headers={"X-Crit-Token": self.token})
+        with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, response.read()
 
     def post(self, path: str, payload: dict):
         request = urllib.request.Request(
             self.base + path,
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Crit-Token": self.token},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
+
+    def raw(self, path: str, *, data: bytes | None = None, headers: dict | None = None) -> int:
+        request = urllib.request.Request(self.base + path, data=data, headers=headers or {}, method="POST" if data else "GET")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
 
     def close(self) -> None:
         self.httpd.shutdown()
@@ -156,6 +166,33 @@ class EndpointTests(unittest.TestCase):
         payload = json.loads(self.server.get("/api/pick")[1])
         self.assertIsNone(payload["pick"])
         self.assertFalse(payload["browser"])
+
+    def test_api_without_the_token_is_refused(self) -> None:
+        original = self.path.read_text(encoding="utf-8")
+        self.assertEqual(self.server.raw("/api/state"), 403)
+        # A cross-site "simple" POST: text/plain body, no token.
+        body = json.dumps({"config": {"url": "https://evil.example/"}}).encode()
+        self.assertEqual(self.server.raw("/api/config", data=body, headers={"Content-Type": "text/plain"}), 403)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), original)
+
+    def test_wrong_token_or_plain_text_body_is_refused(self) -> None:
+        body = json.dumps({"config": {"url": "https://evil.example/"}}).encode()
+        wrong = {"Content-Type": "application/json", "X-Crit-Token": "nope"}
+        self.assertEqual(self.server.raw("/api/config", data=body, headers=wrong), 403)
+        plain = {"Content-Type": "text/plain", "X-Crit-Token": self.server.token}
+        self.assertEqual(self.server.raw("/api/config", data=body, headers=plain), 403)
+        self.assertNotIn("evil", self.path.read_text(encoding="utf-8"))
+
+    def test_rebound_host_or_foreign_origin_is_refused(self) -> None:
+        token = {"X-Crit-Token": self.server.token}
+        self.assertEqual(self.server.raw("/api/state", headers={**token, "Host": "evil.example"}), 403)
+        self.assertEqual(self.server.raw("/api/state", headers={**token, "Origin": "https://evil.example"}), 403)
+        self.assertEqual(self.server.raw("/", headers={"Host": "evil.example"}), 403)
+
+    def test_page_reads_the_token_from_its_address(self) -> None:
+        status, body = self.server.get("/?t=" + self.server.token)
+        self.assertEqual(status, 200)
+        self.assertIn(b"X-Crit-Token", body)
 
     def test_unknown_path_is_404(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as ctx:

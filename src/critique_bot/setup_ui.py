@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import hmac
+import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -360,12 +362,49 @@ def _json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, indent=2, default=str) + "\n").encode("utf-8")
 
 
-def make_handler(state: SetupState) -> type[BaseHTTPRequestHandler]:
+TOKEN_HEADER = "X-Crit-Token"
+
+
+def make_handler(state: SetupState, token: str) -> type[BaseHTTPRequestHandler]:
+    """The setup page's request handler. Every ``/api`` call must carry ``token``.
+
+    The page is opened as ``/?t=<token>`` and sends the token back in a header, which a
+    web page on another site cannot do without a CORS preflight this server never answers.
+    The Host and Origin checks stop DNS rebinding (a site that points its own name at
+    127.0.0.1 to read or rewrite config.json).
+    """
+    if not token:
+        raise ValueError("the setup UI needs a token")
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "critique-bot-setup"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             log.debug("setup ui " + (fmt % args))
+
+        def _local_host(self) -> bool:
+            port = self.server.server_address[1]
+            host = (self.headers.get("Host") or "").strip().lower()
+            if host not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+                return False
+            origin = (self.headers.get("Origin") or "").strip().lower()
+            return not origin or origin in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+
+        def _allowed(self, *, post: bool) -> bool:
+            """False (and a 403 sent) for a request that did not come from the setup page."""
+            if not self._local_host():
+                self._json({"error": "forbidden: wrong Host or Origin"}, status=403)
+                return False
+            if self.path in ("/", "/index.html") or self.path.startswith("/?"):
+                return True
+            sent = self.headers.get(TOKEN_HEADER) or ""
+            if not hmac.compare_digest(sent.encode(), token.encode()):
+                self._json({"error": "forbidden: missing or wrong setup token"}, status=403)
+                return False
+            if post and (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                self._json({"error": "forbidden: requests must be JSON"}, status=403)
+                return False
+            return True
 
         def _send(self, status: int, body: bytes, content_type: str) -> None:
             self.send_response(status)
@@ -392,7 +431,9 @@ def make_handler(state: SetupState) -> type[BaseHTTPRequestHandler]:
             return data if isinstance(data, dict) else {}
 
         def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-            if self.path in ("/", "/index.html"):
+            if not self._allowed(post=False):
+                return
+            if self.path in ("/", "/index.html") or self.path.startswith("/?"):
                 self._send(200, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if self.path == "/api/state":
@@ -409,6 +450,8 @@ def make_handler(state: SetupState) -> type[BaseHTTPRequestHandler]:
             self._json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+            if not self._allowed(post=True):
+                return
             body = self._body()
             try:
                 if self.path == "/api/config":
@@ -607,13 +650,14 @@ def run_setup(
             flush=True,
         )
         return 1
-    handler = make_handler(state)
+    token = secrets.token_urlsafe(24)
+    handler = make_handler(state, token)
     try:
         server = ThreadingHTTPServer((BIND_HOST, port), handler)
     except OSError as exc:
         print(f"error: cannot listen on {BIND_HOST}:{port}: {exc}", flush=True)
         return 1
-    url = f"http://{BIND_HOST}:{server.server_port}/"
+    url = f"http://{BIND_HOST}:{server.server_port}/?t={token}"
     print(f"critique-bot setup UI: {url}   (Ctrl-C to stop)", flush=True)
     if open_page:
         try:
@@ -775,10 +819,13 @@ const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+
 async function api(path, body) {
+  const headers = { "X-Crit-Token": TOKEN };
   const options = body === undefined
-    ? {}
-    : { method: "POST", headers: { "Content-Type": "application/json" },
+    ? { headers }
+    : { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(body) };
   const response = await fetch(path, options);
   return response.json();

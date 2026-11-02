@@ -125,6 +125,9 @@ class LocalModelSession(ChatSession):
         self.last_detail: dict[str, Any] | None = None
 
     def send(self, prompt: str) -> str:
+        from critique_bot.chat_client import redact_outgoing
+
+        prompt = redact_outgoing(prompt)
         self.messages.append({"role": "user", "content": prompt})
         detail: dict[str, Any] = {"backend": "local", "model": self.client.model}
         try:

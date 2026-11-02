@@ -64,7 +64,11 @@ def main(argv: list[str]) -> int:
     except BotHomeError as exc:
         _emit(type="error", message=str(exc))
         return 1
-    config_path = Path(args.config).resolve() if args.config else home.config_file()
+    try:
+        config_path = Path(args.config).resolve() if args.config else home.config_file()
+    except BotHomeError as exc:
+        _emit(type="error", message=str(exc))
+        return 1
     if config_path is None or not config_path.is_file():
         _emit(
             type="error",

@@ -2210,8 +2210,11 @@ class _TaskRun:
         """Ask the user unless the call only reads, the mode allows it, or it was always-allowed.
 
         ask: every edit, command, fetch, and outside path. edits: file edits in
-        the workspace run. auto: everything runs. A risky command (a broad
-        delete, git reset --hard, a push, a flash) asks in every mode, unless
+        the workspace run. auto: edits and fetches run, and so do read-only
+        commands; any other command asks (or runs once "always allow" covers its
+        program), since a command can send data off this machine in ways no check
+        sees. A risky command (a broad delete, git reset --hard, a push, a flash,
+        a secret file, a path outside the workspace) asks in every mode, unless
         ``"confirm_risky": false``.
         """
         kind = getattr(perm, "kind", "read") or "read"
@@ -2222,7 +2225,9 @@ class _TaskRun:
         if risky and not self.confirm_risky and mode == "auto":
             risky = ""
         if not risky:
-            if mode == "auto" or (mode == "edits" and kind == "edit"):
+            if mode == "auto" and (kind != "command" or _read_only_command(str(getattr(perm, "detail", "") or ""))):
+                return True, ""
+            if mode == "edits" and kind == "edit":
                 return True, ""
         key = getattr(perm, "key", "") or ""
         rememberable = bool(key) and kind != "outside"
@@ -2454,12 +2459,25 @@ class _TaskRun:
         self.payload = f"Shell changed to {label}: {preamble}\n\n" + self.payload
 
     def _run_check(self) -> dict[str, Any]:
-        """The project check. It always runs again after a change, with its own long timeout."""
+        """The project check. It always runs again after a change, with its own long timeout.
+
+        It goes through the same approval as any command: the check command can come from
+        a file in the repository (``.bot/AGENT.md``), so it is not trusted on its own.
+        """
         self.hooks.ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
         call = ToolCall(
             "run_command",
             {"command": self.check_command, "timeout": self.check_timeout, "cwd": str(self.ctx.workspace)},
         )
+        approved, reason = self._approved(self._permission(call))
+        if not approved:
+            result = {
+                "tool": "run_command",
+                "ok": False,
+                "error": "the user did not approve the check command" + (f": {reason}" if reason else ""),
+            }
+            self.last_output = result["error"]
+            return result
         session = self.ctx.session
         before = getattr(session, "cwd", None)
         self.hooks.tool_start(call)
@@ -3590,6 +3608,15 @@ def _set_active(name: str, count: int) -> None:
 
 def _waiting(active: bool, label: str = "Thinking") -> None:
     agent_ui.waiting(active, label)
+
+
+def _read_only_command(command: str) -> bool:
+    check = getattr(agent_tools, "read_only_command", None)
+    try:
+        return bool(callable(check) and command and check(command))
+    except Exception as exc:  # a broken check asks rather than runs
+        log.debug(f"read-only check failed: {exc}")
+        return False
 
 
 def _approve_prompt(permission: Any, *, risky: str = "") -> tuple[str, str]:

@@ -90,15 +90,29 @@ class ChatNetworkGuardTests(unittest.TestCase):
         ):
             self.assertTrue(request_is_allowed(url, self.CHAT), url)
 
-    def test_allows_first_party_hosts_for_chatgpt(self) -> None:
+    def test_no_hosts_are_built_in_for_chatgpt(self) -> None:
+        # openai.com, its CDNs, Cloudflare, and Arkose are reachable only when allowed_hosts lists them.
         for url in (
             "https://auth.openai.com/authorize",
             "https://cdn.oaistatic.com/assets/app.js",
             "https://files.oaiusercontent.com/file",
             "https://challenges.cloudflare.com/cdn-cgi/challenge",
+            "https://speed.cloudflare.com/__up",
             "https://client-api.arkoselabs.com/fc/gt2/public_key",
         ):
-            self.assertTrue(request_is_allowed(url, self.CHAT), url)
+            self.assertFalse(request_is_allowed(url, self.CHAT), url)
+
+    def test_allowed_hosts_open_exactly_what_they_list(self) -> None:
+        from critique_bot import browser
+
+        browser.set_allowed_hosts(["oaistatic.com", "challenges.cloudflare.com"])
+        try:
+            self.assertTrue(request_is_allowed("https://cdn.oaistatic.com/assets/app.js", self.CHAT))
+            self.assertTrue(request_is_allowed("https://challenges.cloudflare.com/x", self.CHAT))
+            self.assertFalse(request_is_allowed("https://speed.cloudflare.com/__up", self.CHAT))
+            self.assertFalse(request_is_allowed("https://auth.openai.com/authorize", self.CHAT))
+        finally:
+            browser.set_allowed_hosts(())
 
     def test_blocks_third_party_and_arbitrary_sites(self) -> None:
         for url in (
@@ -131,8 +145,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
 
     def test_allowed_hosts_include_chat_host(self) -> None:
         hosts = allowed_chat_hosts(self.CHAT)
-        self.assertIn("chatgpt.com", hosts)
-        self.assertIn("oaistatic.com", hosts)
+        self.assertEqual(hosts, frozenset({"chatgpt.com"}))
 
     def test_guard_aborts_off_chat_requests(self) -> None:
         handlers: list = []
@@ -169,13 +182,14 @@ class ChatNetworkGuardTests(unittest.TestCase):
         self.assertFalse(blocked.continued)
         self.assertEqual(blocked.aborted, "blockedbyclient")
 
+        # Not built in: a challenge host is reachable only when allowed_hosts lists it.
         challenge = Route(
             "https://challenges.cloudflare.com/cdn-cgi/challenge",
             resource_type="document",
         )
         handlers[0](challenge)
-        self.assertTrue(challenge.continued)
-        self.assertIsNone(challenge.aborted)
+        self.assertFalse(challenge.continued)
+        self.assertEqual(challenge.aborted, "blockedbyclient")
 
     def test_guard_skips_when_already_installed(self) -> None:
         page = MagicMock()

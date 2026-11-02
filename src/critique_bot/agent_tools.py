@@ -1269,6 +1269,23 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
     engine cannot be interrupted once it starts backtracking.
     """
     notes = notes if notes is not None else []
+    found = _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes)
+    if sensitive_file(root):
+        return found  # the user said yes to searching this one file
+    hits, total, _count = found
+    hidden = [item for item in hits if sensitive_file(item)]
+    if not hidden:
+        return found
+    for item in hidden:
+        total -= len(hits.pop(item))
+    notes.append(
+        f"left out matches in {len(hidden)} file(s) that usually hold secrets ({', '.join(hidden[:3])}); "
+        "search that file by its path to ask the user"
+    )
+    return hits, max(total, 0), len(hits)
+
+
+def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes):
     via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern)
     if via_rg is not None:
         return via_rg
@@ -1389,7 +1406,27 @@ def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
         return f"path is a directory: {raw}"
     if inside(ctx.workspace, path) and ".git" in Path(rel(ctx.workspace, path)).parts:
         return f"refusing to change files inside .git: {raw}"
+    for protected in _protected_paths(ctx):
+        if path == protected or inside(protected, path):
+            return (
+                f"refusing to change {raw}: it holds crit's own settings (permissions, chat address, allowed hosts). "
+                "Ask the user to change it"
+            )
     return ""
+
+
+def _protected_paths(ctx: ToolContext) -> list[Path]:
+    """crit's settings, skills, and the config file named in them: the model may not rewrite its own rules."""
+    bot = ctx.workspace / ".bot"
+    out = [bot / "settings.json", bot / "skills"]
+    try:
+        raw = json.loads((bot / "settings.json").read_text(encoding="utf-8")).get("config")
+    except (OSError, ValueError, AttributeError):
+        raw = None
+    if isinstance(raw, str) and raw.strip():
+        config = Path(raw)
+        out.append((config if config.is_absolute() else ctx.workspace / config).resolve())
+    return out
 
 
 #: A whole-file write that leaves fewer than this share of a file this long needs overwrite true.
@@ -3049,22 +3086,27 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
     if not tool:
         return Permission("read", f"Unknown tool {name}", "")
     args = normalize_args(tool, args if isinstance(args, (dict, str)) else {})
-    outside = [item for item in _paths_of(tool, args, ctx) if not inside(ctx.workspace, item)]
+    paths = _paths_of(tool, args, ctx)
+    outside = [item for item in paths if not inside(ctx.workspace, item)]
     if tool in READ_ONLY:
+        # The secret check comes first: ~/.ssh/id_rsa is outside the workspace *and* a secret.
+        secret = [item for item in paths if sensitive_file(item)]
+        if tool == "git_show":
+            secret += [Path(item) for item in _rev_paths(args.get("rev")) if sensitive_file(item)]
+        if secret:
+            shown = ", ".join(rel(ctx.workspace, item) for item in secret[:3])
+            return Permission(
+                "outside",
+                f"Read a file that usually holds secrets: {shown}",
+                "",
+                _tool_label(tool, args),
+                risk=SECRET_RISK,
+            )
         if outside:
             shown = ", ".join(str(item) for item in outside[:3])
-            return Permission("outside", f"Read outside the workspace: {shown}", "", _tool_label(tool, args))
-        if tool == "read_files":
-            secret = [item for item in _paths_of(tool, args, ctx) if sensitive_file(item)]
-            if secret:
-                shown = ", ".join(rel(ctx.workspace, item) for item in secret[:3])
-                return Permission(
-                    "outside",
-                    f"Read a file that usually holds secrets: {shown}",
-                    "",
-                    _tool_label(tool, args),
-                    risk="reads a file that usually holds secrets (its contents go to the chat, with known secret formats redacted)",
-                )
+            return Permission(
+                "outside", f"Read outside the workspace: {shown}", "", _tool_label(tool, args), risk=OUTSIDE_READ_RISK
+            )
         return Permission("read", _tool_label(tool, args), tool)
     if tool in MUTATING:
         summary = _tool_label(tool, args)
@@ -3075,7 +3117,9 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             detail = _edit_preview(args)
         if outside:
             shown = ", ".join(str(item) for item in outside[:3])
-            return Permission("outside", f"{summary} (outside the workspace: {shown})", "", detail)
+            return Permission(
+                "outside", f"{summary} (outside the workspace: {shown})", "", detail, risk="changes files outside the workspace"
+            )
         return Permission("edit", summary, "edit", detail)
     if tool == "run_command":
         command = str(args.get("command") or "").strip()
@@ -3085,10 +3129,25 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             if not inside(ctx.workspace, current.resolve()):
                 outside = [current]
         if outside:
-            return Permission("outside", f"{label} (cwd outside the workspace: {outside[0]})", "", command)
+            return Permission(
+                "outside", f"{label} (cwd outside the workspace: {outside[0]})", "", command, risk="runs outside the workspace"
+            )
         reach = network_command(command)
         if reach:
             return Permission("network", f"{label} (it {reach})", "", command, risk=f"{reach}, which can send data off this machine")
+        named = _command_secret_paths(command, ctx)
+        if named:
+            return Permission("outside", f"{label} (it names {named[0]})", "", command, risk=SECRET_RISK)
+        written = _command_runs_written(command, ctx)
+        if written:
+            program = command_key(command)
+            return Permission(
+                "command",
+                label,
+                f"command:{program}" if program else "",
+                command,
+                risk=f"runs {written}, which this task wrote or changed; code the model wrote can reach the network",
+            )
         program = command_key(command)
         return Permission("command", label, f"command:{program}" if program else "", command)
     if tool == "delegate":
@@ -3114,6 +3173,60 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             host = ""
         return Permission("network", f"Fetch {_one_line(url, 100)}", f"network:{host}" if host else "", url)
     return Permission("read", _tool_label(tool, args), tool)
+
+
+SECRET_RISK = "reads a file that usually holds secrets (its contents go to the chat, with known secret formats redacted)"
+OUTSIDE_READ_RISK = "reads outside the workspace (the contents go to the chat)"
+
+
+def _rev_paths(rev: Any) -> list[str]:
+    """``HEAD:.env`` -> ``[".env"]``: the file a git revision names, if it names one."""
+    if not isinstance(rev, str) or ":" not in rev:
+        return []
+    return [rev.split(":", 1)[1]] if rev.split(":", 1)[1] else []
+
+
+def _command_words(command: str) -> list[str]:
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    words: list[str] = []
+    for token in tokens:
+        for piece in re.split(r"[;&|()<>]+|(?<=\S)=", token):
+            piece = piece.strip().strip("\"'`").strip()
+            if piece and not piece.startswith("-") and "://" not in piece:
+                words.append(piece)
+    return words
+
+
+def _command_secret_paths(command: str, ctx: ToolContext) -> list[str]:
+    """Words of ``command`` that name a file which usually holds secrets (``cat .env``, ``cp ~/.aws/credentials x``)."""
+    found: list[str] = []
+    for word in _command_words(command):
+        text = os.path.expanduser(word) if word.startswith("~") else word
+        if sensitive_file(text):
+            found.append(word)
+    return found
+
+
+def _command_runs_written(command: str, ctx: ToolContext) -> str:
+    """A file this task wrote or changed that ``command`` names (``python check.py``), or ""."""
+    state = ctx.state
+    if state is None or not state.edits:
+        return ""
+    current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+    for word in _command_words(command):
+        try:
+            candidates = [resolve(ctx.workspace, word)]
+            if not Path(word).is_absolute():
+                candidates.append(Path(os.path.abspath(current / word)))
+        except (OSError, ValueError, RuntimeError):
+            continue
+        for path in candidates:
+            if inside(ctx.workspace, path) and rel(ctx.workspace, path) in state.edits:
+                return word
+    return ""
 
 
 _CD_PROGRAMS = {"cd", "set-location", "sl", "pushd", "popd", "chdir"}
@@ -3264,31 +3377,72 @@ _NETWORK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"\b(?:nslookup|dig|host|resolve-dnsname)\s", "sends DNS queries"),
         (r"(?:python3?|py|node|ruby|perl|php|pwsh|powershell)\b[^\n]*\s-(?:c|e|command)\s[^\n]*(?:urllib|requests\.|http\.client|socket\.|fetch\(|https?\.request|net\.connect|xmlhttprequest|invoke-webrequest|net\.webclient)", "opens a network connection from a script"),
         (r"\b(?:send-|test-)?netconnection\b|\btest-connection\b[^;&|\n]*-tcpport", "opens a network connection"),
+        # Host names carry data too: a lookup of <secret>.attacker.example reaches the attacker's DNS server.
+        (r"(?:^|[\s;&|({])(?:ping6?|getent|traceroute6?|tracert|tracepath|mtr|pathping|whois|drill|kdig|arping|tnc)(?:\.exe)?(?=\s|$)", "looks up or contacts another host"),
+        (r"\[\s*(?:system\.)?net\.dns\s*\]|\bgethostbyname\b|\bgetaddrinfo\b|\bdns\.(?:lookup|resolve)", "sends DNS queries"),
+        (r"/dev/(?:tcp|udp)/|\bopenssl\b[^;&|\n]*\bs_client\b|\bnet\.sockets\.|\b(?:tcp|udp)client\b|\bio::socket\b|-msocket\b|\bfsockopen\b|\bnet::http\b|\bopen-uri\b", "opens a network connection"),
+        (r"\bfile_get_contents\s*\(\s*['\"]?(?:https?|ftp)://|\bwebbrowser\.", "opens a network connection from a script"),
+        (r"(?:python3?|py|node|deno|bun|ruby|perl|php|pwsh|powershell)\b[^\n]*\s-(?:c|e|r|p|command|m\w*)\s[^\n]*(?:__import__|importlib|\bsocket\b|\bhttps?\.(?:get|request)\b|require\(\s*['\"](?:node:)?(?:https?|net|dgram|tls|dns|http2|child_process)['\"])", "opens a network connection from a script"),
+        # A web address handed to a browser leaves through the user's own, unfiltered browser.
+        (r"(?:^|[\s;&|({])(?:xdg-open|gio\s+open|gnome-open|kde-open\d?|open|start|explorer|sensible-browser|x-www-browser|www-browser|firefox|chrome|google-chrome[\w-]*|chromium[\w-]*|msedge|microsoft-edge[\w-]*|brave[\w-]*|opera|safari|iexplore)(?:\.exe)?\s[^;&|\n]*(?:\w+://|\bwww\.)", "opens a web address in a browser"),
+        (r"\bstart-process\b[^;&|\n]*\w+://|\brundll32\b[^;&|\n]*\b(?:url|ieframe|shdocvw)\.dll|(?:^|[\s;&|({])(?:lynx|w3m|elinks|links2?)(?:\.exe)?(?=\s|$)", "opens a web address in a browser"),
+        # Windows file shares and network mounts.
+        (r"(?:^|[\s\"'=(])\\\\[\w.$-]+\\|\bnet\s+use\b|\bsmbclient\b|\bnew-psdrive\b|\bmount(?:\.cifs|\.nfs|_smbfs)?\b[^;&|\n]*(?:-t\s+(?:cifs|nfs|smb)|//[\w.-]+/)", "reaches a network share"),
+        # git to an address the model chose, or with a command git runs to connect.
+        (r"\bgit\b[^;&|\n]*(?:\w+://|\s[\w.-]+@[\w.-]+:|\bext::|--upload-pack|--receive-pack|--exec\b|\s-c\s|--config-env|\bremote\s+(?:add|set-url)\b|\bsubmodule\b|\barchive\b[^;&|\n]*--remote|\bconfig\b[^;&|\n]*(?:sshcommand|gitproxy|insteadof|\.url\b|credential|\.proxy|askpass))", "lets git reach an address the model chose"),
+        (r"\bgit_(?:ssh|ssh_command|proxy_command|askpass|config_parameters|config_count)\b|\bgit_config_key_", "lets git reach an address the model chose"),
+        # Package managers pointed at an address, or installing a package the model named
+        # (its install scripts run and can reach anything).
+        (r"\b(?:pip3?|pipx|uv|poetry|pdm|conda|mamba)\b[^;&|\n]*(?:\w+://|--index-url|--extra-index-url|(?<!\w)-i\s|--find-links|(?<!\w)-f\s|--trusted-host|\bconfig\s+set\b)", "points a package manager at another address"),
+        (r"\b(?:npm|pnpm|yarn|bun)\b[^;&|\n]*(?:\w+://|--registry|\bconfig\s+set\b|\bset\s+registry\b)", "points a package manager at another address"),
+        (r"(?:^|[\s;&|({])(?:npx|bunx|pnpx)(?:\.cmd)?\s|\b(?:pnpm|yarn|bun)\s+dlx\b|\bnpm\s+exec\b", "downloads and runs a package"),
+        (r"\b(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:install|i|add)\s+(?:-\S+\s+)*[@\w][^\s]*", "installs a package the model named (its install scripts can reach the network)"),
+        (r"\b(?:pip3?|pipx|uv(?:\s+pip)?|python3?\s+-m\s+pip)\s+install\s+(?:-(?!r\b|c\b|e\b|-requirement|-constraint|-editable)\S+\s+)*(?![-.]|/|\\)[A-Za-z][\w.\[\],<>=!~-]*(?:\s|$)", "installs a package the model named (its install scripts can reach the network)"),
+        (r"\bgradlew?(?:\.bat)?\b[^;&|\n]*(?:--init-script|(?<!\w)-I\s)|\bmvnw?\b[^;&|\n]*(?:-dremoterepositories|-drepo\.url|-daltdeploymentrepository|dependency:get)|\bgo\s+(?:get|install|mod\s+download)\s+[\w-]+\.[\w.-]+/|\bcargo\s+install\b[^;&|\n]*--git", "fetches from an address the model chose"),
+        # Commands that hide what they run cannot be checked.
+        (r"\b(?:pwsh|powershell)(?:\.exe)?\b[^\n]*\s-(?:e|ec|en|enc|enco|encod|encode|encoded|encodedcommand)\s", "runs an encoded command that cannot be checked"),
+        (r"\bbase64\b[^\n]*\s(?:-d|--decode|-D)\b[^\n]*(?:\|\s*(?:sh|bash|zsh|dash|ksh|python3?|perl|ruby|node|php|pwsh|powershell)\b)|\$\([^)]*\bbase64\b[^)]*(?:-d|--decode|-D)\b|\bfrombase64string\b", "runs decoded text that cannot be checked"),
     )
 )
 
 
 _SENSITIVE_NAMES = re.compile(
-    r"(?i)^(?:\.env(?:\..+)?|.+\.(?:pem|key|p8|p12|pfx|jks|keystore|bks|kdbx|ovpn|asc|gpg)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|"
-    r"\.netrc|_netrc|\.npmrc|\.pypirc|\.git-credentials|\.htpasswd|credentials(?:\.json|\.xml)?|"
-    r"(?:keystore|signing|secrets?|release-signing)\.properties|secrets?\.(?:json|ya?ml|toml|xml)|service-account.*\.json)$"
+    r"(?i)^(?:\.env(?:\..+)?|\.envrc|.+\.(?:pem|key|p8|p12|pfx|jks|keystore|bks|kdbx|ovpn|asc|gpg)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|"
+    r"\.netrc|_netrc|\.npmrc|\.yarnrc(?:\.yml)?|\.pypirc|\.pgpass|\.git-credentials|\.htpasswd|credentials(?:\.json|\.xml)?|"
+    r"(?:keystore|signing|secrets?|release-signing|local|gradle)\.properties|secrets?\.(?:json|ya?ml|toml|xml)|service-account.*\.json|"
+    r"google-services\.json|googleservice-info\.plist|\.(?:bash|zsh|python|psql|mysql|node_repl)_history|consolehost_history\.txt|"
+    r"cookies|login data|web data|storage_state\.json)$"
+)
+# Folders whose files are credentials or a signed-in browser.
+_SENSITIVE_DIRS = frozenset(
+    {".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", "gcloud", ".edge-profile", "msedge-user-data", ".bot-browser"}
 )
 
 
 def sensitive_file(path: Path | str) -> bool:
-    """True for a file that usually holds credentials: .env, keys and keystores, .netrc, signing properties."""
+    """True for a file that usually holds credentials: .env, keys and keystores, .netrc, signing properties.
+
+    ``gradle.properties`` and ``local.properties`` count: in Android projects they hold
+    signing passwords and repository tokens.
+    """
     target = Path(path)
-    if any(part in {".ssh", ".aws", ".gnupg", ".azure", ".kube"} for part in target.parts):
+    if any(part.lower() in _SENSITIVE_DIRS for part in target.parts):
         return True
     return bool(_SENSITIVE_NAMES.match(target.name))
 
 
 _SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".psm1", ".sh", ".bash", ".rb", ".pl", ".php", ".bat", ".cmd")
 _SCRIPT_NET_RE = re.compile(
-    r"(?i)\b(?:urllib\.request|urllib3|requests\.(?:get|post|put|patch|request|session)|http\.client|httpx|aiohttp|"
-    r"socket\.(?:socket|create_connection)|smtplib|ftplib|paramiko|fetch\(|axios|https?\.(?:request|get)\(|net\.(?:connect|socket)|"
+    r"(?im)\b(?:urllib\.request|urllib3|requests\.(?:get|post|put|patch|request|session)|http\.client|httpx|aiohttp|"
+    r"socket\.(?:socket|create_connection)|smtplib|ftplib|paramiko|fetch\(|axios|https?\.(?:request|get)\(|net\.(?:connect|socket|createconnection)|"
     r"xmlhttprequest|websocket|invoke-webrequest|invoke-restmethod|net\.webclient|system\.net\.http|"
-    r"(?:^|[\s;&|(])(?:curl|wget|scp|ssh|nc|ncat|ftp)\s)"
+    r"(?:^|[\s;&|(])(?:import|from)\s+(?:socket|requests|urllib|urllib3|http|httpx|aiohttp|smtplib|ftplib|telnetlib|paramiko|webbrowser|asyncssh|websockets?)\b|"
+    r"importlib|__import__|webbrowser\.|"
+    r"require\(\s*['\"](?:node:)?(?:https?|http2|net|dgram|tls|dns)['\"]\s*\)|from\s+['\"](?:node:)?(?:https?|http2|net|dgram|tls|dns)['\"]|"
+    r"openssl\s+s_client\b|net\.sockets\.)"
+    # These start with a non-word character, so they sit outside the leading \b.
+    r"|/dev/(?:tcp|udp)/|\[\s*(?:system\.)?net\.dns\s*\]"
+    r"|(?:^|[\s;&|(/\"'])(?:curl|wget|scp|ssh|nc|ncat|ftp|ping|nslookup|dig|getent|xdg-open)\s"
 )
 
 
@@ -3304,7 +3458,7 @@ def network_script(command: str, workspace: Path, cwd: Path | None = None) -> st
         tokens = command.split()
     base = Path(cwd or workspace)
     for token in tokens:
-        name = token.strip("\"'").lstrip("&").strip()
+        name = token.strip("\"'").lstrip("&<").rstrip(";&|)").strip()
         if not name.lower().endswith(_SCRIPT_SUFFIXES):
             continue
         path = Path(name)
@@ -3322,11 +3476,34 @@ def network_script(command: str, workspace: Path, cwd: Path | None = None) -> st
     return ""
 
 
+def _program_view(text: str) -> str:
+    """``text`` with quotes, escapes, and directory prefixes taken off each word.
+
+    ``/usr/bin/curl``, ``"curl"``, ``c\\url``, and ``C:\\Windows\\System32\\curl.exe`` all read as ``curl``.
+    """
+    words = []
+    for word in text.split(" "):
+        bare = re.sub(r"[\"'`]", "", word)
+        if "://" not in bare and not bare.startswith("\\\\"):
+            bare = re.split(r"[\\/]", bare)[-1] if re.search(r"[\\/]", bare.rstrip("\\/")) else bare
+            bare = bare.replace("\\", "")
+        words.append(bare)
+    return " ".join(words)
+
+
 def network_command(command: str) -> str:
-    """Why ``command`` could send data off this machine, or "" when it does not look like it can."""
+    """Why ``command`` could send data off this machine, or "" when it does not look like it can.
+
+    This is a check for the obvious cases, not a boundary: a command line can hide
+    what it does in ways no pattern sees. Commands that are not read-only ask for a
+    yes in every mode (see ``Agent._approved``), and an outbound firewall rule is the
+    real guarantee.
+    """
     text = " ".join(str(command or "").split())
+    # A POSIX shell drops quotes and backslash escapes: ``c\\url`` and ``cu''rl`` run curl.
+    views = (text, _program_view(text), re.sub(r"[\\\"'`]", "", text))
     for pattern, reason in _NETWORK_PATTERNS:
-        if pattern.search(text):
+        if any(pattern.search(view) for view in views):
             return reason
     return ""
 

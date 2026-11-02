@@ -356,10 +356,10 @@ Shift+Tab cycles through four modes, as in Claude Code. The line under the input
 | --- | --- | --- |
 | **ask** (default) | Every edit, command, web fetch, and path outside the project. | `crit`, or `"permissions": "ask"` |
 | **edits** (accept edits) | Commands, fetches, and outside paths. File edits in the project run at once. | `--permission-mode edits` |
-| **auto** | Only risky commands (below). Everything else runs, and questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
+| **auto** | Commands that are not read-only (once per program with "don't ask again"), and risky commands (below). Edits, reads, and read-only commands run, and questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
 | **plan** | Nothing changes. The model reads the code and sends a plan, then you approve it. | `crit --plan`, `/plan` |
 
-**Risky commands** ask in every mode, auto included. These are deletes of a whole tree (`rm -rf /`, `~`, `.`, `.git`, a drive root), `git reset --hard`, `git clean -f`, `git checkout -- .`, any `git push`, `repo upload`, `fastboot flash`/`erase`, `dd`, `mkfs`, `format`, `sudo`, shutdown or restart, publishing a package, and piping a download into a shell. That box has only Yes and No; "don't ask again" does not cover them. `"confirm_risky": false` lets auto mode run them too.
+**Risky commands** ask in every mode, auto included. These are deletes of a whole tree (`rm -rf /`, `~`, `.`, `.git`, a drive root), `git reset --hard`, `git clean -f`, `git checkout -- .`, any `git push`, `repo upload`, `fastboot flash`/`erase`, `dd`, `mkfs`, `format`, `sudo`, shutdown or restart, publishing a package, piping a download into a shell, reading a file that usually holds secrets, anything outside the workspace, and running a file this task wrote. That box has only Yes and No; "don't ask again" does not cover them. `"confirm_risky": false` lets auto mode run them too.
 
 **Plan mode.** The task goes out with plan-mode instructions. The model may read and search files, ask the code graph, fetch web pages, and run read-only commands (`git log`, `git diff`, `ls`, `grep`, `Get-Content`, `./gradlew tasks`, `adb devices`). Edits, writes, and builds are not run; the model is told to finish reading and send the plan. The plan comes back as **Goal, Findings, Steps, Risks, Verify**, and a box asks:
 
@@ -377,7 +377,7 @@ Reading and searching run without asking. In ask mode, edits, commands, web fetc
 1. **Yes** runs this step.
 2. **Yes, and don't ask again** remembers the choice for this session: all file edits, commands that start with the same program (for example every `npm` command), or one web site. It never covers a command that chains, redirects, or nests another command; those are asked each time. Paths outside the project are always asked.
 3. **No** (or Esc) skips the step. After `3` you can type what to do instead, and the model gets that note.
-4. **Yes, and switch to auto mode** runs this step and stops asking for the rest of the session (risky commands still ask).
+4. **Yes, and switch to auto mode** runs this step and stops asking about edits for the rest of the session (commands that are not read-only, and risky ones, still ask).
 
 When there is no "don't ask again" row (a path outside the project), No is `2` and auto is `3`.
 
@@ -416,7 +416,7 @@ The main chat stays sharp when it stays small. A part of a task whose details th
 - **Every brief starts a fresh chat.** A helper tab opens on its first brief and stays open, but each new brief starts a new chat in it, with the instructions in front, so nothing of an earlier brief carries over.
 - **The chats cannot see each other.** crit is what they share. Every helper works on the same folder through crit's tools, and its final report goes back to the coordinator as the result of the `delegate` call.
 - **Each file has one owner.** A brief lists the files that helper may change, and crit refuses an edit to any other file. Two helpers never get the same file, and a brief with no files is read only.
-- **A single helper may build and test.** When a `delegate` call has one brief, nothing else runs at the same time, so that helper may run builds and tests and report the result. Helpers that run alongside others use only read-only commands. Risky commands (a broad delete, `git reset --hard`, a push) never run in a helper. Helpers cannot ask you anything.
+- **Helpers only read.** Helpers cannot ask you anything, so they run only read-only commands: no builds or tests, no fetches, no secret files, nothing outside the workspace. The coordinator runs builds and tests itself after the reports.
 - **The coordinator finishes the job.** It reviews the helpers' changes (`git_diff`), fixes what does not fit together, and trusts a build or test result only when the report quotes it. The diff at the end, the check command, and `/undo` cover the helpers' changes too.
 - **One approval.** In ask mode the split is approved once, for the files it lists. A read-only split runs without asking, also in plan mode, so planning can investigate several places at once.
 - The status line shows `Running 2 helper chats…` with each helper's current step.

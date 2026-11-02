@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,8 +18,9 @@ BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
 # Transcripts, the prompt history, and caches hold code and tasks: never committed.
-_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history")
-_LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\n"
+# settings.json is the user's own: a committed copy loses its permission keys (SECURITY_KEYS).
+_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history", ".bot/settings.json")
+_LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\nsettings.json\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
 Lines below the marker are sent to the chat at the start of every session,
@@ -33,6 +36,23 @@ empty. Keep the notes short and specific, for example:
 _NOTES_MARKER = "<!-- notes start -->"
 _CHECK_LINE = re.compile(
     r"(?im)^[ \t>*-]*(?:test with|test command|check with|check command)\s*:\s*(.+?)\s*$"
+)
+
+
+# Settings that loosen what the agent may do or where the conversation goes. A cloned
+# repository could ship them in a committed ``.bot/settings.json``; they count only when
+# the file is the user's own (not tracked by git).
+SECURITY_KEYS = frozenset(
+    {
+        "permissions",
+        "mode",
+        "confirm_risky",
+        "web_fetch",
+        "web_fetch_hosts",
+        "network_commands",
+        "check_command",
+        "auto_questions",
+    }
 )
 
 
@@ -55,12 +75,23 @@ class BotHome:
         return self.bot_dir / NOTES_NAME
 
     def config_file(self) -> Path | None:
+        """The config named in settings. Raises BotHomeError when git tracks it in this project.
+
+        A committed config.json would let a cloned repository choose the chat address,
+        allowed hosts, or a remote browser, and every file the agent reads would go there.
+        """
         raw = self.settings.get("config")
         if not raw or not isinstance(raw, str):
             return None
         path = Path(raw)
         if not path.is_absolute():
             path = self.root / path
+        if git_tracks(self.root, path):
+            raise BotHomeError(
+                f"{path} is committed in this repository, so crit does not use it: a config that comes "
+                "with the code could send your files to another chat. Keep config.json out of git "
+                "(git rm --cached it and add it to .gitignore), or pass --config with your own copy."
+            )
         return path
 
     def project_notes(self) -> str:
@@ -154,6 +185,13 @@ def _load(root: Path, settings_path: Path) -> BotHome:
     if not isinstance(raw, dict):
         raise BotHomeError(f"{settings_path} must be a JSON object")
     bot_dir = settings_path.parent
+    ignored = sorted(key for key in raw if key in SECURITY_KEYS)
+    if ignored and git_tracks(root, settings_path):
+        log.warn(
+            f"{settings_path} is committed in this repository; ignoring {', '.join(ignored)} from it. "
+            "Settings that loosen permissions count only in your own, untracked settings file."
+        )
+        raw = {key: value for key, value in raw.items() if key not in SECURITY_KEYS}
     return BotHome(
         root=root,
         bot_dir=bot_dir,
@@ -165,6 +203,30 @@ def _load(root: Path, settings_path: Path) -> BotHome:
     )
 
 
+def git_tracks(root: Path, path: Path) -> bool:
+    """True when git tracks ``path`` in the repository at ``root`` (False outside one, or without git)."""
+    try:
+        relative = Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(root)))
+    except ValueError:
+        return False
+    if not (Path(root) / ".git").exists():
+        return False
+    exe = shutil.which("git")
+    if exe is None:
+        log.warn(f"git is not installed; cannot tell whether {relative} is committed in {root}")
+        return False
+    try:
+        proc = subprocess.run(
+            [exe, "-C", str(root), "ls-files", "--error-unmatch", "--", relative.as_posix()],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
 def update_settings(home: BotHome, **values: object) -> None:
     """Merge ``values`` into ``.bot/settings.json`` and keep ``home.settings`` in step.
 
@@ -172,7 +234,15 @@ def update_settings(home: BotHome, **values: object) -> None:
     Ctrl+C never leaves half a JSON file behind.
     """
     home.settings.update(values)
-    _atomic_write_text(home.settings_path, json.dumps(home.settings, indent=2) + "\n")
+    # Merge into the file as it is: keys left out of home.settings (see SECURITY_KEYS) stay.
+    try:
+        on_disk = json.loads(home.settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        on_disk = {}
+    if not isinstance(on_disk, dict):
+        on_disk = {}
+    on_disk.update(values)
+    _atomic_write_text(home.settings_path, json.dumps(on_disk, indent=2) + "\n")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

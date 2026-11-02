@@ -1,6 +1,7 @@
 {
   "backend": "browser",
   "url": "https://chatgpt.com/",
+  "allowed_hosts": ["oaistatic.com", "oaiusercontent.com", "auth.openai.com", "challenges.cloudflare.com"],
   "selectors": {
     "model_dropdown": "",
     "model_dropdown_identifier": "model-switcher",

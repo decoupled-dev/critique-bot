@@ -170,6 +170,11 @@ class _Route:
 class LeanHeadlessTests(unittest.TestCase):
     CHAT = "https://chatgpt.com/"
 
+    def setUp(self) -> None:
+        # The chat site's own CDN and challenge host come from allowed_hosts; none are built in.
+        browser.set_allowed_hosts(["oaistatic.com", "challenges.cloudflare.com"])
+        self.addCleanup(browser.set_allowed_hosts, ())
+
     def _handler(self, lean: bool):
         handlers: list = []
         page = MagicMock()

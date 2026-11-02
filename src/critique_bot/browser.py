@@ -147,22 +147,9 @@ _INTERNAL_SCHEMES = frozenset(
     }
 )
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
-# First-party hosts needed to *render* a well-known chat page. Not ads, CDNs
-# of other companies, or arbitrary sites the model might try to open.
-_CHAT_PAGE_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "chatgpt.com",
-        (
-            "chatgpt.com",
-            "openai.com",
-            "oaistatic.com",
-            "oaiusercontent.com",
-            "cloudflare.com",
-            "arkoselabs.com",
-            "funcaptcha.com",
-        ),
-    ),
-)
+# No chat site gets extra hosts built in: the page may reach its own host (and subdomains)
+# plus exactly what config.json lists in "allowed_hosts". A public chat used for testing
+# (chatgpt.com) lists its API, CDN, and sign-in hosts there, on that PC only.
 _BLOCKED_BY_CLIENT = ("blockedbyclient", "err_blocked_by_client", "net::err_blocked_by_client")
 
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "oauth", "auth")
@@ -1081,9 +1068,6 @@ def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     hosts = {host, *_extra_hosts}
     if host.startswith("www."):
         hosts.add(host[4:])
-    for root, family in _CHAT_PAGE_FAMILIES:
-        if _host_matches_suffix(host, root):
-            hosts.update(family)
     return frozenset(hosts)
 
 
@@ -1134,14 +1118,13 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
     if host not in seen:
         seen.add(host)
         log.info(f"blocking requests to {host} (outside chat URL)")
-        chat_host = (urlsplit(chat_url).hostname or "").lower()
-        if not any(_host_matches_suffix(chat_host, root) for root, _family in _CHAT_PAGE_FAMILIES):
-            log.print_safe(
-                f"crit blocked the chat page from reaching {host}. If the chat page does not work and needs it "
-                f'(its API, files, or sign-in), add "{host}" to "allowed_hosts" in config.json.',
-                file=sys.stderr,
-                flush=True,
-            )
+        log.print_safe(
+            f"crit blocked the chat page from reaching {host}. If the chat page does not work and needs it "
+            f'(its API, files, or sign-in), and it belongs to the chat service, add "{host}" to "allowed_hosts" '
+            "in config.json.",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         route.abort("blockedbyclient")
     except Exception as exc:

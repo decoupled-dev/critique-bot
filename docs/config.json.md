@@ -107,7 +107,7 @@ Comma-separated lists are OR: the first matching node is used.
 
 Full URL of the chat page the bot should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://chatgpt.com/`.
 
-Edge is not allowed to call anything else after the chat page has loaded. Playwright aborts later XHR/fetch whose host is not the chat URL (or a subdomain of it). Loopback (`127.0.0.1` / `localhost`) stays open so CDP and the local setup page still work. For `https://chatgpt.com/` the first-party hosts that page itself is served from (`openai.com`, `oaistatic.com`, `oaiusercontent.com`, Cloudflare, Arkose) are also allowed; Google, GitHub, ads, and arbitrary sites are not. The first navigation is not intercepted, so login and Cloudflare challenges can finish.
+Edge may reach only the chat URL's host (and its subdomains) plus the hosts in `allowed_hosts`, from the first request on. Every other request, page loads in any frame included, is aborted. No chat site has hosts built in: for `https://chatgpt.com/`, used only for testing on a developer PC, list its CDN and sign-in hosts in that PC's `config.json` (`config.chatgpt.example.json` has a starting list). Sign-in happens in a separate, unfiltered window.
 
 The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
 

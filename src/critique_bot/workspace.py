@@ -120,6 +120,10 @@ def load_changed_files(
     for path in ordered:
         if looks_binary_path(path) or skip_file_context(path):
             continue
+        if _holds_secrets(path):
+            # The diff hunks still go (redacted); the whole file does not.
+            log.info(f"skipping {path}: a file that usually holds secrets")
+            continue
         full = repo / path
         if not _inside_checkout(repo, path):
             log.info(f"skipping {path}: a symbolic link or a path outside the checkout")
@@ -138,6 +142,12 @@ def load_changed_files(
         f"({len(ordered)} reviewable path(s) in the patch)"
     )
     return loaded
+
+
+def _holds_secrets(path: str) -> bool:
+    from critique_bot.agent_tools import sensitive_file
+
+    return sensitive_file(path)
 
 
 def _inside_checkout(repo: Path, path: str) -> bool:

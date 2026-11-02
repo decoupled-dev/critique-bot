@@ -774,14 +774,17 @@ def _ci_meta() -> dict[str, str]:
 
 
 def _copy_job_results(src: Path, dest: Path, stem: str) -> None:
+    """Copy the review and its status into the CI job's output folder.
+
+    ``job.json`` (the whole prompt, source included) and a failure's ``screenshot.png`` and
+    ``page.html`` (the signed-in chat page, with the list of other conversations) stay in the
+    worker's queue folder on this PC: the output folder is uploaded as a CI artifact.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     names = (
         f"{stem}.md",
         f"{stem}.json",
         "status.json",
-        "job.json",
-        "screenshot.png",
-        "page.html",
     )
     for name in names:
         item = src / name
@@ -1184,7 +1187,10 @@ def _main_agent(args: argparse.Namespace) -> int:
         except BotHomeError as exc:
             return _config_error(ConfigError(str(exc)))
         home = find_bot_home(workspace)
-        config_path = Path(args.config) if args.config else (home.config_file() if home else None)
+        try:
+            config_path = Path(args.config) if args.config else (home.config_file() if home else None)
+        except BotHomeError as exc:
+            return _config_error(ConfigError(str(exc)))
         if config_path is None or not config_path.is_file():
             print(
                 "Initialized. Add config.json, then run crit.",
@@ -1237,7 +1243,10 @@ def _main_agent(args: argparse.Namespace) -> int:
                 update_settings(home, role=picked)
 
     has_task = bool(args.prompt or args.prompt_file or words or args.files)
-    config_path = Path(args.config) if args.config else home.config_file()
+    try:
+        config_path = Path(args.config) if args.config else home.config_file()
+    except BotHomeError as exc:
+        return _config_error(ConfigError(str(exc)))
     missing_config = config_path is None or not config_path.is_file()
     if missing_config:
         if not has_task and (just_created or welcome):

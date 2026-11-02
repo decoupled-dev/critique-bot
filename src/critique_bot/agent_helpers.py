@@ -116,8 +116,13 @@ def _helper_run_class():
             kind = getattr(perm, "kind", "read") or "read"
             if name == "delegate":
                 return False, "a helper cannot delegate; do the brief yourself"
-            if kind in {"read", "network"}:
+            if kind == "read":
                 return True, ""
+            # A helper asks no one, so anything a person would be asked about is refused:
+            # fetches, network commands, secret files, and paths outside the workspace.
+            if kind in {"network", "outside"} or getattr(perm, "risk", ""):
+                why = getattr(perm, "risk", "") or "it needs the user's yes"
+                return False, f"not done in a helper chat: {why}. Put it in your report for the coordinator"
             if name == "run_command":
                 command = str((call.arguments or {}).get("command") or "")
                 if agent_tools.read_only_command(command):
@@ -125,10 +130,8 @@ def _helper_run_class():
                 risky = agent_tools.risky_command(command)
                 if risky:
                     return False, f"not run in a helper chat: {risky}. Put it in your report for the coordinator"
-                if self.commands:
-                    return True, ""
                 return False, (
-                    "helper chats that run alongside others use only read-only commands; do not build or test here. "
+                    "helper chats use only read-only commands; do not build or test here. "
                     "Put the command the coordinator should run in your report"
                 )
             if name in agent_tools.MUTATING:
@@ -304,8 +307,9 @@ class HelperPool:
         ``context`` adds ToolContext fields for these briefs, such as the task's checkpoints.
         """
         started = time.monotonic()
-        # The only helper of a call may build and test: nothing else runs at the same time.
-        context = {**(context or {}), "commands": len(briefs) == 1}
+        # Helpers never build or test: no one is there to approve a command, and a build runs
+        # project code that can reach the network. The coordinator runs those after the reports.
+        context = {**(context or {}), "commands": False}
         futures = [self.submit(brief, cancel=cancel, progress=progress, context=context) for brief in briefs]
         reports: list[Report] = []
         for brief, future in zip(briefs, futures):

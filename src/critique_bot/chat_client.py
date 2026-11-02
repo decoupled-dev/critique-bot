@@ -2105,6 +2105,16 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
     log.info("chat UI is ready")
 
 
+def redact_outgoing(prompt: str) -> str:
+    """``prompt`` with known secret formats replaced by ``[REDACTED:kind]`` (see agent_tools.redact_secrets)."""
+    from critique_bot.agent_tools import redact_secrets
+
+    text, hidden = redact_secrets(prompt)
+    if hidden:
+        log.info(f"redacted {hidden} secret(s) before sending")
+    return text
+
+
 def send_turn(
     page: Page,
     config: BotConfig,
@@ -2121,6 +2131,9 @@ def send_turn(
     timeout_ms = config.timeout_ms
     if detail is None:
         detail = {}
+    # Every path to the chat (review, worker, chat, one-shot, setup test, agent) comes
+    # through here, so this is where known secret formats are taken out.
+    prompt = redact_outgoing(prompt)
     # Count only once nothing is being written: a reply that is still
     # streaming (or a stopped one that renders late) belongs to an earlier
     # send and must never be taken as this one's answer.
