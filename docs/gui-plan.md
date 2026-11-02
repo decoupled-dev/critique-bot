@@ -60,9 +60,37 @@ Do not fork VS Code. Build in this order:
    plus BrowserView for the chat page and xterm.js terminal.
 4. Fork only if the extension API blocks something specific.
 
-## Open questions
+## Decided (2026-11-02)
 
-- Should the Electron BrowserView replace the Playwright Edge process entirely
-  (one Chromium, driven over CDP), or sit beside it?
-- Packaging: ship the Python agent inside the extension (PyInstaller, see
-  `packaging/critique-bot.spec`) or require a local install?
+### Browser: Electron view sits beside Edge, does not replace it
+
+- `browser_backend: "edge"` stays the default: Playwright-driven Edge, used by
+  CI (headless MR reviews on the Windows runner), the CLI, and the VS Code
+  extension.
+- `browser_backend: "embedded"` is used only inside the Electron app. Electron
+  starts with `--remote-debugging-port`; the agent attaches with
+  `connect_over_cdp`, the same path `cdp_url` already uses for desktop Edge.
+- If sign-in or Cloudflare blocks the embedded view (Google and Microsoft
+  often refuse embedded browsers), fall back to the Edge window.
+- The security filter is enforced in both backends: Edge through launch args
+  and the host filter, Electron through `session.webRequest` with the same
+  `allowed_hosts`. One test suite checks the blocked channels in both.
+- Why not replace: headless CI needs Edge anyway, the saved login lives in the
+  Edge profile, and a second copy of the filter is the riskiest part.
+
+### Packaging: the Python agent ships inside the GUI, one download
+
+- The agent is frozen with PyInstaller (`packaging/critique-bot.spec`, which
+  already bundles Playwright and its Node driver) and placed in the GUI's
+  resources. Users install nothing else; Edge is the system Edge, as today.
+- VS Code extension: platform-specific VSIX packages
+  (`vsce package --target win32-x64`, `linux-x64`, ...), each carrying the
+  matching agent binary. The extension spawns it and speaks the JSON-lines
+  protocol over stdio.
+- Electron: the agent binary goes in `extraResources`; electron-builder makes
+  one installer per OS (NSIS on Windows, AppImage/deb on Linux).
+- The GUI and the agent share one version number and are built together in
+  CI, so the protocol never mismatches. The agent reports its protocol
+  version on start; the GUI refuses a mismatch with a clear message.
+- Cost to watch: the frozen agent is large (Playwright driver plus Node), and
+  unsigned Windows binaries trigger SmartScreen, so plan for code signing.
