@@ -1,0 +1,62 @@
+{
+  "name": "crit-desktop",
+  "productName": "crit",
+  "version": "0.1.0",
+  "description": "Run several crit coding agents side by side and watch what each one is doing.",
+  "license": "Apache-2.0",
+  "private": true,
+  "main": "out/desktop/src/main.js",
+  "scripts": {
+    "compile": "tsc -p . && node scripts/copy-assets.mjs",
+    "start": "npm run compile && electron .",
+    "test": "npm run compile && node --test \"out/desktop/test/*.test.js\"",
+    "selftest": "npm run compile && node scripts/selftest.mjs",
+    "bundle-agent": "node scripts/bundle-agent.mjs",
+    "dist": "npm run compile && electron-builder --publish never"
+  },
+  "build": {
+    "appId": "dev.critique-bot.crit",
+    "productName": "crit",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**",
+      "renderer/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/critique-bot",
+        "to": "bin/critique-bot",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@xterm/xterm": "5.5.0",
+    "electron": "44.7.2",
+    "electron-builder": "26.17.0",
+    "typescript": "5.9.3"
+  }
+}

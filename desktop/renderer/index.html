@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; frame-src 'self'; connect-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>crit</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">crit</div>
+  <div class="projects" id="projects"></div>
+  <button id="open-project" class="ghost" title="Open a project folder">Open project…</button>
+  <div class="spacer"></div>
+  <div class="counts" id="counts"></div>
+  <button id="new-agent" class="primary" title="Start a new agent (Ctrl+N)">New agent</button>
+</header>
+
+<main class="layout">
+  <aside class="agents">
+    <button class="overview-link" id="overview-link">All agents</button>
+    <div id="agent-list"></div>
+  </aside>
+
+  <section class="center">
+    <div id="overview" class="overview"></div>
+    <div id="agent-view" class="agent-view hidden">
+      <div class="agent-bar">
+        <div class="agent-title">
+          <span class="dot" id="av-dot"></span>
+          <span class="name" id="av-name"></span>
+          <span class="branch" id="av-branch"></span>
+        </div>
+        <div class="agent-activity" id="av-activity"></div>
+        <div class="agent-actions">
+          <button id="av-stop" class="ghost" title="Stop the running task">Stop task</button>
+          <button id="av-apply" class="ghost" title="Copy this agent's changes into the project folder">Apply to project</button>
+          <button id="av-folder" class="ghost" title="Open the folder this agent works in">Open folder</button>
+          <button id="av-restart" class="ghost" title="Restart the agent (new chat)">Restart</button>
+          <button id="av-delete" class="ghost danger" title="Stop and remove this agent">Delete</button>
+        </div>
+      </div>
+      <div class="frames" id="frames"></div>
+    </div>
+  </section>
+
+  <aside class="side" id="side">
+    <div class="side-section changes">
+      <div class="side-head">
+        <span>Changes</span>
+        <button id="refresh-changes" class="icon" title="Refresh">↻</button>
+      </div>
+      <div id="changes" class="change-list"></div>
+    </div>
+    <div class="side-section commands">
+      <div class="side-head"><span>Commands</span></div>
+      <div id="terminals" class="terminals"></div>
+    </div>
+  </aside>
+</main>
+
+<div id="diff-overlay" class="overlay hidden">
+  <div class="overlay-box">
+    <div class="overlay-head">
+      <span id="diff-title"></span>
+      <button id="diff-close" class="icon" title="Close (Esc)">✕</button>
+    </div>
+    <pre id="diff-body" class="diff-view"></pre>
+  </div>
+</div>
+
+<div id="new-overlay" class="overlay hidden">
+  <form id="new-form" class="overlay-box form">
+    <div class="overlay-head">
+      <span>New agent</span>
+      <button type="button" id="new-close" class="icon" title="Close (Esc)">✕</button>
+    </div>
+    <label>Project
+      <select id="new-project"></select>
+    </label>
+    <label>Task
+      <textarea id="new-task" rows="5" placeholder="What should this agent do?"></textarea>
+    </label>
+    <div class="row">
+      <label>Name
+        <input id="new-name" placeholder="agent-1" maxlength="40">
+      </label>
+      <label>Mode
+        <select id="new-mode">
+          <option value="">Project default</option>
+          <option value="ask">Ask before edits and commands</option>
+          <option value="edits">Accept edits, ask for commands</option>
+          <option value="auto">Auto (asks only for risky commands)</option>
+          <option value="plan">Plan first</option>
+        </select>
+      </label>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="new-isolated" checked>
+      <span>Own copy of the project (git worktree on branch <code>crit/&lt;name&gt;</code>), so agents do not overwrite each other. Starts from the last commit.</span>
+    </label>
+    <div class="form-error" id="new-error"></div>
+    <div class="form-actions">
+      <button type="button" id="new-cancel" class="ghost">Cancel</button>
+      <button type="submit" class="primary">Start agent</button>
+    </div>
+  </form>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="vendor/xterm.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

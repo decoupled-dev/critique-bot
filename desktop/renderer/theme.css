@@ -1,0 +1,84 @@
+/* Colors for the app and for the shared chat view (which uses VS Code's variable names). */
+:root {
+  color-scheme: dark;
+  --bg: #17181b;
+  --panel: #1d1f23;
+  --panel-2: #23262b;
+  --border: #2e3238;
+  --text: #d7dae0;
+  --muted: #8b919a;
+  --accent: #4c8dff;
+  --accent-text: #ffffff;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --idle: #6e7681;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+
+  --vscode-font-family: var(--sans);
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: var(--mono);
+  --vscode-editor-font-size: 12px;
+  --vscode-foreground: var(--text);
+  --vscode-descriptionForeground: var(--muted);
+  --vscode-sideBar-background: var(--panel);
+  --vscode-sideBarSectionHeader-border: var(--border);
+  --vscode-panel-border: var(--border);
+  --vscode-focusBorder: var(--accent);
+  --vscode-textLink-foreground: #6ea8ff;
+  --vscode-errorForeground: var(--bad);
+  --vscode-editorWarning-foreground: var(--warn);
+  --vscode-testing-iconPassed: var(--good);
+  --vscode-textCodeBlock-background: #2a2d33;
+  --vscode-editorWidget-background: var(--panel-2);
+  --vscode-input-background: #24272c;
+  --vscode-input-foreground: var(--text);
+  --vscode-input-border: var(--border);
+  --vscode-button-background: var(--accent);
+  --vscode-button-foreground: var(--accent-text);
+  --vscode-button-hoverBackground: #3a7af0;
+  --vscode-button-border: transparent;
+  --vscode-button-secondaryBackground: #2f333a;
+  --vscode-button-secondaryForeground: var(--text);
+  --vscode-button-secondaryHoverBackground: #3a3f47;
+  --vscode-progressBar-background: var(--accent);
+  --vscode-statusBarItem-errorBackground: #8b1d1d;
+  --vscode-gitDecoration-addedResourceForeground: #73c991;
+  --vscode-gitDecoration-deletedResourceForeground: #f07178;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f3f4f6;
+    --panel: #ffffff;
+    --panel-2: #f6f7f9;
+    --border: #dfe2e6;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #2f6fdf;
+    --good: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+    --idle: #8c959f;
+    --vscode-textLink-foreground: #2f6fdf;
+    --vscode-textCodeBlock-background: #eff1f3;
+    --vscode-input-background: #ffffff;
+    --vscode-button-hoverBackground: #285fc0;
+    --vscode-button-secondaryBackground: #e9ebee;
+    --vscode-button-secondaryHoverBackground: #dde0e4;
+    --vscode-statusBarItem-errorBackground: #ffd7d5;
+    --vscode-gitDecoration-addedResourceForeground: #1a7f37;
+    --vscode-gitDecoration-deletedResourceForeground: #cf222e;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+}

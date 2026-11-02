@@ -3,6 +3,8 @@
 //
 //   PYTHON=/path/to/python node scripts/bundle-agent.mjs
 //
+// BUNDLE_TARGET=<dir> puts it in <dir>/bin/critique-bot/ instead (the desktop app uses this).
+//
 // PYTHON must have critique-bot's dependencies and pyinstaller installed
 // (pip install -c ../constraints.txt -e .. pyinstaller).
 import { spawnSync } from "node:child_process";
@@ -43,7 +45,7 @@ if (!String(check.stdout).includes("--protocol")) {
   process.exit(1);
 }
 
-const target = join(extension, "bin", "critique-bot");
+const target = join(process.env.BUNDLE_TARGET ? resolve(process.env.BUNDLE_TARGET) : extension, "bin", "critique-bot");
 rmSync(target, { recursive: true, force: true });
 cpSync(built, target, { recursive: true });
 rmSync(work, { recursive: true, force: true });

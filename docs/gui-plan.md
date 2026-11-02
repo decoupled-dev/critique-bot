@@ -1,11 +1,15 @@
 # GUI plan
 
-Status: steps 1 and 2 done (2026-11-02); step 3 not started. Written 2026-10-23.
+Status: steps 1 and 2 done; step 3 (own app) built as `desktop/` (2026-11-02),
+replacing the VS Code-first direction for day-to-day use. Written 2026-10-23.
 
 - Agent protocol: `crit --protocol`, `src/critique_bot/agent_protocol.py`,
   reference in `docs/agent-protocol.md`.
 - VS Code extension: `vscode-extension/` (README there covers building the
   per-OS package with the frozen agent).
+- Desktop app: `desktop/` (Electron). Several agents side by side, each in
+  its own git worktree by default, with live status, notifications, diffs,
+  and a command terminal per agent. See `desktop/README.md`.
 
 Goal: a graphical front end for the bot with a chat pane, an integrated
 Chromium browser, and a terminal, in the spirit of Cursor or Antigravity.
@@ -99,3 +103,19 @@ Do not fork VS Code. Build in this order:
   version on start; the GUI refuses a mismatch with a clear message.
 - Cost to watch: the frozen agent is large (Playwright driver plus Node), and
   unsigned Windows binaries trigger SmartScreen, so plan for code signing.
+
+## Decided (2026-11-02, later): our own app for several agents
+
+- The user wants a simpler UI than VS Code and to run several agents at once
+  and watch them, so step 3 came first as `desktop/` (Electron).
+- Multiple agents on one project: each gets a git worktree
+  (`<project>.crit/<name>`, branch `crit/<name>`) by default; "Apply to
+  project" copies its changes back. Working in the project folder itself is
+  still possible.
+- Browser: one shared Edge per project, started by `critique-bot
+  desktop-host`; agents attach with `--cdp-url` and `CRITIQUE_CDP_OWN_TAB=1`,
+  so each gets its own tab. Without this, every agent would launch Edge on
+  the same profile and close the others' windows. The embedded Electron view
+  (`browser_backend: "embedded"`) is still open.
+- The chat view is the extension's `media/chat.js`, loaded in an iframe per
+  agent, so both front ends stay the same.

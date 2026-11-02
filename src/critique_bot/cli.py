@@ -838,6 +838,7 @@ SUBCOMMANDS = {
     "worker": "run the long-lived queue worker on the runner PC",
     "submit": "enqueue a review and wait for the worker to finish it",
     "setup": "open a local web UI to configure selectors by clicking them",
+    "desktop-host": "shared browser and project settings for the crit desktop app",
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
 }
@@ -855,9 +856,16 @@ def main(argv: list[str] | None = None) -> int:
             "setup": _main_setup,
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
+            "desktop-host": _main_desktop_host,
         }
         return handlers[command](rest)
     return _main_run(argv)
+
+
+def _main_desktop_host(argv: list[str]) -> int:
+    from critique_bot import desktop_host
+
+    return desktop_host.main(argv)
 
 
 def _main_worker(argv: list[str]) -> int:

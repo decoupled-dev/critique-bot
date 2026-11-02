@@ -20,6 +20,9 @@ from urllib.parse import urlsplit, urlunsplit
 from critique_bot import log
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
 
+# Set by the desktop app: attach over CDP in a new tab of a shared browser instead of reusing one.
+ENV_CDP_OWN_TAB = "CRITIQUE_CDP_OWN_TAB"
+
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page
 
@@ -964,9 +967,18 @@ def _attach_over_cdp(
     context = browser.contexts[0]
     _log_context(context, via="cdp")
     page = _page_for_cdp(context, start_url)
-    attach_page_debug(page)
-    if start_url:
-        navigate(page, start_url, timeout_ms)
+    try:
+        attach_page_debug(page)
+        if start_url:
+            navigate(page, start_url, timeout_ms)
+    except BaseException:
+        if os.environ.get(ENV_CDP_OWN_TAB) == "1":
+            # Our own tab in a shared browser: do not leave it behind.
+            try:
+                page.close()
+            except Exception as exc:
+                log.debug(f"closing own tab after a failed attach: {exc}")
+        raise
     log.info(f"using desktop Edge tab {describe_page(page)}")
     return context, page
 
@@ -1299,6 +1311,10 @@ def _adopt_page(
 
 
 def _page_for_cdp(context: BrowserContext, start_url: str | None) -> Page:
+    if os.environ.get(ENV_CDP_OWN_TAB) == "1":
+        # Several agents share one browser (the desktop app): each needs its own tab.
+        log.debug("opening own tab in shared browser")
+        return context.new_page()
     if start_url:
         for page in context.pages:
             if page.is_closed():
