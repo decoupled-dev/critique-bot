@@ -45,14 +45,19 @@ class _Scripted:
         return self._replies.pop(0)
 
 
+_REAL_APPROVE_PROMPT = None
+
+
 def _loop(session, root: Path, task: str, **kwargs):
+    import critique_bot.agent as agent
+
     kwargs.setdefault("max_rounds", None)
     kwargs.setdefault("max_result_chars", 8000)
     kwargs.setdefault("read_message", lambda: None)
     kwargs.setdefault("emit", lambda _text: None)
     kwargs.setdefault("approve_mode", "auto")
     kwargs.setdefault("ask_user", lambda _question: None)
-    return run_agent_loop(
+    run = lambda: run_agent_loop(  # noqa: E731
         session,
         workspace=root,
         index_path=kwargs.pop("index_path", None),
@@ -60,6 +65,17 @@ def _loop(session, root: Path, task: str, **kwargs):
         first_task=task,
         **kwargs,
     )
+    global _REAL_APPROVE_PROMPT
+    if _REAL_APPROVE_PROMPT is None:
+        _REAL_APPROVE_PROMPT = agent._approve_prompt
+    # Auto mode asks before commands that are not read-only. Tests about other behaviour
+    # answer yes; a test that patches _approve_prompt itself keeps its own answer.
+    if kwargs["approve_mode"] == "auto" and agent._approve_prompt is _REAL_APPROVE_PROMPT:
+        from unittest import mock
+
+        with mock.patch.object(agent, "_approve_prompt", lambda *_a, **_k: ("yes", "")):
+            return run()
+    return run()
 
 
 class ParserTests(unittest.TestCase):
@@ -1527,7 +1543,7 @@ class RobustLoopTests(unittest.TestCase):
             _loop(session, root, "change note.txt", approve_mode="ask")
         self.assertEqual(len(asked), 2)
 
-    def test_auto_mode_never_asks(self) -> None:
+    def test_auto_mode_never_asks_about_edits(self) -> None:
         from unittest import mock
 
         import critique_bot.agent as agent
