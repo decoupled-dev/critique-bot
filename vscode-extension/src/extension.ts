@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { BEFORE_SCHEME, ChatController } from "./chatView";
+import { enterFocusLayout, exitFocusLayout, syncContext } from "./layout";
 import { CommandMirror } from "./terminal";
 
 let controller: ChatController | undefined;
@@ -10,6 +11,7 @@ export function activate(context: vscode.ExtensionContext): { controller: ChatCo
   const mirror = new CommandMirror();
   controller = new ChatController(context, log, mirror);
   const chat = controller;
+  syncContext(context);
 
   context.subscriptions.push(
     log,
@@ -20,11 +22,14 @@ export function activate(context: vscode.ExtensionContext): { controller: ChatCo
     }),
     vscode.workspace.registerTextDocumentContentProvider(BEFORE_SCHEME, chat),
     vscode.commands.registerCommand("crit.newChat", () => chat.newChat()),
+    vscode.commands.registerCommand("crit.undo", () => chat.undo()),
     vscode.commands.registerCommand("crit.interrupt", () => chat.interrupt()),
     vscode.commands.registerCommand("crit.restart", () => chat.restart()),
     vscode.commands.registerCommand("crit.setMode", () => chat.pickMode()),
     vscode.commands.registerCommand("crit.showTerminal", () => mirror.show(false)),
     vscode.commands.registerCommand("crit.showLog", () => log.show(true)),
+    vscode.commands.registerCommand("crit.focusLayout", () => enterFocusLayout(context, () => mirror.show(true), log)),
+    vscode.commands.registerCommand("crit.exitFocusLayout", () => exitFocusLayout(context, log)),
     vscode.commands.registerCommand("crit.askAboutSelection", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {

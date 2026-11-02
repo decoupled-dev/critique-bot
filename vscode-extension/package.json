@@ -14,10 +14,12 @@
     "Programming Languages"
   ],
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "crit",
           "title": "crit",
@@ -73,6 +75,24 @@
         "command": "crit.askAboutSelection",
         "title": "Ask crit About This",
         "category": "crit"
+      },
+      {
+        "command": "crit.focusLayout",
+        "title": "Focus Layout (files, editor, chat)",
+        "category": "crit",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "crit.exitFocusLayout",
+        "title": "Exit Focus Layout",
+        "category": "crit",
+        "icon": "$(layout-sidebar-left-off)"
+      },
+      {
+        "command": "crit.undo",
+        "title": "Undo the Last Task's File Changes",
+        "category": "crit",
+        "icon": "$(discard)"
       }
     ],
     "menus": {
@@ -96,12 +116,42 @@
           "command": "crit.restart",
           "when": "view == crit.chat",
           "group": "navigation@4"
+        },
+        {
+          "command": "crit.focusLayout",
+          "when": "view == crit.chat && !crit.focusLayout",
+          "group": "navigation@5"
+        },
+        {
+          "command": "crit.exitFocusLayout",
+          "when": "view == crit.chat && crit.focusLayout",
+          "group": "navigation@5"
+        },
+        {
+          "command": "crit.undo",
+          "when": "view == crit.chat",
+          "group": "more@1"
+        },
+        {
+          "command": "crit.showLog",
+          "when": "view == crit.chat",
+          "group": "more@2"
         }
       ],
       "editor/context": [
         {
           "command": "crit.askAboutSelection",
           "group": "navigation@90"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "crit.focusLayout",
+          "when": "!crit.focusLayout"
+        },
+        {
+          "command": "crit.exitFocusLayout",
+          "when": "crit.focusLayout"
         }
       ]
     },

@@ -10,7 +10,9 @@ Works in VS Code, VSCodium, and Cursor.
 ## Using it
 
 1. Open a project folder.
-2. Click the crit icon in the activity bar.
+2. Open the crit chat in the right side bar (*View → Open View… → crit*,
+   or run **crit: Focus Layout**). On editors without a right side bar it
+   appears in the Explorer.
 3. Type a task. The first one starts the agent. With a web chat model, the
    agent opens its Edge window, and asks you to sign in the first time.
 
@@ -28,6 +30,14 @@ What you see:
   read-only **crit** terminal.
 - **Mode and role.** Pick them at the top of the chat or from the status bar.
   `Ctrl+Alt+C` (`Cmd+Alt+C`) stops a running task.
+
+- **Focus layout.** *crit: Focus Layout* (the layout icon on the chat)
+  gives a plain screen: files on the left, editor and diffs in the middle,
+  the crit terminal below, the chat on the right; the menu bar (Alt shows
+  it), status bar, activity bar, minimap and breadcrumbs are hidden.
+  *crit: Exit Focus Layout* puts your previous settings back. It changes
+  user settings of the current profile, so for a separate setup start
+  VS Code with `code --profile crit`.
 
 The chat box also takes `/new`, `/mode <ask|edits|auto|plan>`,
 `/role <name>`, and `/undo`.

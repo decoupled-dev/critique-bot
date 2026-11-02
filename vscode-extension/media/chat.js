@@ -121,7 +121,8 @@
   function diffBlock(text, maxLines) {
     const pre = el("pre", "diff");
     const code = el("code");
-    let lines = String(text).split("\n");
+    // The card already names the file, so drop the ---/+++ header lines.
+    let lines = String(text).split("\n").filter((line) => !/^(---|\+\+\+) /.test(line));
     let more = 0;
     if (maxLines && lines.length > maxLines) {
       more = lines.length - maxLines;
@@ -138,21 +139,13 @@
 
   // ------------------------------------------------------------------ layout
 
+  // One row: role and mode. New chat, Stop, Terminal, Restart, Undo and Log are in the view's title bar.
   const header = el("div", "header");
-  const info = el("div", "info", "crit");
   const modeSelect = el("select", "mode");
   modeSelect.title = "Permission mode";
   const roleSelect = el("select", "role");
   roleSelect.title = "Role (applies from the next task)";
-  const tools = el("div", "tools");
-  tools.append(
-    button("New chat", "icon", () => vscode.postMessage({ type: "new_chat" }), "Start a fresh chat"),
-    button("Undo", "icon", () => vscode.postMessage({ type: "undo" }), "Restore files changed by the last task"),
-    button("Terminal", "icon", () => vscode.postMessage({ type: "show_terminal" }), "Show commands crit ran"),
-    button("Log", "icon", () => vscode.postMessage({ type: "show_log" }), "Show the agent log"),
-    button("Restart", "icon", () => vscode.postMessage({ type: "restart" }), "Restart the agent"),
-  );
-  header.append(info, modeSelect, roleSelect, tools);
+  header.append(roleSelect, modeSelect);
 
   const log = el("div", "log");
   const thinking = el("div", "thinking hidden");
@@ -405,8 +398,7 @@
     switch (event.type) {
       case "hello": {
         const parts = [event.model, event.shell].filter(Boolean);
-        info.textContent = "crit " + (event.version || "");
-        info.title = [event.workspace, ...parts].join(" · ");
+        header.title = ["crit " + (event.version || ""), event.workspace, ...parts].join(" · ");
         modeSelect.value = event.mode;
         roleSelect.textContent = "";
         for (const role of event.roles || []) {

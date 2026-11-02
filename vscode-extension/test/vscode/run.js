@@ -12,9 +12,19 @@ exports.run = async function run() {
   assert.ok(ext, "extension not found");
   const api = await ext.activate();
   const commands = await vscode.commands.getCommands(true);
-  for (const id of ["crit.newChat", "crit.interrupt", "crit.restart", "crit.setMode", "crit.showTerminal", "crit.askAboutSelection"]) {
+  for (const id of ["crit.newChat", "crit.interrupt", "crit.restart", "crit.setMode", "crit.showTerminal", "crit.askAboutSelection", "crit.focusLayout", "crit.exitFocusLayout"]) {
     assert.ok(commands.includes(id), `missing command ${id}`);
   }
+  assert.ok(commands.includes("workbench.view.extension.crit"), "chat container not registered");
+  await vscode.commands.executeCommand("crit.focusLayout");
+  const cfg = (s) => vscode.workspace.getConfiguration(s);
+  assert.strictEqual(cfg("workbench.statusBar").get("visible"), false, "focus layout did not hide the status bar");
+  assert.strictEqual(cfg("workbench.activityBar").get("location"), "hidden");
+  await vscode.commands.executeCommand("crit.focusLayout"); // twice keeps the original values
+  await vscode.commands.executeCommand("crit.exitFocusLayout");
+  assert.strictEqual(cfg("workbench.statusBar").inspect("visible").globalValue, undefined, "exit did not restore");
+  assert.strictEqual(cfg("workbench.activityBar").get("location"), "default");
+  console.log("CRIT_LAYOUT_OK");
   await vscode.commands.executeCommand("crit.chat.focus");
   const folder = vscode.workspace.workspaceFolders[0].uri.fsPath;
   const note = path.join(folder, "note.txt");

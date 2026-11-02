@@ -68,7 +68,11 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.TextDo
     view.webview.html = this.html(view.webview, media);
     this.disposables.push(
       view.webview.onDidReceiveMessage((message: FromWebview) => this.onWebview(message)),
-      view.onDidDispose(() => (this.view = undefined)),
+      view.onDidDispose(() => {
+        if (this.view === view) {
+          this.view = undefined;
+        }
+      }),
     );
   }
 
@@ -123,7 +127,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.TextDo
         this.newChat();
         break;
       case "undo":
-        this.agent?.send({ type: "undo" });
+        this.undo();
         break;
       case "interrupt":
         this.interrupt();
@@ -164,6 +168,10 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.TextDo
 
   interrupt(): void {
     this.agent?.interrupt();
+  }
+
+  undo(): void {
+    this.agent?.send({ type: "undo" });
   }
 
   newChat(): void {

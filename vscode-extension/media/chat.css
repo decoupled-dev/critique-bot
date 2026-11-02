@@ -77,21 +77,14 @@ select:focus {
 
 .header {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 6px;
+  gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
 }
-.header .info {
-  font-weight: 600;
-  margin-right: auto;
-}
-.header .tools {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  width: 100%;
+.header .role {
+  flex: 1;
+  min-width: 0;
 }
 
 .log {
