@@ -2933,6 +2933,9 @@ def _task_skills(
 def _show_diff_in_ui(diff: str) -> bool:
     """Print the diff through the terminal UI's colored renderer. False when that is not available."""
     ui = globals().get("agent_ui")
+    show = getattr(ui, "show_diff", None)
+    if callable(show):
+        return bool(show(diff))
     render = getattr(ui, "render_diff", None)
     printer = getattr(ui, "_print", None)
     if not callable(render) or not callable(printer):
@@ -3436,6 +3439,15 @@ def format_transcript(turns: list[dict[str, str]]) -> str:
 # --------------------------------------------------------------------------- terminal output
 
 from critique_bot import agent_ui  # noqa: E402  (UI layer; kept with the terminal hooks)
+
+
+def use_ui(module: Any) -> None:
+    """Swap the UI layer: ``agent_protocol`` for a GUI, ``agent_ui`` for the terminal.
+
+    Every terminal hook below looks ``agent_ui`` up at call time, so this one
+    assignment moves all output, approvals, and questions to ``module``.
+    """
+    globals()["agent_ui"] = module
 
 
 def _one_line(text: str, limit: int = 120) -> str:

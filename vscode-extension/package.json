@@ -1,0 +1,180 @@
+{
+  "name": "crit",
+  "displayName": "crit",
+  "description": "Chat with the crit coding agent: it plans, edits, and runs commands in your project through a web chat model or a local model.",
+  "version": "0.1.0",
+  "publisher": "critique-bot",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "crit",
+          "title": "crit",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "crit": [
+        {
+          "type": "webview",
+          "id": "crit.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "crit.newChat",
+        "title": "New Chat",
+        "category": "crit",
+        "icon": "$(add)"
+      },
+      {
+        "command": "crit.interrupt",
+        "title": "Stop the Running Task",
+        "category": "crit",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "crit.restart",
+        "title": "Restart the Agent",
+        "category": "crit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "crit.setMode",
+        "title": "Set Permission Mode",
+        "category": "crit"
+      },
+      {
+        "command": "crit.showTerminal",
+        "title": "Show Commands Terminal",
+        "category": "crit",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "crit.showLog",
+        "title": "Show Agent Log",
+        "category": "crit"
+      },
+      {
+        "command": "crit.askAboutSelection",
+        "title": "Ask crit About This",
+        "category": "crit"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "crit.newChat",
+          "when": "view == crit.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "crit.interrupt",
+          "when": "view == crit.chat && crit.busy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "crit.showTerminal",
+          "when": "view == crit.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "crit.restart",
+          "when": "view == crit.chat",
+          "group": "navigation@4"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "crit.askAboutSelection",
+          "group": "navigation@90"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "crit.interrupt",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "crit.busy"
+      }
+    ],
+    "configuration": {
+      "title": "crit",
+      "properties": {
+        "crit.agentPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the agent executable. Empty uses the agent bundled with the extension, else `crit` on PATH. A path to `critique-bot` gets `--mode agent` added.",
+          "scope": "machine-overridable"
+        },
+        "crit.configPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "config.json for the agent, relative to the workspace folder. Empty lets crit find it (`.bot/settings.json`, then `config.json` in the project).",
+          "scope": "resource"
+        },
+        "crit.permissionMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "ask",
+            "edits",
+            "auto",
+            "plan"
+          ],
+          "default": "",
+          "markdownDescription": "Permission mode at start. Empty uses `permissions` from `.bot/settings.json` (default: ask)."
+        },
+        "crit.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments for the agent, for example `[\"--headed\"]` or `[\"--logs\"]`.",
+          "scope": "machine-overridable"
+        },
+        "crit.mirrorCommandsInTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the commands crit runs, and their output, in a read-only \"crit\" terminal."
+        },
+        "crit.openDiffsAfterTask": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open a diff editor for each file a task changed when it ends."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "tsc -p . && node --test \"out/test/*.test.js\" \"test/*.test.js\"",
+    "bundle-agent": "node scripts/bundle-agent.mjs",
+    "package": "node scripts/package-target.mjs --no-target",
+    "package:target": "node scripts/package-target.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.9.2",
+    "jsdom": "26.1.0",
+    "typescript": "5.9.3"
+  }
+}

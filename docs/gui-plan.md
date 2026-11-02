@@ -1,6 +1,11 @@
 # GUI plan
 
-Status: proposal, not started. Written 2026-10-23.
+Status: steps 1 and 2 done (2026-11-02); step 3 not started. Written 2026-10-23.
+
+- Agent protocol: `crit --protocol`, `src/critique_bot/agent_protocol.py`,
+  reference in `docs/agent-protocol.md`.
+- VS Code extension: `vscode-extension/` (README there covers building the
+  per-OS package with the frozen agent).
 
 Goal: a graphical front end for the bot with a chat pane, an integrated
 Chromium browser, and a terminal, in the spirit of Cursor or Antigravity.

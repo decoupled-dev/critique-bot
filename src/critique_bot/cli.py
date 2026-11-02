@@ -702,6 +702,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--protocol",
+        action="store_true",
+        help=(
+            "agent mode: speak JSON lines on stdin/stdout instead of drawing the terminal UI "
+            "(used by the VS Code extension; see docs/agent-protocol.md)"
+        ),
+    )
+    parser.add_argument(
         "--logs",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1286,6 +1294,25 @@ def _main_agent(args: argparse.Namespace) -> int:
     )
 
 
+def _main_agent_protocol(args: argparse.Namespace) -> int:
+    """``crit --protocol``: the agent behind a GUI. Ends with a ``bye`` event carrying the exit code."""
+    from critique_bot import agent, agent_protocol
+
+    agent_protocol.start()
+    agent.use_ui(agent_protocol)
+    code = 1
+    try:
+        code = _main_agent(args)
+    except KeyboardInterrupt:
+        code = 130
+    except Exception as exc:
+        agent_protocol.send("error", message=f"unexpected failure: {exc}")
+        raise
+    finally:
+        agent_protocol.send("bye", code=code)
+    return code
+
+
 def _agent_mode(args: argparse.Namespace) -> str | None:
     """--permission-mode, --plan, or --yes; None reads "permissions" from .bot/settings.json."""
     if getattr(args, "agent_mode", None):
@@ -1330,6 +1357,8 @@ def _main_run(argv: list[str]) -> int:
     except ConfigError as exc:
         return _config_error(exc)
     if mode == MODE_AGENT:
+        if getattr(args, "protocol", False):
+            return _main_agent_protocol(args)
         return _main_agent(args)
     if not args.config:
         return _config_error(ConfigError("--config is required"))

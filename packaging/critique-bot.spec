@@ -75,6 +75,7 @@ a = Analysis(
         "critique_bot.agent",
         "critique_bot.agent_cli",
         "critique_bot.agent_ui",
+        "critique_bot.agent_protocol",
         "critique_bot.welcome",
         "critique_bot.bot_home",
         "critique_bot.code_index",
