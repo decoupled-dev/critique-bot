@@ -109,7 +109,7 @@ crit depends on three packages: `playwright`, `rich`, and `prompt_toolkit`. With
 
 ## What this cannot guarantee
 
-These controls are checks in crit, not a sandbox. For a hard guarantee, add an outbound firewall rule (Windows Defender Firewall or your company's proxy) that allows only the chat URL and your package repositories.
+These controls are checks in crit, not a sandbox. For a hard guarantee, add an outbound firewall rule (Windows Defender Firewall or your company's proxy) that allows only the chat URL and your package repositories. Step-by-step for Windows: [windows-lockdown.md](windows-lockdown.md).
 
 - **The project's own code runs.** A build, a test, or a Gradle plugin is code from the repository, and it can open connections that crit cannot see. A command-line check also cannot recognize every program that talks to the network.
 - **The model reads untrusted text.** Files in the repo and fetched docs can contain instructions aimed at the model ("prompt injection"). The controls above limit what such text could make it do, but cannot stop the model from reading it.
