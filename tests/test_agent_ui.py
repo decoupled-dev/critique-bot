@@ -531,7 +531,8 @@ class PromptToolkitTests(_Base):
         permission = _Permission("command", "Run: rm x", "command:rm")
         self.assertEqual(agent_ui.approve(permission), ("no", "no terminal to approve"))
         agent_ui.configure(approve_mode="auto")
-        self.assertEqual(agent_ui.approve(permission), ("yes", ""))
+        # Agent._approved decides when to ask; approve() itself always asks.
+        self.assertEqual(agent_ui.approve(permission), ("no", "no terminal to approve"))
 
 
 class _Provider:

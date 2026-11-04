@@ -1086,12 +1086,16 @@ def approval_options(permission: Any, *, risky: str = "") -> list[tuple[str, str
     """
     options = [("yes", "Yes")]
     key = str(getattr(permission, "key", "") or "")
+    rule = str(getattr(permission, "rule", "") or "")
     if not risky and key and getattr(permission, "kind", "") != "outside":
-        options.append(("always", f"Yes, and don't ask again for {_always_label(permission)} this session"))
+        if rule:
+            options.append(("always", f"Yes, and don't ask again for {rule} (saved in .bot/settings.json)"))
+        else:
+            options.append(("always", f"Yes, and don't ask again for {_always_label(permission)} this session"))
     options.append(("no", "No, and tell crit what to do differently (esc)"))
-    if not risky:
+    if not risky and _state.approve_mode != "auto":
         # Last, so the numbers of yes / always / no stay what people are used to.
-        options.append(("auto", "Yes, and switch to auto mode (stop asking this session)"))
+        options.append(("auto", "Yes, and switch to auto mode (edits run; commands still ask)"))
     return options
 
 
@@ -1313,12 +1317,10 @@ def approve(
 ) -> tuple[str, str]:
     """Ask before an edit, command, fetch, or outside-workspace step.
 
-    Returns ``("yes" | "always" | "no", reason)``. Auto mode answers yes,
-    except for a ``risky`` command. "Yes, and switch to auto mode" switches
-    the mode and answers yes. No terminal answers no.
+    Returns ``("yes" | "always" | "no", reason)``. It is called only when the step
+    needs a yes (``Agent._approved`` decides that, auto mode included). "Yes, and
+    switch to auto mode" switches the mode and answers yes. No terminal answers no.
     """
-    if _state.approve_mode == "auto" and not risky:
-        return ("yes", "")
     interactive = pt_input is not None or (_stdin_tty() and is_tty())
     if not interactive:
         return ("no", "no terminal to approve" + (f" a command that {risky}" if risky else ""))
@@ -1345,10 +1347,11 @@ def approve(
         return ("no", reason)
     if answer == "auto":
         set_mode("auto", announce=False)
-        _print(_elbow(f"{g.check} Approved. Auto mode on: edits and commands run without asking.", style=_style("ok")))
+        _print(_elbow(f"{g.check} Approved. Auto mode on: edits and read-only commands run without asking.", style=_style("ok")))
         _refresh_live()
         return ("yes", "")
-    _print(_elbow(f"{g.check} " + ("Approved for this session" if answer == "always" else "Approved"), style=_style("ok")))
+    saved = answer == "always" and bool(getattr(permission, "rule", ""))
+    _print(_elbow(f"{g.check} " + ("Approved and saved" if saved else "Approved for this session" if answer == "always" else "Approved"), style=_style("ok")))
     _refresh_live()
     return (answer, "")
 

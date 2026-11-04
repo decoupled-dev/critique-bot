@@ -2218,6 +2218,9 @@ class _TaskRun:
         ``"confirm_risky": false``.
         """
         kind = getattr(perm, "kind", "read") or "read"
+        denied = _rule_denied(self.ctx, perm)
+        if denied:
+            return False, denied
         if kind == "read":
             return True, ""
         mode = self._approve_mode()
@@ -2229,6 +2232,8 @@ class _TaskRun:
                 return True, ""
             if mode == "edits" and kind == "edit":
                 return True, ""
+        if _rule_allows(self.ctx, perm, risky):
+            return True, ""
         key = getattr(perm, "key", "") or ""
         rememberable = bool(key) and kind != "outside"
         if rememberable and key in self.always and not risky:
@@ -2237,6 +2242,9 @@ class _TaskRun:
         if decision == "always":
             if rememberable:
                 self.always.add(key)
+            rule = str(getattr(perm, "rule", "") or "")
+            if rule and kind == "command" and not risky:
+                _save_allow_rule(self.ctx, rule)
             return True, ""
         if decision == "yes":
             return True, ""
@@ -2703,6 +2711,7 @@ def run_agent_loop(
             "ask" if str(options.get("network_commands") or "").lower() == "ask" and options.get("offline") is not True else "block"
         ),
         web_hosts=_web_hosts(options),
+        rules=_load_rules(options),
     )
     outcome_code = "COMPLETED"
     pool_box: list[Any] = []
@@ -3250,6 +3259,15 @@ def _model_label(config: BotConfig) -> str:
     return f"{config.model or '(first served model)'} · local at {server_label(config.url)}"
 
 
+def _load_rules(options: dict[str, Any]) -> Any:
+    from critique_bot import agent_rules
+
+    rules, problems = agent_rules.load_rules(options)
+    for problem in problems:
+        log.warn(f".bot/settings.json: {problem}")
+    return rules or None
+
+
 def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any]:
     """The settings the loop reads, with chat-size defaults that fit a local model's context window.
 
@@ -3608,6 +3626,71 @@ def _set_active(name: str, count: int) -> None:
 
 def _waiting(active: bool, label: str = "Thinking") -> None:
     agent_ui.waiting(active, label)
+
+
+def _rule_denied(ctx: Any, perm: Any) -> str:
+    """Why a saved deny rule refuses this step, or ""."""
+    rules = getattr(ctx, "rules", None)
+    if not rules:
+        return ""
+    from critique_bot import agent_rules
+
+    tool = str(getattr(perm, "tool", "") or "")
+    rule = agent_rules.denied_by(
+        rules,
+        tool=tool,
+        perm_kind=str(getattr(perm, "kind", "") or ""),
+        command=str(getattr(perm, "detail", "") or "") if tool == "run_command" else "",
+        paths=tuple(getattr(perm, "paths", ()) or ()),
+        workspace=ctx.workspace,
+    )
+    return f"blocked by the deny rule {rule} in .bot/settings.json" if rule is not None else ""
+
+
+#: Risks a saved allow rule may answer: a read or write outside the workspace that the user
+#: allowed by path. Network commands, risky commands, secret files, and files the task wrote
+#: keep asking whatever the rules say.
+_RULE_ANSWERABLE_RISKS = frozenset({agent_tools.OUTSIDE_READ_RISK, "changes files outside the workspace"})
+
+
+def _rule_allows(ctx: Any, perm: Any, risky: str) -> bool:
+    rules = getattr(ctx, "rules", None)
+    if not rules:
+        return False
+    kind = str(getattr(perm, "kind", "") or "")
+    tool = str(getattr(perm, "tool", "") or "")
+    if kind == "network" or not tool:
+        return False
+    if kind in {"command", "edit"} and risky:
+        return False
+    if kind == "outside" and (tool == "run_command" or risky not in _RULE_ANSWERABLE_RISKS):
+        return False
+    from critique_bot import agent_rules
+
+    rule = agent_rules.allowed_by(
+        rules,
+        tool=tool,
+        perm_kind=kind,
+        command=str(getattr(perm, "detail", "") or "") if tool == "run_command" else "",
+        paths=tuple(getattr(perm, "paths", ()) or ()),
+        workspace=ctx.workspace,
+    )
+    if rule is not None:
+        log.debug(f"allowed by rule {rule}")
+    return rule is not None
+
+
+def _save_allow_rule(ctx: Any, rule: str) -> None:
+    """Remember ``rule`` for this session and in .bot/settings.json, so it holds after a restart."""
+    from critique_bot import agent_rules, bot_home
+
+    ctx.rules = agent_rules.with_allow(getattr(ctx, "rules", None) or agent_rules.Rules(), rule)
+    try:
+        home = bot_home.find_bot_home(ctx.workspace)
+        if home is not None:
+            bot_home.add_allow_rule(home, rule)
+    except Exception as exc:  # the session still remembers it
+        log.warn(f"could not save the rule {rule!r}: {exc}")
 
 
 def _read_only_command(command: str) -> bool:

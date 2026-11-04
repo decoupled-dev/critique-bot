@@ -116,6 +116,9 @@ def _helper_run_class():
             kind = getattr(perm, "kind", "read") or "read"
             if name == "delegate":
                 return False, "a helper cannot delegate; do the brief yourself"
+            denied = agent._rule_denied(self.ctx, perm)
+            if denied:
+                return False, denied
             if kind == "read":
                 return True, ""
             # A helper asks no one, so anything a person would be asked about is refused:

@@ -162,6 +162,7 @@ class AutoModeTests(unittest.TestCase):
         run.ui_mode_at_start = mode
         run.confirm_risky = True
         run.always = set()
+        run.ctx = agent_tools.ToolContext(workspace=Path(tempfile.gettempdir()))
         return run
 
     def test_auto_mode_asks_before_a_command_that_is_not_read_only(self) -> None:

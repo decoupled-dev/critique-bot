@@ -46,6 +46,7 @@ SECURITY_KEYS = frozenset(
     {
         "permissions",
         "mode",
+        "allow",
         "confirm_risky",
         "web_fetch",
         "web_fetch_hosts",
@@ -243,6 +244,19 @@ def update_settings(home: BotHome, **values: object) -> None:
         on_disk = {}
     on_disk.update(values)
     _atomic_write_text(home.settings_path, json.dumps(on_disk, indent=2) + "\n")
+
+
+def add_allow_rule(home: BotHome, rule: str) -> None:
+    """Append ``rule`` to ``"allow"`` in ``.bot/settings.json`` (once), keeping the file's other keys."""
+    try:
+        on_disk = json.loads(home.settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        on_disk = {}
+    current = on_disk.get("allow") if isinstance(on_disk, dict) else None
+    rules = [item for item in current if isinstance(item, str)] if isinstance(current, list) else []
+    if rule in rules:
+        return
+    update_settings(home, allow=rules + [rule])
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

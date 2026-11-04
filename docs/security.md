@@ -53,6 +53,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 
   The address must be a plain page address. No `?query` string, no user name or password, no port other than 443, no more than 300 characters, and no path that looks like encoded data or a secret. Redirects stay on the same host. Add sites with `"web_fetch_hosts": ["..."]`.
 - **In auto mode, commands still ask.** Edits and read-only commands (`ls`, `git log`, `grep`) run. Any other command asks, or runs once you said "always allow" for its program, because a command line can hide a connection in ways no check sees. A command that runs a file this task wrote or changed asks in every mode, "always allow" or not.
+- **Saved rules** (`"allow"` and `"deny"` in your own `.bot/settings.json`) let trusted commands and paths run without asking, or keep others from ever running. An allow rule never covers a network command, a risky command, a secret file, or a file the task just wrote, and a committed settings file's `allow` is ignored.
 - **Helper chats never ask, so they only read.** They may not run builds, tests, or any command that is not read-only, may not fetch, and may not read secret files or files outside the workspace. The coordinator runs builds and tests after the reports.
 - **Commands that can send data out do not run.** That covers:
   - web clients: `curl`, `wget`, `Invoke-WebRequest`/`irm`, `Net.WebClient`, `certutil -urlcache`, `Start-BitsTransfer`

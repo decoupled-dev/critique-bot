@@ -224,6 +224,8 @@ class ToolContext:
     web_hosts: tuple[str, ...] = ()
     #: Runs briefs in helper chat tabs at the same time (see agent_helpers). None when there are none.
     delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
+    #: Saved "allow" and "deny" rules from .bot/settings.json (agent_rules.Rules); None when there are none.
+    rules: Any = None
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
@@ -243,6 +245,11 @@ class Permission:
     detail: str = ""
     #: Why this needs a person's yes in every mode, auto included ("" when it does not).
     risk: str = ""
+    #: The tool, and the paths it would read or change: what saved rules are matched against.
+    tool: str = ""
+    paths: tuple[str, ...] = ()
+    #: The allow rule a "don't ask again" answer saves for a command ("" when there is none).
+    rule: str = ""
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -3076,6 +3083,26 @@ def _ask_user(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> Permission:
+    """What the user must approve before ``name`` runs with ``args`` (see :func:`_permission_for`).
+
+    The result also names the tool and its paths, for saved rules, and for a command the
+    allow rule a "don't ask again" answer would save.
+    """
+    perm = _permission_for(name, args, ctx)
+    tool = canonical_tool(name) or ""
+    perm.tool = tool
+    if tool:
+        normalized = normalize_args(tool, args if isinstance(args, (dict, str)) else {})
+        if tool != "run_command":
+            perm.paths = tuple(str(item) for item in _paths_of(tool, normalized, ctx))
+        elif perm.kind == "command":
+            from critique_bot.agent_rules import suggest_rule
+
+            perm.rule = suggest_rule(str(normalized.get("command") or ""))
+    return perm
+
+
+def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> Permission:
     """What the user must approve before ``name`` runs with ``args``.
 
     read: never asks. edit: key "edit". command: key "command:<program>".

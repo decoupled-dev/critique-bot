@@ -451,9 +451,7 @@ def show_diff(diff: str) -> bool:
 
 
 def approve(permission: Any, *, risky: str = "", **_ignored: Any) -> tuple[str, str]:
-    """``("yes" | "always" | "no", reason)``, like :func:`agent_ui.approve`."""
-    if _state.approve_mode == "auto" and not risky:
-        return ("yes", "")
+    """``("yes" | "always" | "no", reason)``, like :func:`agent_ui.approve`. Called only when the step needs a yes."""
     options = agent_ui.approval_options(permission, risky=risky)
     reply = _request(
         "approval",

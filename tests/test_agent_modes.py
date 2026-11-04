@@ -215,7 +215,10 @@ class PromptToolkitModeTests(_Base):
         self.assertEqual(labels, ["yes", "always", "no", "auto"])
         self.assertEqual(self._run("4\r", agent_ui.approve, permission=permission), ("yes", ""))
         self.assertEqual(agent_ui.approve_mode(), "auto")
-        self.assertEqual(agent_ui.approve(permission), ("yes", ""))
+        # Agent._approved decides when to ask; once asked, the box asks in auto mode too,
+        # and no longer offers to switch to auto.
+        self.assertEqual(agent_ui.approve(permission), ("no", "no terminal to approve"))
+        self.assertNotIn("auto", [answer for answer, _label in agent_ui.approval_options(permission)])
 
     def test_risky_prompt_has_only_yes_and_no_even_in_auto(self) -> None:
         agent_ui.set_mode("auto", announce=False)
