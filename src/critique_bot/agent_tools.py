@@ -1847,6 +1847,46 @@ def patched_paths(patch: str) -> list[str]:
 # --------------------------------------------------------------------------- commands and git
 
 
+#: Full outputs kept in .bot/cache/output; older ones are removed.
+KEEP_OUTPUTS = 40
+_OUTPUT_LOCK = threading.Lock()
+
+
+def _clip_output(body: str, ctx: ToolContext) -> str:
+    """``body`` cut to fit one tool result. When something was cut, the whole text is saved
+    under ``.bot/cache/output`` and the result says where, so the middle is not lost."""
+    clipped = agent_shell.head_tail(body, max_chars=ctx.max_chars)
+    if clipped == body or ctx.cache_dir is None:
+        return clipped
+    saved = _save_output(body, ctx)
+    if not saved:
+        return clipped
+    lines = body.count("\n") + 1
+    return (
+        f"FULL OUTPUT ({lines} lines) saved to {saved}: only the start and end are shown below. "
+        "Read the middle with read_files (offset, limit) or search it with search_code (path).\n" + clipped
+    )
+
+
+def _save_output(body: str, ctx: ToolContext) -> str:
+    folder = Path(ctx.cache_dir) / "output"
+    try:
+        with _OUTPUT_LOCK:
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            index = 1
+            while (folder / f"{stamp}-{index}.log").exists():
+                index += 1
+            path = folder / f"{stamp}-{index}.log"
+            path.write_text(body, encoding="utf-8", errors="replace")
+            old = sorted(folder.glob("*.log"), key=lambda item: item.stat().st_mtime)
+            for stale in old[:-KEEP_OUTPUTS]:
+                stale.unlink(missing_ok=True)
+    except OSError:
+        return ""  # the clipped text still goes back
+    return rel(ctx.workspace, path) if inside(ctx.workspace, path) else str(path)
+
+
 def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     command = args.get("command") or args.get("cmd")
     if not isinstance(command, str) or not command.strip():
@@ -1932,7 +1972,7 @@ def _run_in_session(
             ctx.state.last_exit = f"background {job_id}"
         return ok(
             "run_command",
-            agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            _clip_output(body, ctx),
             ctx,
             _ui(f"Started {job_id} in background ({shell_name})", lines=_preview(first, tail=True)),
         )
@@ -2015,7 +2055,7 @@ def _run_in_session(
         return err(
             "run_command",
             "interrupted by the user; the command was stopped",
-            output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            output=_clip_output(body, ctx),
             ctx=ctx,
             ui=_ui(f"interrupted · {seconds:.1f}s · {shell_name}", lines=preview),
         )
@@ -2029,7 +2069,7 @@ def _run_in_session(
         body = "\n".join(part for part in (note, *head[1:], out, errs) if part)
         return ok(
             "run_command",
-            agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            _clip_output(body, ctx),
             ctx,
             _ui(f"still running after {timeout:.0f}s · continues as {job_id}", lines=preview),
         )
@@ -2043,7 +2083,7 @@ def _run_in_session(
         return err(
             "run_command",
             f"timed out after {timeout:.0f}s{hint}",
-            output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            output=_clip_output(body, ctx),
             ctx=ctx,
             ui=_ui(f"timed out after {timeout:.0f}s · {shell_name}", lines=preview),
         )
@@ -2066,7 +2106,7 @@ def _run_in_session(
         parts.append(errs)
     if not out and not errs:
         parts.append("(no output)")
-    body = agent_shell.head_tail("\n".join(parts), max_chars=ctx.max_chars)
+    body = _clip_output("\n".join(parts), ctx)
     summary = f"exit {code} · {_duration(seconds)} · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
     if retried:
         summary += " · retried once"
@@ -2165,7 +2205,7 @@ def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: fl
         return err(
             "run_command",
             f"timed out after {timeout:.0f}s{hint}",
-            output=agent_shell.head_tail(body, max_chars=ctx.max_chars),
+            output=_clip_output(body, ctx),
             ctx=ctx,
             ui=_ui(f"timed out after {timeout:.0f}s", lines=_preview(out + "\n" + errs, tail=True)),
         )
@@ -2174,7 +2214,7 @@ def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: fl
         parts.append(out)
     if errs:
         parts.append(errs)
-    body = agent_shell.head_tail("\n".join(parts), max_chars=ctx.max_chars)
+    body = _clip_output("\n".join(parts), ctx)
     ui = _ui(f"exit {code} · {seconds:.1f}s", lines=_preview(out + "\n" + errs, tail=True))
     if code == 0:
         return ok("run_command", body, ctx, ui)
@@ -2243,7 +2283,7 @@ def _command_output(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     body = f"{job_id}: {state}\n" + (text.strip() or "(no new output)")
     return ok(
         "command_output",
-        agent_shell.head_tail(body, max_chars=ctx.max_chars),
+        _clip_output(body, ctx),
         ctx,
         _ui(f"{job_id} {state}", lines=_preview(text, tail=True)),
     )
