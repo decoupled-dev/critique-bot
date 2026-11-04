@@ -43,6 +43,8 @@ npm install
 npm start -- /path/to/project          # or open the project from the window
 ```
 
+On Windows, `scripts\setup-crit.ps1 -Desktop` does the install for you (through a proxy with `-ProxyHost`, `-ProxyPort`, and `-ProxyUser`) and points the app at the agent it installed. Then run `npm start` here.
+
 On Ubuntu 24.04+ an Electron run from `node_modules` aborts with "The SUID
 sandbox helper binary was found, but is not configured correctly". Either
 `sudo chown root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755

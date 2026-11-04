@@ -13,7 +13,13 @@ Automates the manual steps in docs/bot-agent.md:
      relative user_data_dir to a full path next to the config file,
   5. writes crit.cmd, bot-agent.cmd, and critique-bot.cmd into BinDir,
   6. puts BinDir first on the user PATH (and in this session),
-  7. runs crit --help through the new command.
+  7. runs crit --help through the new command,
+  8. with -Desktop, installs the desktop app's packages (npm ci in desktop\)
+     and points the app at this install (%APPDATA%\crit\settings.json).
+Behind a proxy, pass -ProxyHost and -ProxyPort (and -ProxyUser; the password
+is asked for, or taken from -ProxyPassword / CRIT_PROXY_PASSWORD). The proxy
+is used by pip, uv, npm, and the Electron download for this run only: it is
+not written to pip.ini, .npmrc, or the registry, so the password is not saved.
 Safe to re-run: every step checks what is already in place.
 
 If running scripts is blocked on this PC, start it with:
@@ -30,9 +36,32 @@ Folder for crit.cmd, bot-agent.cmd, critique-bot.cmd.
 Default: %LOCALAPPDATA%\critique-bot\bin
 
 .PARAMETER Proxy
-Proxy for every pip install, for example
-http://username:password@10.1.2.3:8080.
-uv installs receive the same URL through HTTP_PROXY and HTTPS_PROXY.
+Proxy as one URL, for example http://username:password@10.1.2.3:8080.
+Special characters in the user name or password must be percent-encoded;
+-ProxyHost/-ProxyPort/-ProxyUser do that for you. Do not combine the two.
+
+.PARAMETER ProxyHost
+Proxy host name or address, for example 10.1.2.3 or proxy.corp.example.
+An http:// or https:// prefix sets the scheme (default http).
+
+.PARAMETER ProxyPort
+Proxy port, for example 8080.
+
+.PARAMETER ProxyUser
+User name for the proxy (DOMAIN\user works). Without -ProxyPassword or
+CRIT_PROXY_PASSWORD, the password is asked for without echoing it.
+
+.PARAMETER ProxyPassword
+Proxy password as a SecureString, for example (Read-Host -AsSecureString).
+
+.PARAMETER CaFile
+Your company's root certificate (.pem or .crt), for proxies that inspect
+HTTPS. pip, uv, npm, and Node use it for this run.
+
+.PARAMETER Desktop
+Also install the desktop app: runs npm ci in desktop\ through the proxy
+(Electron included) and sets "command" in %APPDATA%\crit\settings.json to
+this install's critique-bot.exe. Needs Node.js (winget install OpenJS.NodeJS.LTS).
 
 .PARAMETER WithIndex
 Also install the [index] extra (tree-sitter parsers).
@@ -51,6 +80,12 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
 
 .EXAMPLE
 .\scripts\setup-crit.ps1 -Proxy "http://username:password@10.1.2.3:8080"
+
+.EXAMPLE
+.\scripts\setup-crit.ps1 -ProxyHost 10.1.2.3 -ProxyPort 8080 -ProxyUser "CORP\jdoe" -Desktop
+
+.EXAMPLE
+.\scripts\setup-crit.ps1 -ProxyHost proxy.corp.example -ProxyPort 3128 -CaFile C:\certs\corp-root.pem -Desktop
 #>
 [CmdletBinding()]
 param(
@@ -58,6 +93,12 @@ param(
     [string]$Config = "",
     [string]$BinDir = "",
     [string]$Proxy = "",
+    [string]$ProxyHost = "",
+    [int]$ProxyPort = 0,
+    [string]$ProxyUser = "",
+    [SecureString]$ProxyPassword = $null,
+    [string]$CaFile = "",
+    [switch]$Desktop,
     [switch]$WithIndex,
     [switch]$NoPath,
     [switch]$SkipBrowserCheck
@@ -160,6 +201,102 @@ function Get-RedactedProxy([string]$Url) {
         return ($Matches.scheme + '***@' + $Matches.rest)
     }
     return $Url
+}
+
+# http://user:password@host:port from parts; user and password percent-encoded.
+function Get-ProxyUrl([string]$HostName, [int]$Port, [string]$User, [string]$Password) {
+    $hostPart = ([string]$HostName).Trim()
+    if (-not $hostPart) { return "" }
+    $scheme = "http://"
+    if ($hostPart -match '^(?<scheme>[a-z][a-z0-9+.-]*://)(?<rest>.*)$') {
+        $scheme = $Matches.scheme.ToLowerInvariant()
+        $hostPart = $Matches.rest
+    }
+    $hostPart = $hostPart.TrimEnd([char]47)
+    if ($hostPart -match '[@/\s]') { throw "ERROR: -ProxyHost must be a host name or address, not $hostPart" }
+    if ($hostPart -match ':\d+$') {
+        if ($Port -gt 0) { throw "ERROR: give the port either in -ProxyHost or in -ProxyPort, not both" }
+    } elseif ($Port -gt 0) {
+        if ($Port -gt 65535) { throw "ERROR: -ProxyPort must be 1 to 65535" }
+        $hostPart = $hostPart + ":" + $Port
+    } else {
+        throw "ERROR: -ProxyPort is required with -ProxyHost (for example -ProxyPort 8080)"
+    }
+    $auth = ""
+    if ($User) {
+        $auth = [Uri]::EscapeDataString($User)
+        if ($Password) { $auth = $auth + ":" + [Uri]::EscapeDataString($Password) }
+        $auth = $auth + "@"
+    }
+    return $scheme + $auth + $hostPart
+}
+
+function ConvertFrom-SecurePassword([SecureString]$Secure) {
+    if ($null -eq $Secure) { return "" }
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+# Environment for this process only, so pip, uv, npm, and Electron's download use the
+# proxy and the CA file. Returns the names it set. Loopback never goes through the proxy.
+function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
+    $names = New-Object System.Collections.Generic.List[string]
+    if ($ProxyUrl) {
+        $values = [ordered]@{
+            "HTTP_PROXY" = $ProxyUrl
+            "HTTPS_PROXY" = $ProxyUrl
+            "ALL_PROXY" = $ProxyUrl
+            "NO_PROXY" = "localhost,127.0.0.1,::1"
+            "npm_config_proxy" = $ProxyUrl
+            "npm_config_https_proxy" = $ProxyUrl
+            "npm_config_noproxy" = "localhost,127.0.0.1,::1"
+            # Electron's binary comes from GitHub through @electron/get, which ignores npm's proxy.
+            "ELECTRON_GET_USE_PROXY" = "true"
+            "GLOBAL_AGENT_HTTP_PROXY" = $ProxyUrl
+            "GLOBAL_AGENT_HTTPS_PROXY" = $ProxyUrl
+            "GLOBAL_AGENT_NO_PROXY" = "localhost,127.0.0.1,::1"
+        }
+        foreach ($name in $values.Keys) {
+            Set-Item -Path "Env:$name" -Value $values[$name]
+            $names.Add($name)
+        }
+    }
+    if ($CaPath) {
+        foreach ($name in @("PIP_CERT", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "npm_config_cafile")) {
+            Set-Item -Path "Env:$name" -Value $CaPath
+            $names.Add($name)
+        }
+    }
+    return ,$names.ToArray()
+}
+
+# Merge "command" into the desktop app's settings.json, keeping its other keys.
+function Set-DesktopCommand([string]$SettingsPath, [string]$Command) {
+    $dir = Split-Path -Parent $SettingsPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $data = New-Object PSObject
+    if (Test-Path -LiteralPath $SettingsPath) {
+        $text = [IO.File]::ReadAllText($SettingsPath)
+        if ($text.Trim()) {
+            try {
+                $data = $text | ConvertFrom-Json
+            } catch {
+                throw "ERROR: $SettingsPath is not valid JSON; fix or delete it and re-run"
+            }
+        }
+    }
+    if ($data.PSObject.Properties.Name -contains "command") {
+        if ([string]$data.command -eq $Command) { return $false }
+        $data.command = $Command
+    } else {
+        $data | Add-Member -NotePropertyName "command" -NotePropertyValue $Command
+    }
+    [IO.File]::WriteAllText($SettingsPath, ($data | ConvertTo-Json -Depth 20) + "`n", (New-Object Text.UTF8Encoding $false))
+    return $true
 }
 
 # pip arguments with --proxy URL appended when a proxy was given.
@@ -283,15 +420,43 @@ function Invoke-Setup {
     Write-Info "venv:    $venvDir"
     Write-Info "config:  $configPath"
     Write-Info "bin dir: $binPath"
+    if ($Proxy -and $ProxyHost) {
+        Stop-Setup "give either -Proxy (one URL) or -ProxyHost/-ProxyPort, not both"
+    }
+    if (($ProxyUser -or $ProxyPort -gt 0 -or $null -ne $ProxyPassword) -and -not $ProxyHost) {
+        Stop-Setup "-ProxyUser, -ProxyPort, and -ProxyPassword need -ProxyHost"
+    }
+    if ($ProxyHost) {
+        $password = ""
+        if ($ProxyUser) {
+            if ($null -ne $ProxyPassword) {
+                $password = ConvertFrom-SecurePassword $ProxyPassword
+            } elseif ($env:CRIT_PROXY_PASSWORD) {
+                $password = $env:CRIT_PROXY_PASSWORD
+            } else {
+                $password = ConvertFrom-SecurePassword (Read-Host "Proxy password for $ProxyUser" -AsSecureString)
+            }
+        }
+        try {
+            $Proxy = Get-ProxyUrl $ProxyHost $ProxyPort $ProxyUser $password
+        } catch {
+            Stop-Setup ($_.Exception.Message -replace '^ERROR: ', '')
+        }
+        $password = $null
+    }
+    $caPath = ""
+    if ($CaFile) {
+        if (-not (Test-Path -LiteralPath $CaFile -PathType Leaf)) { Stop-Setup "-CaFile not found: $CaFile" }
+        $caPath = Get-FullPath $CaFile
+        Write-Info "CA file: $caPath"
+    }
     if ($Proxy) {
         if ($Proxy -notmatch '^[a-z][a-z0-9+.-]*://') {
             Stop-Setup "-Proxy must be a URL such as http://username:password@10.1.2.3:8080"
         }
-        foreach ($name in @("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")) {
-            Set-Item -Path "Env:$name" -Value $Proxy
-        }
-        Write-Info ("proxy:   " + (Get-RedactedProxy $Proxy))
+        Write-Info ("proxy:   " + (Get-RedactedProxy $Proxy) + " (this run only; not saved)")
     }
+    [void](Set-ProxyEnvironment $Proxy $caPath)
 
     # 1. Python
     Write-Step "Looking for Python 3.10 or newer"
@@ -357,11 +522,13 @@ function Invoke-Setup {
             Write-Info "upgrading pip"
             $upgradeArgs = @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
             if ($Proxy) { $upgradeArgs += @("--proxy", $Proxy) }
+            if ($caPath) { $upgradeArgs += @("--cert", $caPath) }
             if ((Invoke-Native $venvPython $upgradeArgs) -ne 0) {
                 Write-Warn "pip upgrade failed; continuing with the installed pip"
             }
             $installArgs = @("-m", "pip", "install", "--quiet") + $pins + @("-e", $target)
             if ($Proxy) { $installArgs += @("--proxy", $Proxy) }
+            if ($caPath) { $installArgs += @("--cert", $caPath) }
             $rc = Invoke-Native $venvPython $installArgs
         }
         if ($rc -ne 0) { Stop-Setup "pip install -e $target failed" }
@@ -479,7 +646,40 @@ function Invoke-Setup {
     }
     Write-Info "OK"
 
-    # 8. Next steps
+    # 8. Desktop app
+    if ($Desktop) {
+        $desktopDir = Join-Path $repo "desktop"
+        Write-Step "Installing the desktop app (npm ci in $desktopDir)"
+        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $npm) { $npm = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        if (-not $npm) {
+            Stop-Setup "-Desktop needs Node.js. Install it (winget install OpenJS.NodeJS.LTS), open a new window, and re-run"
+        }
+        Push-Location -LiteralPath $desktopDir
+        try {
+            # npm ci installs exactly what package-lock.json lists.
+            $rc = Invoke-Native $npm.Path @("ci", "--no-audit", "--no-fund")
+        } finally {
+            Pop-Location
+        }
+        if ($rc -ne 0) {
+            Write-Host "  Behind a proxy that inspects HTTPS, pass your company's root certificate: -CaFile C:\certs\corp-root.pem"
+            Stop-Setup "npm ci failed in $desktopDir"
+        }
+        $settingsPath = Join-Path $env:APPDATA "crit\settings.json"
+        try {
+            $changed = Set-DesktopCommand $settingsPath (Join-Path $scripts "critique-bot.exe")
+        } catch {
+            Stop-Setup ($_.Exception.Message -replace '^ERROR: ', '')
+        }
+        if ($changed) {
+            Write-Info "the desktop app now runs $scripts\critique-bot.exe ($settingsPath)"
+        } else {
+            Write-Info "$settingsPath already points at this install"
+        }
+    }
+
+    # 9. Next steps
     Write-Step "Done. Next steps:"
     if ($pathChanged) {
         Write-Info "0. Open a new PowerShell window (this one already has the new PATH)"
@@ -492,6 +692,10 @@ function Invoke-Setup {
     Write-Info "     critique-bot --config `"$configPath`" --mode general --prompt `"Reply with exactly one word: PONG.`""
     Write-Info "3. Use crit in any project:"
     Write-Info "     cd your-project; crit"
+    if ($Desktop) {
+        Write-Info "4. Start the desktop app (no proxy needed from here on):"
+        Write-Info "     cd `"$repo\desktop`"; npm start -- C:\path\to\your\project"
+    }
 }
 
 # CRIT_SETUP_NO_MAIN=1 only defines the functions (used by the tests).
