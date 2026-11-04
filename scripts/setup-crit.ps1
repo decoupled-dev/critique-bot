@@ -289,9 +289,12 @@ function Set-DesktopCommand([string]$SettingsPath, [string]$Command) {
             }
         }
     }
-    if ($data.PSObject.Properties.Name -contains "command") {
-        if ([string]$data.command -eq $Command) { return $false }
-        $data.command = $Command
+    # The indexer returns $null for a missing key; .Properties.Name on an object with no
+    # properties throws under Set-StrictMode in Windows PowerShell 5.1.
+    $existing = $data.PSObject.Properties["command"]
+    if ($null -ne $existing) {
+        if ([string]$existing.Value -eq $Command) { return $false }
+        $existing.Value = $Command
     } else {
         $data | Add-Member -NotePropertyName "command" -NotePropertyValue $Command
     }
