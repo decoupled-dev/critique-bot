@@ -172,6 +172,7 @@ _TOOL_TITLES = {
     "ask_user": "Ask",
     "delegate": "Delegate",
     "command_output": "Output",
+    "command_input": "Input",
     "kill_command": "Kill",
 }
 _SHELL_TITLES = {
@@ -596,6 +597,8 @@ def arg_summary(name: str, args: dict[str, Any] | None) -> str:
         src = args.get("source") or args.get("src") or args.get("from") or path or ""
         dst = args.get("destination") or args.get("dst") or args.get("to") or ""
         return f"{src} → {dst}" if dst else str(src)
+    if name == "command_input":
+        return f"{args.get('id') or args.get('job_id') or ''}: {_short(str(args.get('input') or '(Enter)'), 60)}"
     if name in {"command_output", "kill_command"}:
         return str(args.get("id") or args.get("job_id") or "")
     if name == "skill":
@@ -763,6 +766,7 @@ def tool_result_lines(
 _ACTIVITY = {
     "run_command": ("Running", "shell command", "shell commands"),
     "command_output": ("Waiting for", "background command", "background commands"),
+    "command_input": ("Typing into", "background command", "background commands"),
     "kill_command": ("Stopping", "background command", "background commands"),
     "read_files": ("Reading", "file", "files"),
     "list_files": ("Listing", "folder", "folders"),

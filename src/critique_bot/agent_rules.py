@@ -252,7 +252,7 @@ def _path_matches(path: str | Path, rule: Rule, workspace: Path) -> bool:
 
 
 def _kind_of(tool: str, perm_kind: str) -> str:
-    if tool == "run_command":
+    if tool in {"run_command", "command_input"}:
         return "command"
     if tool in {"write_files", "edit_file", "delete_file", "apply_patch", "move_file"}:
         return "edit"

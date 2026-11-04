@@ -2277,9 +2277,9 @@ class _TaskRun:
             return True
         if name in _read_only_tools():
             return True  # a read outside the workspace still asks
-        if name == "run_command":
+        if name in {"run_command", "command_input"}:
             check = getattr(agent_tools, "read_only_command", None)
-            command = str(call.arguments.get("command") or "")
+            command = str(call.arguments.get("command") or call.arguments.get("input") or "")
             return bool(callable(check) and check(command))
         return False
 
@@ -3640,7 +3640,7 @@ def _rule_denied(ctx: Any, perm: Any) -> str:
         rules,
         tool=tool,
         perm_kind=str(getattr(perm, "kind", "") or ""),
-        command=str(getattr(perm, "detail", "") or "") if tool == "run_command" else "",
+        command=str(getattr(perm, "detail", "") or "") if tool in {"run_command", "command_input"} else "",
         paths=tuple(getattr(perm, "paths", ()) or ()),
         workspace=ctx.workspace,
     )
@@ -3671,7 +3671,7 @@ def _rule_allows(ctx: Any, perm: Any, risky: str) -> bool:
         rules,
         tool=tool,
         perm_kind=kind,
-        command=str(getattr(perm, "detail", "") or "") if tool == "run_command" else "",
+        command=str(getattr(perm, "detail", "") or "") if tool in {"run_command", "command_input"} else "",
         paths=tuple(getattr(perm, "paths", ()) or ()),
         workspace=ctx.workspace,
     )

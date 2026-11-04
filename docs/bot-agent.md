@@ -595,7 +595,7 @@ The tool protocol is long. Sending it as the first message works, but the model 
 
 ### Tools
 
-The model has 21 tools. `/tools` lists them in a session.
+The model has 22 tools. `/tools` lists them in a session.
 
 | Tool | What it does |
 | --- | --- |
@@ -604,8 +604,9 @@ The model has 21 tools. `/tools` lists them in a session.
 | `search_code` | Regular-expression search. Definitions come first. |
 | `edit_file`, `write_files`, `apply_patch` | Change files. Edits show a diff and a syntax check. |
 | `move_file`, `delete_file` | Move, rename, or delete one file. |
-| `run_command` | One command in the session shell. Takes `cwd`, `timeout`, `shell`, and `background`. |
+| `run_command` | One command in the session shell. Takes `cwd`, `timeout`, `shell`, and `background`. Output that does not fit is saved whole under `.bot/cache/output`, and the result names the file. |
 | `command_output`, `kill_command` | Read new output from a background command, or stop it. |
+| `command_input` | Type into a background command, like a terminal: a shell, `python -i`, `node -i`, `adb shell`, a debugger. Each line is checked and approved like a command. |
 | `git_status`, `git_diff`, `git_log`, `git_show` | Read git state. |
 | `web_fetch` | Read one http or https page as text. Asks first, per site. |
 | `ask_user` | Ask you one question when the task needs your decision. |
@@ -617,6 +618,8 @@ The model has 21 tools. `/tools` lists them in a session.
 On Windows, `run_command` uses PowerShell 7 (`pwsh.exe`) when it is installed, and Windows PowerShell 5.1 otherwise. On Linux and macOS it uses `bash`, or `sh` when bash is missing. The model can pick another installed shell for one call with `"shell"`: `"bash"` (on Windows this is Git Bash, never WSL's `System32\bash.exe`), `"cmd"`, `"pwsh"`, or `"powershell"`. The settings value `"shell"` (`auto`, `bash`, `pwsh`, `powershell`, `cmd`, `sh`, `zsh`) changes the default.
 
 - The working folder persists like a terminal: `cd` in one command carries over to the next, and `cwd` sets where a command starts.
+- Environment variables persist too. What a command sets or removes (`$env:NAME = ...`, `export NAME=...`, `set NAME=...`, an activated venv or `vcvars`) carries over to the next commands, and the result lists the names. With `"offline": true` the proxy and offline settings cannot be changed this way.
+- A program that keeps running and reads input (a shell, a REPL, `adb shell`) starts with `"background": true`; `command_input` types lines into it and returns what it prints.
 - Each command runs from a temporary script file, so long commands work. PowerShell reads that file through a short `-EncodedCommand`, so a Group Policy execution policy (`AllSigned`, `Restricted`) does not block it, and runs with `-NoProfile -ExecutionPolicy Bypass`, so `npm.ps1`, `npx.ps1`, and `Activate.ps1` are not blocked where policy allows. Output is UTF-8; a native tool that writes the OEM code page is still decoded.
 - PowerShell exit codes follow the last statement: a native program's exit code, else 1 when a cmdlet failed or an error was thrown, else 0. `exit N` exits with N. A script made of `param(...)`, `begin`, `process`, and `end` blocks runs whole.
 - On Windows PowerShell 5.1, a top-level `a && b` or `a || b` is rewritten so it runs. A command that uses `export`, `grep`, `sed`, a heredoc, or other bash syntax is not run; the model is told the PowerShell form, or to resend it with `"shell": "bash"` when Git Bash is installed. Quoted text and `@{...}` hashtables are not checked.

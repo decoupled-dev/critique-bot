@@ -1392,7 +1392,7 @@ function __crit_finish([int]$code) { $global:LASTEXITCODE = $code }
 """
 
 _PS_BODY = r"""$__critCode = 0
-try {
+{envbefore}try {
     $__critText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}'))
     $__critParseErrors = $null
     $__critTokens = $null
@@ -1433,6 +1433,10 @@ try {
 if ($Host.Name -eq 'ConsoleHost') { $Host.SetShouldExit($__critCode) } else { exit $__critCode }
 """
 
+# The process environment as NAME=value records separated by NUL (see read_env_dump).
+_PS_ENV_DUMP = r"""    try { [System.IO.File]::WriteAllText('{path}', ((([Environment]::GetEnvironmentVariables()).GetEnumerator() | ForEach-Object { [string]$_.Key + '=' + [string]$_.Value }) -join [char]0)) } catch { }
+"""
+
 _PS_MARKER = r"""    try {
         $__critLocation = Get-Location
         if ($__critLocation.Provider.Name -eq 'FileSystem') { [System.IO.File]::WriteAllText('{path}', $__critLocation.ProviderPath) }
@@ -1444,7 +1448,7 @@ def _ps_literal(text: str) -> str:
     return text.replace("'", "''")
 
 
-def powershell_script(command: str, *, kind: str = "pwsh", marker: str | None = None) -> str:
+def powershell_script(command: str, *, kind: str = "pwsh", marker: str | None = None, env_marker: str | None = None) -> str:
     """The wrapper that runs ``command`` in PowerShell and sets an honest exit code.
 
     Exit code semantics (both PowerShell 7 and 5.1):
@@ -1483,40 +1487,109 @@ def powershell_script(command: str, *, kind: str = "pwsh", marker: str | None = 
             pass
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
     marker_text = _PS_MARKER.replace("{path}", _ps_literal(marker)) if marker else ""
-    return _PS_PRELUDE + _PS_BODY.replace("{encoded}", encoded).replace("{marker}", marker_text)
+    before = after = ""
+    if env_marker:
+        before = _PS_ENV_DUMP.replace("{path}", _ps_literal(env_marker + ".0"))
+        after = _PS_ENV_DUMP.replace("{path}", _ps_literal(env_marker + ".1"))
+    return _PS_PRELUDE + _PS_BODY.replace("{encoded}", encoded).replace("{envbefore}", before).replace("{marker}", marker_text + after)
 
 
 def _sh_quote(text: str) -> str:
     return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
-def posix_script(command: str, *, kind: str = "bash", marker: str | None = None) -> str:
-    """The script for bash/sh/zsh/Git Bash. An EXIT trap records the final folder."""
+def posix_script(command: str, *, kind: str = "bash", marker: str | None = None, env_marker: str | None = None) -> str:
+    """The script for bash/sh/zsh/Git Bash. An EXIT trap records the final folder (and the environment)."""
     body = command.replace("\r\n", "\n").rstrip() + "\n"
     if not marker:
         return body
     where = "{ pwd -W 2>/dev/null || pwd -P; }" if kind == "gitbash" else "pwd -P"
+    dump = ""
+    first = ""
+    if env_marker:
+        # Git Bash keeps PATH in /c/... form; the next command may run in PowerShell, so record it as Windows sees it.
+        if kind == "gitbash":
+            envcmd = 'PATH="$(cygpath -wp "$PATH" 2>/dev/null || printf %s "$PATH")" /usr/bin/env'
+        else:
+            envcmd = "env"
+        first = "__crit_env() { " + envcmd + " -0 > \"$1\" 2>/dev/null || " + envcmd + " > \"$1\" 2>/dev/null; }\n"
+        first += "__crit_env " + _sh_quote(env_marker + ".0") + "\n"
+        dump = "__crit_env " + _sh_quote(env_marker + ".1") + "; "
     return (
-        "__crit_done() { __crit_rc=$?; " + where + " > " + _sh_quote(marker) + " 2>/dev/null; exit $__crit_rc; }\n"
+        first
+        + "__crit_done() { __crit_rc=$?; " + dump + where + " > " + _sh_quote(marker) + " 2>/dev/null; exit $__crit_rc; }\n"
         "trap __crit_done EXIT\n" + body
     )
 
 
-def cmd_script(command: str, *, marker: str | None = None) -> str:
+def cmd_script(command: str, *, marker: str | None = None, env_marker: str | None = None) -> str:
     """The batch file for cmd.exe (UTF-8 code page; batch rules such as %% apply)."""
     body = command.replace("\r\n", "\n").rstrip().split("\n")
-    lines = ["@echo off", "chcp 65001>nul", *body, ""]
+    lines = ["@echo off", "chcp 65001>nul"]
+    if env_marker:
+        lines.append(f'@set > "{env_marker}.0" 2>nul')
+    lines += [*body, ""]
     if marker:
-        lines += ['@set "__CRIT_RC=%ERRORLEVEL%"', f'@cd > "{marker}" 2>nul', "@exit /b %__CRIT_RC%"]
+        lines += ['@set "__CRIT_RC=%ERRORLEVEL%"', f'@cd > "{marker}" 2>nul']
+        if env_marker:
+            lines.append(f'@set > "{env_marker}.1" 2>nul')
+        lines.append("@exit /b %__CRIT_RC%")
     return "\r\n".join(lines) + "\r\n"
 
 
-def _script(shell: Shell, command: str, marker: str | None) -> tuple[str, bytes]:
+def _script(shell: Shell, command: str, marker: str | None, env_marker: str | None = None) -> tuple[str, bytes]:
     if shell.is_powershell:
-        return ".ps1", ("\ufeff" + powershell_script(command, kind=shell.kind, marker=marker)).encode("utf-8")
+        return ".ps1", ("\ufeff" + powershell_script(command, kind=shell.kind, marker=marker, env_marker=env_marker)).encode("utf-8")
     if shell.kind == "cmd":
-        return ".cmd", cmd_script(command, marker=marker).encode("utf-8")
-    return ".sh", posix_script(command, kind=shell.kind, marker=marker).encode("utf-8")
+        return ".cmd", cmd_script(command, marker=marker, env_marker=env_marker).encode("utf-8")
+    return ".sh", posix_script(command, kind=shell.kind, marker=marker, env_marker=env_marker).encode("utf-8")
+
+
+# Set by the shell itself, or per process: never carried to the next command.
+_ENV_VOLATILE = frozenset(
+    {
+        "PWD", "OLDPWD", "SHLVL", "_", "PS1", "PS2", "PS4", "PROMPT", "COLUMNS", "LINES", "RANDOM", "SECONDS",
+        "LINENO", "BASHPID", "BASH_COMMAND", "BASH_SUBSHELL", "__CRIT_RC", "ERRORLEVEL", "CD", "CMDCMDLINE",
+        "=C:", "=D:", "=E:", "=EXITCODE", "=EXITCODEASCII",
+    }
+)
+
+
+def read_env_dump(path: str) -> dict[str, str] | None:
+    """``NAME=value`` records from a dump (NUL-separated, or one per line), or None if there is none."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    text = decode(raw).lstrip("\ufeff")
+    records = text.split("\0") if "\0" in text else text.splitlines()
+    out: dict[str, str] = {}
+    for record in records:
+        record = record.rstrip("\r") if "\0" not in text else record
+        if not record:
+            continue
+        # A name starting with "=" (cmd's per-drive folders) has its "=" inside the name.
+        cut = record.find("=", 1)
+        if cut <= 0:
+            continue
+        out[record[:cut]] = record[cut + 1:]
+    return out
+
+
+def env_changes(before: dict[str, str], after: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """What a command set and what it removed (names compared without case on Windows)."""
+    fold = (lambda name: name.upper()) if sys.platform == "win32" else (lambda name: name)
+    old = {fold(name): (name, value) for name, value in before.items()}
+    new = {fold(name): (name, value) for name, value in after.items()}
+    changed: dict[str, str] = {}
+    for key, (name, value) in new.items():
+        if name.upper() in _ENV_VOLATILE or name.upper().startswith(("__CRIT", "BASH_FUNC_")):
+            continue
+        if key not in old or old[key][1] != value:
+            changed[name] = value
+    removed = [name for key, (name, _value) in old.items() if key not in new and name.upper() not in _ENV_VOLATILE]
+    return changed, removed
 
 
 # Reads the wrapper and runs it as a script block. A Group Policy execution
@@ -1726,13 +1799,25 @@ def kill_tree(proc: subprocess.Popen) -> None:
 class _Launch:
     """One running script: process, reader threads, temp files."""
 
-    def __init__(self, shell: Shell, command: str, cwd: Path, env: dict[str, str], *, want_cwd: bool, offline: bool = False) -> None:
+    def __init__(
+        self,
+        shell: Shell,
+        command: str,
+        cwd: Path,
+        env: dict[str, str],
+        *,
+        want_cwd: bool,
+        offline: bool = False,
+        want_env: bool = False,
+        stdin_pipe: bool = False,
+    ) -> None:
         self.shell = shell
         self.command = command
         folder = _private_dir()
         token = uuid.uuid4().hex
         self.marker = os.path.join(folder, f"{token}.cwd") if want_cwd else None
-        suffix, data = _script(shell, adjust_command(command, shell, cwd, offline=offline), self.marker)
+        self.env_marker = os.path.join(folder, f"{token}.env") if (want_cwd and want_env) else None
+        suffix, data = _script(shell, adjust_command(command, shell, cwd, offline=offline), self.marker, self.env_marker)
         self.script = os.path.join(folder, f"{token}{suffix}")
         with open(self.script, "wb") as handle:
             handle.write(data)
@@ -1750,7 +1835,7 @@ class _Launch:
             self.proc = subprocess.Popen(
                 script_argv(shell, self.script),
                 cwd=str(cwd),
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
@@ -1812,9 +1897,36 @@ class _Launch:
         path = Path(text)
         return path if path.is_dir() else None
 
+    def env_delta(self) -> tuple[dict[str, str], list[str]] | None:
+        """What the command changed in its environment, or None when it was not recorded."""
+        if not self.env_marker:
+            return None
+        before = read_env_dump(self.env_marker + ".0")
+        after = read_env_dump(self.env_marker + ".1")
+        if before is None or after is None:
+            return None
+        return env_changes(before, after)
+
+    def write(self, text: str) -> None:
+        """Send ``text`` to the program's input (background jobs started for input only)."""
+        pipe = self.proc.stdin
+        if pipe is None:
+            raise ValueError("this job was not started to take input")
+        pipe.write(text.encode("utf-8"))
+        pipe.flush()
+
+    def close_input(self) -> None:
+        pipe = self.proc.stdin
+        if pipe is not None and not pipe.closed:
+            pipe.close()
+
     def cleanup(self) -> None:
         _remove(getattr(self, "script", None))
         _remove(getattr(self, "marker", None))
+        marker = getattr(self, "env_marker", None)
+        if marker:
+            _remove(marker + ".0")
+            _remove(marker + ".1")
 
 
 @dataclass
@@ -1829,6 +1941,9 @@ class CommandResult:
     shell: Shell
     #: Set when a timed-out command was left running as this background job instead of being killed.
     job_id: str | None = None
+    #: Environment variables this command set (kept for later commands) and removed.
+    env_set: tuple[str, ...] = ()
+    env_unset: tuple[str, ...] = ()
 
 
 def _execute(
@@ -1843,10 +1958,11 @@ def _execute(
     want_cwd: bool = False,
     detach_on_timeout: bool = False,
     offline: bool = False,
+    want_env: bool = False,
 ) -> tuple[_Launch, bool, bool]:
     """Run until exit, timeout, or cancel. With ``detach_on_timeout`` a command that is
     still producing work at the deadline is left running (the caller adopts it)."""
-    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd, offline=offline)
+    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd, offline=offline, want_env=want_env)
     timed_out = interrupted = False
     deadline = launch.started + max(0.0, timeout)
     last_flush = 0.0
@@ -2046,6 +2162,7 @@ class ShellSession:
             want_cwd=True,
             detach_on_timeout=self.detach_on_timeout,
             offline=self.offline,
+            want_env=True,
         )
         if timed_out and launch.poll() is None and not launch.killed:
             job_id = self._adopt(command, launch, chosen)
@@ -2073,6 +2190,7 @@ class ShellSession:
                     self.cwd = final
             elif cwd is not None:
                 self.cwd = start
+            env_set, env_unset = self._keep_env(launch) if not (timed_out or interrupted) else ((), ())
             result = CommandResult(
                 exit_code=launch.exit_code(),
                 stdout=tidy(launch.stdout.text()),
@@ -2082,11 +2200,43 @@ class ShellSession:
                 timed_out=timed_out,
                 interrupted=interrupted,
                 shell=chosen,
+                env_set=env_set,
+                env_unset=env_unset,
             )
             self._remember(command, result, start)
             return result
         finally:
             launch.cleanup()
+
+    def _keep_env(self, launch: _Launch) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Carry what the command set or removed (``export``, ``$env:``, ``set``, a venv) to later commands.
+
+        Offline mode's proxy and offline settings cannot be changed this way.
+        """
+        delta = launch.env_delta()
+        if not delta:
+            return (), ()
+        changed, removed = delta
+        env = self.environment()
+        locked = set(OFFLINE_ENV) | {"GRADLE_OPTS", "JAVA_TOOL_OPTIONS"} if self.offline else set()
+        fold = (lambda name: name.upper()) if sys.platform == "win32" else (lambda name: name)
+        locked_folded = {fold(name) for name in locked}
+        kept: list[str] = []
+        dropped: list[str] = []
+        for name, value in changed.items():
+            if fold(name) in locked_folded:
+                continue
+            for existing in [key for key in env if fold(key) == fold(name) and key != name]:
+                del env[existing]
+            env[name] = value
+            kept.append(name)
+        for name in removed:
+            if fold(name) in locked_folded:
+                continue
+            for existing in [key for key in env if fold(key) == fold(name)]:
+                del env[existing]
+                dropped.append(name)
+        return tuple(sorted(kept)), tuple(sorted(set(dropped)))
 
     def _adopt(self, command: str, launch: _Launch, shell: Shell) -> str:
         """Keep a still-running foreground command as a background job."""
@@ -2130,7 +2280,7 @@ class ShellSession:
         """Start a long-running command; returns its job id (``b1``, ``b2``...)."""
         chosen = self.resolve(shell)
         start = self._start_dir(cwd)
-        launch = _Launch(chosen, command, start, self.environment(), want_cwd=False, offline=self.offline)
+        launch = _Launch(chosen, command, start, self.environment(), want_cwd=False, offline=self.offline, stdin_pipe=True)
         with self._lock:
             self._counter += 1
             job_id = f"b{self._counter}"
@@ -2175,6 +2325,20 @@ class ShellSession:
             if data:
                 parts.append(_decode_as(data, detect_encoding(data)))
         return tidy("".join(parts)), not job.done, job.exit_code
+
+    def write_background(self, job_id: str, text: str, *, close: bool = False) -> None:
+        """Send ``text`` to a background job's input (a shell, REPL, or device shell); ``close`` ends its input."""
+        job = self._job(job_id)
+        self._reap(job)
+        if job.done:
+            raise ValueError(f"background job {job_id} has ended (exit {job.exit_code})")
+        try:
+            if text:
+                job.launch.write(text)
+            if close:
+                job.launch.close_input()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"could not send input to {job_id}: {exc}") from exc
 
     def kill_background(self, job_id: str) -> bool:
         """Stop a background job and its children. True when it was still running."""

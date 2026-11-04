@@ -59,6 +59,7 @@ ALLOWED_TOOLS = (
     "web_fetch",
     "ask_user",
     "command_output",
+    "command_input",
     "kill_command",
     "delegate",
 )
@@ -353,6 +354,10 @@ _ALIASES = {
     "ask": "ask_user",
     "question": "ask_user",
     "ask_question": "ask_user",
+    "send_input": "command_input",
+    "write_input": "command_input",
+    "terminal_input": "command_input",
+    "stdin": "command_input",
     "bash_output": "command_output",
     "bashoutput": "command_output",
     "get_output": "command_output",
@@ -522,7 +527,11 @@ def normalize_args(tool: str, args: dict[str, Any] | str) -> dict[str, Any]:
         timeout = out.get("timeout")
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > MAX_COMMAND_TIMEOUT:
             out["timeout"] = float(timeout) / 1000.0
-    if tool in {"command_output", "kill_command"}:
+    if tool == "command_input":
+        for src in ("text", "data", "line", "keys", "command"):
+            if "input" not in out and src in out:
+                out["input"] = out[src]
+    if tool in {"command_output", "kill_command", "command_input"}:
         for src in ("job_id", "id", "bash_id", "shell_id", "job"):
             if src in out and "job_id" not in out:
                 out["job_id"] = str(out[src])
@@ -2048,6 +2057,15 @@ def _run_in_session(
         head.append(f"cwd: {session.cwd}")
     elif cwd is not None:
         head.append(f"ran in: {ended} (session cwd stays {before})")
+    env_set = tuple(getattr(result, "env_set", ()) or ())
+    env_unset = tuple(getattr(result, "env_unset", ()) or ())
+    if env_set or env_unset:
+        changed = []
+        if env_set:
+            changed.append("set " + ", ".join(env_set[:12]) + (" ..." if len(env_set) > 12 else ""))
+        if env_unset:
+            changed.append("unset " + ", ".join(env_unset[:12]))
+        head.append("env: " + "; ".join(changed) + " (kept for the next commands)")
     combined = out + "\n" + errs
     preview = _preview(combined, tail=True)
     if result.interrupted:
@@ -2287,6 +2305,60 @@ def _command_output(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         ctx,
         _ui(f"{job_id} {state}", lines=_preview(text, tail=True)),
     )
+
+
+def _input_reach(text: str) -> str:
+    """Why a line sent to a running shell or REPL could send data out, or ""."""
+    reach = network_command(text)
+    if reach:
+        return reach
+    if _SCRIPT_NET_RE.search(text):
+        return "opens a network connection"
+    return ""
+
+
+def _command_input(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Type into a background job (a shell, REPL, or device shell) and return what it printed."""
+    session = ctx.session
+    if session is None:
+        return err("command_input", "there are no background jobs in this session; start one with run_command and background true")
+    if not args.get("job_id"):
+        return err("command_input", "job_id is required. Jobs:\n" + _format_jobs(session.jobs()))
+    text = args.get("input")
+    if text is None:
+        text = ""
+    if not isinstance(text, str):
+        return err("command_input", "input must be text")
+    reach = _input_reach(text)
+    if reach and str(ctx.network_commands or "block").lower() != "ask":
+        return err(
+            "command_input",
+            f"not sent: this input {reach}, and nothing may leave this machine except the chat",
+        )
+    enter = args.get("enter")
+    close = args.get("close") is True or args.get("eof") is True
+    try:
+        wait = float(args.get("wait") if args.get("wait") is not None else 2)
+    except (TypeError, ValueError):
+        return err("command_input", "wait must be a number of seconds")
+    wait = min(max(wait, 0.0), 30.0)
+    job_id = _job_id(session, args.get("job_id"))
+    payload = text if (enter is False or not text and close) else text + "\n"
+    try:
+        session.write_background(job_id, payload, close=close)
+        output, running, code = session.read_background(job_id, wait=wait)
+        # Closing input usually ends the program: wait for that, not just its first line.
+        deadline = time.monotonic() + wait
+        while close and running and time.monotonic() < deadline:
+            more, running, code = session.read_background(job_id, wait=max(0.0, deadline - time.monotonic()))
+            output += more
+    except KeyError as exc:
+        return err("command_input", str(exc.args[0] if exc.args else exc))
+    except ValueError as exc:
+        return err("command_input", str(exc))
+    state = "running" if running else (f"exit {code}" if code is not None else "stopped")
+    body = f"{job_id}: {state}\n" + (output.strip() or "(no new output yet; read more with command_output)")
+    return ok("command_input", _clip_output(body, ctx), ctx, _ui(f"{job_id} {state}", lines=_preview(output, tail=True)))
 
 
 def _kill_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -3217,6 +3289,19 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
             )
         program = command_key(command)
         return Permission("command", label, f"command:{program}" if program else "", command)
+    if tool == "command_input":
+        text = str(args.get("input") or "")
+        label = f"Type into {args.get('job_id') or '?'}: " + (_one_line(text, 100) if text.strip() else "(Enter)")
+        if not text.strip():
+            return Permission("read", label, "")  # Enter or closing input runs nothing new
+        reach = _input_reach(text)
+        if reach:
+            return Permission("network", f"{label} (it {reach})", "", text, risk=f"{reach}, which can send data off this machine")
+        named = _command_secret_paths(text, ctx)
+        if named:
+            return Permission("outside", f"{label} (it names {named[0]})", "", text, risk=SECRET_RISK)
+        program = command_key(text)
+        return Permission("command", label, f"command:{program}" if program else "", text)
     if tool == "delegate":
         briefs, problem = delegate_briefs(args, ctx)
         if problem or not briefs:
@@ -3820,6 +3905,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "web_fetch": _web_fetch,
     "ask_user": _ask_user,
     "command_output": _command_output,
+    "command_input": _command_input,
     "kill_command": _kill_command,
     "delegate": _delegate,
 }
