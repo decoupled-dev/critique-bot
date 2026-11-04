@@ -669,6 +669,25 @@ function Invoke-Setup {
             Write-Host "  Behind a proxy that inspects HTTPS, pass your company's root certificate: -CaFile C:\certs\corp-root.pem"
             Stop-Setup "npm ci failed in $desktopDir"
         }
+        # The electron package downloads its runtime in an install script. When that download
+        # fails (proxy, certificate, or a blocked extractor), npm can still finish, and the app
+        # only says "Electron failed to install correctly" at start. Check, and retry once.
+        $electronDir = Join-Path $desktopDir "node_modules\electron"
+        $electronExe = Join-Path $electronDir "dist\electron.exe"
+        if (-not (Test-Path -LiteralPath $electronExe)) {
+            Write-Info "the Electron runtime is missing; downloading it again"
+            $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $node) { Stop-Setup "node was not found next to npm; reinstall Node.js and re-run" }
+            $rc = Invoke-Native $node.Path @((Join-Path $electronDir "install.js"))
+            if (($rc -ne 0) -or -not (Test-Path -LiteralPath $electronExe)) {
+                Write-Host "  Electron's runtime comes from github.com (or ELECTRON_MIRROR) through the proxy."
+                Write-Host "  - proxy refused or needs a login: check -ProxyHost, -ProxyPort, -ProxyUser"
+                Write-Host "  - certificate error (SELF_SIGNED_CERT_IN_CHAIN, unable to get local issuer): add -CaFile"
+                Write-Host "  - github.com blocked: set ELECTRON_MIRROR to your company's Electron mirror and re-run"
+                Stop-Setup "could not download the Electron runtime into $electronDir"
+            }
+        }
+        Write-Info "Electron runtime: $electronExe"
         $settingsPath = Join-Path $env:APPDATA "crit\settings.json"
         try {
             $changed = Set-DesktopCommand $settingsPath (Join-Path $scripts "critique-bot.exe")
