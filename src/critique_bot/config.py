@@ -122,8 +122,11 @@ class BotConfig:
     #: Hard cap on one reply while it keeps making progress.
     reply_max_ms: int = 1_200_000
     #: More hosts the chat page may reach (an internal chat's API, static files, or sign-in host).
-    #: Each also covers its subdomains. Everything else is blocked.
+    #: Each also covers its subdomains. Used only with filter_chat_page.
     allowed_hosts: tuple[str, ...] = ()
+    #: True: the chat page may reach only its own site and allowed_hosts. False (the default):
+    #: the page works as it does for a person; crit controls what it types into it.
+    filter_chat_page: bool = False
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
@@ -367,6 +370,7 @@ def load_config(
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
         allowed_hosts=_host_list(raw.get("allowed_hosts")),
+        filter_chat_page=_bool_field("filter_chat_page", raw.get("filter_chat_page"), False),
         queue_dir=queue_dir,
         min_interval_seconds=_non_negative_float(
             "min_interval_seconds",
@@ -447,6 +451,14 @@ def backend_kind(value: object) -> str:
         f"backend {value!r} is not supported. Use browser (the chat page in Edge) or local "
         "(a model served on this PC, such as Ollama)."
     )
+
+
+def _bool_field(name: str, value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(f"{name} must be true or false")
 
 
 def _local_url(url: str, allowed_hosts: tuple[str, ...]) -> str:

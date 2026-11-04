@@ -78,8 +78,53 @@ class UrlsMatchTests(unittest.TestCase):
         self.assertTrue(_urls_match("https://ex.com/a?x=1", "https://ex.com/a?x=1"))
 
 
+class UnfilteredByDefaultTests(unittest.TestCase):
+    def test_page_runs_unfiltered_unless_configured(self) -> None:
+        from unittest.mock import MagicMock
+
+        from critique_bot import browser
+
+        browser.set_page_filter(False)
+        page = MagicMock()
+        page._critique_chat_guard = None
+        browser.guard_page_network(page, "https://chat.corp.example/")
+        page.route.assert_not_called()
+        browser.set_page_filter(True)
+        try:
+            page = MagicMock()
+            page._critique_chat_guard = None
+            browser.guard_page_network(page, "https://chat.corp.example/")
+            page.route.assert_called()
+        finally:
+            browser.set_page_filter(False)
+
+    def test_config_field(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from critique_bot.config import ConfigError, load_config
+
+        base = {"url": "https://chat.corp.example/", "selectors": {"prompt_input": "#p", "assistant_messages": ".a"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(base), encoding="utf-8")
+            self.assertFalse(load_config(path).filter_chat_page)
+            path.write_text(json.dumps({**base, "filter_chat_page": True}), encoding="utf-8")
+            self.assertTrue(load_config(path).filter_chat_page)
+            path.write_text(json.dumps({**base, "filter_chat_page": "yes"}), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(path)
+
+
 class ChatNetworkGuardTests(unittest.TestCase):
     CHAT = "https://chatgpt.com/"
+
+    def setUp(self) -> None:
+        from critique_bot import browser
+
+        browser.set_page_filter(True)
+        self.addCleanup(browser.set_page_filter, False)
 
     def test_allows_chat_origin_and_subdomains(self) -> None:
         for url in (
@@ -141,7 +186,25 @@ class ChatNetworkGuardTests(unittest.TestCase):
         self.assertTrue(request_is_allowed("https://cdn.chat.corp.example/app.js", chat))
         self.assertFalse(request_is_allowed("https://chatgpt.com/", chat))
         self.assertFalse(request_is_allowed("https://cdn.oaistatic.com/x", chat))
-        self.assertFalse(request_is_allowed("https://other.corp.example/", chat))
+        # The chat's own site is the chat UI's domain: its API and static hosts work.
+        self.assertTrue(request_is_allowed("https://api.corp.example/", chat))
+        self.assertFalse(request_is_allowed("https://evilcorp.example/", chat))
+        self.assertFalse(request_is_allowed("https://corp.example.evil.com/", chat))
+
+    def test_chat_site(self) -> None:
+        from critique_bot.browser import chat_site
+
+        self.assertEqual(chat_site("chat.corp.example"), "corp.example")
+        self.assertEqual(chat_site("ai.internal.corp.example"), "corp.example")
+        self.assertEqual(chat_site("chat.example.co.uk"), "example.co.uk")
+        self.assertEqual(chat_site("10.1.2.3"), "10.1.2.3")
+        self.assertEqual(chat_site("localhost"), "localhost")
+
+    def test_shared_hosting_keeps_the_exact_host(self) -> None:
+        chat = "https://mychat.azurewebsites.net/"
+        self.assertTrue(request_is_allowed("https://mychat.azurewebsites.net/api", chat))
+        self.assertFalse(request_is_allowed("https://attacker.azurewebsites.net/", chat))
+        self.assertFalse(request_is_allowed("https://other.github.io/", "https://me.github.io/"))
 
     def test_allowed_hosts_include_chat_host(self) -> None:
         hosts = allowed_chat_hosts(self.CHAT)

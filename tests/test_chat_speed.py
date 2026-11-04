@@ -174,15 +174,29 @@ class LeanHeadlessTests(unittest.TestCase):
         # The chat site's own CDN and challenge host come from allowed_hosts; none are built in.
         browser.set_allowed_hosts(["oaistatic.com", "challenges.cloudflare.com"])
         self.addCleanup(browser.set_allowed_hosts, ())
+        browser.set_page_filter(True)
+        self.addCleanup(browser.set_page_filter, False)
 
-    def _handler(self, lean: bool):
+    def _handler(self, lean: bool, env: str = "1"):
         handlers: list = []
         page = MagicMock()
         page._critique_chat_guard = None
         page.route.side_effect = lambda _pattern, handler: handlers.append(handler)
-        with patch.object(browser, "_lean_launch", lean):
+        with patch.object(browser, "_lean_launch", lean), patch.dict("os.environ", {"CRIT_LEAN_HEADLESS": env}):
             browser.guard_page_network(page, self.CHAT)
         return handlers[0]
+
+    def test_headless_keeps_everything_by_default(self) -> None:
+        # The chat page loads as it does for a person unless CRIT_LEAN_HEADLESS=1.
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("CRIT_LEAN_HEADLESS", None)
+            self.assertFalse(browser.lean_headless_enabled())
+        handle = self._handler(lean=True, env="")
+        route = _Route("https://cdn.oaistatic.com/avatar.png", "image")
+        handle(route)
+        self.assertTrue(route.continued)
 
     def test_headless_skips_decoration_only(self) -> None:
         handle = self._handler(lean=True)
@@ -206,7 +220,7 @@ class LeanHeadlessTests(unittest.TestCase):
 
     def test_env_switch_turns_it_off(self) -> None:
         with patch.dict("os.environ", {"CRIT_LEAN_HEADLESS": "0"}):
-            handle = self._handler(lean=True)
+            handle = self._handler(lean=True, env="0")
         route = _Route("https://cdn.oaistatic.com/avatar.png", "image")
         handle(route)
         self.assertTrue(route.continued)

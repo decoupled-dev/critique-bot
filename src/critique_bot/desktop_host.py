@@ -87,9 +87,10 @@ def main(argv: list[str]) -> int:
         _emit(type="host", cdp_url=config.cdp_url, **base)
         return _wait_for_stdin_close()
 
-    from critique_bot.browser import BrowserError, launch_edge, set_allowed_hosts
+    from critique_bot.browser import BrowserError, launch_edge, set_allowed_hosts, set_page_filter
 
     set_allowed_hosts(config.allowed_hosts)
+    set_page_filter(config.filter_chat_page)
     cdp_out: dict[str, str] = {}
     try:
         with ExitStack() as stack:

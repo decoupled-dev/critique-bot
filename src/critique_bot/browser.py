@@ -73,8 +73,8 @@ EDGE_PRIVATE_ARGS = (
     "--no-pings",
 )
 
-# Headless only: what the chat page would download just to look nice. Reading a
-# reply needs the DOM, scripts, CSS, and the network calls; none of these.
+# Headless only, and only with CRIT_LEAN_HEADLESS=1: what the chat page would download
+# just to look nice. Off by default, so the chat page loads as it does for a person.
 LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifest"})
 # Never trimmed: a challenge may need its images to pass.
 _CHALLENGE_MARKERS = ("challenges.cloudflare.com", "turnstile", "arkoselabs", "funcaptcha", "hcaptcha", "recaptcha", "captcha")
@@ -83,8 +83,8 @@ _lean_launch = False
 
 
 def lean_headless_enabled() -> bool:
-    """``CRIT_LEAN_HEADLESS=0`` keeps images and fonts in headless runs."""
-    return os.environ.get("CRIT_LEAN_HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    """``CRIT_LEAN_HEADLESS=1`` skips images, fonts, and media in headless runs (off by default)."""
+    return os.environ.get("CRIT_LEAN_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def sandbox_disabled() -> bool:
@@ -1052,6 +1052,19 @@ def _host_matches_suffix(host: str, suffix: str) -> bool:
 
 #: config.json "allowed_hosts": more hosts the chat page may reach (set by the provider).
 _extra_hosts: frozenset[str] = frozenset()
+#: config.json "filter_chat_page". Off: the chat page works as it does for a person, and
+#: crit controls what leaves through it (what it types: redacted, secret files asked for).
+_filter_page = False
+
+
+def set_page_filter(enabled: bool) -> None:
+    """Turn the chat page's network filter on (config.json ``"filter_chat_page": true``) or off."""
+    global _filter_page
+    _filter_page = bool(enabled)
+
+
+def page_filter_enabled() -> bool:
+    return _filter_page
 
 
 def set_allowed_hosts(hosts) -> None:
@@ -1060,15 +1073,59 @@ def set_allowed_hosts(hosts) -> None:
     _extra_hosts = frozenset(str(item).lower().strip(".") for item in (hosts or ()) if str(item).strip())
 
 
+# Two-label public suffixes: the site of chat.example.co.uk is example.co.uk, not co.uk.
+_TWO_LABEL_SUFFIXES = frozenset(
+    {
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "me.uk", "net.uk",
+        "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "net.nz",
+        "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in", "co.jp", "ne.jp", "or.jp",
+        "co.kr", "or.kr", "com.br", "net.br", "org.br", "com.cn", "net.cn", "org.cn",
+        "com.sg", "com.my", "com.hk", "com.tw", "com.mx", "com.ar", "com.tr", "co.za",
+        "co.il", "com.pl", "com.ua", "co.id", "com.vn", "com.ph", "com.pk", "com.sa", "com.eg",
+    }
+)
+# Shared hosting: anyone can get a subdomain here, so a chat hosted on one of these
+# keeps its exact host only (allowing the whole suffix would allow strangers' sites).
+_SHARED_HOSTING_SUFFIXES = (
+    "github.io", "gitlab.io", "pages.dev", "workers.dev", "trycloudflare.com", "vercel.app", "now.sh",
+    "netlify.app", "netlify.com", "herokuapp.com", "onrender.com", "fly.dev", "railway.app", "glitch.me",
+    "repl.co", "replit.app", "replit.dev", "web.app", "firebaseapp.com", "appspot.com", "run.app",
+    "cloudfunctions.net", "googleusercontent.com", "azurewebsites.net", "azurestaticapps.net",
+    "azureedge.net", "azurefd.net", "cloudapp.azure.com", "cloudapp.net", "core.windows.net",
+    "trafficmanager.net", "cloudfront.net", "amazonaws.com", "elasticbeanstalk.com", "awsapps.com",
+    "ondigitalocean.app", "ngrok.io", "ngrok-free.app", "ngrok.app", "loca.lt", "surge.sh",
+    "blogspot.com", "wordpress.com", "wixsite.com", "webflow.io", "notion.site", "myshopify.com",
+    "hf.space", "streamlit.app", "gradio.live",
+)
+
+
+def chat_site(host: str) -> str:
+    """The site a chat host belongs to: ``chat.corp.example`` -> ``corp.example``.
+
+    The host itself for an IP address, a single-label name, or a host on shared hosting.
+    """
+    host = (host or "").lower().rstrip(".")
+    if not host or "." not in host or re.fullmatch(r"[\d.]+|\[?[0-9a-f:]+\]?", host):
+        return host
+    if any(_host_matches_suffix(host, suffix) for suffix in _SHARED_HOSTING_SUFFIXES):
+        return host
+    labels = host.split(".")
+    size = 3 if ".".join(labels[-2:]) in _TWO_LABEL_SUFFIXES else 2
+    if len(labels) < size:
+        return host
+    return ".".join(labels[-size:])
+
+
 def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
-    """Host suffixes Edge may contact for this chat URL."""
+    """Host suffixes Edge may contact for this chat URL.
+
+    The chat's whole site (``corp.example`` and every subdomain, for a chat at
+    ``chat.corp.example``) plus config.json ``allowed_hosts``. Nothing else.
+    """
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
     if not host:
         return frozenset()
-    hosts = {host, *_extra_hosts}
-    if host.startswith("www."):
-        hosts.add(host[4:])
-    return frozenset(hosts)
+    return frozenset({host, chat_site(host), *_extra_hosts})
 
 
 def request_is_allowed(request_url: str, chat_url: str) -> bool:
@@ -1183,6 +1240,14 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     Playwright's sync API when Cloudflare or login redirects are aborted.
     """
     if not chat_url or getattr(page, "_critique_chat_guard", None) == chat_url:
+        return
+    if not _filter_page:
+        if not getattr(page, "_critique_unfiltered_noted", False):
+            log.debug("chat page runs unfiltered (filter_chat_page is off)")
+            try:
+                page._critique_unfiltered_noted = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
         return
     lean = _lean_launch and lean_headless_enabled()
 
@@ -1588,7 +1653,9 @@ def launch_edge(
             "channel": channel,
             "headless": not headed,
             "chromium_sandbox": not no_sandbox,
-            "service_workers": "block",
+            # A service worker's requests would bypass the page filter; without the filter
+            # the page keeps them, as it would for a person.
+            "service_workers": "block" if _filter_page else "allow",
             "args": args,
             "ignore_default_args": ["--enable-automation"],
         }

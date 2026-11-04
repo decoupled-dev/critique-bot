@@ -252,13 +252,15 @@ class BrowserBridge:
             login_profile_dir,
             needs_visible_login,
             set_allowed_hosts,
+            set_page_filter,
             sign_in_with_plain_browser,
         )
 
         set_allowed_hosts(getattr(config, "allowed_hosts", ()))
+        set_page_filter(bool(getattr(config, "filter_chat_page", False)))
         try:
             if not config.cdp_url and needs_visible_login(config.user_data_dir, config.storage_state):
-                # Sign in first in a plain browser; the picker window is filtered to the chat's hosts.
+                # Sign in first in a plain browser; with filter_chat_page the picker window is filtered too.
                 sign_in_with_plain_browser(config.url, login_profile_dir(config.user_data_dir))
             with launch_edge(
                 headed=True,

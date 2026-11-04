@@ -107,7 +107,9 @@ Comma-separated lists are OR: the first matching node is used.
 
 Full URL of the chat page the bot should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://chatgpt.com/`.
 
-Edge may reach only the chat URL's host (and its subdomains) plus the hosts in `allowed_hosts`, from the first request on. Every other request, page loads in any frame included, is aborted. No chat site has hosts built in: for `https://chatgpt.com/`, used only for testing on a developer PC, list its CDN and sign-in hosts in that PC's `config.json` (`config.chatgpt.example.json` has a starting list). Sign-in happens in a separate, unfiltered window.
+The chat page runs as it does in a normal browser: crit does not filter its requests, so a chat UI that calls other hosts behind the scenes keeps working. crit controls what leaves on its own side, by what it types into the page (see [security.md](security.md)).
+
+`"filter_chat_page": true` turns on a page filter: Edge may then reach only the chat's own site (for `chat.corp.example`, `corp.example` and all its subdomains; on shared hosting such as `*.azurewebsites.net`, the exact host) plus the hosts in `allowed_hosts`. Every other request, page loads in any frame included, is aborted, and crit prints the blocked host names. No chat site has hosts built in: for `https://chatgpt.com/`, used only for testing, list its CDN and sign-in hosts in `allowed_hosts` (`config.chatgpt.example.json` has a starting list). Default `false`.
 
 The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
 

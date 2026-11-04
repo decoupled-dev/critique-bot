@@ -99,6 +99,8 @@ class BrowserEgressTests(unittest.TestCase):
             server.server_close()
 
     def _run(self) -> list[str]:
+        browser.set_page_filter(True)  # opt-in: "filter_chat_page": true
+        self.addCleanup(browser.set_page_filter, False)
         with patch.object(browser, "EDGE_LAUNCH_ARGS", self.args):
             with browser.launch_edge(
                 headed=False, user_data_dir=tempfile.mkdtemp(), start_url=self.chat_url,

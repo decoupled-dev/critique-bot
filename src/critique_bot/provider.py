@@ -165,9 +165,10 @@ class BrowserProvider(ChatProvider):
         self.can_parallelize = False
 
     def __enter__(self) -> BrowserProvider:
-        from critique_bot.browser import launch_edge, needs_visible_login, set_allowed_hosts
+        from critique_bot.browser import launch_edge, needs_visible_login, set_allowed_hosts, set_page_filter
 
         set_allowed_hosts(self._config.allowed_hosts)
+        set_page_filter(self._config.filter_chat_page)
 
         signed_in_visibly = False
         if (

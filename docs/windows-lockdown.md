@@ -30,9 +30,7 @@ Check: `crit --help` runs.
 Open the `config.json` that crit uses (by default next to the repo, or the one `.bot\settings.json` names).
 
 - `url`: your company chat address, starting with `https://`.
-- `allowed_hosts`: only hosts that belong to that chat service (its API, static files, sign-in).
-  Remove `chatgpt.com`, `openai.com`, `oaistatic.com`, `cloudflare.com` and similar entries unless this is a test PC that is meant to use ChatGPT.
-  No hosts are built in any more. If the page breaks, crit prints the blocked host name; add it only if it belongs to the chat service.
+- The chat page runs as it does in a normal browser; crit does not filter its requests unless you set `"filter_chat_page": true`. If you do set it, list in `allowed_hosts` only hosts that belong to the chat service; crit prints any host it blocks.
 - `cdp_url`: empty, or `http://127.0.0.1:<port>`. Never another machine.
 - `user_data_dir`: a folder **outside** every project, for example `%LOCALAPPDATA%\critique-bot\edge-profile`. That folder holds the signed-in session cookies.
 
@@ -213,10 +211,10 @@ Open a test project and start crit.
 
    Each line names a destination that something on this PC tried to reach and the firewall stopped.
 
-## What crit does not cover yet
+## What crit does not cover
 
 Step 6 covers these, which is why it is the guarantee:
 
-- The browser filter is page-level. Web Workers can open WebSockets around it, and with `user_data_dir: system` the chat page loads before the filter is in place. A local allowlisting proxy for the browser is planned.
+- The chat page runs unfiltered by default, so its own scripts decide which hosts they call. `"filter_chat_page": true` limits it, at page level.
 - The desktop app's spellchecker downloads dictionaries from Google until it is turned off in a later change.
 - The sign-in window runs unfiltered by design, so that sign-in works.
