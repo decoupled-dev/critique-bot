@@ -324,6 +324,26 @@ class TurnTests(_Base):
         refused = self.client.result(self.client.request("session/new", cwd=str(other), mcpServers=[]))
         self.assertIn(str(self.root), refused["error"]["message"])
 
+    def test_ide_context_keeps_the_project_and_open_file_only(self) -> None:
+        # The shape Android Studio wraps around every prompt: its agent instructions, a skill catalog
+        # (~48 KB), the project, and the open file.
+        catalog = "".join(f"<skill>\n<name>s{i}</name>\n<description>{'x' * 400}</description>\n</skill>\n" for i in range(100))
+        wrapped = (
+            "<ide-context>\n<system_prompt>\nUse the provided Python library to call IDE tools.\n</system_prompt>\n"
+            f"<skills>\n{catalog}</skills>\n\n<project_structure>\nIts root folder is /p.\n</project_structure>\n"
+            "Active document: /p/app/Main.kt\n\n</ide-context>\n\nExplain this code to me"
+        )
+        text = agent_acp.prompt_text([{"type": "text", "text": wrapped}])
+        self.assertTrue(text.startswith("Explain this code to me"))
+        self.assertIn("Its root folder is /p.", text)
+        self.assertIn("Active document: /p/app/Main.kt", text)
+        self.assertNotIn("Python library", text)
+        self.assertNotIn("<skill>", text)
+        self.assertLess(len(text), 400)
+        long_part = "<ide-context>\n<selection>\n" + "y" * 10_000 + "\n</selection>\n</ide-context>\nfix it"
+        self.assertLess(len(agent_acp.prompt_text([{"type": "text", "text": long_part}])), agent_acp.IDE_CONTEXT_PART_CHARS + 200)
+        self.assertEqual(agent_acp.prompt_text([{"type": "text", "text": "plain"}]), "plain")
+
     def test_prompt_text_inlines_attached_files(self) -> None:
         text = agent_acp.prompt_text(
             [

@@ -596,6 +596,46 @@ def _end_turn(default: str) -> None:
         _respond(prompt, {"stopReason": reason})
 
 
+#: Parts of an IDE's <ide-context> wrapper that crit drops: the IDE's own agent instructions
+#: (they describe the IDE's tools, not crit's, and contradict its tool format) and its skill
+#: catalog (crit brings its own skills). Android Studio sends ~58 KB of these with every prompt.
+_IDE_CONTEXT_DROPPED = ("system_prompt", "skills")
+#: Characters kept from any other part of the wrapper.
+IDE_CONTEXT_PART_CHARS = 4_000
+_IDE_CONTEXT = re.compile(r"<ide-context>(.*?)</ide-context>", re.DOTALL)
+
+
+def slim_ide_context(text: str) -> str:
+    """``text`` with each <ide-context> block cut down to what helps: the project and the open file."""
+
+    def slim(match: "re.Match[str]") -> str:
+        body = match.group(1)
+        for tag in _IDE_CONTEXT_DROPPED:
+            body = re.sub(rf"<{tag}>.*?</{tag}>", "", body, flags=re.DOTALL)
+
+        def cap(part: "re.Match[str]") -> str:
+            inner = part.group(2)
+            if len(inner) > IDE_CONTEXT_PART_CHARS:
+                inner = inner[:IDE_CONTEXT_PART_CHARS] + "\n[cut]\n"
+            return f"<{part.group(1)}>{inner}</{part.group(1)}>"
+
+        body = re.sub(r"<([a-z_\-]+)>(.*?)</\1>", cap, body, flags=re.DOTALL)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        return f"<ide-context>\n{body}\n</ide-context>" if body else ""
+
+    found: list[str] = []
+
+    def take(match: "re.Match[str]") -> str:
+        kept = slim(match)
+        if kept:
+            found.append(kept)
+        return ""
+
+    rest = _IDE_CONTEXT.sub(take, text).strip()
+    # The request first: it is what the task line shows and what the model reads first.
+    return "\n\n".join(part for part in (rest, *found) if part)
+
+
 def prompt_text(blocks: Any) -> str:
     """The prompt's content blocks as one task text. Attached files become paths or inline text."""
     parts: list[str] = []
@@ -604,7 +644,7 @@ def prompt_text(blocks: Any) -> str:
             continue
         kind = block.get("type")
         if kind == "text":
-            parts.append(str(block.get("text") or ""))
+            parts.append(slim_ide_context(str(block.get("text") or "")))
         elif kind == "resource_link":
             parts.append(f"@{_uri_path(str(block.get('uri') or ''))}")
         elif kind == "resource":

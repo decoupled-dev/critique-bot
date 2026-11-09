@@ -177,6 +177,62 @@ class DelegateTests(unittest.TestCase):
         self.assertNotIn("a.xml", tab.sent[2])  # nothing of the first brief carried over
         self.assertIn("COMPLETED".lower(), coordinator.sent[2].lower())
 
+    def test_inline_helpers_take_turns_in_one_tab_on_the_callers_thread(self) -> None:
+        # No remote debugging: the briefs run one after another in one extra tab, on this thread.
+        _HelperTab.scripts = {
+            "xml": [
+                _call("edit_file", path="a.xml", old_string="    <x/>\n", new_string="    <x/>\n    <y/>\n"),
+                "COMPLETED Added <y/> in a.xml.",
+            ],
+            "kotlin": [
+                _call("edit_file", path="b.kt", old_string="    println(1)", new_string="    println(2)"),
+                "COMPLETED Changed b.kt.",
+            ],
+        }
+        delegate = _call(
+            "delegate",
+            tasks=[
+                {"name": "xml", "brief": "In a.xml add <y/> after <x/>.", "files": ["a.xml"]},
+                {"name": "kotlin", "brief": "In b.kt print 2.", "files": ["b.kt"]},
+            ],
+        )
+        coordinator = _Coordinator([delegate, "COMPLETED"])
+        code = self._loop(coordinator, "add <y/> and print 2", helper_inline=True, seed="HELPER INSTRUCTIONS")
+        self.assertEqual(code, "COMPLETED")
+        self.assertIn("<y/>", (self.root / "a.xml").read_text(encoding="utf-8"))
+        self.assertIn("println(2)", (self.root / "b.kt").read_text(encoding="utf-8"))
+        self.assertEqual(_HelperTab.opened, 1)
+        self.assertEqual(_HelperTab.threads, {threading.current_thread().name})
+        tab = _HelperTab.instances[0]
+        self.assertEqual(tab.new_chats, [2])  # the second brief got a fresh chat in the same tab
+        self.assertNotIn("a.xml", tab.sent[2])
+        result = coordinator.sent[1]
+        self.assertIn("Added <y/> in a.xml.", result)
+        self.assertIn("Changed b.kt.", result)
+
+    def test_inline_helper_tab_failure_reports_and_reopens(self) -> None:
+        opened: list[int] = []
+
+        class _Broken(_HelperTab):
+            def send(self, prompt: str) -> str:
+                if len(opened) == 1:
+                    raise RuntimeError("tab crashed")
+                return super().send(prompt)
+
+        def factory():
+            opened.append(1)
+            return _Broken()
+
+        _HelperTab.scripts = {"two": ["COMPLETED fine"]}
+        pool = agent_helpers.InlineHelperPool(
+            factory, seed="", sections=agent.load_prompt_sections(), base={"workspace": self.root}, max_result_chars=10_000, retries=0
+        )
+        reports = pool.run([{"name": "one", "brief": "x"}, {"name": "two", "brief": "y"}])
+        pool.close()
+        self.assertEqual([r.status for r in reports], ["FAILED", "COMPLETED"])
+        self.assertIn("tab crashed", reports[0].error)
+        self.assertEqual(len(opened), 2)
+
     def test_a_helper_never_builds_reads_secrets_or_reaches_the_network(self) -> None:
         # No one approves a helper's calls, so anything a person would be asked about is refused.
         (self.root / ".env").write_text("TOKEN=x\n", encoding="utf-8")

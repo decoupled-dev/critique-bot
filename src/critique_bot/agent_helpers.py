@@ -173,6 +173,38 @@ class _Job:
     context: dict[str, Any] = field(default_factory=dict)
 
 
+def _open_tab(pool: "HelperPool") -> tuple[Any, Any, Any]:
+    """A helper tab from ``pool.factory``: (context manager, session, chat)."""
+    agent = _agent()
+    cm = pool.factory()
+    enter = getattr(cm, "__enter__", None)
+    session = enter() if callable(enter) else cm
+    chat = agent._Chat(
+        session,
+        seed=pool.seed,
+        retries=pool.retries,
+        compact_after=pool.compact_after,
+        quiet=True,
+    )
+    chat.prefix = agent._without_ready(pool.seed) if pool.seed else ""
+    return cm, session, chat
+
+
+def _close_tab(cm: Any, index: int) -> None:
+    if cm is None:
+        return
+    try:
+        exit_ = getattr(cm, "__exit__", None)
+        if callable(exit_):
+            exit_(None, None, None)
+        else:
+            close = getattr(cm, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"closing helper tab {index}: {exc}")
+
+
 class _Slot:
     """One helper tab on its own thread. It opens the tab on its first brief and keeps it."""
 
@@ -189,33 +221,11 @@ class _Slot:
         self.thread.start()
 
     def _open(self) -> None:
-        agent = _agent()
-        self.session_cm = self.pool.factory()
-        enter = getattr(self.session_cm, "__enter__", None)
-        self.session = enter() if callable(enter) else self.session_cm
-        self.chat = agent._Chat(
-            self.session,
-            seed=self.pool.seed,
-            retries=self.pool.retries,
-            compact_after=self.pool.compact_after,
-            quiet=True,
-        )
-        self.chat.prefix = agent._without_ready(self.pool.seed) if self.pool.seed else ""
+        self.session_cm, self.session, self.chat = _open_tab(self.pool)
 
     def _close(self) -> None:
         cm, self.session_cm, self.session, self.chat = self.session_cm, None, None, None
-        if cm is None:
-            return
-        try:
-            exit_ = getattr(cm, "__exit__", None)
-            if callable(exit_):
-                exit_(None, None, None)
-            else:
-                close = getattr(cm, "close", None)
-                if callable(close):
-                    close()
-        except Exception as exc:  # noqa: BLE001
-            log.debug(f"closing helper tab {self.index}: {exc}")
+        _close_tab(cm, self.index)
 
     def _loop(self) -> None:
         while True:
@@ -408,6 +418,55 @@ class HelperPool:
         for slot in self._slots:
             slot.thread.join(timeout=15)
         self._slots.clear()
+
+
+class InlineHelperPool(HelperPool):
+    """Briefs one after another in one extra tab, on the caller's own thread.
+
+    Parallel helper tabs each need their own thread, and a Playwright page belongs to the
+    thread that opened it, so those need the browser's remote debugging. A second tab
+    opened on the coordinator's thread needs nothing: the briefs take turns in it, each
+    in a fresh chat, and the coordinator's chat still sees only their reports.
+    """
+
+    def __init__(self, factory: Callable[[], Any], size: int = 1, **kwargs: Any) -> None:
+        super().__init__(factory, 1, **kwargs)
+        self._cm: Any = None
+        self._chat: Any = None
+
+    def run(
+        self,
+        briefs: list[dict[str, Any]],
+        *,
+        cancel: threading.Event | None = None,
+        progress: Callable[[str], None] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[Report]:
+        context = {**(context or {}), "commands": False}
+        reports: list[Report] = []
+        for brief in briefs:
+            started = time.monotonic()
+            if cancel is not None and cancel.is_set():
+                reports.append(Report(brief["name"], "INTERRUPTED", ""))
+                continue
+            try:
+                if self._chat is None:
+                    self._cm, _session, self._chat = _open_tab(self)
+                elif self._chat.sends:
+                    # A fresh chat for every brief: the last brief's reading stays out of this one.
+                    self._chat.restart("a new brief")
+                reports.append(self.run_brief(self._chat, brief, cancel=cancel, progress=progress, context=context))
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one failed brief does not lose the others
+                log.warn(f"helper tab failed: {exc}")
+                self.close()
+                reports.append(Report(brief["name"], "FAILED", "", error=str(exc), seconds=time.monotonic() - started))
+        return reports
+
+    def close(self) -> None:
+        cm, self._cm, self._chat = self._cm, None, None
+        _close_tab(cm, 1)
 
 
 def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:

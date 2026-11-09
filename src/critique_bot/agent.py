@@ -1435,7 +1435,7 @@ def seed_message(
     if helpers > 0:
         lines.append(
             f"helper chats: {helpers}. Hand a self-contained part of the task to one with delegate (one brief, "
-            "or up to 6 at the same time). Each runs in a fresh chat and returns a short report, so the files it "
+            "or up to 6 in one call). Each runs in a fresh chat and returns a short report, so the files it "
             "reads and the output it sees never land in this chat."
         )
     else:
@@ -2637,6 +2637,7 @@ def run_agent_loop(
     seed_first: bool = False,
     helper_factory: Callable[[], Any] | None = None,
     helper_count: int = 0,
+    helper_inline: bool = False,
     role: str | None = None,
     reseed: Callable[[str], str] | None = None,
 ) -> list[dict[str, str]]:
@@ -2728,8 +2729,10 @@ def run_agent_loop(
 
         def delegate(briefs: list[dict[str, Any]]) -> dict[str, Any]:
             if not pool_box:
+                # Inline: one extra tab on this thread, briefs in turn (no remote debugging needed).
+                pool_class = agent_helpers.InlineHelperPool if helper_inline else agent_helpers.HelperPool
                 pool_box.append(
-                    agent_helpers.HelperPool(
+                    pool_class(
                         helper_factory,
                         helper_count,
                         seed=chat.seed or seed or "",
@@ -3381,8 +3384,10 @@ def _run_session(
                 if kwargs.get("helper_count") and getattr(provider, "can_parallelize", False):
                     kwargs["helper_factory"] = lambda: provider.session(isolated=True)
                 elif kwargs.get("helper_count"):
-                    log.info("helper chats need the browser's remote debugging; the task runs in one chat")
-                    kwargs["helper_count"] = 0
+                    # Without remote debugging the helpers take turns in one extra tab on this thread.
+                    log.info("helper chats run one at a time in a second tab (no remote debugging)")
+                    kwargs["helper_factory"] = lambda: provider.session()
+                    kwargs["helper_inline"] = True
                 try:
                     result = run_agent_loop(session, first_task=task, **kwargs)
                     if "turns" not in kwargs and result is not turns:
