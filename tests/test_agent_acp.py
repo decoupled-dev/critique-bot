@@ -282,6 +282,16 @@ class TurnTests(_Base):
         refused = self.client.result(self.client.request("session/new", cwd=str(other), mcpServers=[]))
         self.assertEqual(refused["error"]["code"], agent_acp.INVALID_PARAMS)
 
+    def test_session_new_for_the_asked_folder_matches_a_parent_workspace(self) -> None:
+        # A .bot found by walking upward makes the workspace a parent of the folder the IDE opened.
+        self.open_session()
+        agent_acp.configure(workspace=self.root.parent)
+        reply = self.client.result(self.client.request("session/new", cwd=str(self.root), mcpServers=[]))
+        self.assertIn("result", reply)
+        other = Path(tempfile.mkdtemp())
+        refused = self.client.result(self.client.request("session/new", cwd=str(other), mcpServers=[]))
+        self.assertIn(str(self.root), refused["error"]["message"])
+
     def test_prompt_text_inlines_attached_files(self) -> None:
         text = agent_acp.prompt_text(
             [

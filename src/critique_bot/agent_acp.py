@@ -303,12 +303,16 @@ def _new_session(request_id: Any, params: dict[str, Any]) -> None:
             _state.pending_new.append(request_id)
             _session_asked.set()
             return
-        if not _same_folder(cwd, _state.workspace if _state.ready else _state.requested_cwd):
+        # The workspace can be a parent of the folder the client asked for (a .bot found by
+        # walking upward), so a later chat for that same folder must still match.
+        served = _same_folder(cwd, _state.requested_cwd) or (
+            _state.ready and _same_folder(cwd, _state.workspace)
+        )
+        if not served:
             _fail(
                 request_id,
                 INVALID_PARAMS,
-                f"this crit process serves {_state.workspace if _state.ready else _state.requested_cwd}; "
-                "start another one for a different folder",
+                f"this crit process serves {_state.requested_cwd}; start another one for a different folder",
             )
             return
         if not _state.ready:
