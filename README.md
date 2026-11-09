@@ -134,6 +134,8 @@ crit undo
 
 The first `crit` creates `.bot/` (settings, a symbol index in `.bot/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. `crit init` rebuilds the index without replacing settings. A task run from a subdirectory finds `.bot` by walking upward. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
 
+In an IDE: `crit --acp` runs crit as an Agent Client Protocol agent, so Android Studio (Bring Your Own Agent), the other JetBrains IDEs, and Zed can use it as their coding agent. Setup and details: [`docs/acp.md`](docs/acp.md).
+
 To put `crit` on `PATH` and reuse one `config.json` and one signed-in profile from any folder, run the setup script for your OS: `scripts/setup-crit.sh` on Linux and macOS, `.\scripts\setup-crit.ps1` on Windows. Script options and the manual steps for both: [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script).
 
 ## CI runner (GitLab)

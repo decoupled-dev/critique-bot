@@ -8,6 +8,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from critique_bot import log
 from critique_bot.config import (
@@ -710,6 +711,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--acp",
+        action="store_true",
+        help=(
+            "agent mode: run as an Agent Client Protocol agent on stdin/stdout, for Android Studio, "
+            "JetBrains IDEs, and Zed; the folder comes from the client's session (see docs/acp.md)"
+        ),
+    )
+    parser.add_argument(
         "--logs",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1330,6 +1339,54 @@ def _main_agent_protocol(args: argparse.Namespace) -> int:
     return code
 
 
+class _StderrTail:
+    """stderr that also keeps its last few KB, so a startup failure can be told to the ACP client."""
+
+    def __init__(self, stream: Any, keep: int = 4000) -> None:
+        self._stream = stream
+        self._keep = keep
+        self.text = ""
+
+    def write(self, data: str) -> int:
+        self.text = (self.text + data)[-self._keep :]
+        return self._stream.write(data)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def _main_agent_acp(args: argparse.Namespace) -> int:
+    """``crit --acp``: the agent behind an ACP client. Waits for the first session/new to pick the folder."""
+    from critique_bot import agent, agent_acp
+
+    agent_acp.start()
+    tail = _StderrTail(sys.stderr)
+    sys.stderr = sys.stdout = tail
+    cwd = agent_acp.wait_for_session()
+    if cwd is None:
+        return 0
+    args.repo_dir = str(cwd)
+    try:
+        os.chdir(cwd)
+    except OSError as exc:
+        print(f"error: cannot open {cwd}: {exc}", file=sys.stderr)
+    agent.use_ui(agent_acp)
+    code = 1
+    try:
+        code = _main_agent(args)
+    except KeyboardInterrupt:
+        code = 130
+    except Exception as exc:
+        print(f"error: unexpected failure: {exc}", file=sys.stderr)
+        raise
+    finally:
+        # Told to a client still waiting on session/new (no config.json, sign-in needed, ...).
+        errors = [line for line in tail.text.splitlines() if line.lower().startswith("error")]
+        lines = [line for line in tail.text.splitlines() if line.strip()]
+        agent_acp.finish(code, errors[-1] if errors else (lines[-1] if lines else ""))
+    return code
+
+
 def _agent_mode(args: argparse.Namespace) -> str | None:
     """--permission-mode, --plan, or --yes; None reads "permissions" from .bot/settings.json."""
     if getattr(args, "agent_mode", None):
@@ -1374,6 +1431,8 @@ def _main_run(argv: list[str]) -> int:
     except ConfigError as exc:
         return _config_error(exc)
     if mode == MODE_AGENT:
+        if getattr(args, "acp", False):
+            return _main_agent_acp(args)
         if getattr(args, "protocol", False):
             return _main_agent_protocol(args)
         return _main_agent(args)

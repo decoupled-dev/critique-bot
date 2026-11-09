@@ -14,6 +14,8 @@ to stdout: stray prints and child processes are pointed at stderr, and child
 processes get an empty stdin. Stderr carries logs (`--logs` for more) and
 fatal `error: ...` lines; show it in an output panel.
 
+For IDEs that speak the Agent Client Protocol (Android Studio, JetBrains, Zed), use `crit --acp` instead: [acp.md](acp.md).
+
 Implementation: `src/critique_bot/agent_protocol.py`, a drop-in replacement
 for the terminal UI module `agent_ui.py`. Tests: `tests/test_agent_protocol.py`.
 
