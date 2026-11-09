@@ -1334,6 +1334,21 @@ class RobustLoopTests(unittest.TestCase):
         self.assertEqual(len(set(session.sent)), 1)
         self.assertEqual(sleeps, list(agent.RETRY_DELAYS))
 
+    def test_a_cloudflare_block_in_a_headless_window_is_not_retried(self) -> None:
+        from unittest import mock
+
+        import critique_bot.agent as agent
+        from critique_bot.chat_client import CloudflareBlocked
+
+        sleeps: list[float] = []
+        session = _Raising([CloudflareBlocked("Cloudflare blocked the headless browser."), "2 + 2 is 4."])
+        with mock.patch.object(agent, "_sleep", sleeps.append):
+            with self.assertRaises(CloudflareBlocked):
+                _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?")
+        # Straight up to the session, which reopens the browser as a visible window.
+        self.assertEqual(len(session.sent), 1)
+        self.assertEqual(sleeps, [])
+
     def test_chat_page_errors_end_the_task_after_the_retries(self) -> None:
         from unittest import mock
 

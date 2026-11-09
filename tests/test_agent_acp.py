@@ -240,6 +240,38 @@ class TurnTests(_Base):
         reply = self.client.result(self.prompt(session, "two"))
         self.assertEqual(reply["error"]["code"], agent_acp.BUSY)
 
+    def test_a_new_chat_cuts_the_running_turn_short_and_takes_prompts_at_once(self) -> None:
+        old, thread, _ = self.open_session()
+        stale = self.prompt(old, "long task")
+        thread.join(5)
+        with mock.patch.object(agent_acp, "interrupt") as interrupt:
+            request = self.client.request("session/new", cwd=str(self.root), mcpServers=[])
+            # The old prompt is answered before the new chat is.
+            self.assertEqual(self.client.result(stale)["result"], {"stopReason": "cancelled"})
+            new = self.client.result(request)
+        self.assertTrue(interrupt.called)
+        session = new["result"]["sessionId"]
+        prompt = self.prompt(session, "next task")  # before the old turn has wound down
+        deadline = time.monotonic() + 5
+        while agent_acp._state.prompt_id != prompt and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(agent_acp._state.prompt_id, prompt)
+        # The old turn ends: the loop opens the new chat first, and the new prompt is not answered yet.
+        agent_acp.final_status("INTERRUPTED", ok=False)
+        thread, box = self.run_in_thread(agent_acp.read_message)
+        thread.join(5)
+        self.assertEqual(box, [agent_ui.NEW_CHAT])
+        thread, box = self.run_in_thread(agent_acp.read_message)
+        thread.join(5)
+        self.assertEqual(box, ["next task"])
+        with self.assertRaises(AssertionError):
+            self.client.expect(
+                lambda m: m.get("id") == prompt and "method" not in m, "early answer", timeout=0.3
+            )
+        agent_acp.final_status("COMPLETED", ok=True)
+        self.run_in_thread(agent_acp.read_message)
+        self.assertEqual(self.client.result(prompt)["result"], {"stopReason": "end_turn"})
+
     def test_cancel_ends_the_turn_as_cancelled(self) -> None:
         session, thread, _ = self.open_session()
         prompt = self.prompt(session, "long task")

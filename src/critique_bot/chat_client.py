@@ -1608,6 +1608,10 @@ class ReplyNotStarted(ChatError):
     """The page showed no reply and no generating signal after the send (and a second send)."""
 
 
+class CloudflareBlocked(ChatError):
+    """A Cloudflare challenge that a headless window cannot pass. Retrying headless does not help."""
+
+
 class ReplyStalled(ChatError):
     """A reply started, then nothing arrived: no text and no generating signal for too long."""
 
@@ -2025,7 +2029,7 @@ def _raise_if_cloudflare(page: Page, prompt_selector: str) -> None:
     """
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-    from critique_bot.browser import page_block_hint
+    from critique_bot.browser import launched_headless, page_block_hint
 
     hint = page_block_hint(page)
     if "Cloudflare" not in hint:
@@ -2033,9 +2037,12 @@ def _raise_if_cloudflare(page: Page, prompt_selector: str) -> None:
     try:
         page.locator(prompt_selector).first.wait_for(state="visible", timeout=15_000)
     except PlaywrightTimeoutError:
-        raise ChatError(
-            "Cloudflare blocked the headless browser. Opening a visible window is required."
-        )
+        if launched_headless():
+            raise CloudflareBlocked(
+                "Cloudflare blocked the headless browser. Opening a visible window is required."
+            )
+        # A visible window: the person can still pass the challenge, so the usual retries apply.
+        raise ChatError("Cloudflare is still showing a challenge in the browser window")
     log.info("Cloudflare challenge cleared; the chat box is visible")
 
 

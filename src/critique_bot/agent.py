@@ -40,7 +40,7 @@ from critique_bot.agent_tools import (
 )
 from critique_bot.agent_tools import execute as _execute
 from critique_bot.bot_home import BotHome, resolve_check_command
-from critique_bot.chat_client import COMPLETION_IDLE, ChatError, ReplyStalled
+from critique_bot.chat_client import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
 
@@ -1670,6 +1670,8 @@ class _Chat:
             try:
                 reply = self.session.send(outgoing)
                 problem = _provider_error(reply)
+            except CloudflareBlocked:
+                raise  # only a visible window gets past it; the session reopens one
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
                 stalled = isinstance(exc, ReplyStalled)

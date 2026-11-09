@@ -308,6 +308,24 @@ class PageHintTests(unittest.TestCase):
         hint = page_block_hint(page)
         self.assertIn("Cloudflare", hint)
 
+    def test_a_challenge_that_stays_up_is_final_only_when_headless(self) -> None:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        import critique_bot.browser as browser
+        from critique_bot.chat_client import ChatError, CloudflareBlocked, _raise_if_cloudflare
+
+        page = MagicMock()
+        page.url = "https://x/__cf_chl_tk=1"
+        page.title.return_value = "Just a moment"
+        page.locator.return_value.first.wait_for.side_effect = PlaywrightTimeoutError("still up")
+        with patch.object(browser, "_lean_launch", True):
+            with self.assertRaises(CloudflareBlocked):
+                _raise_if_cloudflare(page, "#prompt")
+        with patch.object(browser, "_lean_launch", False):
+            with self.assertRaises(ChatError) as caught:
+                _raise_if_cloudflare(page, "#prompt")
+        self.assertNotIsInstance(caught.exception, CloudflareBlocked)
+
     def test_login(self) -> None:
         page = MagicMock()
         page.url = "https://sso.example/signin"

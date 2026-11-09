@@ -120,6 +120,9 @@ class _State:
     pending_new: list[Any] = field(default_factory=list)
     #: The JSON-RPC id of the session/prompt in flight.
     prompt_id: Any = None
+    #: True until the agent takes that prompt's text from the inbox. A turn that ends
+    #: before then (one a new chat cut short) must not answer it.
+    prompt_queued: bool = False
     cancelled: bool = False
     last_status: str = ""
     ready: bool = False
@@ -319,6 +322,19 @@ def _new_session(request_id: Any, params: dict[str, Any]) -> None:
             _state.pending_new.append(request_id)
             return
         busy = _state.busy
+        # The running turn belongs to the old chat: answer its prompt now, or the client
+        # cannot prompt the new chat until the old turn has wound down.
+        stale = _state.prompt_id if not _state.prompt_queued else None
+        if stale is not None:
+            _state.prompt_id = None
+            _state.cancelled = True
+            pending = list(_answers.values())
+        else:
+            pending = []
+    for box in pending:
+        box.put(None)
+    if stale is not None:
+        _respond(stale, {"stopReason": "cancelled"})
     if busy:
         interrupt()
     session = _open_session()
@@ -340,6 +356,7 @@ def _prompt(request_id: Any, params: dict[str, Any]) -> None:
             _respond(request_id, {"stopReason": "end_turn"})
             return
         _state.prompt_id = request_id
+        _state.prompt_queued = True
         _state.cancelled = False
         _state.last_status = ""
     _inbox.put(text)
@@ -550,20 +567,27 @@ def _wait_for_reply(question: str) -> str | None:
             continue
         if item is None or item == NEW_CHAT:
             if item == NEW_CHAT:
-                _inbox.put(NEW_CHAT)  # the loop starts the new chat once this task is over
+                # The loop starts the new chat once this task is over, before any prompt sent to it.
+                with inbox.mutex:
+                    inbox.queue.appendleft(NEW_CHAT)
+                    inbox.not_empty.notify()
             return None
         if item == _UNDO:
             continue
         with _lock:
             _state.busy = True
+            _state.prompt_queued = False
         return item
 
 
 def _end_turn(default: str) -> None:
     with _lock:
-        prompt, _state.prompt_id = _state.prompt_id, None
-        reason = "cancelled" if _state.cancelled else default
-        _state.cancelled = False
+        if _state.prompt_queued:
+            prompt, reason = None, default  # the next turn's prompt, not this one's
+        else:
+            prompt, _state.prompt_id = _state.prompt_id, None
+            reason = "cancelled" if _state.cancelled else default
+            _state.cancelled = False
         _state.busy = False
         _state.live, _state.live_text = None, ""
         _state.calls.clear()
@@ -750,6 +774,8 @@ def read_message(**_ignored: Any) -> str | None:
         if item == _UNDO:
             _undo()
             continue
+        with _lock:
+            _state.prompt_queued = False
         text = item.strip()
         if text.startswith("/") and "\n" not in text:
             word, _, rest = text.partition(" ")

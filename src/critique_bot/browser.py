@@ -82,6 +82,11 @@ _CHALLENGE_MARKERS = ("challenges.cloudflare.com", "turnstile", "arkoselabs", "f
 _lean_launch = False
 
 
+def launched_headless() -> bool:
+    """True while the browser in use is a headless one crit started itself."""
+    return _lean_launch
+
+
 def lean_headless_enabled() -> bool:
     """``CRIT_LEAN_HEADLESS=1`` skips images, fonts, and media in headless runs (off by default)."""
     return os.environ.get("CRIT_LEAN_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "on"}
