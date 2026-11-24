@@ -534,40 +534,39 @@ def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="critique-bot",
+        prog="crit",
+        usage="crit [MODE] [options] [TASK or FILE ...]",
         description=(
-            "Browser chat automation bot. Drives a web chat UI in headless "
-            "Microsoft Edge. Default mode is a specialized code reviewer; "
-            "--mode general sends any prompt and optional files; "
-            "--mode chat is an interactive terminal session; "
-            "--mode agent is the local coding harness (command: crit)."
+            "One command for everything critique-bot does. The first word picks the mode; "
+            "with no mode word crit runs the local coding agent. The model is a web chat "
+            "in Edge or a model on this PC (backend in config.json). critique-bot is the "
+            "same command, except that with no mode word it reviews a patch."
         ),
         epilog=(
-            "first run on a new machine:\n"
-            "  critique-bot setup --config config.json\n"
+            "modes:\n"
+            "  crit [TASK]             coding agent (default): crit \"fix the build\"\n"
+            "  crit review [PATCH]     review a patch: stdin, --patch-file, or the CI checkout\n"
+            "  crit ask --prompt TEXT  one-shot prompt with optional files (alias: general)\n"
+            "  crit chat               interactive conversation in this terminal\n"
             "\n"
-            "production (runner PC):\n"
-            "  critique-bot worker --config config.json --logs\n"
-            "  critique-bot queue-status --config config.json\n"
-            "  critique-bot submit --config config.json --patch-file diff.patch\n"
-            "  critique-bot gitlab-post --review-file out/review.md "
-            "--patch-file diff.patch\n"
+            "service commands:\n"
+            "  crit setup              web UI to pick the chat page's selectors by clicking\n"
+            "  crit worker             queue worker on the runner PC (owns the signed-in Edge)\n"
+            "  crit submit             enqueue a review for the worker and wait for it\n"
+            "  crit queue-status       worker liveness, queued jobs, recent results\n"
+            "  crit gitlab-post        post review.md on a GitLab merge request\n"
+            "  crit desktop-host       backend for the crit desktop app\n"
             "\n"
-            "one-shot (debug):\n"
-            "  critique-bot --config config.json --patch-file diff.patch\n"
-            "  critique-bot --config config.json --mode general "
-            "--prompt 'Summarize this' notes.txt\n"
-            "  critique-bot --config config.json --mode chat\n"
+            "agent extras:\n"
+            "  crit init               rebuild the .bot index\n"
+            "  crit undo               restore the files the last task changed\n"
+            "  crit --yes TASK         auto mode: no approval prompts\n"
+            "  crit --plan TASK        plan first, approve, then build\n"
+            "  crit --acp              Agent Client Protocol agent for JetBrains IDEs and Zed\n"
             "\n"
-            "local coding agent (crit; bot-agent is the same command):\n"
-            "  crit\n"
-            "  crit \"update the test cases\"\n"
-            "  crit undo    (restore the files the last task changed)\n"
-            "  crit --yes \"fix the build\"   (auto mode: no approval prompts)\n"
-            "  crit --plan \"add dark mode\"  (plan first, approve, then build)\n"
-            "\n"
-            "The first crit in a folder creates .bot, asks which text style\n"
-            "looks right, then asks to sign in and opens Edge.\n"
+            "review, ask, and chat use the config.json crit stored for this project\n"
+            "when --config is not given. Quote a task that starts with a mode word:\n"
+            "  crit \"review the auth code\"\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -575,18 +574,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         help=(
             "path to JSON config (see config.example.json). "
-            "Required except an agent task after crit has stored it"
+            "Required unless crit has stored one for this project"
         ),
     )
     parser.add_argument(
         "--mode",
         choices=(MODE_REVIEW, MODE_GENERAL, MODE_CHAT, MODE_AGENT),
         help=(
-            f"{MODE_REVIEW} (default): code-review template + patch. "
+            "same as naming the mode as the first word (crit review). "
+            f"{MODE_REVIEW} (critique-bot's default): code-review template + patch. "
             f"{MODE_GENERAL}: send --prompt and optional files as-is. "
             f"{MODE_CHAT}: interactive conversation in this terminal "
             f"(--prompt is optional as the first message). "
-            f"{MODE_AGENT}: local coding harness; crit is the command"
+            f"{MODE_AGENT} (crit's default): local coding harness"
         ),
     )
     prompt_src = parser.add_mutually_exclusive_group()
@@ -856,9 +856,24 @@ SUBCOMMANDS = {
 }
 
 
+# A mode named as the first word, as in ``crit review`` or ``critique-bot chat``, is the
+# same as ``--mode``. ``ask`` is a shorter name for general.
+MODE_WORDS = {
+    MODE_REVIEW: MODE_REVIEW,
+    MODE_GENERAL: MODE_GENERAL,
+    "ask": MODE_GENERAL,
+    MODE_CHAT: MODE_CHAT,
+    MODE_AGENT: MODE_AGENT,
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     log.configure_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in MODE_WORDS:
+        if "--mode" in argv[1:] or any(arg.startswith("--mode=") for arg in argv[1:]):
+            return _config_error(ConfigError(f"{argv[0]} already names the mode; drop --mode"))
+        return _main_run(["--mode", MODE_WORDS[argv[0]], *argv[1:]])
     if argv and argv[0] in SUBCOMMANDS:
         command = argv[0]
         rest = argv[1:]
@@ -1421,6 +1436,21 @@ def _welcome_login(config: BotConfig) -> bool:
     return True
 
 
+def _stored_config(repo_dir: Path) -> str | None:
+    """The config.json crit stored for this project, so ``crit review`` needs no --config."""
+    from critique_bot.bot_home import BotHomeError, find_bot_home
+
+    home = find_bot_home(repo_dir.resolve())
+    if home is None:
+        return None
+    try:
+        path = home.config_file()
+    except BotHomeError as exc:
+        log.warn(str(exc))
+        return None
+    return str(path) if path is not None and path.is_file() else None
+
+
 def _main_run(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1437,7 +1467,11 @@ def _main_run(argv: list[str]) -> int:
             return _main_agent_protocol(args)
         return _main_agent(args)
     if not args.config:
-        return _config_error(ConfigError("--config is required"))
+        args.config = _stored_config(Path(args.repo_dir))
+    if not args.config:
+        return _config_error(
+            ConfigError("--config is required (or run crit once in this project to store one)")
+        )
     stem = OUTPUT_STEM[mode]
     headed = args.headed
     log.info(

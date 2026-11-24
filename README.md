@@ -2,7 +2,17 @@
 
 Patch-review bot and local coding agent. The model behind it is an adapter chosen in `config.json`: a ChatGPT-like web UI driven in Microsoft Edge (`backend: browser`, the default), or a model served on this PC such as Qwen or Gemma in Ollama, llama.cpp, LM Studio, or vLLM (`backend: local`). Prompt composition, the job queue, the agent, and review output are the same with both.
 
-**Default mode is a specialized code reviewer.** Pass a patch and the bot wraps it in the review template. `--mode general` sends a one-shot prompt. `--mode chat` is an interactive conversation in the terminal.
+**One command, `crit`, with modes.** The first word picks the mode:
+
+```bash
+crit "fix the failing test"           # coding agent (the default)
+crit review --patch-file diff.patch   # code review of a patch
+crit ask --prompt "Summarize" a.txt   # one-shot prompt (alias: general)
+crit chat                             # interactive conversation
+crit setup | worker | submit | queue-status | gitlab-post
+```
+
+`critique-bot` is the same command with the old default: with no mode word it reviews a patch, so existing CI scripts keep working. `--mode MODE` still works on both. Details: [Modes](COMMANDS.md#modes).
 
 Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMANDS.md).
 

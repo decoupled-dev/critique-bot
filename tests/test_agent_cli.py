@@ -238,3 +238,57 @@ class AgentCliTests(unittest.TestCase):
         )
         with self.assertRaises(ConfigError):
             _resolve_mode(args)
+
+
+class OneCommandTests(unittest.TestCase):
+    """``crit MODE ...`` and ``critique-bot MODE ...`` route the same way as ``--mode``."""
+
+    def test_crit_mode_words_route_to_run(self) -> None:
+        cases = {
+            "review": "review",
+            "general": "general",
+            "ask": "general",
+            "chat": "chat",
+            "agent": "agent",
+        }
+        for word, mode in cases.items():
+            with patch("critique_bot.cli._main_run", return_value=0) as run:
+                self.assertEqual(agent_main([word, "--prompt", "x"]), 0)
+                self.assertEqual(run.call_args.args[0][:2], ["--mode", mode])
+                self.assertEqual(run.call_args.args[0][2:], ["--prompt", "x"])
+            with patch("critique_bot.cli._main_run", return_value=0) as run:
+                self.assertEqual(main([word]), 0)
+                self.assertEqual(run.call_args.args[0], ["--mode", mode])
+
+    def test_crit_subcommands_route(self) -> None:
+        with patch("critique_bot.cli._main_queue_status", return_value=0) as status:
+            self.assertEqual(agent_main(["queue-status", "--config", "c.json"]), 0)
+            status.assert_called_once_with(["--config", "c.json"])
+
+    def test_crit_task_is_still_agent(self) -> None:
+        with patch("critique_bot.cli._main_run", return_value=0) as run:
+            self.assertEqual(agent_main(["review the auth code", "-y"]), 0)
+            self.assertEqual(
+                run.call_args.args[0], ["--mode", "agent", "review the auth code", "--yes"]
+            )
+
+    def test_mode_word_and_flag_conflict(self) -> None:
+        self.assertEqual(agent_main(["chat", "--mode", "review"]), 1)
+        self.assertEqual(main(["chat", "--mode=review"]), 1)
+
+    def test_review_uses_stored_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".bot").mkdir()
+            config = root / "my-config.json"
+            config.write_text("{}", encoding="utf-8")
+            (root / ".bot" / "settings.json").write_text(
+                json.dumps({"config": str(config)}), encoding="utf-8"
+            )
+            with patch("critique_bot.cli.load_config", side_effect=ConfigError("stop")) as load:
+                self.assertEqual(agent_main(["chat", "--repo-dir", str(root)]), 1)
+            self.assertEqual(load.call_args.args[0], str(config))
+
+    def test_review_without_any_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(agent_main(["chat", "--repo-dir", tmp]), 1)

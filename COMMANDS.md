@@ -2,7 +2,7 @@
 
 Reference for **modes**, **CLI flags**, and **in-session chat commands**. Examples are given for **Linux (bash)** and **Windows PowerShell**.
 
-Full command list for **Linux (bash)** and **Windows PowerShell**: [`COMMANDS.md`](COMMANDS.md). `--config` is required on every run, except `crit` once a folder has stored it (see [Agent](#agent-crit)). Copy [`config.example.json`](config.example.json) to `config.json` first.
+Full command list for **Linux (bash)** and **Windows PowerShell**: [`COMMANDS.md`](COMMANDS.md). `--config` is required on every run, except `crit` (any mode) once a folder has stored it (see [Agent](#agent-crit)). Copy [`config.example.json`](config.example.json) to `config.json` first.
 
 How you invoke the bot:
 
@@ -58,7 +58,22 @@ Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`)
 
 ## Modes
 
-`--mode` selects how the bot builds the prompt. If you omit it, **review** is used unless you pass `--prompt` / `--prompt-file` (those select **general**).
+One command, `crit`, runs every mode. The first word picks it; with no mode word, `crit` runs the coding agent:
+
+```bash
+crit "fix the failing test"                 # agent (default)
+crit review --patch-file diff.patch         # code review
+git diff | crit review                      # review from stdin
+crit ask --prompt "Summarize this" notes.txt   # one-shot (alias: crit general)
+crit chat                                   # interactive conversation
+crit setup | worker | submit | queue-status | gitlab-post
+```
+
+`review`, `ask`, and `chat` use the `config.json` that `crit` stored for the project when `--config` is not given. A task that starts with a mode word must be quoted (`crit "review the auth code"`); unquoted, `review` is read as the mode.
+
+`critique-bot` takes the same mode words and subcommands (`critique-bot chat`, `critique-bot agent "..."`). Without a mode word it keeps its old default, **review**, so existing CI scripts work unchanged. `--mode MODE` still works on both and means the same as the mode word; using both at once is an error.
+
+With `critique-bot` and no mode word, **review** is used unless you pass `--prompt` / `--prompt-file` (those select **general**).
 
 | Mode | When to use | Prompt | Files | Output |
 | --- | --- | --- | --- | --- |

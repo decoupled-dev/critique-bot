@@ -1,4 +1,12 @@
-"""``crit`` is the local coding agent. ``bot-agent`` is the same command.
+"""``crit`` is the one command for everything critique-bot does. ``bot-agent`` is the same command.
+
+The first word picks the mode; with no mode word crit runs the local coding agent:
+
+    crit [TASK]                 coding agent (default; also: crit agent, crit init, crit undo)
+    crit review [PATCH]         code review of a patch (stdin, --patch-file, or the CI checkout)
+    crit ask --prompt ...       one-shot prompt with optional files (also: crit general)
+    crit chat                   interactive conversation in this terminal
+    crit setup | worker | submit | queue-status | gitlab-post | desktop-host
 
 ``crit --yes`` (also ``--auto`` or ``-y``) runs edits and commands without
 asking; see ``crit --help``.
@@ -10,10 +18,13 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
+    from critique_bot.cli import MODE_WORDS, SUBCOMMANDS
     from critique_bot.cli import main as cli_main
 
     args = list(sys.argv[1:] if argv is None else argv)
     args = ["--yes" if arg == "-y" else arg for arg in args]
+    if args and (args[0] in MODE_WORDS or args[0] in SUBCOMMANDS):
+        return cli_main(args)
     return cli_main(["--mode", "agent", *args])
 
 
