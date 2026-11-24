@@ -22,9 +22,6 @@ from critique_bot.output import private_dir
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
 from critique_bot.model_api import BackendError
 
-# Set by the desktop app: attach over CDP in a new tab of a shared browser instead of reusing one.
-ENV_CDP_OWN_TAB = "CRITIQUE_CDP_OWN_TAB"
-
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page
 
@@ -1370,10 +1367,6 @@ def _adopt_page(
 
 
 def _page_for_cdp(context: BrowserContext, start_url: str | None) -> Page:
-    if os.environ.get(ENV_CDP_OWN_TAB) == "1":
-        # Several agents share one browser (the desktop app): each needs its own tab.
-        log.debug("opening own tab in shared browser")
-        return context.new_page()
     if start_url:
         for page in context.pages:
             if page.is_closed():

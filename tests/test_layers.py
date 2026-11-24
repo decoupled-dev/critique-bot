@@ -59,7 +59,6 @@ LAYERS: dict[str, int] = {
     "queue": APPS,
     "worker": APPS,
     "agent_ui": APPS,
-    "agent_protocol": APPS,
     "agent_acp": APPS,
     "welcome": APPS,
     "setup_wizard": APPS,
@@ -67,7 +66,6 @@ LAYERS: dict[str, int] = {
     "cli": ROUTING,
     "agent_cli": ROUTING,
     "__main__": ROUTING,
-    "desktop_host": ROUTING,  # the desktop app's host process: wires a shared browser and projects
 }
 
 #: The interface of each layer that layers above may use. Anything else in that layer is

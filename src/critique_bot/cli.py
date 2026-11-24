@@ -573,7 +573,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit submit             enqueue a review for the worker and wait for it\n"
             "  crit queue-status       worker liveness, queued jobs, recent results\n"
             "  crit gitlab-post        post review.md on a GitLab merge request\n"
-            "  crit desktop-host       backend for the crit desktop app\n"
             "\n"
             "agent extras:\n"
             "  crit init               rebuild the .bot index\n"
@@ -761,14 +760,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--protocol",
-        action="store_true",
-        help=(
-            "agent mode: speak JSON lines on stdin/stdout instead of drawing the terminal UI "
-            "(used by the VS Code extension; see docs/agent-protocol.md)"
-        ),
-    )
-    parser.add_argument(
         "--acp",
         action="store_true",
         help=(
@@ -908,7 +899,6 @@ SUBCOMMANDS = {
     "worker": "run the long-lived queue worker on the runner PC",
     "submit": "enqueue a review and wait for the worker to finish it",
     "setup": "open a local web UI to configure selectors by clicking them",
-    "desktop-host": "shared browser and project settings for the crit desktop app",
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
 }
@@ -941,16 +931,9 @@ def main(argv: list[str] | None = None) -> int:
             "setup": _main_setup,
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
-            "desktop-host": _main_desktop_host,
         }
         return handlers[command](rest)
     return _main_run(argv)
-
-
-def _main_desktop_host(argv: list[str]) -> int:
-    from critique_bot import desktop_host
-
-    return desktop_host.main(argv)
 
 
 def _main_worker(argv: list[str]) -> int:
@@ -1411,25 +1394,6 @@ def _main_agent(args: argparse.Namespace) -> int:
     )
 
 
-def _main_agent_protocol(args: argparse.Namespace) -> int:
-    """``crit --protocol``: the agent behind a GUI. Ends with a ``bye`` event carrying the exit code."""
-    from critique_bot import agent, agent_protocol
-
-    agent_protocol.start()
-    agent.use_ui(agent_protocol)
-    code = 1
-    try:
-        code = _main_agent(args)
-    except KeyboardInterrupt:
-        code = 130
-    except Exception as exc:
-        agent_protocol.send("error", message=f"unexpected failure: {exc}")
-        raise
-    finally:
-        agent_protocol.send("bye", code=code)
-    return code
-
-
 class _StderrTail:
     """stderr that also keeps its last few KB, so a startup failure can be told to the ACP client."""
 
@@ -1557,10 +1521,11 @@ def _apply_tool_flags(args: argparse.Namespace, home) -> None:
 
 
 def _use_terminal_ui() -> None:
-    """The engine runs headless until a front end is installed; the command line uses the terminal."""
-    from critique_bot import agent, agent_ui
+    """The terminal, unless a front end is installed already (crit --acp installs the IDE's)."""
+    from critique_bot import agent, agent_ui, ui_api
 
-    agent.use_ui(agent_ui)
+    if isinstance(agent.agent_ui, ui_api.NullUI):
+        agent.use_ui(agent_ui)
 
 
 def _review_engine(args: argparse.Namespace) -> str:
@@ -1668,8 +1633,6 @@ def _main_run(argv: list[str]) -> int:
     if mode == MODE_AGENT:
         if getattr(args, "acp", False):
             return _main_agent_acp(args)
-        if getattr(args, "protocol", False):
-            return _main_agent_protocol(args)
         return _main_agent(args)
     if not args.config:
         args.config = _stored_config(Path(args.repo_dir))

@@ -3,9 +3,9 @@
 Goal: **the only data that leaves this PC is the conversation with the chat URL.** crit's checks
 ([security.md](security.md)) catch the common ways data could leave, but they run inside the app.
 A build, a test, or a Gradle plugin runs the repository's own code, which can connect anywhere.
-Only Windows itself can enforce the rule, so the guarantee comes from step 6 (the firewall).
+Only Windows itself can enforce the rule, so the guarantee comes from step 5 (the firewall).
 
-Do the steps in order. Steps 1 to 5 take about 15 minutes; step 6 needs an administrator, or your IT team.
+Do the steps in order. Steps 1 to 5 take about 15 minutes; step 5 needs an administrator, or your IT team.
 
 ---
 
@@ -70,29 +70,7 @@ Edit `.bot\settings.json` in each project (it is your own file now, not committe
   **First run one normal build with offline off** (for example `.\gradlew build`), so the dependencies are in the local caches. After that, builds run offline.
 - Leave out `web_fetch` and `network_commands`. They are off and blocked by default.
 
-## 5. VS Code (if you use the extension)
-
-crit's settings now count only in **User** settings. A repository's `.vscode\settings.json` cannot change them.
-
-Ctrl+Shift+P → **Preferences: Open User Settings (JSON)**, then set what you need:
-
-```json
-"crit.configPath": "C:\\path\\to\\config.json",
-"crit.permissionMode": "edits"
-```
-
-Also turn off VS Code's own network calls:
-
-```json
-"telemetry.telemetryLevel": "off",
-"update.mode": "none",
-"extensions.autoCheckUpdates": false,
-"extensions.autoUpdate": false,
-"workbench.enableExperiments": false,
-"npm.fetchOnlinePackageInfo": false
-```
-
-## 6. Block every other connection with Windows Firewall (the guarantee)
+## 5. Block every other connection with Windows Firewall (the guarantee)
 
 Windows Defender Firewall allows by IP address and program, not by host name. Choose the case that fits this PC.
 
@@ -155,7 +133,7 @@ Blocking all outbound traffic would break normal work, and a host-name allowlist
 
 Until that is in place, steps 1 to 5 apply and crit's checks catch the obvious cases. There is no hard guarantee.
 
-## 7. Edge policies (turn off Edge's own background services)
+## 6. Edge policies (turn off Edge's own background services)
 
 These are machine-wide and also apply to your everyday Edge. Run **PowerShell as Administrator**:
 
@@ -173,7 +151,7 @@ Set-ItemProperty "$k\ExtensionInstallBlocklist" 1 "*" -Type String
 
 Check: open `edge://policy` in Edge and confirm the values. If your company manages Edge through Group Policy or Intune, ask IT to set the same policies there.
 
-## 8. Lock the worker folder (GitLab runner PCs only)
+## 7. Lock the worker folder (GitLab runner PCs only)
 
 A folder created directly under `C:\` is writable by every signed-in user. The queue holds full prompts with source code, and the worker runs `critique-bot.exe` from that folder.
 
@@ -188,7 +166,7 @@ In GitLab:
 - mark the `GITLAB_TOKEN` CI variable **Protected** and **Masked**
 - limit the runner to this project and to protected branches, so an MR author cannot edit `.gitlab-ci.yml` to run code on it
 
-## 9. Check that it works
+## 8. Check that it works
 
 Open a test project and start crit.
 
@@ -213,8 +191,7 @@ Open a test project and start crit.
 
 ## What crit does not cover
 
-Step 6 covers these, which is why it is the guarantee:
+Step 5 covers these, which is why it is the guarantee:
 
 - The chat page runs unfiltered by default, so its own scripts decide which hosts they call. `"filter_chat_page": true` limits it, at page level.
-- The desktop app's spellchecker downloads dictionaries from Google until it is turned off in a later change.
 - The sign-in window runs unfiltered by design, so that sign-in works.

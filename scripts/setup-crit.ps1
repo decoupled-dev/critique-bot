@@ -14,11 +14,9 @@ Automates the manual steps in docs/bot-agent.md:
   5. writes crit.cmd, bot-agent.cmd, and critique-bot.cmd into BinDir,
   6. puts BinDir first on the user PATH (and in this session),
   7. runs crit --help through the new command,
-  8. with -Desktop, installs the desktop app's packages (npm ci in desktop\)
-     and points the app at this install (%APPDATA%\crit\settings.json).
 Behind a proxy, pass -ProxyHost and -ProxyPort (and -ProxyUser; the password
 is asked for, or taken from -ProxyPassword / CRIT_PROXY_PASSWORD). The proxy
-is used by pip, uv, npm, and the Electron download for this run only: it is
+is used by pip, uv, and npm for this run only: it is
 not written to pip.ini, .npmrc, or the registry, so the password is not saved.
 Safe to re-run: every step checks what is already in place.
 
@@ -58,10 +56,6 @@ Proxy password as a SecureString, for example (Read-Host -AsSecureString).
 Your company's root certificate (.pem or .crt), for proxies that inspect
 HTTPS. pip, uv, npm, and Node use it for this run.
 
-.PARAMETER Desktop
-Also install the desktop app: runs npm ci in desktop\ through the proxy
-(Electron included) and sets "command" in %APPDATA%\crit\settings.json to
-this install's critique-bot.exe. Needs Node.js (winget install OpenJS.NodeJS.LTS).
 
 .PARAMETER WithIndex
 Also install the [index] extra (tree-sitter parsers).
@@ -82,10 +76,10 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
 .\scripts\setup-crit.ps1 -Proxy "http://username:password@10.1.2.3:8080"
 
 .EXAMPLE
-.\scripts\setup-crit.ps1 -ProxyHost 10.1.2.3 -ProxyPort 8080 -ProxyUser "CORP\jdoe" -Desktop
+.\scripts\setup-crit.ps1 -ProxyHost 10.1.2.3 -ProxyPort 8080 -ProxyUser "CORP\jdoe"
 
 .EXAMPLE
-.\scripts\setup-crit.ps1 -ProxyHost proxy.corp.example -ProxyPort 3128 -CaFile C:\certs\corp-root.pem -Desktop
+.\scripts\setup-crit.ps1 -ProxyHost proxy.corp.example -ProxyPort 3128 -CaFile C:\certs\corp-root.pem
 #>
 [CmdletBinding()]
 param(
@@ -98,7 +92,6 @@ param(
     [string]$ProxyUser = "",
     [SecureString]$ProxyPassword = $null,
     [string]$CaFile = "",
-    [switch]$Desktop,
     [switch]$WithIndex,
     [switch]$NoPath,
     [switch]$SkipBrowserCheck
@@ -241,7 +234,7 @@ function ConvertFrom-SecurePassword([SecureString]$Secure) {
     }
 }
 
-# Environment for this process only, so pip, uv, npm, and Electron's download use the
+# Environment for this process only, so pip, uv, and npm use the
 # proxy and the CA file. Returns the names it set. Loopback never goes through the proxy.
 function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
     $names = New-Object System.Collections.Generic.List[string]
@@ -254,8 +247,6 @@ function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
             "npm_config_proxy" = $ProxyUrl
             "npm_config_https_proxy" = $ProxyUrl
             "npm_config_noproxy" = "localhost,127.0.0.1,::1"
-            # Electron's binary comes from GitHub through @electron/get, which ignores npm's proxy.
-            "ELECTRON_GET_USE_PROXY" = "true"
             "GLOBAL_AGENT_HTTP_PROXY" = $ProxyUrl
             "GLOBAL_AGENT_HTTPS_PROXY" = $ProxyUrl
             "GLOBAL_AGENT_NO_PROXY" = "localhost,127.0.0.1,::1"
@@ -272,34 +263,6 @@ function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
         }
     }
     return ,$names.ToArray()
-}
-
-# Merge "command" into the desktop app's settings.json, keeping its other keys.
-function Set-DesktopCommand([string]$SettingsPath, [string]$Command) {
-    $dir = Split-Path -Parent $SettingsPath
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    $data = New-Object PSObject
-    if (Test-Path -LiteralPath $SettingsPath) {
-        $text = [IO.File]::ReadAllText($SettingsPath)
-        if ($text.Trim()) {
-            try {
-                $data = $text | ConvertFrom-Json
-            } catch {
-                throw "ERROR: $SettingsPath is not valid JSON; fix or delete it and re-run"
-            }
-        }
-    }
-    # The indexer returns $null for a missing key; .Properties.Name on an object with no
-    # properties throws under Set-StrictMode in Windows PowerShell 5.1.
-    $existing = $data.PSObject.Properties["command"]
-    if ($null -ne $existing) {
-        if ([string]$existing.Value -eq $Command) { return $false }
-        $existing.Value = $Command
-    } else {
-        $data | Add-Member -NotePropertyName "command" -NotePropertyValue $Command
-    }
-    [IO.File]::WriteAllText($SettingsPath, ($data | ConvertTo-Json -Depth 20) + "`n", (New-Object Text.UTF8Encoding $false))
-    return $true
 }
 
 # pip arguments with --proxy URL appended when a proxy was given.
@@ -649,59 +612,7 @@ function Invoke-Setup {
     }
     Write-Info "OK"
 
-    # 8. Desktop app
-    if ($Desktop) {
-        $desktopDir = Join-Path $repo "desktop"
-        Write-Step "Installing the desktop app (npm ci in $desktopDir)"
-        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $npm) { $npm = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
-        if (-not $npm) {
-            Stop-Setup "-Desktop needs Node.js. Install it (winget install OpenJS.NodeJS.LTS), open a new window, and re-run"
-        }
-        Push-Location -LiteralPath $desktopDir
-        try {
-            # npm ci installs exactly what package-lock.json lists.
-            $rc = Invoke-Native $npm.Path @("ci", "--no-audit", "--no-fund")
-        } finally {
-            Pop-Location
-        }
-        if ($rc -ne 0) {
-            Write-Host "  Behind a proxy that inspects HTTPS, pass your company's root certificate: -CaFile C:\certs\corp-root.pem"
-            Stop-Setup "npm ci failed in $desktopDir"
-        }
-        # The electron package downloads its runtime in an install script. When that download
-        # fails (proxy, certificate, or a blocked extractor), npm can still finish, and the app
-        # only says "Electron failed to install correctly" at start. Check, and retry once.
-        $electronDir = Join-Path $desktopDir "node_modules\electron"
-        $electronExe = Join-Path $electronDir "dist\electron.exe"
-        if (-not (Test-Path -LiteralPath $electronExe)) {
-            Write-Info "the Electron runtime is missing; downloading it again"
-            $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $node) { Stop-Setup "node was not found next to npm; reinstall Node.js and re-run" }
-            $rc = Invoke-Native $node.Path @((Join-Path $electronDir "install.js"))
-            if (($rc -ne 0) -or -not (Test-Path -LiteralPath $electronExe)) {
-                Write-Host "  Electron's runtime comes from github.com (or ELECTRON_MIRROR) through the proxy."
-                Write-Host "  - proxy refused or needs a login: check -ProxyHost, -ProxyPort, -ProxyUser"
-                Write-Host "  - certificate error (SELF_SIGNED_CERT_IN_CHAIN, unable to get local issuer): add -CaFile"
-                Write-Host "  - github.com blocked: set ELECTRON_MIRROR to your company's Electron mirror and re-run"
-                Stop-Setup "could not download the Electron runtime into $electronDir"
-            }
-        }
-        Write-Info "Electron runtime: $electronExe"
-        $settingsPath = Join-Path $env:APPDATA "crit\settings.json"
-        try {
-            $changed = Set-DesktopCommand $settingsPath (Join-Path $scripts "critique-bot.exe")
-        } catch {
-            Stop-Setup ($_.Exception.Message -replace '^ERROR: ', '')
-        }
-        if ($changed) {
-            Write-Info "the desktop app now runs $scripts\critique-bot.exe ($settingsPath)"
-        } else {
-            Write-Info "$settingsPath already points at this install"
-        }
-    }
-
-    # 9. Next steps
+    # 8. Next steps
     Write-Step "Done. Next steps:"
     if ($pathChanged) {
         Write-Info "0. Open a new PowerShell window (this one already has the new PATH)"
@@ -714,10 +625,6 @@ function Invoke-Setup {
     Write-Info "     critique-bot --config `"$configPath`" --mode general --prompt `"Reply with exactly one word: PONG.`""
     Write-Info "3. Use crit in any project:"
     Write-Info "     cd your-project; crit"
-    if ($Desktop) {
-        Write-Info "4. Start the desktop app (no proxy needed from here on):"
-        Write-Info "     cd `"$repo\desktop`"; npm start -- C:\path\to\your\project"
-    }
 }
 
 # CRIT_SETUP_NO_MAIN=1 only defines the functions (used by the tests).

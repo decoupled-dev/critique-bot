@@ -82,4 +82,4 @@ JSON-RPC 2.0, one message per line, protocol version 1.
 | crit → IDE | `session/update` | `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `current_mode_update`, `available_commands_update` |
 | crit → IDE | `session/request_permission` | approvals, plan review, multiple-choice questions |
 
-Implementation: `src/critique_bot/agent_acp.py`, a drop-in replacement for the terminal UI module, like `agent_protocol.py` (see [agent-protocol.md](agent-protocol.md)). Tests: `tests/test_agent_acp.py`.
+Implementation: `src/critique_bot/agent_acp.py`, a drop-in replacement for the terminal UI module (see `ui_api.py`). Tests: `tests/test_agent_acp.py`.

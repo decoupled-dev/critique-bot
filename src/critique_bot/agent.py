@@ -3804,7 +3804,7 @@ agent_ui: Any = ui_api.NullUI()
 
 
 def use_ui(module: Any) -> None:
-    """Install the UI: ``agent_ui`` for the terminal, ``agent_protocol`` for a GUI, ``agent_acp`` for ACP.
+    """Install the UI: ``agent_ui`` for the terminal, ``agent_acp`` for an IDE over ACP.
 
     Every hook below looks ``agent_ui`` up at call time, so this one assignment moves
     all output, approvals, and questions to ``module``. ``None`` goes back to NullUI.

@@ -311,7 +311,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertIn("critique-bot", proc.stdout)
         for name in (
             "Venv", "Config", "BinDir", "Proxy", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPassword",
-            "CaFile", "Desktop", "WithIndex", "NoPath", "SkipBrowserCheck",
+            "CaFile", "WithIndex", "NoPath", "SkipBrowserCheck",
         ):
             self.assertIn(name, proc.stdout.split())
 
@@ -375,13 +375,13 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertIn("-ProxyPort is required", lines["NOPORT"])
         self.assertIn("not both", lines["TWOPORTS"])
 
-    def test_proxy_environment_covers_npm_and_electron(self) -> None:
+    def test_proxy_environment_covers_npm(self) -> None:
         script = str(PS_SCRIPT).replace("'", "''")
         proc = self._pwsh(
             f". '{script}'; "
             "$n = Set-ProxyEnvironment 'http://u:p@10.1.2.3:8080' 'C:\\certs\\root.pem'; "
             "'NAMES=' + ($n -join ','); "
-            "'NPM=' + $env:npm_config_https_proxy; 'ELECTRON=' + $env:ELECTRON_GET_USE_PROXY; "
+            "'NPM=' + $env:npm_config_https_proxy; "
             "'AGENT=' + $env:GLOBAL_AGENT_HTTPS_PROXY; 'NOPROXY=' + $env:NO_PROXY; "
             "'CA=' + $env:NODE_EXTRA_CA_CERTS; 'NPMCA=' + $env:npm_config_cafile",
             CRIT_SETUP_NO_MAIN="1",
@@ -389,34 +389,10 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         lines = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
         self.assertEqual(lines["NPM"], "http://u:p@10.1.2.3:8080")
-        self.assertEqual(lines["ELECTRON"], "true")
         self.assertEqual(lines["AGENT"], "http://u:p@10.1.2.3:8080")
         self.assertIn("127.0.0.1", lines["NOPROXY"])
         self.assertEqual(lines["CA"], "C:\\certs\\root.pem")
         self.assertEqual(lines["NPMCA"], lines["CA"])
-
-    def test_desktop_command_is_merged_into_settings(self) -> None:
-        script = str(PS_SCRIPT).replace("'", "''")
-        with tempfile.TemporaryDirectory() as tmp:
-            settings = Path(tmp) / "crit" / "settings.json"
-            target = str(settings).replace("'", "''")
-            first = self._pwsh(
-                f". '{script}'; 'CHANGED=' + (Set-DesktopCommand '{target}' 'C:\\venv\\Scripts\\critique-bot.exe')",
-                CRIT_SETUP_NO_MAIN="1",
-            )
-            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-            self.assertIn("CHANGED=True", first.stdout)
-            data = json.loads(settings.read_text(encoding="utf-8"))
-            data["headedBrowser"] = False
-            settings.write_text(json.dumps(data), encoding="utf-8")
-            again = self._pwsh(
-                f". '{script}'; 'CHANGED=' + (Set-DesktopCommand '{target}' 'C:\\venv\\Scripts\\critique-bot.exe')",
-                CRIT_SETUP_NO_MAIN="1",
-            )
-            self.assertIn("CHANGED=False", again.stdout)
-            data = json.loads(settings.read_text(encoding="utf-8"))
-            self.assertFalse(data["headedBrowser"])
-            self.assertTrue(data["command"].endswith("critique-bot.exe"))
 
     def test_refuses_to_run_off_windows(self) -> None:
         if os.name == "nt":

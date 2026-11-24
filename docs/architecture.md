@@ -5,11 +5,11 @@ it, because the layers above use it only through its interface. Code in the rout
 wires the concrete pieces together.
 
 ```
-5  routing   cli, agent_cli, __main__, desktop_host
+5  routing   cli, agent_cli, __main__
              parse arguments, load config, open a backend, install a UI, call an app
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
-             agent_ui, agent_protocol, agent_acp, welcome     (front ends)
+             agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
 3  engine    agent (the loop), agent_helpers (helper chats), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, bot_home

@@ -1,7 +1,7 @@
 """Agent Client Protocol front end for the agent: ``crit --acp``.
 
 Lets an ACP client (Android Studio's Bring Your Own Agent, other JetBrains
-IDEs, Zed) run crit as its coding agent. Like :mod:`critique_bot.agent_protocol`
+IDEs, Zed) run crit as its coding agent. Like any front end
 this is a drop-in replacement for :mod:`critique_bot.agent_ui`: the agent loop
 calls the same functions, and this module turns them into ACP messages.
 
@@ -24,7 +24,7 @@ the user's next prompt is the answer. The same goes for "No, keep planning":
 the next prompt is the feedback.
 
 The protocol owns the process's real stdin and stdout (see
-:func:`agent_protocol._claim_stdio`); everything else that writes to fd 1 goes
+:func:`_claim_stdio`); everything else that writes to fd 1 goes
 to stderr, which ACP clients keep as the agent's log.
 """
 
@@ -152,12 +152,29 @@ _generation = 0
 # --------------------------------------------------------------------------- transport
 
 
+def _claim_stdio() -> tuple[IO[str], IO[str]]:
+    """Take fd 0 and fd 1 for the protocol; anything else that prints goes to stderr."""
+    sys.stdout.flush()
+    out_fd = os.dup(1)
+    in_fd = os.dup(0)
+    os.dup2(2, 1)
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    sys.stdout = sys.stderr
+    try:
+        sys.stdin = open(os.devnull, encoding="utf-8")
+    except OSError:
+        pass
+    out = os.fdopen(out_fd, "w", encoding="utf-8", newline="\n", buffering=1)
+    inp = os.fdopen(in_fd, "r", encoding="utf-8", errors="replace")
+    return inp, out
+
+
 def start(stdin: IO[str] | None = None, stdout: IO[str] | None = None) -> None:
     """Take over stdin/stdout and start reading messages (tests pass their own streams)."""
     global _out, _generation
     if stdout is None or stdin is None:
-        from critique_bot.agent_protocol import _claim_stdio
-
         stdin, stdout = _claim_stdio()
     _out = stdout
     _state.closed = False

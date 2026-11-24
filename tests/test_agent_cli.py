@@ -292,3 +292,27 @@ class OneCommandTests(unittest.TestCase):
     def test_review_without_any_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(agent_main(["chat", "--repo-dir", tmp]), 1)
+
+
+class FrontEndTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        from critique_bot import agent
+
+        agent.use_ui(None)
+
+    def test_terminal_ui_does_not_replace_an_installed_front_end(self) -> None:
+        from critique_bot import agent, agent_acp, agent_ui
+        from critique_bot.cli import _use_terminal_ui
+
+        agent.use_ui(agent_acp)
+        _use_terminal_ui()
+        self.assertIs(agent.agent_ui, agent_acp)
+
+    def test_terminal_ui_is_installed_when_none_is(self) -> None:
+        from critique_bot import agent, agent_ui
+        from critique_bot.cli import _use_terminal_ui
+
+        agent.use_ui(None)
+        _use_terminal_ui()
+        self.assertIs(agent.agent_ui, agent_ui)
+

@@ -90,7 +90,6 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 - **A committed `.bot/settings.json` loses its permission keys** (`permissions`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`). They count only in your own, untracked settings file. New projects git-ignore `.bot/settings.json`.
 - **The check command asks like any other command**, since it can come from `.bot/AGENT.md`.
 - **The model cannot rewrite crit's own files.** Writes to `.bot/settings.json`, `.bot/skills/`, and the config file named there are refused.
-- **In VS Code, a repository's `.vscode/settings.json` cannot set** `crit.agentPath`, `crit.extraArgs`, `crit.configPath`, or `crit.permissionMode`. Only your user settings count.
 
 ## The setup page
 
@@ -102,9 +101,9 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 
 ## Dependencies
 
-crit depends on three packages: `playwright`, `rich`, and `prompt_toolkit`. With what they pull in, that is ten packages, pinned to exact tested versions in [`constraints.txt`](../constraints.txt). Both setup scripts install with those pins, so a new release of any of them is never installed unreviewed. Nothing is downloaded at run time. Programs that do ship with crit: Playwright's driver (a Node.js runtime) inside the Python package, and, in the desktop app, Electron (Chromium and Node.js) and xterm.js. Electron and Playwright take regular security releases, so update them on a schedule even when nothing else changes. Every shipped package and its license text is in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), generated offline by `scripts/third_party_notices.py`.
+crit depends on three packages: `playwright`, `rich`, and `prompt_toolkit`. With what they pull in, that is ten packages, pinned to exact tested versions in [`constraints.txt`](../constraints.txt). Both setup scripts install with those pins, so a new release of any of them is never installed unreviewed. Nothing is downloaded at run time. One program ships inside a Python package: Playwright's driver, a Node.js runtime. Playwright takes regular security releases, so update it on a schedule even when nothing else changes. Every shipped package and its license text is in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), generated offline by `scripts/third_party_notices.py`.
 
-To check the pinned versions for known vulnerabilities, run `pip-audit -r constraints.txt` (and `npm audit` in `desktop/` and `vscode-extension/`) on a machine where sending the package list to the vulnerability database is acceptable.
+To check the pinned versions for known vulnerabilities, run `pip-audit -r constraints.txt` on a machine where sending the package list to the vulnerability database is acceptable.
 
 ## Scans
 
@@ -112,7 +111,7 @@ These run offline and are clean on this repository:
 
 - **Committed secrets:** `gitleaks git .` (history) and `gitleaks dir` over the tracked files. Test fixtures that are fake secrets carry `gitleaks:allow`; their first commits are listed in `.gitleaksignore`.
 - **Python security issues:** `bandit -c pyproject.toml -r src/critique_bot`. No medium or high findings. The reviewed false positives are skipped in `[tool.bandit]` in `pyproject.toml` or marked `# nosec` with the reason on the line above.
-- **Licenses:** every shipped Python package is under MIT, BSD, Apache-2.0, or PSF terms (`pip-licenses --allow-only=...`); the desktop app ships MIT-licensed Electron and xterm.js. The VS Code extension and desktop build tools are not shipped; one of them, `@vscode/vsce-sign` (used by the extension packager), is under Microsoft's license terms.
+- **Licenses:** every shipped Python package is under MIT, BSD, Apache-2.0, or PSF terms (`pip-licenses --allow-only=...`).
 - **SBOM:** `cyclonedx-py environment` lists the shipped Python packages in CycloneDX format.
 
 ## What this cannot guarantee

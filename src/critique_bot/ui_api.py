@@ -1,9 +1,8 @@
 """The engine's UI interface: how the agent loop shows progress and asks a person.
 
 The loop never imports a front end. It calls the object installed with
-``agent.use_ui(...)``: the terminal (:mod:`critique_bot.agent_ui`), the JSON-lines
-protocol for the VS Code extension and the desktop app (:mod:`critique_bot.agent_protocol`),
-or ACP (:mod:`critique_bot.agent_acp`). Each is a module whose functions match
+``agent.use_ui(...)``: the terminal (:mod:`critique_bot.agent_ui`) or an IDE over the
+Agent Client Protocol (:mod:`critique_bot.agent_acp`). Each is a module whose functions match
 :class:`NullUI`'s methods. :class:`NullUI` is the default: it shows nothing and answers
 every question the way the terminal does when no one is at it, so the engine runs (and
 is tested) headless with no front end at all.

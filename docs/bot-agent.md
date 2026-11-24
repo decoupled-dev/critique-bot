@@ -63,21 +63,18 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
 | `-ProxyHost HOST` `-ProxyPort PORT` | The proxy as host and port, for example `-ProxyHost 10.1.2.3 -ProxyPort 8080`. An `https://` prefix on the host sets the scheme. |
 | `-ProxyUser USER` | User name for the proxy (`CORP\jdoe` works). The password is asked for without echoing, unless `-ProxyPassword` (a SecureString) or the `CRIT_PROXY_PASSWORD` variable gives it. Special characters are encoded for you. |
 | `-CaFile FILE` | Your company's root certificate, for a proxy that inspects HTTPS. pip, uv, npm, and Node trust it for this run. |
-| `-Desktop` | Also install the desktop app: `npm ci` in `desktop\` (Electron's download included) and `"command"` in `%APPDATA%\crit\settings.json` set to this install. Needs Node.js (`winget install OpenJS.NodeJS.LTS`). |
 | `-WithIndex` | Also install the `[index]` extra (tree-sitter parsers). |
 | `-NoPath` | Do not change the user `PATH`. |
 | `-SkipBrowserCheck` | Do not look for Edge or Chrome. |
 
 It does the same steps as the Linux script, writes `crit.cmd`, `bot-agent.cmd`, and `critique-bot.cmd`, and puts the bin folder first on your user `PATH`. Open a new PowerShell window afterwards.
 
-The proxy is used by pip, uv, npm, and Electron's download, for this run only. It is not written to `pip.ini`, `.npmrc`, or the registry, so a password given to the script is not saved anywhere. Loopback addresses never go through it. pip and npm can log in to a proxy with a user name and password (Basic authentication). A proxy that accepts only Windows sign-in (NTLM or Kerberos) needs a local relay such as [px](https://github.com/genotrance/px), and `-ProxyHost 127.0.0.1 -ProxyPort 3128` pointed at it.
+The proxy is used by pip, uv, and npm, for this run only. It is not written to `pip.ini`, `.npmrc`, or the registry, so a password given to the script is not saved anywhere. Loopback addresses never go through it. pip and npm can log in to a proxy with a user name and password (Basic authentication). A proxy that accepts only Windows sign-in (NTLM or Kerberos) needs a local relay such as [px](https://github.com/genotrance/px), and `-ProxyHost 127.0.0.1 -ProxyPort 3128` pointed at it.
 
-Example, behind a proxy, with the desktop app:
+Example, behind a proxy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -ProxyHost 10.1.2.3 -ProxyPort 8080 -ProxyUser "CORP\jdoe" -Desktop
-cd desktop
-npm start -- C:\path\to\your\project
+powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -ProxyHost 10.1.2.3 -ProxyPort 8080 -ProxyUser "CORP\jdoe"
 ```
 
 ### After the script

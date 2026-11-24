@@ -2,6 +2,5 @@ critique-bot
 Copyright 2026 Decoupled
 
 This product includes third-party software under their own licenses
-(Playwright, rich, prompt_toolkit and their dependencies; xterm.js and
-Electron in the desktop app). See THIRD_PARTY_NOTICES.md for each
-package, its license, and its license text.
+(Playwright, rich, prompt_toolkit and their dependencies). See
+THIRD_PARTY_NOTICES.md for each package, its license, and its license text.
