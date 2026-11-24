@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, log, roles
+from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
 from critique_bot.tool_api import (
     ALLOWED_TOOLS,
@@ -327,6 +328,8 @@ class ToolCall:
     tool: str
     arguments: dict[str, Any]
     error: str | None = None
+    #: The call_id of an OpenAI-format call; its result goes back with the same id.
+    call_id: str = ""
 
 
 def command_argv(command: str, *, platform_name: str | None = None, cwd: Path | None = None) -> list[str]:
@@ -535,8 +538,23 @@ def _bare_tool_blobs(text: str) -> list[str]:
 
 
 def hide_tool_markup(text: str) -> str:
-    """Text with the tool-call protocol removed, as the user should see it."""
+    """Text with the tool-call protocol removed, as the user should see it.
+
+    A reply in the OpenAI Responses format gives the words of its message items.
+    """
+    from critique_bot import openai_format
+
+    words = openai_format.visible_text(text, loads=_loads_lenient)
+    if words is not None:
+        return words
     return _hide_tool_markup(text)
+
+
+def _openai_reply(raw: str, complete: bool) -> Any:
+    """A Responses-format reply, parsed; None when the reply is not in that format."""
+    from critique_bot import openai_format
+
+    return openai_format.parse_reply(raw, loads=_loads_lenient, complete=complete)
 
 
 def _hide_tool_markup(text: str) -> str:
@@ -1358,9 +1376,20 @@ def _keywords(task: str) -> list[str]:
 # --------------------------------------------------------------------------- prompt file
 
 
-def load_prompt_sections() -> dict[str, str]:
-    """Read prompts/agent.txt. Model-facing text lives only in that file."""
-    path = _agent_prompt_path()
+TOOL_FORMAT_TAGS = "tags"
+TOOL_FORMAT_OPENAI = "openai"
+TOOL_FORMATS = (TOOL_FORMAT_TAGS, TOOL_FORMAT_OPENAI)
+
+
+def tool_format_of(settings: dict[str, Any] | None) -> str:
+    """``"openai"`` or ``"tags"`` from the ``"tool_format"`` setting (tags when unset or unknown)."""
+    raw = str((settings or {}).get("tool_format") or TOOL_FORMAT_TAGS).strip().lower()
+    if raw in {"openai", "responses", "openai-responses", "json"}:
+        return TOOL_FORMAT_OPENAI
+    return TOOL_FORMAT_TAGS
+
+
+def _read_sections(path: Path) -> dict[str, str]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1374,13 +1403,32 @@ def load_prompt_sections() -> dict[str, str]:
             sections[parts[index]] = parts[index + 1].strip()
     if "SYSTEM" not in sections:
         sections["SYSTEM"] = text.strip()
-    for key, value in _FALLBACKS.items():
-        sections.setdefault(key, value)
     return sections
 
 
-def load_agent_instructions() -> str:
-    return load_prompt_sections()["SYSTEM"]
+def load_prompt_sections(tool_format: str = TOOL_FORMAT_TAGS) -> dict[str, str]:
+    """Read prompts/agent.txt. Model-facing text lives only in the prompts folder.
+
+    With the OpenAI format, prompts/agent_openai.txt replaces the sections that describe
+    how to call tools; every other section is shared. ``sections["_FORMAT"]`` records the
+    format, so a task (and its helper chats) parse replies and send results to match.
+    """
+    sections = _read_sections(_agent_prompt_path())
+    if tool_format == TOOL_FORMAT_OPENAI:
+        from critique_bot import openai_format
+
+        overlay = _read_sections(_agent_prompt_path("agent_openai.txt"))
+        if "SYSTEM" in overlay:
+            overlay["SYSTEM"] = overlay["SYSTEM"].replace("{format}", openai_format.INSTRUCTION)
+        sections.update(overlay)
+    for key, value in _FALLBACKS.items():
+        sections.setdefault(key, value)
+    sections["_FORMAT"] = tool_format if tool_format in TOOL_FORMATS else TOOL_FORMAT_TAGS
+    return sections
+
+
+def load_agent_instructions(tool_format: str = TOOL_FORMAT_TAGS) -> str:
+    return load_prompt_sections(tool_format)["SYSTEM"]
 
 
 def load_role_instructions(role_id: object) -> str:
@@ -1388,10 +1436,12 @@ def load_role_instructions(role_id: object) -> str:
     return load_prompt_sections().get(roles.section_key(role_id), "").strip()
 
 
-def task_message(task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "") -> str:
+def task_message(
+    task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "", prefix: str | None = None
+) -> str:
     """The task with the short protocol reminder, the repo map, skills, and the mode note."""
     body = task.strip()
-    prefix = load_prompt_sections()["TASK_PREFIX"].rstrip()
+    prefix = (prefix if prefix is not None else load_prompt_sections()["TASK_PREFIX"]).rstrip()
     if body.startswith(prefix.splitlines()[0]):
         return body
     parts = [prefix]
@@ -1422,8 +1472,10 @@ def seed_message(
     web_hosts: tuple[str, ...] | None = None,
     offline: bool = False,
     role: str = "",
+    tools: str = "",
 ) -> str:
-    """The first message of a chat: SHELL, the instructions, the ROLE text, ENVIRONMENT, and the notes."""
+    """The first message of a chat: SHELL, the instructions, the ROLE text, the tools (OpenAI format),
+    ENVIRONMENT, and the notes."""
     chosen = shell or agent_shell.detect_shell(platform_name)
     lines = [
         "ENVIRONMENT",
@@ -1473,6 +1525,8 @@ def seed_message(
         text += instructions.rstrip() + "\n\n"
     if role.strip():
         text += role.strip() + "\n\n"
+    if tools.strip():
+        text += tools.strip() + "\n\n"
     text += "\n".join(lines) + "\n"
     if notes.strip():
         text += "\nPROJECT NOTES (from .bot/AGENT.md; follow them)\n" + notes.strip() + "\n"
@@ -1531,21 +1585,21 @@ def _setting_list(settings: dict[str, Any], key: str) -> list[str]:
     return [str(item).strip() for item in raw or [] if str(item).strip()] if isinstance(raw, list) else []
 
 
-def _agent_prompt_path() -> Path:
+def _agent_prompt_path(name: str = "agent.txt") -> Path:
     package_dir = Path(__file__).resolve().parent
     candidates = [
-        package_dir / "prompts" / "agent.txt",
-        Path(sys.executable).resolve().parent / "prompts" / "agent.txt",
+        package_dir / "prompts" / name,
+        Path(sys.executable).resolve().parent / "prompts" / name,
     ]
     try:
-        candidates.append(package_dir.parents[2] / "prompts" / "agent.txt")
+        candidates.append(package_dir.parents[2] / "prompts" / name)
     except IndexError:
         pass
-    candidates.append(Path.cwd() / "prompts" / "agent.txt")
+    candidates.append(Path.cwd() / "prompts" / name)
     for path in candidates:
         if path.is_file():
             return path
-    raise OSError("agent instructions not found (prompts/agent.txt)")
+    raise OSError(f"agent instructions not found (prompts/{name})")
 
 
 # --------------------------------------------------------------------------- the loop
@@ -1888,6 +1942,8 @@ class _TaskRun:
         self.ctx = ctx
         self.state = ctx.state or TaskState(task=task)
         self.sections = sections
+        #: How tool calls look in this chat: "tags" (<tool_call>) or "openai" (Responses items).
+        self.tool_format = sections.get("_FORMAT", TOOL_FORMAT_TAGS)
         self.turns = turns
         self.show = show
         self.max_rounds = max_rounds
@@ -1965,14 +2021,21 @@ class _TaskRun:
 
     def _handle(self, raw_reply: str) -> str | None:
         detail = self.chat.last_detail
-        reply, fabricated = _cut_fabricated(raw_reply)
         complete = isinstance(detail, dict) and detail.get("complete") is True
         answer_task = _answer_only(self.task)
-        calls, unclosed = parse_tool_calls(reply, complete=complete)
-        note = commentary(reply)
-        if calls and not _OPEN_RE.search(reply) and answer_task and len(note) > 80:
-            # JSON quoted inside an answer, not a call.
-            calls = []
+        wire = _openai_reply(raw_reply, complete) if self.tool_format == TOOL_FORMAT_OPENAI else None
+        if wire is not None:
+            # Responses items: the calls are explicit, and the words are the message items.
+            reply, fabricated, unclosed = wire.text, wire.fabricated, wire.unclosed
+            calls = [ToolCall(item.name, item.arguments, item.error, item.call_id) for item in wire.calls]
+            note = reply
+        else:
+            reply, fabricated = _cut_fabricated(raw_reply)
+            calls, unclosed = parse_tool_calls(reply, complete=complete)
+            note = commentary(reply)
+            if calls and not _OPEN_RE.search(reply) and answer_task and len(note) > 80:
+                # JSON quoted inside an answer, not a call.
+                calls = []
         status = _status_code(reply)
         plan = _plan_text(reply)
         shown = _answer_text(note)
@@ -2136,7 +2199,11 @@ class _TaskRun:
                 for call in calls
             ]
             self.state.step += 1
-            self._send_results(results, extra="\n\n".join(extras + [fill(self.sections["LOOP"], count=str(LOOP_REPLIES))]))
+            self._send_results(
+                results,
+                extra="\n\n".join(extras + [fill(self.sections["LOOP"], count=str(LOOP_REPLIES))]),
+                calls=calls,
+            )
             return
         slots: list[dict[str, Any] | None] = [None] * len(calls)
         batch: list[tuple[int, ToolCall]] = []
@@ -2249,7 +2316,7 @@ class _TaskRun:
             extras.append(self.sections["DENIED"])
         if plan_blocked:
             extras.append(self.sections["PLAN_ONLY"])
-        self._send_results(results, extra="\n\n".join(extras))
+        self._send_results(results, extra="\n\n".join(extras), calls=[c for c, slot in zip(calls, slots) if slot is not None])
 
     def _execute_one(self, call: ToolCall) -> dict[str, Any]:
         self.hooks.tool_start(call)
@@ -2677,10 +2744,22 @@ class _TaskRun:
         lines.append("The latest message from the program follows.")
         return "\n".join(lines)
 
-    def _send_results(self, results: list[dict[str, Any]], *, extra: str = "") -> None:
+    def _send_results(
+        self, results: list[dict[str, Any]], *, extra: str = "", calls: list[ToolCall] | None = None
+    ) -> None:
         state_text = self._state_text()
         room = max(2_000, self.max_result_chars - len(state_text) - len(extra) - 4)
-        body = _cap("\n".join(format_tool_result(item) for item in results), room)
+        if self.tool_format == TOOL_FORMAT_OPENAI:
+            from critique_bot import openai_format
+
+            ids = [call.call_id for call in calls or []]
+            stamped = [
+                {**item, "call_id": ids[index] if index < len(ids) and ids[index] else f"call_{index + 1}"}
+                for index, item in enumerate(results)
+            ]
+            body = _cap(openai_format.format_results(stamped), room)
+        else:
+            body = _cap("\n".join(format_tool_result(item) for item in results), room)
         if extra:
             body += "\n\n" + extra
         self.payload = body + "\n\n" + state_text
@@ -2743,7 +2822,7 @@ def run_agent_loop(
     reader = read_message or _read_message
     show = emit or _emit
     ask_person = ask_user or (lambda question: _ask_user(question, None))
-    sections = load_prompt_sections()
+    sections = load_prompt_sections(tool_format_of(settings if isinstance(settings, dict) else None))
 
     def ask(question: str) -> str | None:
         # Auto mode does not stop for questions: the model decides and says what it chose.
@@ -2929,7 +3008,7 @@ def run_agent_loop(
         if read_only or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes
-        message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note)
+        message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"])
         if carry:
             message = carry + "\n\n" + message
             carry = ""
@@ -3229,8 +3308,10 @@ def run_agent(
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = home.settings if isinstance(home.settings, dict) else {}
+    helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
+    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)))
     try:
-        instructions = load_agent_instructions()
+        instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
         log.error(str(exc))
         print(f"error: {exc}", file=sys.stderr)
@@ -3242,8 +3323,6 @@ def run_agent(
         approve_mode = ui_api.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
-    helpers = _int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0)
-    helpers = min(helpers, MAX_HELPER_SESSIONS)
     if helpers and config.max_parallel_tabs < helpers + 1:
         # Extra tabs are opened over the browser's remote debugging port, which this turns on.
         config = dataclasses.replace(config, max_parallel_tabs=helpers + 1)
@@ -3261,7 +3340,7 @@ def run_agent(
         history_path=home.bot_dir / "history",
         cache_dir=home.cache_dir,
         session_shell=session_shell,
-        tools=ALLOWED_TOOLS,
+        tools=setup.registry.names() if setup.registry is not None else ALLOWED_TOOLS,
         role=role_id,
     )
     agent_ui.welcome_header()
@@ -3284,10 +3363,12 @@ def run_agent(
             web_hosts=_web_hosts(settings),
             offline=settings.get("offline") is True,
             role=load_role_instructions(chosen_role),
+            tools=setup.tools_block,
         )
 
     seed = build_seed(role_id)
     code = 1
+    previous_registry = tool_api.use_registry(setup.registry) if setup.registry is not None else None
     try:
         _remove_old_codegraph()
         code = _run_session(
@@ -3322,6 +3403,8 @@ def run_agent(
         _print_status("INTERRUPTED")
         code = 130
     finally:
+        if previous_registry is not None:
+            tool_api.use_registry(previous_registry)
         agent_ui.shutdown()
         if session_shell is not None:
             try:
@@ -3339,6 +3422,51 @@ def run_agent(
     if code != 0:
         return code
     return 0 if outcome[-1] in _STATUS_OK else 1
+
+
+#: The "minimal" tool set: the shell does the searching, listing, and git; files are read and
+#: edited with tools that number lines, check syntax, and can be undone.
+MINIMAL_TOOLS = (
+    "run_command",
+    "command_output",
+    "command_input",
+    "kill_command",
+    "read_files",
+    "edit_file",
+    "write_files",
+    "todo",
+    "ask_user",
+)
+
+
+@dataclass(frozen=True)
+class _ToolSetup:
+    tool_format: str
+    #: The tools block for the first message ("" with the tag format, whose prompt lists the tools).
+    tools_block: str
+    #: The registry to install for the session, or None for the built-in one.
+    registry: Any
+
+
+def _tool_setup(
+    settings: dict[str, Any], *, helpers: int, web: bool, only: Iterable[str] | None = None
+) -> _ToolSetup:
+    """The tool format, the tool set, and the tools block, from ``tool_format`` and ``tool_set``."""
+    fmt = tool_format_of(settings)
+    minimal = str(settings.get("tool_set") or "").strip().lower() == "minimal"
+    names = list(only) if only is not None else list(MINIMAL_TOOLS if minimal else ALLOWED_TOOLS)
+    if helpers < 1 and "delegate" in names:
+        names.remove("delegate")
+    if not web and "web_fetch" in names:
+        names.remove("web_fetch")
+    registry = tool_api.builtin_registry().only(names) if (minimal or only is not None) else None
+    block = ""
+    if fmt == TOOL_FORMAT_OPENAI:
+        from critique_bot import openai_format
+
+        source = registry or tool_api.builtin_registry().only(names)
+        block = openai_format.tools_block(source.openai_tools())
+    return _ToolSetup(fmt, block, registry)
 
 
 def run_read_only_task(
@@ -3363,8 +3491,9 @@ def run_read_only_task(
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = home.settings if isinstance(home.settings, dict) else {}
+    setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS))
     try:
-        instructions = load_agent_instructions()
+        instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
         log.error(str(exc))
         print(f"error: {exc}", file=sys.stderr)
@@ -3391,6 +3520,7 @@ def run_read_only_task(
         helpers=0,
         offline=True,
         role=load_role_instructions(role),
+        tools=setup.tools_block,
     )
     code = 1
     try:

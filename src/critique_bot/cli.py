@@ -743,6 +743,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tool-format",
+        choices=("tags", "openai"),
+        default=None,
+        help=(
+            "agent and review: how the model calls tools. openai: OpenAI Responses API items "
+            '(function_call / function_call_output); tags: <tool_call> blocks (default; "tool_format" in .bot/settings.json)'
+        ),
+    )
+    parser.add_argument(
+        "--tool-set",
+        choices=("full", "minimal"),
+        default=None,
+        help=(
+            "agent mode: minimal gives the model the shell plus read_files, edit_file, and write_files; "
+            'it searches, lists, and runs git through the shell ("tool_set" in .bot/settings.json)'
+        ),
+    )
+    parser.add_argument(
         "--protocol",
         action="store_true",
         help=(
@@ -1368,6 +1386,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         return _config_error(ConfigError("--max-rounds must be at least 1"))
     output_dir = Path(args.output_dir) if args.output_dir else None
     _use_terminal_ui()
+    _apply_tool_flags(args, home)
     return run_agent(
         config,
         home,
@@ -1481,6 +1500,16 @@ def _welcome_login(config: BotConfig) -> bool:
     return True
 
 
+def _apply_tool_flags(args: argparse.Namespace, home) -> None:
+    """--tool-format / --tool-set win over .bot/settings.json for this run (not saved)."""
+    if not isinstance(home.settings, dict):
+        return
+    if getattr(args, "tool_format", None):
+        home.settings["tool_format"] = args.tool_format
+    if getattr(args, "tool_set", None):
+        home.settings["tool_set"] = args.tool_set
+
+
 def _use_terminal_ui() -> None:
     """The engine runs headless until a front end is installed; the command line uses the terminal."""
     from critique_bot import agent, agent_ui
@@ -1528,6 +1557,7 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     except BotHomeError as exc:
         return _config_error(ConfigError(str(exc)))
     _use_terminal_ui()
+    _apply_tool_flags(args, home)
     code, turns = run_read_only_task(
         config,
         home,

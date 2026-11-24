@@ -10,7 +10,7 @@ wires the concrete pieces together.
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
              agent_ui, agent_protocol, agent_acp, welcome     (front ends)
-3  engine    agent (the loop), agent_helpers (helper chats), ui_api
+3  engine    agent (the loop), agent_helpers (helper chats), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, bot_home
 1  models    model_api (interface), provider + browser + chat_client (web chat in Edge),
@@ -47,10 +47,12 @@ tools.
 
 ## Where standard protocols plug in
 
-- **OpenAI-compatible tool calling.** `ToolSpec.to_openai()` gives the `tools` entries.
-  A backend that supports native tool calls (the local backend already talks to
-  `/v1/chat/completions`) can send them and hand the engine structured calls instead of
-  `<tool_call>` text. Not built yet; the text protocol stays for the web chat page.
+- **OpenAI Responses format.** With `"tool_format": "openai"` the chat itself speaks it:
+  the first message carries the registry's tools as a Responses `tools` array, replies are
+  `{"output": [...]}` with `function_call` and `message` items, and results go back as
+  `function_call_output` items (`openai_format.py`; the format-specific prompt sections are in
+  `prompts/agent_openai.txt`). Not built yet: a backend that sends `tools` through a native API
+  (the local backend already talks to `/v1/chat/completions`) and returns structured calls.
 - **MCP.** `ToolSpec.to_mcp()` gives `tools/list` entries, so crit's tools can be served
   over MCP, and MCP tools from other servers (for example the `mcpServers` an ACP client
   offers) can be added as a `ToolRegistry`. Not built yet.

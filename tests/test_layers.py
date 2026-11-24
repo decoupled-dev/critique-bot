@@ -49,6 +49,7 @@ LAYERS: dict[str, int] = {
     "agent": ENGINE,
     "agent_helpers": ENGINE,
     "ui_api": ENGINE,
+    "openai_format": ENGINE,
     # apps: things built on the engine and the models
     "review_agent": APPS,
     "review_session": APPS,
