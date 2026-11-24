@@ -529,13 +529,16 @@ def session_cookie_present(profile_dir: Path, url: str) -> bool | None:
         return None
     sites, wanted = entry
     import sqlite3
+    from contextlib import closing
 
     for candidate in (profile_dir / "Default" / "Network" / "Cookies", profile_dir / "Default" / "Cookies"):
         if not candidate.is_file():
             continue
         try:
             uri = candidate.resolve().as_uri() + "?mode=ro&immutable=1"
-            with sqlite3.connect(uri, uri=True, timeout=1) as db:
+            # closing(): a sqlite3 connection's own "with" only commits; an open handle
+            # on Windows keeps the browser's cookie file locked.
+            with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
                 where = " or ".join("host_key like ?" for _ in sites)
                 row = db.execute(
                     f"select count(*) from cookies where name like ? and ({where})",  # nosec B608 - placeholders only

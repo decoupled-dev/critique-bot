@@ -684,9 +684,9 @@ class Checkpoints:
         """
         if self.task_dir is None:
             return False
-        target = Path(os.path.abspath(path))
-        if target.is_symlink():
-            target = Path(os.path.realpath(target))
+        # realpath, like the resolved workspace: it follows links and, on Windows,
+        # expands 8.3 short names (RUNNER~1), so a file inside is never stored as outside.
+        target = Path(os.path.realpath(os.path.abspath(path)))
         if target.is_file() and sensitive_file(target):
             return False
         try:

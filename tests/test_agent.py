@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,9 @@ from critique_bot.agent import (
 from critique_bot.agent_shell import Shell, command_argv as shell_command_argv, tool_hints
 from critique_bot.agent_tools import TaskState, canonical_tool
 from critique_bot.chat_client import COMPLETION_IDLE
+
+# Fails until the file "flag" says good; runs the same in bash and PowerShell (no grep on Windows).
+_PY_CHECK_FLAG = f'"{sys.executable}" -c "import sys; sys.exit(0 if open(\'flag\').read().startswith(\'good\') else 1)"'
 
 
 def _edit(path: str, old: str, new: str) -> str:
@@ -962,7 +966,7 @@ class LoopTests(unittest.TestCase):
             ]
         )
         outcome: list[str] = []
-        _loop(session, root, "change note.txt", outcome=outcome, check_command="grep -q good flag")
+        _loop(session, root, "change note.txt", outcome=outcome, check_command=_PY_CHECK_FLAG)
         self.assertIn("check above ran after your edits and failed", session.sent[2])
         self.assertEqual(outcome, ["COMPLETED"])
 

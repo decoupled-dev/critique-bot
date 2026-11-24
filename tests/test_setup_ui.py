@@ -302,10 +302,11 @@ class BrowserBridgeTests(unittest.TestCase):
             url="https://chat.example/",
             selectors=Selectors(prompt_input="#p", assistant_messages=".a"),
         )
+        # No saved sign-in here, so without the needs_visible_login patch a real sign-in window would open first.
         with patch(
             "critique_bot.browser.launch_edge",
             side_effect=BrowserError("no Edge here"),
-        ):
+        ), patch("critique_bot.browser.needs_visible_login", return_value=False):
             with self.assertRaises(RuntimeError) as ctx:
                 BrowserBridge().start(config)
         self.assertIn("no Edge here", str(ctx.exception))

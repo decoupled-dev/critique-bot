@@ -563,6 +563,33 @@ def rewrite_and_or(command: str) -> str:
     return "".join(pieces)
 
 
+# A quoted program path in command position: PowerShell reads it as a string,
+# so ``"C:\Python\python.exe" -c ...`` is a parse error without ``&``.
+_PS_QUOTED_PROGRAM_RE = re.compile(
+    r"(?:^|(?<=[;\n{|])|(?<=&&))[ \t]*(?P<quote>[\"'])[^\"'\r\n]+?\.(?:exe|cmd|bat|com|ps1)(?P=quote)"
+    r"(?=[ \t]+(?!-[ci]?(?:eq|ne|gt|ge|lt|le|like|notlike|match|notmatch|contains|notcontains|in|notin|replace"
+    r"|split|join|is|isnot|as|and|or|xor|band|bor|f)\b)[^\s|;)}=]|[ \t]*(?:$|[;\r\n}]))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def add_call_operator(command: str) -> str:
+    """Prefix ``&`` to a quoted program path that starts a PowerShell statement.
+
+    ``"C:\\Program Files\\nodejs\\node.exe" app.js`` is how bash and cmd run a
+    program whose path has spaces; PowerShell needs ``& "..." app.js``. Text
+    inside strings, here-strings and comments is left alone.
+    """
+    masked = _ps_mask(command)
+    out = command
+    for match in reversed(list(_PS_QUOTED_PROGRAM_RE.finditer(command))):
+        start = match.start("quote")
+        if masked[start] != command[start]:
+            continue
+        out = out[:start] + "& " + out[start:]
+    return out
+
+
 # --------------------------------------------------------------------------- lint
 
 _CMD_POS = r"(?:^\s*|[;|&{(]\s*|\n\s*)"
@@ -1462,6 +1489,7 @@ def powershell_script(command: str, *, kind: str = "pwsh", marker: str | None = 
     The command runs dot-sourced at script scope, split into "everything but
     the last statement" and "the last statement" with the PowerShell parser.
     """
+    command = add_call_operator(command)
     if kind == "powershell":
         try:
             command = rewrite_and_or(command)

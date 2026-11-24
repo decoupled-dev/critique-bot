@@ -49,6 +49,9 @@ def _console(*, terminal: bool, width: int = 100) -> Console:
         file=io.StringIO(),
         force_terminal=terminal,
         width=width,
+        # rich sets legacy_windows from the real stdout (no VT console on a Windows CI runner),
+        # which would switch these UTF-8 test consoles to ASCII glyphs and square boxes.
+        legacy_windows=False,
         record=True,
         color_system="truecolor" if terminal else None,
         theme=agent_ui.rich_theme("dark"),

@@ -521,7 +521,7 @@ class LoadPathTests(unittest.TestCase):
 
     def test_reads_utf8(self) -> None:
         path = self.folder / "a.txt"
-        path.write_text("hello\n", encoding="utf-8")
+        path.write_bytes("hello\n".encode("utf-8"))  # write_text would make it CRLF on Windows
         loaded = load_path(path, self.limits)
         self.assertEqual(loaded.text, "hello\n")
         self.assertFalse(loaded.binary)

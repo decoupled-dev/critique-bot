@@ -238,7 +238,8 @@ class DesktopEdgeArgsTests(unittest.TestCase):
             with patch.object(browser, "resolve_browser", return_value=("/usr/bin/msedge", "msedge")), \
                  patch.object(browser.subprocess, "Popen", side_effect=fake_popen), \
                  patch.object(browser, "_wait_for_cdp", return_value=None), \
-                 patch.object(browser, "_free_port", return_value=9333):
+                 patch.object(browser, "_free_port", return_value=9333), \
+                 patch.object(browser, "private_dir"):
                 try:
                     browser._start_desktop_edge(headed=headed, start_url=None, user_data_dir=browser.Path("/tmp/crit-test-profile"))
                 except Exception:

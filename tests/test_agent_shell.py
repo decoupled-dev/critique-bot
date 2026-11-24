@@ -56,6 +56,20 @@ def _wait_for(path: Path, seconds: float = 10) -> None:
         time.sleep(0.05)
 
 
+class CallOperatorTests(unittest.TestCase):
+    def test_quoted_program_gets_the_call_operator(self) -> None:
+        add = agent_shell.add_call_operator
+        self.assertEqual(add('"C:\\Py\\python.exe" -c "print(1)"'), '& "C:\\Py\\python.exe" -c "print(1)"')
+        self.assertEqual(add("cd x; 'C:\\a b\\n.exe' --v"), "cd x; & 'C:\\a b\\n.exe' --v")
+        self.assertEqual(add('"C:\\tool.exe"'), '& "C:\\tool.exe"')
+
+    def test_strings_that_are_not_commands_are_kept(self) -> None:
+        add = agent_shell.add_call_operator
+        for text in ('& "C:\\x.exe" a', 'echo "x.exe" b', 'if ("a.exe" -eq $x) {}', '"a.exe" | Out-File f',
+                     "Write-Host \"; 'z.exe' a\"", '@{ "a.exe" = 1 }', '"a.exe" -like "*.exe"'):
+            self.assertEqual(add(text), text)
+
+
 class RewriteTests(unittest.TestCase):
     def test_and_or_chains_become_status_checks(self) -> None:
         text = rewrite_and_or("npm ci && npm test")

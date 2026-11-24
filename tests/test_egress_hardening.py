@@ -114,10 +114,16 @@ class PermissionTests(unittest.TestCase):
             self.assertEqual(perm.risk, agent_tools.SECRET_RISK, path)
 
     def test_any_read_outside_the_workspace_carries_a_risk(self) -> None:
-        perm = self._perm("read_files", paths=["/etc/hostname"])
-        self.assertEqual(perm.kind, "outside")
-        self.assertTrue(perm.risk)
-        self.assertTrue(self._perm("write_files", files=[{"path": "/tmp/x", "content": "a"}]).risk)
+        # A real absolute path outside the workspace on every platform (/etc/hostname does not exist on
+        # Windows, where a rooted path that is missing is read as workspace-relative).
+        with tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "hostname"
+            outside.write_text("host\n", encoding="utf-8")
+            perm = self._perm("read_files", paths=[str(outside)])
+            self.assertEqual(perm.kind, "outside")
+            self.assertTrue(perm.risk)
+            target = str(Path(other) / "x")
+            self.assertTrue(self._perm("write_files", files=[{"path": target, "content": "a"}]).risk)
 
     def test_secret_files_through_other_tools_ask(self) -> None:
         for perm in (
@@ -183,7 +189,7 @@ class AutoModeTests(unittest.TestCase):
 class CommittedSettingsTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
+        self.root = Path(self._tmp.name).resolve()  # the config path comes back resolved (no 8.3 names on Windows)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / ".bot").mkdir()
 
