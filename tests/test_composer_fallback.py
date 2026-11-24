@@ -56,7 +56,7 @@ class FindComposerTests(unittest.TestCase):
         self._run(_Page({CONFIGURED}))
         self.assertEqual(chat_client._prompt_selector(_selectors()), CONFIGURED)
 
-    def test_signed_in_chatgpt_editor_is_found_and_remembered(self) -> None:
+    def test_prosemirror_editor_is_found_and_remembered(self) -> None:
         editor = "div.ProseMirror[contenteditable='true']"
         self._run(_Page({editor}))
         self.assertEqual(chat_client._prompt_selector(_selectors()), editor)

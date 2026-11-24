@@ -324,6 +324,40 @@ class SetupState:
         self.config_path = Path(config_path)
         self.bridge = BrowserBridge()
         self.lock = threading.RLock()
+        #: Sites the chat page tried to reach that strict egress blocked, not yet allowed.
+        self.blocked: list[str] = []
+
+    def blocked_hosts(self) -> list[str]:
+        """Newly blocked sites added to the list shown on the page (allowed ones drop off)."""
+        from critique_bot.browser import drain_blocked_hosts
+
+        allowed = set(self.raw_config().get("allowed_hosts") or [])
+        with self.lock:
+            for host in drain_blocked_hosts():
+                if host not in self.blocked:
+                    self.blocked.append(host)
+            self.blocked = [h for h in self.blocked if h not in allowed]
+            return list(self.blocked)
+
+    def allow_host(self, host: str) -> dict[str, Any]:
+        """Add ``host`` to allowed_hosts; the browser must be reopened for it to apply."""
+        from critique_bot.config import _host_list
+
+        try:
+            cleaned = _host_list([host])
+        except ConfigError as exc:
+            return {"error": str(exc)}
+        if not cleaned:
+            return {"error": "no site given"}
+        with self.lock:
+            current = self.raw_config()
+            hosts = list(current.get("allowed_hosts") or [])
+            if cleaned[0] not in hosts:
+                hosts.append(cleaned[0])
+            current["allowed_hosts"] = hosts
+            write_config_file(self.config_path, current)
+            self.blocked = [h for h in self.blocked if h != cleaned[0]]
+        return {"allowed": cleaned[0], "allowed_hosts": hosts}
 
     def raw_config(self) -> dict[str, Any]:
         if not self.config_path.is_file():
@@ -505,6 +539,14 @@ def make_handler(state: SetupState, token: str) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/browser/open":
                     self._json(_open_browser(state))
                     return
+                if self.path == "/api/allow_host":
+                    result = state.allow_host(str(body.get("host") or ""))
+                    if not result.get("error") and state.bridge.running:
+                        # Allowed sites are part of how the browser starts: reopen it.
+                        state.bridge.stop()
+                        result.update(_open_browser(state))
+                    self._json(result)
+                    return
                 if self.path == "/api/browser/close":
                     state.bridge.stop()
                     self._json({"browser": False})
@@ -532,6 +574,7 @@ def _state_payload(state: SetupState) -> dict[str, Any]:
         "config_path": str(state.config_path.resolve()),
         "config": state.raw_config(),
         "browser": state.bridge.running,
+        "blocked_hosts": state.blocked_hosts(),
         "fields": PICK_FIELDS,
         "error": "",
     }
@@ -691,7 +734,7 @@ def run_setup(
     if not state.config_path.is_file():
         print(
             f"error: config file not found: {state.config_path}\n"
-            "Set crit up first: run crit (it asks a few questions), or crit config --preset chatgpt.",
+            "Set crit up first: run crit (it asks a few questions), or crit config --url https://chat.company.com/.",
             flush=True,
         )
         return 1
@@ -817,9 +860,16 @@ PAGE_HTML = """<!doctype html>
       <span class="status" id="browserStatus"></span>
     </div>
     <div id="configError" class="check-hint"></div>
+    <div id="blockedBox" class="check-hint" style="display:none">
+      <b>The chat page tried to reach other sites</b>, which crit blocked (only the chat address and
+      the allowed sites are reachable). If the page stays blank or cannot sign in, allow the sites that
+      belong to your company's chat or its sign-in, then the browser reopens:
+      <div id="blockedList" style="margin-top:8px"></div>
+    </div>
+    <div id="allowedList" class="sub"></div>
     <div class="field">
       <label for="url">Chat URL</label>
-      <input type="text" id="url" placeholder="https://chatgpt.com/" />
+      <input type="text" id="url" placeholder="https://chat.company.com/" />
       <span></span>
     </div>
     <div class="field">
@@ -919,6 +969,15 @@ async function refresh() {
   el("redactTermsList").innerHTML = terms.length
     ? "Sent to the chat as [REDACTED:name]: " + terms.map((term) => `<b>${esc(term)}</b>`).join(", ")
     : "";
+  const blocked = Array.isArray(state.blocked_hosts) ? state.blocked_hosts : [];
+  el("blockedBox").style.display = blocked.length ? "" : "none";
+  el("blockedList").innerHTML = blocked.map((host) => `
+    <div class="row" style="margin:4px 0"><code>${esc(host)}</code>
+      <button class="ghost" data-host="${esc(host)}" onclick="allowHost(this.dataset.host)">Allow</button></div>`).join("");
+  const allowed = Array.isArray(config.allowed_hosts) ? config.allowed_hosts : [];
+  el("allowedList").innerHTML = allowed.length
+    ? "Allowed sites besides the chat: " + allowed.map((h) => `<code>${esc(h)}</code>`).join(", ")
+    : "No other sites allowed: crit reaches only the chat address.";
   if (!document.querySelector("#selectorFields input")) renderSelectorFields(config);
   setBrowser(state.browser);
 }
@@ -937,6 +996,13 @@ async function openBrowser() {
     ? "error: " + result.error
     : "browser open at " + result.url + " - sign in if the page asks.";
   setBrowser(!result.error);
+}
+
+async function allowHost(host) {
+  el("browserStatus").textContent = "allowing " + host + " and reopening the browser...";
+  const result = await api("/api/allow_host", { host });
+  el("browserStatus").textContent = result.error ? "error: " + result.error : "allowed " + result.allowed;
+  refresh();
 }
 
 async function closeBrowser() {

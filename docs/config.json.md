@@ -7,7 +7,6 @@ reference and for CI images:
 | Starter | Use |
 | --- | --- |
 | [`config.example.json`](../config.example.json) | Generic chat UI |
-| [`config.chatgpt.example.json`](../config.chatgpt.example.json) | ChatGPT (also built in: `crit config --preset chatgpt`) |
 | [`config.local.example.json`](../config.local.example.json) | A model behind an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) |
 
 The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
@@ -28,7 +27,7 @@ crit writes the user config owner-only (0600 in a 0700 folder on Linux and macOS
 owner-only ACL on Windows), replacing it in one step so it is never half-written.
 
 When no file exists, a command in a terminal asks the first-run questions (cloud chat or local
-model; ChatGPT or a company chat address; names to hide) and writes the user config. Without
+model; the company chat address; names to hide) and writes the user config. Without
 a terminal (CI, the worker, `--acp`) it exits with a sentence naming the `crit config`
 command to run. `crit configure` asks the questions again.
 
@@ -41,9 +40,7 @@ not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
 
 | Flag | Sets |
 | --- | --- |
-| `--preset chatgpt` | `url`, `selectors`, and `allowed_hosts` for ChatGPT (`egress` strict unless set) |
-| `--preset custom` | a company chat: starter `selectors` (run `crit setup` next); needs `--url` |
-| `--url URL` | `url` (https only; plain http only for localhost), `backend: browser` |
+| `--url URL` | `url` (https only; plain http only for localhost), `backend: browser`; starter `selectors` when none are set (run `crit setup` next) |
 | `--backend browser\|local` | `backend` (local defaults `url` to `http://127.0.0.1:8080`) |
 | `--local-url URL` | the model server's `url`, `backend: local` (another PC must be in `allowed_hosts`) |
 | `--model NAME` | `model` (`""` for the default) |
@@ -62,7 +59,7 @@ file from loading is refused with the reason (exit code 2). A file that is not c
 (for example only `--redact` so far) is saved with a "Not ready yet" note.
 
 ```bash
-crit config --preset chatgpt --redact "Acme, Globex"
+crit config --url https://chat.company.com/ --redact "Acme, Globex"
 crit config --url https://chat.company.com/ --allow-host static.company-cdn.net
 crit config --pii on --egress strict --gitlab-url https://gitlab.company.com
 ```
@@ -150,10 +147,10 @@ A real `url` (not the `YOUR_CHAT_UI` placeholder) and two selectors:
 
 ```json
 {
-  "url": "https://chatgpt.com/",
+  "url": "https://chat.company.com/",
   "selectors": {
-    "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea']",
-    "assistant_messages": "[data-message-author-role='assistant'] .markdown"
+    "prompt_input": "textarea, [contenteditable='true'][role='textbox']",
+    "assistant_messages": "[data-message-author-role='assistant'], .assistant-message"
   }
 }
 ```
@@ -193,11 +190,11 @@ Comma-separated lists are OR: the first matching node is used.
 | Env | `CRITIQUE_CHAT_URL` |
 | Default | none |
 
-Full URL of the chat page the bot should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://chatgpt.com/`.
+Full URL of the chat page the bot should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://chat.company.com/`.
 
 The chat page runs as it does in a normal browser: crit does not filter its requests, so a chat UI that calls other hosts behind the scenes keeps working. crit controls what leaves on its own side, by what it types into the page (see [security.md](security.md)).
 
-`"filter_chat_page": true` turns on a page filter: Edge may then reach only the chat's own site (for `chat.corp.example`, `corp.example` and all its subdomains; on shared hosting such as `*.azurewebsites.net`, the exact host) plus the hosts in `allowed_hosts`. Every other request, page loads in any frame included, is aborted, and crit prints the blocked host names. No chat site has hosts built in: for `https://chatgpt.com/`, used only for testing, list its CDN and sign-in hosts in `allowed_hosts` (`config.chatgpt.example.json` has a starting list). Default `false`.
+`"filter_chat_page": true` turns on a page filter: Edge may then reach only the chat's own site (for `chat.corp.example`, `corp.example` and all its subdomains; on shared hosting such as `*.azurewebsites.net`, the exact host) plus the hosts in `allowed_hosts`. Every other request, page loads in any frame included, is aborted, and crit prints the blocked host names. No chat site has hosts built in: list the chat's CDN and sign-in hosts in `allowed_hosts`. Default `false`.
 
 The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
 
@@ -210,14 +207,14 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 | Type | list of host names |
 | Default | `[]` |
 
-The browser may reach only the chat URL's host and its subdomains (for chatgpt.com, also its own CDNs and challenge hosts). Everything else is blocked: page loads in any frame, scripts, API calls, WebSockets, and popups. An internal chat site often needs neighbouring hosts, such as its API, its static files, or the company sign-in. List them here; each also covers its subdomains:
+The browser may reach only the chat URL's host and its subdomains. Everything else is blocked: page loads in any frame, scripts, API calls, WebSockets, and popups. An internal chat site often needs neighbouring hosts, such as its API, its static files, or the company sign-in. List them here; each also covers its subdomains:
 
 ```json
 "url": "https://ai-chat.company.net/",
 "allowed_hosts": ["api.company.net", "static.company.net", "login.microsoftonline.com"]
 ```
 
-When crit blocks a host for a non-ChatGPT URL, it prints the host and this setting. Add only hosts the chat page needs. See [security.md](security.md).
+When crit blocks a host, it prints the host and this setting. Add only hosts the chat page needs. See [security.md](security.md).
 
 ## `redact_terms` and `redact_pii`
 
@@ -252,30 +249,30 @@ When crit blocks a host for a non-ChatGPT URL, it prints the host and this setti
 
 Must be visible after navigation or the run fails (`prompt input after navigation`). Prefer test ids over `textarea` alone if the page has several.
 
-ChatGPT example:
+Example:
 
 ```text
-#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]
+textarea, [contenteditable='true'][role='textbox']
 ```
 
 ### `send_button`
 
 If set, the bot clicks it; on failure it falls back to Enter. If omitted, Enter only.
 
-ChatGPT example:
+Example:
 
 ```text
-button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton
+button[type='submit'], button[aria-label='Send' i]
 ```
 
 ### `assistant_messages`
 
 Must match **each** assistant bubble (or the markdown inside it), not the whole transcript. Counting these nodes is how the bot knows a new reply started.
 
-ChatGPT example:
+Example:
 
 ```text
-[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']
+[data-message-author-role='assistant'], .assistant-message
 ```
 
 If this selector is too broad, the bot may think the reply finished too soon or grab the wrong text. If it is too narrow, it waits until `timeout_ms` and then fails.
@@ -284,10 +281,10 @@ If this selector is too broad, the bot may think the reply finished too soon or 
 
 Optional but the most important selector for review quality. While this control is visible the assistant is still writing, so the bot keeps waiting no matter how long the model pauses. When it disappears, the reply is finished and the bot returns it after a short settle.
 
-ChatGPT example:
+Example:
 
 ```text
-button[data-testid='stop-button'], button[aria-label*='Stop' i]
+button[aria-label*='Stop' i]
 ```
 
 Leave it empty and the bot falls back to `idle_ms`: it assumes a reply that stopped changing for that long is done. A model that pauses longer than `idle_ms` mid-answer — extended thinking, a tool call, rate limiting — then yields a **silently truncated** review. When that happens the run logs a warning and `review.json` records `completion.complete: false`, so you can tell truncated output apart from finished output.
@@ -366,7 +363,7 @@ A reply is waited for as long as it shows signs of life, not for a fixed time. E
 | Type | integer > 0 |
 | Default | `4000` |
 
-Fallback completion signal, used only when no generating indicator is visible (see `selectors.stop_button`). After the assistant text stops changing for this long *and* nothing says generation is in progress, the reply is treated as complete. Too low: truncated reviews. Too high: extra wait on every job. ChatGPT example uses `6000`.
+Fallback completion signal, used only when no generating indicator is visible (see `selectors.stop_button`). After the assistant text stops changing for this long *and* nothing says generation is in progress, the reply is treated as complete. Too low: truncated reviews. Too high: extra wait on every job. The first-run setup writes `6000`.
 
 When `stop_button` is configured, `idle_ms` no longer decides completion — it only sizes the settle window after generation stops.
 
@@ -496,7 +493,7 @@ Extra random delay in `[0, jitter]` added to the interval, so traffic is less me
 | Env | `CRITIQUE_MAX_PARALLEL_TABS` |
 | Default | `1` |
 
-How many reviews the worker may run at once. Edge tabs in the same signed-in instance (`1` is safest for ChatGPT rate limits). `3` means up to three MRs in flight; new sends still wait `min_interval_seconds`. Values above 8 are clamped to 8.
+How many reviews the worker may run at once. Edge tabs in the same signed-in instance (`1` is safest for the chat's rate limits). `3` means up to three MRs in flight; new sends still wait `min_interval_seconds`. Values above 8 are clamped to 8.
 
 If Edge cannot open remote debugging, the worker logs a warning and falls back to one tab.
 
@@ -567,15 +564,15 @@ Adjust `url` / `selectors` to your chat UI. Keep paths absolute.
 ```json
 {
   "backend": "browser",
-  "url": "https://chatgpt.com/",
+  "url": "https://chat.company.com/",
   "selectors": {
     "model_dropdown": "",
-    "model_dropdown_identifier": "model-switcher",
+    "model_dropdown_identifier": "",
     "model_option": "[role='menuitemradio'], [role='menuitem'], [role='option']",
-    "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]",
-    "send_button": "button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton",
-    "stop_button": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
-    "assistant_messages": "[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']"
+    "prompt_input": "textarea, [contenteditable='true'][role='textbox']",
+    "send_button": "button[type='submit'], button[aria-label='Send' i]",
+    "stop_button": "button[aria-label*='Stop' i]",
+    "assistant_messages": "[data-message-author-role='assistant'], .assistant-message"
   },
   "model": "",
   "timeout_ms": 180000,

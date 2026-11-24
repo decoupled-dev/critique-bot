@@ -276,7 +276,7 @@ crit
 crit "create a hello.txt file that says hello"
 ```
 
-The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, asks which role crit plays in this project (see [Roles](#roles)), then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. For chatgpt.com the window closes by itself once the session cookie is saved; for other sites, close it when you are signed in. If the chat page later shows a **Log in** button, crit warns that it is not signed in: a signed-out ChatGPT answers with a smaller model and may return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
+The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, asks which role crit plays in this project (see [Roles](#roles)), then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. Close the window when you are signed in. If the chat page later shows a **Log in** button, crit warns that it is not signed in: a signed-out chat may answer with a smaller model and return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
 
 The task uses the chat URL, selectors, and browser profile from the clone's `config.json`. Tasks stay headless. Add `--headed` when you want the window on a later task:
 
@@ -432,7 +432,7 @@ The main chat stays sharp when it stays small. A part of a task whose details th
 - **One approval.** In ask mode the split is approved once, for the files it lists. A read-only split runs without asking, also in plan mode, so planning can investigate several places at once.
 - The status line shows `Running 2 helper chats…` with each helper's current step.
 
-`"helper_sessions"` in `.bot/settings.json` sets how many helper chats may run at once (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same ChatGPT account limits. With the browser backend, helpers need its remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one chat and `delegate` says so. With a local model, helpers are plain extra conversations with the server.
+`"helper_sessions"` in `.bot/settings.json` sets how many helper chats may run at once (default 2, at most 4, 0 turns it off). Each helper's chat counts against the same chat account limits. With the browser backend, helpers need its remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one chat and `delegate` says so. With a local model, helpers are plain extra conversations with the server.
 
 ### Long sessions and replies that never come
 
@@ -479,7 +479,7 @@ Only the conversation with the chat URL leaves this PC. With `backend: local` no
 
 ### How replies are read
 
-crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so the "ChatGPT said:" heading is never taken for the reply.
+crit reads each reply from the page with its whitespace intact. The browser's `innerText` collapses runs of spaces and tabs in a paragraph, which used to strip the indentation from every `old_string`, `new_string`, and written file. The reader keeps text exactly as the model wrote it, keeps code blocks verbatim (without the language label and Copy button), and puts back the backticks of inline code. When the reply selector matches a whole turn and the markdown inside it, only the markdown is read, so an "Assistant said:" heading is never taken for the reply.
 
 Edits and whole-file rewrites of XML (`.xml`, layouts, `AndroidManifest.xml`, `.csproj`, `.svg`, ...) are checked like Python and JSON: a change that would make a well-formed file malformed (an unescaped `&`, a mismatched tag, a missing `xmlns:android`) is not applied, and the model gets the line and the reason. Line endings (CRLF), a BOM, and the encoding of the file are kept.
 
@@ -552,7 +552,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | --- | --- |
 | `check_command` | The finish line after a real edit. A `Test with:` or `Test command:` line in `AGENT.md` is used when this key is absent; this key wins when both are set. A non-zero exit sends the output back to the model, up to two times. If it still fails, the task ends as FAILED. When the task ends, the program prints the on-disk diff once. Example: `".\\gradlew.bat testDebugUnitTest"` or `"./gradlew testDebugUnitTest"`. |
 | `max_result_chars` | Characters per tool-result message sent to the chat. The default is 20000 or `max_prompt_chars` from `config.json`, whichever is smaller; with a local model, `num_ctx / 2`. Smaller results keep the chat sharp for longer. Values under 4000 are ignored. |
-| `seed_instructions` | Set to `false` when the tool instructions already live in a ChatGPT Project (see below). The first task then goes out with only the environment and project notes in front of it. |
+| `seed_instructions` | Set to `false` when the tool instructions already live in a chat project (see below). The first task then goes out with only the environment and project notes in front of it. |
 | `theme` | Text style chosen on the welcome screen: `auto`, `dark`, `light`, `dark-colorblind`, `light-colorblind`, `dark-ansi`, or `light-ansi`. The session screen uses the same colors. `/theme` changes it. |
 | `permissions` | The starting mode: `"ask"` (the default), `"edits"`, `"auto"` (like `--yes`), or `"plan"`. See [Modes](#modes). |
 | `confirm_risky` | `false` lets auto mode run risky commands (a broad delete, `git reset --hard`, a push, a flash) without asking. Default `true`. |
@@ -582,15 +582,15 @@ On Linux and macOS the same lines use `./gradlew`.
 | `handoff_notes` | `false` skips asking the old chat for a handoff note before moving to a new one. Default `true`. |
 | `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same chat when nothing was answered yet; a stalled reply, an unhealthy chat, and every later retry go to a new chat with a summary of the task. Default 3. |
 
-### Use a ChatGPT Project for the instructions
+### Use a chat project for the instructions
 
-The tool protocol is long. Sending it as the first message works, but the model can lose track of it in a long chat. A ChatGPT Project keeps it pinned:
+The tool protocol is long. Sending it as the first message works, but the model can lose track of it in a long chat. If the company chat has projects or custom assistants with their own instructions, one keeps it pinned:
 
-1. In chatgpt.com, create a Project and paste the `<<<SYSTEM>>>` section of `prompts/agent.txt` into the Project's instructions.
-2. Point `url` in `config.json` at that Project.
+1. In the company chat, create a project (or assistant) and paste the `<<<SYSTEM>>>` section of `prompts/agent.txt` into its instructions.
+2. Point `url` in `config.json` at that project.
 3. Set `"seed_instructions": false` in `.bot/settings.json`.
 
-`/new` and compaction open an empty chat inside the same Project or GPT: a conversation link such as `https://chatgpt.com/g/g-x/c/abc` becomes `https://chatgpt.com/g/g-x`.
+`/new` and compaction open an empty chat inside the same project: a conversation link such as `https://chat.company.com/g/g-x/c/abc` becomes `https://chat.company.com/g/g-x`.
 
 ### Tools
 

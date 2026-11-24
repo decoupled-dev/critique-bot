@@ -685,7 +685,7 @@ function Invoke-Setup {
         Write-Info "0. Put $binPath on PATH"
     }
     Write-Info "1. Pick the chat, and any company names to keep out of it (crit uses $configPath):"
-    Write-Info "     crit config --preset chatgpt --redact `"Your Company`"   (or: crit config --url https://chat.company.com/ ; crit setup)"
+    Write-Info "     crit config --url https://chat.company.com/ --redact `"Your Company`" ; crit setup   (or: crit config --backend local)"
     Write-Info "2. Check a one-word reply:"
     Write-Info "     crit ask --prompt `"Reply with exactly one word: PONG.`""
     Write-Info "3. Use crit in any project:"

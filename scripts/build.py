@@ -117,8 +117,7 @@ def _write_readme(dest: Path, binary_name: str) -> None:
                 "Set up: run crit (or critique-bot) in a terminal; the first run asks",
                 "where the model runs and which names to hide, and saves your settings.",
                 "Or in one line, for scripts and rollouts:",
-                f'  {invoke} config --preset chatgpt --redact "Your Company"',
-                f"  {invoke} config --url https://chat.company.com/   (then: {invoke} setup)",
+                f'  {invoke} config --url https://chat.company.com/ --redact "Your Company"   (then: {invoke} setup)',
                 f"  {invoke} config                                    (show the settings)",
                 "The first chat run opens Edge so you can sign in. Later runs reuse it.",
                 "",
@@ -156,7 +155,7 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     if internal.is_dir():
         shutil.copytree(internal, payload / "_internal", symlinks=True)
     shutil.copy2(ROOT / "config.example.json", payload / "config.example.json")
-    for extra_cfg in (ROOT / "config.chatgpt.example.json", ROOT / "config.local.example.json"):
+    for extra_cfg in (ROOT / "config.local.example.json",):
         if extra_cfg.is_file():
             shutil.copy2(extra_cfg, payload / extra_cfg.name)
     for extra in (

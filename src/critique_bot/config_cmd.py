@@ -3,7 +3,7 @@
 ``crit config`` with no flags prints the settings in plain words. With flags it changes
 them, for scripts, CI, and IT rollout as much as for people:
 
-    crit config --preset chatgpt --redact "Acme, Globex"
+    crit config --url https://chat.company.com/ --redact "Acme, Globex"
     crit config --url https://chat.company.com/ --allow-host static.company-cdn.net
     crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
 
@@ -22,13 +22,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
-from urllib.parse import urlsplit
 
 from critique_bot import egress, redaction
 from critique_bot.config import (
     BACKEND_BROWSER,
     BACKEND_LOCAL,
-    CHATGPT_PRESET,
     DEFAULT_LOCAL_URL,
     ENV_CONFIG,
     PLACEHOLDER_MODEL,
@@ -51,7 +49,7 @@ CONFIG_FILE_NAME = "config.json"
 #: Told when a command needs settings and cannot ask (no terminal).
 NOT_SET_UP = (
     "crit is not set up yet. Run crit in a terminal to answer a few questions, or set it up "
-    'in one line: crit config --preset chatgpt (or crit config --url https://chat.company.com/), '
+    'in one line: crit config --url https://chat.company.com/ (or crit config --backend local), '
     'adding --redact "Your Company" for names to hide. See the settings with: crit config'
 )
 
@@ -122,7 +120,7 @@ def describe(location: ConfigLocation) -> list[str]:
     path = location.path
     lines = [f"Settings file: {path} ({_SOURCE_WORDS.get(location.source, location.source)})"]
     if not location.exists:
-        lines.append("Nothing is set up yet. Run crit to answer a few questions, or: crit config --preset chatgpt")
+        lines.append("Nothing is set up yet. Run crit to answer a few questions, or: crit config --url https://chat.company.com/")
         return lines
     data = read_config_dict(path)
     try:
@@ -177,8 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            "  crit config --preset chatgpt --redact \"Acme, Globex\"\n"
-            "  crit config --url https://chat.company.com/\n"
+            "  crit config --url https://chat.company.com/ --redact \"Acme, Globex\"\n"
             "  crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b\n"
             "  crit config --allow-host static.company-cdn.net\n"
             "  crit config --gitlab-url https://gitlab.company.com"
@@ -188,7 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="change this file instead of the one crit would use")
     parser.add_argument("--repo-dir", default=".", help=argparse.SUPPRESS)
     parser.add_argument("--path", action="store_true", help="print the settings file's path and stop")
-    parser.add_argument("--preset", choices=("chatgpt", "custom"), help="chatgpt: ChatGPT's address, page elements, and sites; custom: a company chat (with --url)")
     parser.add_argument("--url", help="the chat's https address (a cloud chat in the browser)")
     parser.add_argument("--backend", choices=(BACKEND_BROWSER, BACKEND_LOCAL), help="browser: a chat page; local: a model server")
     parser.add_argument("--local-url", help=f"the model server's address (default {DEFAULT_LOCAL_URL})")
@@ -210,7 +206,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
     return any(
         value not in (None, [], False)
         for value in (
-            args.preset, args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
+            args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
         )
     )
@@ -220,25 +216,10 @@ def _split_names(values: list[str]) -> list[str]:
     return [item.strip() for value in values for item in value.split(",") if item.strip()]
 
 
-def _host(url: str) -> str:
-    return (urlsplit(url).hostname or "").lower()
-
-
 def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
     """Apply the flags to ``data`` in place; what changed, as short phrases. ConfigError on a bad value."""
     done: list[str] = []
     hints: list[str] = []
-    if args.preset == "chatgpt":
-        preset = json.loads(json.dumps(CHATGPT_PRESET))
-        data["backend"] = BACKEND_BROWSER
-        data["url"] = preset["url"]
-        data["selectors"] = preset["selectors"]
-        data.setdefault("egress", preset["egress"])
-        for key in ("timeout_ms", "idle_ms"):
-            data.setdefault(key, preset[key])
-        existing = data.get("allowed_hosts") if isinstance(data.get("allowed_hosts"), list) else []
-        data["allowed_hosts"] = list(_host_list(list(existing) + preset["allowed_hosts"]))
-        done.append(f"ChatGPT set up (chat address {preset['url']}, its page elements, and the {len(preset['allowed_hosts'])} sites its page needs)")
     if args.backend:
         before = data.get("backend")
         data["backend"] = args.backend
@@ -258,15 +239,6 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
         data["url"] = url
         data["backend"] = BACKEND_BROWSER
         done.append(f"chat address set to {url} (the only site crit sends prompts to)")
-        if args.preset == "chatgpt" and _host(url) != _host(CHATGPT_PRESET["url"]):
-            raise ConfigError("--preset chatgpt sets the address itself; drop --url, or use --preset custom")
-    if args.preset == "custom":
-        url = str(data.get("url") or "")
-        if not url or backend_kind(data.get("backend")) != BACKEND_BROWSER:
-            raise ConfigError("--preset custom needs the chat's address: add --url https://chat.company.com/")
-        if not isinstance(data.get("selectors"), dict) or data.get("selectors") == CHATGPT_PRESET["selectors"]:
-            data["selectors"] = dict(STARTER_SELECTORS)
-        data.setdefault("egress", egress.STRICT)
     hosts = list(_host_list(data.get("allowed_hosts")))
     if args.allow_host:
         new = [host for host in _host_list(args.allow_host) if host not in hosts]
@@ -347,11 +319,7 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
     if backend_kind(data.get("backend")) == BACKEND_BROWSER and data.get("url"):
         selectors = data.get("selectors") if isinstance(data.get("selectors"), dict) else {}
         if not selectors.get("prompt_input"):
-            if _host(str(data["url"])) == _host(CHATGPT_PRESET["url"]):
-                data["selectors"] = {**CHATGPT_PRESET["selectors"], **{k: v for k, v in selectors.items() if v}}
-                data["allowed_hosts"] = list(_host_list(list(data.get("allowed_hosts") or []) + CHATGPT_PRESET["allowed_hosts"]))
-            else:
-                data["selectors"] = {**STARTER_SELECTORS, **{k: v for k, v in selectors.items() if v}}
+            data["selectors"] = {**STARTER_SELECTORS, **{k: v for k, v in selectors.items() if v}}
         if data.get("selectors") == STARTER_SELECTORS:
             hints.append("Next: run crit setup to point crit at the chat's message box and replies.")
     return done + hints
@@ -424,7 +392,7 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
                 print("Kept the settings.")
                 return 0
         path.unlink()
-        print(f"Removed {path}. crit asks the setup questions on the next run (or use crit config --preset ...).")
+        print(f"Removed {path}. crit asks the setup questions on the next run (or use crit config --url https://chat.company.com/).")
         return 0
     if not _changes_requested(args):
         try:

@@ -2,8 +2,7 @@
 
 ``crit`` asks these when it has no config.json yet (and ``crit configure`` asks them again):
 
-- **Cloud**: a chat page in a browser. ChatGPT is a preset (address, page elements, and
-  the few sites its page needs); a company chat asks for its https address, writes starter
+- **Cloud**: the company chat page in a browser. Asks for its https address, writes starter
   selectors, and then ``crit setup`` opens so the person points at the page's real elements.
 - **Local**: an OpenAI-compatible model server (llama.cpp's llama-server, LM Studio, vLLM)
   on this PC or another PC on the network. Asks for the host and port, then lists the
@@ -30,7 +29,6 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from critique_bot.config import (
-    CHATGPT_PRESET,
     STARTER_SELECTORS,
     BotConfig,
     ConfigError,
@@ -106,20 +104,8 @@ def run_wizard(
 
 def _cloud(path: Path, ask: Ask, say: Say) -> WizardResult | None:
     say("")
-    say("Which chat?")
-    say("  1) ChatGPT (chatgpt.com)")
-    say("  2) Your company's chat (you type its address)")
-    choice = _choose(ask, say, "Choose 1 or 2", ("1", "2"))
-    if choice is None:
-        return None
-    if choice == "1":
-        data = json.loads(json.dumps(CHATGPT_PRESET))
-        _write(path, data)
-        say("crit will contact chatgpt.com, plus only the few sites the ChatGPT page needs to load: "
-            + ", ".join(data["allowed_hosts"]) + ".")
-        return WizardResult(path, "browser", needs_selectors=False)
     while True:
-        url = ask("Chat address (for example https://chat.company.com/): ").strip()
+        url = ask("Your company's chat address (for example https://chat.company.com/): ").strip()
         if not url:
             return None
         problem = _chat_url_problem(url)

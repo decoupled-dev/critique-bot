@@ -124,7 +124,7 @@ class UnfilteredByDefaultTests(unittest.TestCase):
 
 
 class ChatNetworkGuardTests(unittest.TestCase):
-    CHAT = "https://chatgpt.com/"
+    CHAT = "https://chat.company.example/"
 
     def setUp(self) -> None:
         from critique_bot import browser
@@ -134,19 +134,19 @@ class ChatNetworkGuardTests(unittest.TestCase):
 
     def test_allows_chat_origin_and_subdomains(self) -> None:
         for url in (
-            "https://chatgpt.com/",
-            "https://chatgpt.com/backend-api/conversation",
-            "wss://chatgpt.com/ws",
-            "https://ab.chatgpt.com/events",
+            "https://chat.company.example/",
+            "https://chat.company.example/backend-api/conversation",
+            "wss://chat.company.example/ws",
+            "https://ab.chat.company.example/events",
         ):
             self.assertTrue(request_is_allowed(url, self.CHAT), url)
 
-    def test_no_hosts_are_built_in_for_chatgpt(self) -> None:
-        # openai.com, its CDNs, Cloudflare, and Arkose are reachable only when allowed_hosts lists them.
+    def test_no_hosts_are_built_in_for_the_chat(self) -> None:
+        # The chat's sign-in host, its CDNs, Cloudflare, and Arkose are reachable only when allowed_hosts lists them.
         for url in (
-            "https://auth.openai.com/authorize",
-            "https://cdn.oaistatic.com/assets/app.js",
-            "https://files.oaiusercontent.com/file",
+            "https://login.company-sso.example/authorize",
+            "https://cdn.company-static.example/assets/app.js",
+            "https://files.company-files.example/file",
             "https://challenges.cloudflare.com/cdn-cgi/challenge",
             "https://speed.cloudflare.com/__up",
             "https://client-api.arkoselabs.com/fc/gt2/public_key",
@@ -156,12 +156,12 @@ class ChatNetworkGuardTests(unittest.TestCase):
     def test_allowed_hosts_open_exactly_what_they_list(self) -> None:
         from critique_bot import browser
 
-        browser.set_allowed_hosts(["oaistatic.com", "challenges.cloudflare.com"])
+        browser.set_allowed_hosts(["company-static.example", "challenges.cloudflare.com"])
         try:
-            self.assertTrue(request_is_allowed("https://cdn.oaistatic.com/assets/app.js", self.CHAT))
+            self.assertTrue(request_is_allowed("https://cdn.company-static.example/assets/app.js", self.CHAT))
             self.assertTrue(request_is_allowed("https://challenges.cloudflare.com/x", self.CHAT))
             self.assertFalse(request_is_allowed("https://speed.cloudflare.com/__up", self.CHAT))
-            self.assertFalse(request_is_allowed("https://auth.openai.com/authorize", self.CHAT))
+            self.assertFalse(request_is_allowed("https://login.company-sso.example/authorize", self.CHAT))
         finally:
             browser.set_allowed_hosts(())
 
@@ -180,13 +180,13 @@ class ChatNetworkGuardTests(unittest.TestCase):
             "http://127.0.0.1:9222/json/version",
             "http://localhost:8765/",
             "about:blank",
-            "blob:https://chatgpt.com/uuid",
+            "blob:https://chat.company.example/uuid",
             "data:text/plain,hi",
             "edge://settings/",
         ):
             self.assertTrue(request_is_allowed(url, self.CHAT), url)
 
-    def test_custom_chat_host_does_not_get_openai_family(self) -> None:
+    def test_custom_chat_host_gets_only_its_own_site(self) -> None:
         from critique_bot import egress
 
         chat = "https://chat.corp.example/"
@@ -194,8 +194,8 @@ class ChatNetworkGuardTests(unittest.TestCase):
         egress.configure("open", chat)  # the chat's whole site is allowed only with "egress": "open"
         self.assertTrue(request_is_allowed("https://chat.corp.example/api", chat))
         self.assertTrue(request_is_allowed("https://cdn.chat.corp.example/app.js", chat))
-        self.assertFalse(request_is_allowed("https://chatgpt.com/", chat))
-        self.assertFalse(request_is_allowed("https://cdn.oaistatic.com/x", chat))
+        self.assertFalse(request_is_allowed("https://chat.company.example/", chat))
+        self.assertFalse(request_is_allowed("https://cdn.company-static.example/x", chat))
         # The chat's own site is the chat UI's domain: its API and static hosts work.
         self.assertTrue(request_is_allowed("https://api.corp.example/", chat))
         self.assertFalse(request_is_allowed("https://evilcorp.example/", chat))
@@ -218,7 +218,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
 
     def test_allowed_hosts_include_chat_host(self) -> None:
         hosts = allowed_chat_hosts(self.CHAT)
-        self.assertEqual(hosts, frozenset({"chatgpt.com"}))
+        self.assertEqual(hosts, frozenset({"chat.company.example"}))
 
     def test_guard_aborts_off_chat_requests(self) -> None:
         handlers: list = []
@@ -245,7 +245,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
             def abort(self, reason: str | None = None) -> None:
                 self.aborted = reason
 
-        allowed = Route("https://chatgpt.com/backend-api/conversation")
+        allowed = Route("https://chat.company.example/backend-api/conversation")
         handlers[0](allowed)
         self.assertTrue(allowed.continued)
         self.assertIsNone(allowed.aborted)

@@ -46,7 +46,7 @@ class NoReplyTests(unittest.TestCase):
 
 
 class VirtualizedChatTests(unittest.TestCase):
-    """ChatGPT drops old messages from the page: the count stays flat, the last reply changes."""
+    """Some chat pages drop old messages from the page: the count stays flat, the last reply changes."""
 
     def test_a_different_last_reply_is_new_even_when_the_count_is_flat(self) -> None:
         page = MagicMock()

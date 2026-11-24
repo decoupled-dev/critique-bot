@@ -55,7 +55,7 @@ class WizardTests(unittest.TestCase):
         return run_wizard(self.path, ask=script.ask, say=script.say, list_models=listing)
 
     def test_cloud_needs_https_and_writes_a_loadable_config(self) -> None:
-        script = _Script("1", "2", "http://chat.corp.example/", "https://chat.corp.example/", "")
+        script = _Script("1", "http://chat.corp.example/", "https://chat.corp.example/", "")
         result = self._run(script)
         assert result is not None
         self.assertEqual((result.backend, result.needs_selectors), ("browser", True))
@@ -102,11 +102,11 @@ class WizardTests(unittest.TestCase):
         self.assertTrue(any("connection refused" in line for line in script.said))
 
     def test_ctrl_c_stops_without_writing(self) -> None:
-        self.assertIsNone(self._run(_Script("1", "2", "^C")))
+        self.assertIsNone(self._run(_Script("1", "^C")))
         self.assertFalse(self.path.exists())
 
     def test_names_to_hide_are_saved_and_registered(self) -> None:
-        script = _Script("1", "2", "https://chat.corp.example/", "Globex, ab", "Acme Corp, Globex, acme corp")
+        script = _Script("1", "https://chat.corp.example/", "Globex, ab", "Acme Corp, Globex, acme corp")
         result = self._run(script)
         assert result is not None
         self.assertTrue(any("too short" in line for line in script.said))
@@ -119,23 +119,9 @@ class WizardTests(unittest.TestCase):
         set_custom_terms(())
 
     def test_ctrl_c_at_the_names_question_keeps_the_config(self) -> None:
-        result = self._run(_Script("1", "2", "https://chat.corp.example/", "^C"))
+        result = self._run(_Script("1", "https://chat.corp.example/", "^C"))
         self.assertIsNotNone(result)
         self.assertNotIn("redact_terms", json.loads(self.path.read_text()))
-
-    def test_chatgpt_preset_needs_no_page_setup(self) -> None:
-        script = _Script("1", "1", "Acme Corp")
-        result = self._run(script)
-        assert result is not None
-        self.assertFalse(result.needs_selectors)
-        config = load_config(self.path)
-        self.assertEqual(config.url, "https://chatgpt.com/")
-        self.assertIn("auth.openai.com", config.allowed_hosts)
-        self.assertEqual(config.redact_terms, ("Acme Corp",))
-        self.assertTrue(config.redact_pii)
-        self.assertTrue(any("chatgpt.com" in line for line in script.said))
-        self.assertTrue(any(line.startswith("Personal data") for line in script.said))
-        set_custom_terms(())
 
     def test_default_path_is_the_user_config(self) -> None:
         from critique_bot.config import user_config_path

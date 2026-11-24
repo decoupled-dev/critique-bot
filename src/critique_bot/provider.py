@@ -66,8 +66,8 @@ _CONVERSATION_RE = re.compile(r"^(.*?)/c/[^/]+/?$")
 def fresh_chat_url(url: str) -> str:
     """The URL of an empty chat for ``url``: a conversation link loses its ``/c/<id>``.
 
-    ``https://chatgpt.com/c/abc`` -> ``https://chatgpt.com/``;
-    ``https://chatgpt.com/g/g-x/c/abc`` -> ``https://chatgpt.com/g/g-x`` (the GPT or project stays).
+    ``https://chat.company.com/c/abc`` -> ``https://chat.company.com/``;
+    ``https://chat.company.com/g/g-x/c/abc`` -> ``https://chat.company.com/g/g-x`` (the assistant or project stays).
     """
     try:
         parts = urllib.parse.urlsplit(url)

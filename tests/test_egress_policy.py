@@ -84,7 +84,8 @@ class PolicyTest(_PolicyReset):
 class BrowserTest(_PolicyReset):
     def test_resolver_allows_only_the_policy_hosts(self) -> None:
         egress.configure("strict", "https://chat.corp.example/c", ("cdn.corp.example",))
-        args = browser.browser_quiet_args("https://chat.corp.example/c")
+        with patch.object(browser, "system_proxy", return_value=("", "")):
+            args = browser.browser_quiet_args("https://chat.corp.example/c")
         rules = next(a for a in args if a.startswith("--host-resolver-rules="))
         self.assertIn("MAP * ~NOTFOUND", rules)
         self.assertIn("EXCLUDE chat.corp.example", rules)
@@ -99,6 +100,41 @@ class BrowserTest(_PolicyReset):
         self.assertFalse(browser.request_is_allowed("https://static.corp.example/app.js", url))
         egress.configure("open", url)
         self.assertTrue(browser.request_is_allowed("https://static.corp.example/app.js", url))
+
+
+class ProxyTest(_PolicyReset):
+    def test_company_proxy_is_used_and_still_resolvable(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        with patch.object(browser, "system_proxy", return_value=("http=proxy.corp.example:8080;https=proxy.corp.example:8443", "")):
+            args = browser.browser_quiet_args("https://chat.corp.example/c")
+        self.assertIn("--proxy-server=http=proxy.corp.example:8080;https=proxy.corp.example:8443", args)
+        self.assertNotIn("--no-proxy-server", args)
+        rules = next(a for a in args if a.startswith("--host-resolver-rules="))
+        self.assertIn("EXCLUDE proxy.corp.example", rules)
+
+    def test_pac_file(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        with patch.object(browser, "system_proxy", return_value=("", "http://wpad.corp.example/proxy.pac")):
+            args = browser.browser_quiet_args("https://chat.corp.example/c")
+        self.assertIn("--proxy-pac-url=http://wpad.corp.example/proxy.pac", args)
+        self.assertIn("EXCLUDE wpad.corp.example", next(a for a in args if a.startswith("--host-resolver-rules=")))
+
+    def test_env_proxy_off_windows(self) -> None:
+        with patch.object(browser.os, "name", "posix"), patch.dict(os.environ, {"HTTPS_PROXY": "http://p.corp.example:3128"}):
+            self.assertEqual(browser.system_proxy(), ("http://p.corp.example:3128", ""))
+
+
+class ResolverBlockNoticeTest(_PolicyReset):
+    def test_a_blocked_sign_in_page_is_explained_once(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        browser._resolver_reported.discard("login.idp.example")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            browser._report_resolver_block("login.idp.example", navigation=True)
+            browser._report_resolver_block("login.idp.example", navigation=True)
+        self.assertEqual(err.getvalue().count("Blocked:"), 1)
+        self.assertIn("crit config --allow-host login.idp.example", err.getvalue())
+        self.assertIn("login.idp.example", browser.drain_blocked_hosts())
 
 
 class GitLabTest(_PolicyReset):

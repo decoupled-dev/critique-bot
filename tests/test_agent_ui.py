@@ -287,9 +287,9 @@ class TextTests(_Base):
         self.assertNotIn("**", text)
 
     def test_header_plain_when_piped(self) -> None:
-        agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5", approve_mode="auto")
+        agent_ui.configure(workspace=Path("/w"), model="Model 5.5", approve_mode="auto")
         agent_ui.welcome_header(version="1.2")
-        self.assertEqual(self.text(), f"crit v1.2 · {Path('/w')} · model: ChatGPT 5.5 · mode: auto\n")
+        self.assertEqual(self.text(), f"crit v1.2 · {Path('/w')} · model: Model 5.5 · mode: auto\n")
         agent_ui.configure(role="AOSPExpert")
         agent_ui.welcome_header(version="1.2")
         self.assertTrue(self.text().endswith("· mode: auto · role: AOSP Expert\n"))
@@ -297,12 +297,12 @@ class TextTests(_Base):
     def test_header_box_on_a_terminal(self) -> None:
         con = _console(terminal=True)
         agent_ui.set_console(con)
-        agent_ui.configure(workspace=Path("/w"), model="ChatGPT 5.5", role="code-reviewer")
+        agent_ui.configure(workspace=Path("/w"), model="Model 5.5", role="code-reviewer")
         agent_ui.welcome_header(version="1.2")
         text = con.export_text()
         self.assertIn("✻ Welcome to crit v1.2", text)
         self.assertIn("/help for commands", text)
-        self.assertIn("model: ChatGPT 5.5", text)
+        self.assertIn("model: Model 5.5", text)
         self.assertIn("role: Code Reviewer · /role to change", text)
         self.assertIn("╭", text)
 
@@ -574,9 +574,9 @@ class RunAgentTests(_Base):
         from critique_bot.config import BotConfig, Selectors
 
         self.config = BotConfig(
-            url="https://chatgpt.com/",
+            url="https://chat.company.example/",
             selectors=Selectors(prompt_input="textarea", assistant_messages=".markdown"),
-            model="ChatGPT 5.5",
+            model="Model 5.5",
         )
 
     def tearDown(self) -> None:

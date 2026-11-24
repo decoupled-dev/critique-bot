@@ -168,11 +168,11 @@ class _Route:
 
 
 class LeanHeadlessTests(unittest.TestCase):
-    CHAT = "https://chatgpt.com/"
+    CHAT = "https://chat.company.example/"
 
     def setUp(self) -> None:
         # The chat site's own CDN and challenge host come from allowed_hosts; none are built in.
-        browser.set_allowed_hosts(["oaistatic.com", "challenges.cloudflare.com"])
+        browser.set_allowed_hosts(["company-static.example", "challenges.cloudflare.com"])
         self.addCleanup(browser.set_allowed_hosts, ())
         browser.set_page_filter(True)
         self.addCleanup(browser.set_page_filter, False)
@@ -194,18 +194,18 @@ class LeanHeadlessTests(unittest.TestCase):
             os.environ.pop("CRIT_LEAN_HEADLESS", None)
             self.assertFalse(browser.lean_headless_enabled())
         handle = self._handler(lean=True, env="")
-        route = _Route("https://cdn.oaistatic.com/avatar.png", "image")
+        route = _Route("https://cdn.company-static.example/avatar.png", "image")
         handle(route)
         self.assertTrue(route.continued)
 
     def test_headless_skips_decoration_only(self) -> None:
         handle = self._handler(lean=True)
         for kind in ("image", "font", "media"):
-            route = _Route("https://cdn.oaistatic.com/x." + kind, kind)
+            route = _Route("https://cdn.company-static.example/x." + kind, kind)
             handle(route)
             self.assertEqual(route.aborted, "blockedbyclient", kind)
         for kind in ("script", "stylesheet", "xhr", "fetch", "websocket", "document", "eventsource"):
-            route = _Route("https://chatgpt.com/backend-api/x", kind)
+            route = _Route("https://chat.company.example/backend-api/x", kind)
             handle(route)
             self.assertTrue(route.continued, kind)
         challenge = _Route("https://challenges.cloudflare.com/turnstile/v0/img.png", "image")
@@ -214,14 +214,14 @@ class LeanHeadlessTests(unittest.TestCase):
 
     def test_visible_window_keeps_images(self) -> None:
         handle = self._handler(lean=False)
-        route = _Route("https://cdn.oaistatic.com/avatar.png", "image")
+        route = _Route("https://cdn.company-static.example/avatar.png", "image")
         handle(route)
         self.assertTrue(route.continued)
 
     def test_env_switch_turns_it_off(self) -> None:
         with patch.dict("os.environ", {"CRIT_LEAN_HEADLESS": "0"}):
             handle = self._handler(lean=True, env="0")
-        route = _Route("https://cdn.oaistatic.com/avatar.png", "image")
+        route = _Route("https://cdn.company-static.example/avatar.png", "image")
         handle(route)
         self.assertTrue(route.continued)
 

@@ -475,7 +475,7 @@ elif [ "$on_path" = 0 ]; then
     info "0. Put $bin_dir on PATH"
 fi
 info "1. Pick the chat, and any company names to keep out of it (crit uses $q_cfg_show):"
-info "     crit config --preset chatgpt --redact \"Your Company\"   (or: crit config --url https://chat.company.com/ ; crit setup)"
+info "     crit config --url https://chat.company.com/ --redact \"Your Company\" ; crit setup   (or: crit config --backend local)"
 info "2. Check a one-word reply:"
 info "     crit ask --prompt \"Reply with exactly one word: PONG.\""
 info "3. Use crit in any project:"

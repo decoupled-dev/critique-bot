@@ -324,3 +324,28 @@ class PickFieldTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockedSitesTests(unittest.TestCase):
+    """The setup page lists sites strict egress blocked, and Allow adds them to allowed_hosts."""
+
+    def test_blocked_then_allowed(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from critique_bot import browser, setup_ui
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"url": "https://chat.company.example/"}), encoding="utf-8")
+            state = setup_ui.SetupState(path)
+            browser.drain_blocked_hosts()
+            browser._note_blocked_host("login.company-sso.example")
+            self.assertEqual(state.blocked_hosts(), ["login.company-sso.example"])
+            result = state.allow_host("login.company-sso.example")
+            self.assertEqual(result["allowed"], "login.company-sso.example")
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["allowed_hosts"], ["login.company-sso.example"])
+            self.assertEqual(state.blocked_hosts(), [])
+            self.assertIn("error", state.allow_host("not a host!"))

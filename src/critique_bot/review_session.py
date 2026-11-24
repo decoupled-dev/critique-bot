@@ -1,6 +1,6 @@
 """Review turns on one ChatSession: one-shot when it fits, else prompt → files → patch.
 
-ChatGPT-like UIs have no system role we own. Recency wins, the middle of a long
+Web chat UIs have no system role we own. Recency wins, the middle of a long
 chat is dropped, and "ACK only / do not review" trains the model to ignore HEAD
 files. So: keep instructions, original files, and the patch as separate artifacts;
 put the patch last with a short review closer that points back at those files.
@@ -99,7 +99,7 @@ def format_files_coming(files: dict[str, str] | list[tuple[str, str]]) -> str:
 
 
 def format_review_closer(*, file_index: str = "", files_in_this_message: bool = False) -> str:
-    """Short recency block: ChatGPT follows the last instructions most reliably."""
+    """Short recency block: chat models follow the last instructions most reliably."""
     if file_index:
         where = (
             "HEAD files already in this conversation (use them; do not review "
@@ -197,7 +197,7 @@ def split_review_payload(
 ) -> PromptPayload:
     """One paste when it fits; otherwise prompt, then files, then patch.
 
-    ChatGPT attends to a single well-ordered message better than many turns.
+    A chat model attends to a single well-ordered message better than many turns.
     Split only when template + HEAD files + patch would overflow one paste.
     """
     path_count = changed_path_count or len(file_attachments)

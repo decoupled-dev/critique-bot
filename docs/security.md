@@ -4,7 +4,7 @@
 
 ## Verified
 
-- **A full ChatGPT turn, traced at the system level** (`strace -f -e connect` over Python, Playwright's driver, and the browser) connected to four addresses. All four are chatgpt.com's own. Nothing else was contacted, DNS aside.
+- **A full chat turn with a hosted chat, traced at the system level** (`strace -f -e connect` over Python, Playwright's driver, and the browser) connected only to the chat site's own addresses. Nothing else was contacted, DNS aside.
 - **Every channel a page can use to send data** was tried against a separate tracker host with the optional page filter on (`filter_chat_page`): `fetch`, XHR, `sendBeacon`, image, script, tracking pixel, iframe, a form POSTed into an iframe, WebSocket, `window.open` popup, preconnect, and a WebRTC STUN request. **Nothing reached the tracker.** With the filter off, the same page reached it nine ways, which proves the channels are real. This runs as `tests/test_browser_egress.py` wherever Chrome or Edge is installed.
 - **Every program crit starts** (git, rg, the shell, PowerShell) was checked. In agent mode, none of them is pointed at another machine.
 

@@ -49,7 +49,7 @@ _FILL_DIRECT_MAX = 8_000
 _FILL_CHUNK = 12_000
 _FILL_SINGLE_EVAL_MAX = 48_000
 _MODELISH_RE = re.compile(
-    r"model|gpt|claude|gemini|grok|llama|mistral|sonnet|opus|haiku|flash|chatgpt",
+    r"model|gpt|claude|gemini|grok|llama|mistral|sonnet|opus|haiku|flash",
     re.I,
 )
 
@@ -284,7 +284,7 @@ _MENU_OPEN_JS = """
 _FIND_OPENER_JS = """
 (needle) => {
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK"]);
-  const MODELISH = /model|gpt|claude|gemini|grok|llama|mistral|sonnet|opus|haiku|flash|o1|o3|o4|chatgpt/i;
+  const MODELISH = /model|gpt|claude|gemini|grok|llama|mistral|sonnet|opus|haiku|flash|o1|o3|o4/i;
   const SKIP_LABEL = /search|filter|timezone|language|locale/i;
   const target = String(needle || "").replace(/\\s+/g, " ").trim().toLowerCase();
 
@@ -571,7 +571,7 @@ _SET_PROMPT_JS = """
 
 
 #: Composer shapes chat pages use, tried in this order when the configured prompt_input finds
-#: nothing (ChatGPT signed in is a ProseMirror editor with no id; other chat UIs differ too).
+#: nothing (many chat pages use a ProseMirror editor with no id; others differ).
 COMPOSER_FALLBACKS = (
     "div.ProseMirror[contenteditable='true']",
     "[contenteditable='true'][role='textbox']",
@@ -585,7 +585,7 @@ _COMPOSER_FOUND: dict[str, str] = {}
 
 #: Current shapes of a chat page's send button and replies, added to the configured selectors.
 #: Each matches nothing on a page that uses the configured ones, so adding them is safe there;
-#: on a page that changed (ChatGPT signed in, late 2026) they are what finds the elements.
+#: on a page whose markup changed they are what finds the elements.
 SEND_FALLBACKS = (
     "button[type='submit'][aria-label='Send' i]",
     "button[aria-label='Send message' i]",
@@ -1446,12 +1446,11 @@ const replyText = (root) => {
 #: ``element.evaluate(_ELEMENT_TEXT_JS)``: the reply text of one element (see _REPLY_TEXT_FN).
 _ELEMENT_TEXT_JS = "(el) => {" + _REPLY_TEXT_FN + " return replyText(el); }"
 
-#: Attributes that name one message, nearest first (ChatGPT, then common chat UI shapes).
+#: Attributes that name one message, nearest first (common chat UI shapes).
 _REPLY_KEY_ATTRS = (
     "data-message-id",
     "data-dil-message-id",
     "data-response-body",
-    "data-chatgpt-selection-message-id",
     "data-content-search-unit-key",
     "data-testid",
 )
@@ -1477,7 +1476,7 @@ _REPLY_STATE_JS = """
     if (style.display === 'none' || parseFloat(style.opacity || '1') === 0) return false;
     return el.getAttribute('aria-hidden') !== 'true';
   };
-  // A selector list can match a reply twice: its outer turn (with the "ChatGPT said:"
+  // A selector list can match a reply twice: its outer turn (with an "Assistant said:"
   // heading) and the markdown inside it. Keep only the innermost match of each reply.
   const visible = nodes.filter(shown);
   const inner = visible.filter((node) => !visible.some((other) => other !== node && node.contains(other)));
@@ -1764,7 +1763,7 @@ def _is_new_reply(page: Page, state: dict, previous_count: int) -> bool:
     """A reply after the send: more replies than before, or a different last reply.
 
     The count alone misses a new reply on a page that drops old messages from the DOM
-    as the chat grows (ChatGPT does): the count stays flat while the last reply changes.
+    as the chat grows (some chat UIs do): the count stays flat while the last reply changes.
     """
     if int(state.get("count") or 0) > previous_count:
         return True
@@ -2214,7 +2213,7 @@ _SIGNED_OUT_SELECTORS = (
 
 
 def _warn_if_signed_out(page: Page) -> None:
-    """ChatGPT answers signed-out visitors too, with a smaller model. Say so plainly."""
+    """Some chat pages answer signed-out visitors too, with a smaller model. Say so plainly."""
     for selector in _SIGNED_OUT_SELECTORS:
         try:
             if page.locator(selector).first.is_visible():

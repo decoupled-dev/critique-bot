@@ -361,7 +361,7 @@ def load_config(
         if not selectors.prompt_input:
             raise ConfigError(
                 "selectors.prompt_input is required: crit does not know the chat's message box yet. "
-                "Run crit setup to point at it, or crit config --preset chatgpt for ChatGPT"
+                "Run crit setup to point at it (after crit config --url https://chat.company.com/)"
             )
         if not selectors.assistant_messages:
             raise ConfigError(
@@ -370,13 +370,13 @@ def load_config(
             )
         if not url:
             raise ConfigError(
-                "no chat address is set. Run crit config --preset chatgpt, or "
-                "crit config --url https://chat.company.com/ (or set CRITIQUE_CHAT_URL)"
+                "no chat address is set. Run crit config --url https://chat.company.com/ "
+                "(or set CRITIQUE_CHAT_URL)"
             )
         if PLACEHOLDER_URL in url:
             raise ConfigError(
                 "url is still a placeholder. Set the chat address with "
-                "crit config --url https://chat.company.com/ (or crit config --preset chatgpt)."
+                "crit config --url https://chat.company.com/."
             )
 
     egress_mode = _egress_mode(raw.get("egress"))
@@ -571,31 +571,6 @@ def clean_gitlab_url(value: str) -> str:
     path = parts.path.rstrip("/")
     return f"{parts.scheme}://{host}{port}{path}"
 
-
-#: ``crit config --preset chatgpt``: kept equal to config.chatgpt.example.json (a test checks),
-#: embedded because a packaged binary may not ship the example files.
-CHATGPT_PRESET: dict = {
-    "backend": "browser",
-    "url": "https://chatgpt.com/",
-    "egress": "strict",
-    "allowed_hosts": [
-        "oaistatic.com",
-        "oaiusercontent.com",
-        "auth.openai.com",
-        "challenges.cloudflare.com",
-    ],
-    "selectors": {
-        "model_dropdown": "",
-        "model_dropdown_identifier": "model-switcher",
-        "model_option": "[role='menuitemradio'], [role='menuitem'], [role='option']",
-        "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]",
-        "send_button": "button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton",
-        "stop_button": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
-        "assistant_messages": "[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']",
-    },
-    "timeout_ms": 180000,
-    "idle_ms": 6000,
-}
 
 #: Starter selectors for a chat page nobody has picked elements on yet. They match the
 #: common shapes; ``crit setup`` replaces them with the page's own.

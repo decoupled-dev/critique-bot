@@ -21,13 +21,13 @@ def _chrome() -> str:
 
 CHROME = os.environ.get("CRIT_TEST_CHROME") or _chrome()
 
-# The two layouts seen on chatgpt.com: plain text with literal newlines (signed out),
+# Two layouts seen on chat pages: plain text with literal newlines (signed out),
 # and rendered markdown (signed in), each inside a turn <li> that the selector also matches.
-_PLAIN = """<ol><li data-message-role="assistant"><h4 data-message-attribution>ChatGPT said:</h4>
+_PLAIN = """<ol><li data-message-role="assistant"><h4 data-message-attribution>Assistant said:</h4>
 <div data-assistant-markdown><section><p style="white-space: pre-line">&lt;tool_call&gt;
 {"tool": "edit_file", "arguments": {"old_string": "    &lt;item /&gt;\\n", "note": "a\tb"}}
 &lt;/tool_call&gt;</p></section></div></li></ol>"""
-_MARKDOWN = """<ol><li data-message-role="assistant"><h4 data-message-attribution>ChatGPT said:</h4>
+_MARKDOWN = """<ol><li data-message-role="assistant"><h4 data-message-attribution>Assistant said:</h4>
 <div data-assistant-markdown><p>Here:</p><pre><div><span>xml</span><button>Copy code</button></div><code class="language-xml">&lt;a&gt;
     &lt;b/&gt;
 &lt;/a&gt;
@@ -64,7 +64,7 @@ class RealBrowserTextTests(unittest.TestCase):
             state["text"],
             '<tool_call>\n{"tool": "edit_file", "arguments": {"old_string": "    <item />\\n", "note": "a\tb"}}\n</tool_call>',
         )
-        self.assertNotIn("ChatGPT said", state["text"])
+        self.assertNotIn("Assistant said", state["text"])
         inner = page.evaluate("() => document.querySelector('[data-assistant-markdown]').innerText")
         self.assertNotIn('"    <item', inner)  # what the old reader saw
 
@@ -77,7 +77,7 @@ class RealBrowserTextTests(unittest.TestCase):
         )
 
     def test_turn_without_content_reads_empty(self) -> None:
-        page = self._page('<ol><li data-message-role="assistant"><h4 data-message-attribution>ChatGPT said:</h4></li></ol>')
+        page = self._page('<ol><li data-message-role="assistant"><h4 data-message-attribution>Assistant said:</h4></li></ol>')
         state = chat_client._reply_state(page, SELECTOR, with_text=True)
         self.assertEqual((state["count"], state["length"], state["text"]), (1, 0, ""))
 

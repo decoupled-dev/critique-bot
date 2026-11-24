@@ -982,7 +982,7 @@ class LoopTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
-    """Shapes taken from real chatgpt.com sessions in .bot/sessions."""
+    """Shapes taken from real chat sessions in .bot/sessions."""
 
     def test_backtick_markdown_edit_lands_first_time(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -1726,20 +1726,20 @@ class RobustLoopTests(unittest.TestCase):
         from critique_bot.provider import PageBrowserSession, fresh_chat_url
 
         for url, fresh in (
-            ("https://chatgpt.com/c/68e1-abc", "https://chatgpt.com/"),
-            ("https://chatgpt.com/c/68e1-abc/", "https://chatgpt.com/"),
-            ("https://chatgpt.com/g/g-p-123-proj/c/68e1-abc", "https://chatgpt.com/g/g-p-123-proj"),
-            ("https://chatgpt.com/g/g-abc/c/1?model=gpt-4o#x", "https://chatgpt.com/g/g-abc?model=gpt-4o"),
-            ("https://chatgpt.com/g/g-abc", "https://chatgpt.com/g/g-abc"),
-            ("https://chatgpt.com/", "https://chatgpt.com/"),
+            ("https://chat.company.example/c/68e1-abc", "https://chat.company.example/"),
+            ("https://chat.company.example/c/68e1-abc/", "https://chat.company.example/"),
+            ("https://chat.company.example/g/g-p-123-proj/c/68e1-abc", "https://chat.company.example/g/g-p-123-proj"),
+            ("https://chat.company.example/g/g-abc/c/1?model=gpt-4o#x", "https://chat.company.example/g/g-abc?model=gpt-4o"),
+            ("https://chat.company.example/g/g-abc", "https://chat.company.example/g/g-abc"),
+            ("https://chat.company.example/", "https://chat.company.example/"),
             ("https://chat.example/?model=x", "https://chat.example/?model=x"),
         ):
             self.assertEqual(fresh_chat_url(url), fresh, url)
         visits: list[str] = []
         page = SimpleNamespace(goto=lambda url, **_kw: visits.append(url))
-        config = SimpleNamespace(url="https://chatgpt.com/c/68e1-abc", timeout_ms=1000)
+        config = SimpleNamespace(url="https://chat.company.example/c/68e1-abc", timeout_ms=1000)
         self.assertTrue(PageBrowserSession(page, config, close_page=False).new_chat())
-        self.assertEqual(visits, ["https://chatgpt.com/"])
+        self.assertEqual(visits, ["https://chat.company.example/"])
 
 
 if __name__ == "__main__":

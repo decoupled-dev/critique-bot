@@ -120,9 +120,9 @@ class BrowserQuietTest(unittest.TestCase):
 
         saved = egress.policy()
         self.addCleanup(setattr, egress, "_policy", saved)
-        egress.configure("open", "https://chatgpt.com/")  # strict egress blocks everything; this is the open-mode list
+        egress.configure("open", "https://chat.company.example/")  # strict egress blocks everything; this is the open-mode list
 
-        args = browser.browser_quiet_args("https://chatgpt.com/")
+        args = browser.browser_quiet_args("https://chat.company.example/")
         rules = next(a for a in args if a.startswith("--host-resolver-rules="))
         self.assertIn("MAP accounts.google.com ~NOTFOUND", rules)
         self.assertIn("MAP *.events.data.microsoft.com ~NOTFOUND", rules)

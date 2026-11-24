@@ -158,6 +158,60 @@ def strict_resolver_rules(hosts: tuple[str, ...]) -> str:
     return ", ".join(parts)
 
 
+def system_proxy() -> tuple[str, str]:
+    """The proxy this PC uses for the web: ``(server, pac_url)``, either may be empty.
+
+    Windows: the Internet Options settings (what Edge itself follows). Elsewhere: HTTPS_PROXY.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+                def value(name: str):
+                    try:
+                        return winreg.QueryValueEx(key, name)[0]
+                    except OSError:
+                        return None
+
+                pac = str(value("AutoConfigURL") or "").strip()
+                server = str(value("ProxyServer") or "").strip() if value("ProxyEnable") else ""
+                return server, pac
+        except OSError:
+            return "", ""
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        if os.environ.get(name, "").strip():
+            return os.environ[name].strip(), ""
+    return "", ""
+
+
+def _proxy_hosts(server: str, pac: str) -> list[str]:
+    """Host names in a proxy setting ("host:port", "http=a:80;https=b:80", a URL) and a PAC URL."""
+    hosts = []
+    for part in re.split(r"[;\s]+", server or ""):
+        part = part.split("=", 1)[-1]
+        if part:
+            hosts.append((urlsplit(part if "://" in part else "http://" + part).hostname or "").lower())
+    if pac:
+        hosts.append((urlsplit(pac).hostname or "").lower())
+    return [h for h in dict.fromkeys(hosts) if h]
+
+
+def _strict_proxy_args() -> tuple[list[str], list[str]]:
+    """Proxy switches under strict egress, and the proxy hosts the resolver must still find.
+
+    No proxy on this PC: the browser connects directly (``--no-proxy-server``). A company
+    proxy: the browser uses it, since nothing else may reach the internet there; the proxy
+    resolves names, so the page filter (and the proxy's own rules) limit where pages go.
+    """
+    server, pac = system_proxy()
+    if pac:
+        return [f"--proxy-pac-url={pac}"], _proxy_hosts("", pac)
+    if server:
+        return [f"--proxy-server={server}"], _proxy_hosts(server, "")
+    return ["--no-proxy-server"], []
+
+
 def browser_quiet_args(chat_url: str | None) -> list[str]:
     """Switches that keep the browser's own services quiet, plus resolver rules for their hosts.
 
@@ -170,7 +224,10 @@ def browser_quiet_args(chat_url: str | None) -> list[str]:
         hosts = egress.policy().hosts()
         if not hosts and chat_url:
             hosts = ((urlsplit(chat_url).hostname or "").lower(),)
-        args += ["--host-resolver-rules=" + strict_resolver_rules(hosts), "--no-proxy-server"]
+        proxy_args, proxy_hosts = _strict_proxy_args()
+        if proxy_hosts:
+            log.info(f"strict egress through the company proxy {', '.join(proxy_hosts)}")
+        args += ["--host-resolver-rules=" + strict_resolver_rules((*hosts, *proxy_hosts))] + proxy_args
         return args
     blocked = [pattern for pattern in BROWSER_SERVICE_HOSTS if _service_host_blocked(pattern, chat_url)]
     if blocked:
@@ -335,8 +392,7 @@ _INTERNAL_SCHEMES = frozenset(
 # a list of this PC's addresses, not a bind
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nosec B104
 # No chat site gets extra hosts built in: the page may reach its own host (and subdomains)
-# plus exactly what config.json lists in "allowed_hosts". A public chat used for testing
-# (chatgpt.com) lists its API, CDN, and sign-in hosts there, on that PC only.
+# plus exactly what config.json lists in "allowed_hosts" (its API, CDN, or sign-in hosts).
 _BLOCKED_BY_CLIENT = ("blockedbyclient", "err_blocked_by_client", "net::err_blocked_by_client")
 
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sso", "oauth", "auth")
@@ -448,10 +504,9 @@ def needs_visible_login(
 
 _LOGIN_POLL_MS = 500
 
-# Cookies that mean a real signed-in session (ChatGPT shows a chat box when signed out too).
-_SESSION_COOKIES = (
-    (("chatgpt.com", "openai.com"), "next-auth.session-token"),
-)
+# Cookies that mean a real signed-in session, as ((site suffixes), cookie name). No site is
+# built in; with none known, the sign-in window stays open until the user closes it.
+_SESSION_COOKIES: tuple[tuple[tuple[str, ...], str], ...] = ()
 
 
 def login_profile_dir(user_data_dir: str | None) -> Path:
@@ -469,9 +524,10 @@ def session_cookie_present(profile_dir: Path, url: str) -> bool | None:
     read (Windows keeps it locked while the browser runs).
     """
     host = (urlsplit(url).hostname or "").lower()
-    wanted = next((name for hosts, name in _SESSION_COOKIES if any(_host_matches_suffix(host, h) for h in hosts)), "")
-    if not wanted:
+    entry = next((entry for entry in _SESSION_COOKIES if any(_host_matches_suffix(host, h) for h in entry[0])), None)
+    if entry is None:
         return None
+    sites, wanted = entry
     import sqlite3
 
     for candidate in (profile_dir / "Default" / "Network" / "Cookies", profile_dir / "Default" / "Cookies"):
@@ -480,9 +536,10 @@ def session_cookie_present(profile_dir: Path, url: str) -> bool | None:
         try:
             uri = candidate.resolve().as_uri() + "?mode=ro&immutable=1"
             with sqlite3.connect(uri, uri=True, timeout=1) as db:
+                where = " or ".join("host_key like ?" for _ in sites)
                 row = db.execute(
-                    "select count(*) from cookies where name like ? and (host_key like ? or host_key like ?)",
-                    (f"%{wanted}%", "%chatgpt.com", "%openai.com"),
+                    f"select count(*) from cookies where name like ? and ({where})",  # nosec B608 - placeholders only
+                    (f"%{wanted}%", *(f"%{site}" for site in sites)),
                 ).fetchone()
             return bool(row and row[0])
         except Exception as exc:  # noqa: BLE001 - locked or a different schema
@@ -1352,6 +1409,31 @@ def _note_blocked_host(host: str) -> None:
         _blocked_pending.add(host)
 
 
+_resolver_reported: set[str] = set()
+
+
+def _report_resolver_block(host: str, *, navigation: bool) -> None:
+    """A friendly line, once per site, for a site strict egress kept the browser from reaching."""
+    with _blocked_lock:
+        first = host not in _resolver_reported
+        _resolver_reported.add(host)
+    _note_blocked_host(host)
+    if not first:
+        return
+    log.info(f"strict egress: {host} is not resolvable for the browser")
+    if navigation:
+        log.notice(
+            f"Blocked: the chat page sent the browser to {host} (often its sign-in page), which is not your "
+            f"chat, so the page cannot load. If {host} belongs to your company's chat or sign-in, allow it with: "
+            f"crit config --allow-host {host}"
+        )
+    else:
+        log.notice(
+            f"Blocked: the chat page tried to contact {host}, which is not your chat. Nothing was sent there. "
+            f"If the chat does not work and {host} belongs to it, allow it with: crit config --allow-host {host}"
+        )
+
+
 def drain_blocked_hosts() -> list[str]:
     """The sites blocked for the first time since the last call (sorted), and forget them.
 
@@ -1703,6 +1785,12 @@ def attach_page_debug(page: Page) -> None:
         failure = request.failure or {}
         error_text = failure.get("errorText") if isinstance(failure, dict) else failure
         err = str(error_text or "").lower()
+        host = (urlsplit(str(getattr(request, "url", "") or "")).hostname or "").lower()
+        if "name_not_resolved" in err and egress.strict() and host and not egress.policy().permits(host):
+            # Strict egress made the name unresolvable (the browser's resolver rules), so
+            # nothing reached that site. Say so once; the command line asks about it after the step.
+            _report_resolver_block(host, navigation=bool(getattr(request, "is_navigation_request", lambda: False)()))
+            return
         if any(token in err for token in _BLOCKED_BY_CLIENT):
             log.debug(
                 "blocked off-chat request "

@@ -36,11 +36,12 @@ class SandboxFlagTests(unittest.TestCase):
             self.assertFalse(browser.sandbox_disabled())
 
 
-def _cookie_db(profile: Path, rows: list[tuple[str, str]]) -> None:
+def _cookie_db(profile: Path, rows: list[tuple[str, str]], *, fresh: bool = True) -> None:
     path = profile / "Default" / "Network" / "Cookies"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=not fresh)
     with sqlite3.connect(path) as db:
-        db.execute("create table cookies (host_key text, name text)")
+        if fresh:
+            db.execute("create table cookies (host_key text, name text)")
         db.executemany("insert into cookies values (?, ?)", rows)
 
 
@@ -48,10 +49,16 @@ class SignInTests(unittest.TestCase):
     def test_session_cookie_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             profile = Path(tmp)
-            self.assertFalse(browser.session_cookie_present(profile, "https://chatgpt.com/"))
-            _cookie_db(profile, [(".chatgpt.com", "__Secure-next-auth.session-token")])
-            self.assertTrue(browser.session_cookie_present(profile, "https://chatgpt.com/"))
-            self.assertIsNone(browser.session_cookie_present(profile, "https://chat.example.com/"))
+            # No site is built in: an unknown site's session cannot be told from the cookies.
+            self.assertIsNone(browser.session_cookie_present(profile, "https://chat.company.example/"))
+            known = ((("chat.company.example",), "session_token"),)
+            with patch.object(browser, "_SESSION_COOKIES", known):
+                self.assertFalse(browser.session_cookie_present(profile, "https://chat.company.example/"))
+                _cookie_db(profile, [(".chat.company.example", "other"), (".evil.example", "session_token")])
+                self.assertFalse(browser.session_cookie_present(profile, "https://chat.company.example/"))
+                _cookie_db(profile, [(".chat.company.example", "__Secure-session_token")], fresh=False)
+                self.assertTrue(browser.session_cookie_present(profile, "https://chat.company.example/"))
+                self.assertIsNone(browser.session_cookie_present(profile, "https://chat.example.com/"))
 
     def test_plain_window_has_no_automation_flags_and_closes_when_signed_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,9 +78,9 @@ class SignInTests(unittest.TestCase):
                  patch.object(browser, "session_cookie_present", side_effect=lambda *_: next(checks)), \
                  patch.object(browser, "_close_gracefully") as close, \
                  patch.object(browser.time, "sleep"):
-                browser.sign_in_with_plain_browser("https://chatgpt.com/", profile, timeout_s=60)
+                browser.sign_in_with_plain_browser("https://chat.company.example/", profile, timeout_s=60)
             cmd = seen[0]
-            self.assertEqual(cmd[-1], "https://chatgpt.com/")
+            self.assertEqual(cmd[-1], "https://chat.company.example/")
             joined = " ".join(cmd)
             for flag in ("remote-debugging", "enable-automation", "AutomationControlled", "no-sandbox", "setuid"):
                 self.assertNotIn(flag, joined)
@@ -89,7 +96,7 @@ class SignInTests(unittest.TestCase):
                  patch.object(browser, "close_existing_edge_sessions"), \
                  patch.object(browser, "session_cookie_present", return_value=False):
                 with self.assertRaises(browser.BrowserError):
-                    browser.sign_in_with_plain_browser("https://chatgpt.com/", profile, timeout_s=60)
+                    browser.sign_in_with_plain_browser("https://chat.company.example/", profile, timeout_s=60)
 
 
 if __name__ == "__main__":
@@ -100,17 +107,17 @@ class GuardTests(unittest.TestCase):
     def test_every_window_is_filtered(self) -> None:
         page = MagicMock()
         page._critique_chat_guard = None
-        browser.guard_page_network(page, "https://chatgpt.com/")
+        browser.guard_page_network(page, "https://chat.company.example/")
         page.route.assert_not_called()  # the filter is opt-in ("filter_chat_page")
         try:
             browser.set_page_filter(True)
-            browser.guard_page_network(page, "https://chatgpt.com/")
+            browser.guard_page_network(page, "https://chat.company.example/")
             page.route.assert_called_once()
         finally:
             browser.set_page_filter(False)
 
     def test_headless_reaches_only_the_chat_hosts(self) -> None:
-        self.assertTrue(browser.request_is_allowed("https://chatgpt.com/backend-api/x", "https://chatgpt.com/"))
+        self.assertTrue(browser.request_is_allowed("https://chat.company.example/backend-api/x", "https://chat.company.example/"))
         for url in (
             "https://accounts.google.com/gsi/client",
             "https://www.gstatic.com/x.js",
@@ -118,7 +125,7 @@ class GuardTests(unittest.TestCase):
             "https://www.google-analytics.com/g/collect",
         ):
             with self.subTest(url=url):
-                self.assertFalse(browser.request_is_allowed(url, "https://chatgpt.com/"))
+                self.assertFalse(browser.request_is_allowed(url, "https://chat.company.example/"))
 
     def test_internal_chat_allowed_hosts(self) -> None:
         from critique_bot.config import _host_list
@@ -144,7 +151,7 @@ class GuardTests(unittest.TestCase):
         route = MagicMock()
         route.request.url = "wss://tracker.example/socket"
         route.request.resource_type = "websocket"
-        browser._filter_chat_route(route, "https://chatgpt.com/")
+        browser._filter_chat_route(route, "https://chat.company.example/")
         route.abort.assert_called_once()
         route.continue_.assert_not_called()
 

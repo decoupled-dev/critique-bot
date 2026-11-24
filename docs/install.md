@@ -1,4 +1,40 @@
-# Install from a release
+# Install
+
+## Quick install (recommended)
+
+One line, no administrator rights. It downloads the latest release, checks it against the
+release's `SHA256SUMS.txt`, installs it for your user, and puts `crit` on your PATH:
+
+Windows 10/11 (PowerShell):
+
+```powershell
+irm https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.ps1 | iex
+```
+
+Linux (x64 or arm64):
+
+```bash
+curl -fsSL https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.sh | sh
+```
+
+Then, in any project folder:
+
+```
+crit            # the coding agent; the first run asks for your company's chat address
+crit review     # review the current changes
+crit config     # see or change the settings
+```
+
+Run the same line again to update. `critique-bot install --uninstall` removes it (your
+settings stay). Instead of the one-liner you can also download the zip yourself and
+double-click `critique-bot.exe` (Windows), or run `./critique-bot install` (Linux): it
+offers the same install.
+
+If the chat page stays blank, the chat probably needs its sign-in site (or a site for
+its files). crit names each site it blocked; allow the ones that belong to your chat with
+`crit config --allow-host <site>`, or with the **Allow** buttons on the `crit setup` page.
+
+## Release files
 
 Download from the repository's **Releases** page. Each release has:
 
@@ -8,6 +44,7 @@ Download from the repository's **Releases** page. Each release has:
 | `critique-bot_<version>_arm64.deb` | the same, on Arm (Graviton, Ampere, Raspberry Pi 5 with 64-bit OS) |
 | `critique-bot-<version>-linux-x64.zip`, `-linux-arm64.zip` | other Linux distributions with glibc 2.35 or newer (RHEL 9+, Fedora, ...) |
 | `critique-bot-<version>-windows-x64.zip` | Windows 10 and 11 (64-bit) |
+| `install.ps1`, `install.sh` | the one-line installers above |
 | `SHA256SUMS.txt` | checksums of every file |
 
 You need Microsoft Edge or Google Chrome installed (crit drives the browser that is already
@@ -92,8 +129,8 @@ The file and its folder are readable by you only. `crit config --path` prints wh
 in a terminal. With no settings yet it asks:
 
 1. Cloud chat or a model on this or another PC.
-2. Cloud: ChatGPT, or your company's chat (its `https://` address; crit names the host and
-   contacts no other site). Local: the server's address and which of its models to use.
+2. Cloud: your company's chat address (for example `https://chat.company.com/`; crit names
+   the host and contacts no other site). Local: the server's address and which of its models to use.
 3. Company, customer, or project names to hide from the chat (Enter for none).
 
 It then says that personal data (emails, phone numbers, card numbers, ...) is hidden too, and
@@ -105,8 +142,7 @@ runs headless.
 **Or set it up in one line** (scripts, CI images, IT rollout):
 
 ```bash
-crit config --preset chatgpt --redact "Acme, Globex"
-crit config --url https://chat.company.com/ --redact "Acme"     # then: crit setup
+crit config --url https://chat.company.com/ --redact "Acme, Globex"   # then: crit setup
 crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
 crit config                                                      # review the settings
 ```

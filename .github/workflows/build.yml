@@ -144,9 +144,18 @@ jobs:
       id-token: write      # signs the build provenance (Sigstore, keyless)
       attestations: write  # stores it with the repository
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: source
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+      - name: Install scripts
+        # releases/latest/download/install.ps1 and install.sh: the one-line installers.
+        run: |
+          mkdir -p artifacts/installers
+          cp source/scripts/install.ps1 source/scripts/install.sh artifacts/installers/
       - name: Checksums
         run: |
           cd artifacts
@@ -160,6 +169,8 @@ jobs:
           subject-path: |
             artifacts/**/*.zip
             artifacts/**/*.deb
+            artifacts/**/install.ps1
+            artifacts/**/install.sh
             artifacts/**/*.whl
             artifacts/**/*.tar.gz
       - name: Publish GitHub Release

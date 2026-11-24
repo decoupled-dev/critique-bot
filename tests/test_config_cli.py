@@ -15,7 +15,7 @@ from unittest.mock import patch
 from critique_bot import browser, config_prompts, egress, redaction
 from critique_bot.agent_cli import main as crit_main
 from critique_bot.cli import main as bot_main
-from critique_bot.config import CHATGPT_PRESET, load_config, user_config_path
+from critique_bot.config import load_config, user_config_path
 from critique_bot.config_cmd import main as config_main
 from critique_bot.config_cmd import resolve_config_path
 
@@ -112,26 +112,25 @@ class ResolutionTests(_Isolated):
 
 
 class ConfigCommandTests(_Isolated):
-    def test_preset_chatgpt_writes_a_private_loadable_user_config(self) -> None:
-        code, out, err = self.config("--preset", "chatgpt", "--redact", "Acme Corp, Globex", "--redact", "Initech")
+    def test_url_writes_a_private_loadable_user_config(self) -> None:
+        code, out, err = self.config("--url", "https://chat.corp.example/", "--redact", "Acme Corp, Globex", "--redact", "Initech")
         self.assertEqual(code, 0, err)
         self.assertIn(f"Saved {self.user}", out)
         self.assertIn("now hiding Acme Corp, Globex, Initech", out)
         config = load_config(self.user)
-        self.assertEqual(config.url, "https://chatgpt.com/")
+        self.assertEqual(config.url, "https://chat.corp.example/")
         self.assertEqual(config.redact_terms, ("Acme Corp", "Globex", "Initech"))
-        self.assertIn("auth.openai.com", config.allowed_hosts)
         if os.name != "nt":
             self.assertEqual(self.user.stat().st_mode & 0o777, 0o600)
             self.assertEqual(self.user.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual([p.name for p in self.user.parent.iterdir()], ["config.json"])  # no temp file left
 
     def test_show_prints_plain_settings_without_tokens(self) -> None:
-        self.config("--preset", "chatgpt", "--redact", "Acme Corp", "--gitlab-url", "https://gitlab.corp.example/")
+        self.config("--url", "https://chat.corp.example/", "--redact", "Acme Corp", "--gitlab-url", "https://gitlab.corp.example/")
         code, out, _ = self.config()
         self.assertEqual(code, 0)
         self.assertIn(f"Settings file: {self.user} (your user settings)", out)
-        self.assertIn("Chat address: https://chatgpt.com/", out)
+        self.assertIn("Chat address: https://chat.corp.example/", out)
         self.assertIn("Network: strict", out)
         self.assertIn("Names hidden: 1 (Acme Corp)", out)
         self.assertIn("Personal data hidden: on", out)
@@ -172,7 +171,7 @@ class ConfigCommandTests(_Isolated):
         self.assertIn("not a host name", err)
 
     def test_redact_validation_and_unredact(self) -> None:
-        self.config("--preset", "chatgpt", "--redact", "Acme Corp,Globex")
+        self.config("--url", "https://chat.corp.example/", "--redact", "Acme Corp,Globex")
         code, _, err = self.config("--redact", "ab")
         self.assertEqual(code, 2)
         self.assertIn("too short", err)
@@ -181,7 +180,7 @@ class ConfigCommandTests(_Isolated):
         self.assertEqual(self.data()["redact_terms"], ["Globex"])
 
     def test_pii_egress_model_gitlab_selector(self) -> None:
-        self.config("--preset", "chatgpt")
+        self.config("--url", "https://chat.corp.example/")
         code, out, _ = self.config("--pii", "off", "--egress", "open", "--model", "GPT-5", "--selector", "send_button=button.go")
         self.assertEqual(code, 0)
         self.assertIn("NO LONGER hidden", out)
@@ -208,7 +207,7 @@ class ConfigCommandTests(_Isolated):
         self.assertEqual(load_config(self.user).url, "http://gpu.corp.example:8080")
 
     def test_a_change_that_breaks_a_working_config_is_refused(self) -> None:
-        self.config("--preset", "chatgpt")
+        self.config("--url", "https://chat.corp.example/")
         before = self.user.read_text(encoding="utf-8")
         data = self.data()
         data["cdp_url"] = "http://127.0.0.1:9222"
@@ -227,7 +226,7 @@ class ConfigCommandTests(_Isolated):
         self.assertEqual(self.data()["redact_terms"], ["Acme Corp"])
 
     def test_reset(self) -> None:
-        self.config("--preset", "chatgpt")
+        self.config("--url", "https://chat.corp.example/")
         code, _, err = self.config("--reset")
         self.assertEqual(code, 2)
         self.assertIn("--yes", err)
@@ -241,13 +240,13 @@ class ConfigCommandTests(_Isolated):
             config_main, ["--repo-dir", str(self.project), "--reset"], is_tty=lambda: True, confirm=lambda q: True
         )
         self.assertFalse(self.user.exists())
-        self.config("--preset", "chatgpt")
+        self.config("--url", "https://chat.corp.example/")
         self.assertEqual(self.config("--reset", "--yes")[0], 0)
         self.assertFalse(self.user.exists())
 
     def test_other_file_with_config_flag(self) -> None:
         other = self.root / "deep" / "team.json"
-        code, out, _ = self.config("--config", str(other), "--preset", "chatgpt")
+        code, out, _ = self.config("--config", str(other), "--url", "https://chat.corp.example/")
         self.assertEqual(code, 0)
         self.assertTrue(other.is_file())
         self.assertFalse(self.user.exists())
@@ -259,13 +258,6 @@ class ConfigCommandTests(_Isolated):
         with patch("critique_bot.config_cmd.main", return_value=0) as run:
             self.assertEqual(bot_main(["config", "--path"]), 0)
             run.assert_called_once_with(["--path"])
-
-
-class PresetTests(unittest.TestCase):
-    def test_preset_matches_the_example_file(self) -> None:
-        example = json.loads((REPO / "config.chatgpt.example.json").read_text(encoding="utf-8"))
-        for key in ("backend", "url", "egress", "allowed_hosts", "selectors", "timeout_ms", "idle_ms"):
-            self.assertEqual(CHATGPT_PRESET[key], example[key], key)
 
 
 class FirstRunTests(_Isolated):
@@ -282,22 +274,8 @@ class FirstRunTests(_Isolated):
             code, out, err = _capture(crit_main, ["--repo-dir", str(self.project), "fix the build"])
         return code, (run, setup), out + err
 
-    def test_chatgpt_answers_write_the_user_config_and_go_on(self) -> None:
-        code, (run, setup), text = self._agent(["1", "1", "Acme Corp"])
-        self.assertEqual(code, 0, text)
-        run.assert_called_once()
-        setup.assert_not_called()
-        self.assertIn("Personal data", text)
-        config = load_config(self.user)
-        self.assertEqual(config.url, "https://chatgpt.com/")
-        self.assertEqual(config.redact_terms, ("Acme Corp",))
-        settings = json.loads((self.project / ".bot" / "settings.json").read_text(encoding="utf-8"))
-        self.assertNotIn("config", settings)  # the user config is found without being stored
-        if os.name != "nt":
-            self.assertEqual(self.user.stat().st_mode & 0o777, 0o600)
-
     def test_company_chat_opens_the_element_picker_then_stops(self) -> None:
-        code, (run, setup), text = self._agent(["1", "2", "https://chat.corp.example/", ""])
+        code, (run, setup), text = self._agent(["1", "https://chat.corp.example/", "Acme Corp"])
         self.assertEqual(code, 0, text)
         self.assertIn("only chat.corp.example", text)
         self.assertIn("point at the message box", text)
@@ -316,7 +294,7 @@ class FirstRunTests(_Isolated):
         with patch("critique_bot.welcome.stdio_is_tty", return_value=False):
             code, out, err = _capture(crit_main, ["ask", "--prompt", "hi", "--repo-dir", str(self.project)])
         self.assertEqual(code, 1)
-        self.assertIn("crit config --preset chatgpt", err)
+        self.assertIn("crit config --url https://chat.company.com/", err)
         self.assertNotIn("Traceback", err)
         self.assertFalse(self.user.exists())
 
@@ -329,7 +307,7 @@ class FirstRunTests(_Isolated):
         self.assertIn("crit config", err)
 
     def test_setup_without_config_flag_uses_the_user_config(self) -> None:
-        self.assertEqual(self.config("--preset", "chatgpt")[0], 0)
+        self.assertEqual(self.config("--url", "https://chat.corp.example/")[0], 0)
         with patch("critique_bot.setup_ui.run_setup", return_value=0) as run:
             code, _, _ = _capture(bot_main, ["setup", "--no-open"])
         self.assertEqual(code, 0)
@@ -407,7 +385,7 @@ class BlockedHostTests(_Isolated):
 class GitLabPromptTests(_Isolated):
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(self.config("--preset", "chatgpt")[0], 0)
+        self.assertEqual(self.config("--url", "https://chat.corp.example/")[0], 0)
 
     def test_asked_once_https_only_and_saved(self) -> None:
         answers = iter(["http://gitlab.corp.example", "https://gitlab.corp.example/"])

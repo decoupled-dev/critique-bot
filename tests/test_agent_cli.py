@@ -19,7 +19,7 @@ class AgentCliTests(unittest.TestCase):
         config.write_text(
             json.dumps(
                 {
-                    "url": "https://chatgpt.com/",
+                    "url": "https://chat.company.example/",
                     "selectors": {
                         "prompt_input": "textarea",
                         "assistant_messages": ".markdown",
@@ -53,7 +53,7 @@ class AgentCliTests(unittest.TestCase):
             config.write_text(
                 json.dumps(
                     {
-                        "url": "https://chatgpt.com/",
+                        "url": "https://chat.company.example/",
                         "selectors": {
                             "prompt_input": "textarea",
                             "assistant_messages": ".markdown",
