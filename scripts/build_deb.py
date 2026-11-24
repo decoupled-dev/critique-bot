@@ -36,7 +36,7 @@ Section: devel
 Priority: optional
 Architecture: {arch}
 Maintainer: critique-bot maintainers <noreply@invalid>
-Depends: libc6 (>= 2.35)
+Depends: libc6 (>= {glibc})
 Recommends: microsoft-edge-stable | google-chrome-stable | chromium | chromium-browser
 Description: Code review and coding agent that drives a web chat UI
  crit sends only the conversation to the chat URL in config.json (strict egress by
@@ -75,6 +75,20 @@ if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
 fi
 exit 0
 """
+
+
+def _build_glibc() -> str:
+    """The glibc of the machine that built the bundle: the oldest the program can run on.
+
+    PyInstaller bundles carry the build machine's libpython, which needs that glibc or newer,
+    so the package must not promise less (release builds use Ubuntu 22.04: glibc 2.35).
+    """
+    import platform
+
+    name, version = platform.libc_ver()
+    if name != "glibc" or not version:
+        raise SystemExit("could not tell the glibc version of this machine")
+    return version
 
 
 def _commit_time() -> str:
@@ -124,7 +138,7 @@ def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
         _normalize_modes(root)
         control = root / "DEBIAN"
         control.mkdir()
-        _write(control / "control", _CONTROL.format(version=version, arch=arch), 0o644)
+        _write(control / "control", _CONTROL.format(version=version, arch=arch, glibc=_build_glibc()), 0o644)
         _write(control / "conffiles", "/lib/systemd/system/critique-bot-worker.service\n", 0o644)
         _write(control / "postinst", _POSTINST, 0o755)
         _write(control / "prerm", _PRERM, 0o755)

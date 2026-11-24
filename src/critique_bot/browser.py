@@ -1701,6 +1701,34 @@ def _close_extra_blank_pages(context: BrowserContext, keep: Page) -> None:
             log.debug(f"could not close extra blank tab: {exc}")
 
 
+def friendly_navigation_error(url: str, error: str) -> str:
+    """One plain sentence for why the browser could not open ``url`` (from Chromium's net:: error)."""
+    host = (urlsplit(url).hostname or url).lower()
+    text = (error or "").upper()
+    fix = "Check the address with: crit config"
+    if "ERR_NAME_NOT_RESOLVED" in text:
+        if egress.strict() and not egress.policy().permits(host):
+            return (f"The chat address {url} is outside the allowed sites. Set it with crit config --url, "
+                    f"or allow {host} with: crit config --allow-host {host}")
+        return (f"The chat address {url} could not be found: {host} does not resolve. If it is a company "
+                f"site, connect to the company network or VPN. {fix}")
+    if "ERR_PROXY" in text or "ERR_TUNNEL_CONNECTION_FAILED" in text:
+        return (f"The company proxy did not let the browser reach {host}. Ask IT to allow it through the proxy, "
+                f"or check the proxy settings in Windows (Settings > Network > Proxy).")
+    if "ERR_CERT" in text or "SSL" in text:
+        return (f"The browser does not trust the certificate of {host}. If your company inspects HTTPS traffic, "
+                "its root certificate must be installed on this PC (ask IT).")
+    if "ERR_CONNECTION_REFUSED" in text or "ERR_CONNECTION_RESET" in text or "ERR_CONNECTION_CLOSED" in text:
+        return f"{host} refused the connection. Check that the chat is up and the address is right. {fix}"
+    if "ERR_INTERNET_DISCONNECTED" in text or "ERR_NETWORK" in text or "ERR_ADDRESS_UNREACHABLE" in text:
+        return f"This PC has no network route to {host}. Check the network or VPN connection."
+    if "TIMEOUT" in text or "TIMED_OUT" in text:
+        return (f"The chat at {url} did not load in time. Check the network or VPN; if the page needs a sign-in "
+                f"or file site, crit names it above and how to allow it.")
+    first = (error or "").strip().splitlines()[0] if (error or "").strip() else "unknown error"
+    return f"The browser could not open {url} ({first.strip(': ')}). {fix}"
+
+
 def navigate(page: Page, url: str, timeout_ms: int) -> None:
     """Navigate the visible tab off about:blank onto the chat UI."""
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -1722,7 +1750,10 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
     except PlaywrightTimeoutError as exc:
         log.error(f"timed out loading chat UI: {url} ({describe_page(page)})")
-        raise BrowserError(f"timed out loading chat UI: {url}") from exc
+        raise BrowserError(friendly_navigation_error(url, "timeout")) from exc
+    except Exception as exc:
+        log.error(f"could not load chat UI: {url}: {exc}")
+        raise BrowserError(friendly_navigation_error(url, str(exc))) from exc
     loaded = _page_url(page)
     log.info(f"loaded {describe_page(page)}")
     if is_blank_url(loaded) and not is_blank_url(url):

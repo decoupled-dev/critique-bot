@@ -13,3 +13,4 @@ storage_state.json
 .python-version
 .bot/cache/
 .bot/sessions/
+.claude/worktrees/

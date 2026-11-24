@@ -186,3 +186,22 @@ class FriendlyErrorsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FriendlyNavigationErrorTest(_PolicyReset):
+    def test_messages(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        url = "https://chat.corp.example/c"
+        cases = {
+            "net::ERR_NAME_NOT_RESOLVED at x\nCall log:\n  - navigating": "does not resolve",
+            "net::ERR_PROXY_CONNECTION_FAILED": "company proxy",
+            "net::ERR_CERT_AUTHORITY_INVALID": "certificate",
+            "net::ERR_CONNECTION_REFUSED": "refused the connection",
+            "timeout": "did not load in time",
+            "something odd\nCall log: ...": "something odd",
+        }
+        for error, expected in cases.items():
+            message = browser.friendly_navigation_error(url, error)
+            self.assertIn(expected, message, error)
+            self.assertNotIn("Call log", message)
+            self.assertNotIn("\n", message)

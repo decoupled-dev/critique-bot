@@ -949,7 +949,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except Exception as exc:  # the last line of defense: a readable message, details only with --logs
         log.exception(f"unexpected error: {exc}")
-        detail = " ".join(str(exc).split())[:300] or type(exc).__name__
+        lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+        detail = (lines[0] if lines else type(exc).__name__)[:300].rstrip(".")
         log.notice(f"crit stopped: {detail}. Run the command again with --logs for details.")
         return 1
     finally:
