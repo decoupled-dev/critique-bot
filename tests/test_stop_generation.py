@@ -50,7 +50,10 @@ class _Item:
 class _Locator:
     def __init__(self, page: _Page, selector: str) -> None:
         self.page = page
-        self.selector = selector
+        # A selector list matches what any of its parts matches; this page knows one part each.
+        known = {".a", "button.stop", "#p", "button.more"}
+        parts = [part.strip() for part in selector.split(",")]
+        self.selector = next((part for part in parts if part in known), selector)
 
     @property
     def first(self) -> _Locator:

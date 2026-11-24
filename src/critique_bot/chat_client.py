@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
@@ -569,6 +570,90 @@ _SET_PROMPT_JS = """
 """
 
 
+#: Composer shapes chat pages use, tried in this order when the configured prompt_input finds
+#: nothing (ChatGPT signed in is a ProseMirror editor with no id; other chat UIs differ too).
+COMPOSER_FALLBACKS = (
+    "div.ProseMirror[contenteditable='true']",
+    "[contenteditable='true'][role='textbox']",
+    "textarea:not([readonly]):not([disabled])",
+)
+#: How long the configured prompt_input gets before the fallbacks are tried.
+_CONFIGURED_COMPOSER_MS = 8_000
+#: configured prompt_input -> the selector that found the composer, for the rest of the run.
+_COMPOSER_FOUND: dict[str, str] = {}
+
+
+#: Current shapes of a chat page's send button and replies, added to the configured selectors.
+#: Each matches nothing on a page that uses the configured ones, so adding them is safe there;
+#: on a page that changed (ChatGPT signed in, late 2026) they are what finds the elements.
+SEND_FALLBACKS = (
+    "button[type='submit'][aria-label='Send' i]",
+    "button[aria-label='Send message' i]",
+)
+REPLY_FALLBACKS = (
+    "[data-markdown-text-style='assistant-message']",
+)
+
+
+def _with_fallbacks(configured: str, fallbacks: tuple[str, ...]) -> str:
+    parts = [configured.strip()] if configured and configured.strip() else []
+    parts += [item for item in fallbacks if item not in configured]
+    return ", ".join(parts)
+
+
+def _send_selector(selectors: Selectors) -> str:
+    """The configured send_button plus SEND_FALLBACKS ("" when none is configured: Enter sends)."""
+    return _with_fallbacks(selectors.send_button, SEND_FALLBACKS) if selectors.send_button else ""
+
+
+def _reply_selector(selectors: Selectors) -> str:
+    """The configured assistant_messages plus REPLY_FALLBACKS."""
+    return _with_fallbacks(selectors.assistant_messages, REPLY_FALLBACKS)
+
+
+def _prompt_selector(selectors: Selectors) -> str:
+    """The prompt_input to use: the configured one, or the fallback that found the composer."""
+    return _COMPOSER_FOUND.get(selectors.prompt_input, selectors.prompt_input)
+
+
+def _find_composer(page: Page, selectors: Selectors, timeout_ms: int) -> None:
+    """Wait for the composer: the configured prompt_input first, then COMPOSER_FALLBACKS.
+
+    A fallback that works is remembered for this run and logged, so the config can be
+    updated; when nothing appears, the error names the configured selector as before.
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    configured = selectors.prompt_input
+    if configured in _COMPOSER_FOUND:
+        _wait_visible(page.locator(_COMPOSER_FOUND[configured]), timeout_ms, "prompt input after navigation")
+        return
+    first_try = min(timeout_ms, _CONFIGURED_COMPOSER_MS)
+    log.debug(f"waiting up to {first_try}ms for prompt input after navigation ({configured})")
+    try:
+        _wait_for_sliced(page.locator(configured).first, first_try, PlaywrightTimeoutError)
+        log.debug("prompt input after navigation is visible")
+        return
+    except PlaywrightTimeoutError:
+        pass
+    union = ", ".join(COMPOSER_FALLBACKS)
+    try:
+        _wait_visible(page.locator(union), max(timeout_ms - first_try, 1_000), "prompt input after navigation")
+    except ChatError as exc:
+        raise ChatError(f"timed out waiting for prompt input after navigation: {configured} (no composer found)") from exc
+    for candidate in COMPOSER_FALLBACKS:
+        try:
+            if page.locator(candidate).first.is_visible():
+                _COMPOSER_FOUND[configured] = candidate
+                log.warn(
+                    f"selectors.prompt_input ({configured}) found nothing; the composer matched {candidate!r}. "
+                    "Set that as prompt_input in config.json (or run critique-bot setup) to skip this wait."
+                )
+                return
+        except Exception:  # noqa: BLE001 - a candidate that errors is just not the one
+            continue
+
+
 def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -1126,7 +1211,7 @@ def _click_visible_model_label(page: Page, model: str, timeout_ms: int) -> bool:
 def _send(page: Page, selectors: Selectors, timeout_ms: int) -> None:
     if selectors.send_button:
         log.info(f"clicking send button {selectors.send_button!r}")
-        button = page.locator(selectors.send_button).first
+        button = page.locator(_send_selector(selectors)).first
         _wait_visible(button, timeout_ms, "send button")
         try:
             button.click(timeout=timeout_ms)
@@ -1134,11 +1219,11 @@ def _send(page: Page, selectors: Selectors, timeout_ms: int) -> None:
             return
         except Exception as exc:
             log.warn(f"send button click failed ({exc}); pressing Enter")
-        page.locator(selectors.prompt_input).first.press("Enter", timeout=timeout_ms)
+        page.locator(_prompt_selector(selectors)).first.press("Enter", timeout=timeout_ms)
         log.debug("Enter pressed after send click failed")
         return
     log.info("no send_button selector; pressing Enter in the prompt")
-    page.locator(selectors.prompt_input).first.press("Enter", timeout=timeout_ms)
+    page.locator(_prompt_selector(selectors)).first.press("Enter", timeout=timeout_ms)
     log.debug("Enter pressed")
 
 
@@ -1248,7 +1333,7 @@ def _stream_state(page: Page, selectors: Selectors | None) -> tuple[bool, str]:
             {
                 "stopSelector": selectors.stop_button,
                 "defaults": list(_STOP_BUTTON_SELECTORS),
-                "assistantSelector": selectors.assistant_messages,
+                "assistantSelector": _reply_selector(selectors),
             },
         )
     except Exception as exc:
@@ -1326,8 +1411,19 @@ const replyText = (root) => {
 #: ``element.evaluate(_ELEMENT_TEXT_JS)``: the reply text of one element (see _REPLY_TEXT_FN).
 _ELEMENT_TEXT_JS = "(el) => {" + _REPLY_TEXT_FN + " return replyText(el); }"
 
+#: Attributes that name one message, nearest first (ChatGPT, then common chat UI shapes).
+_REPLY_KEY_ATTRS = (
+    "data-message-id",
+    "data-dil-message-id",
+    "data-response-body",
+    "data-chatgpt-selection-message-id",
+    "data-content-search-unit-key",
+    "data-testid",
+)
+
 _REPLY_STATE_JS = """
 (payload) => {""" + _REPLY_TEXT_FN + """
+  const KEY_ATTRS = """ + json.dumps(list(_REPLY_KEY_ATTRS)) + """;
   let nodes;
   try {
     nodes = Array.from(document.querySelectorAll(payload.selector));
@@ -1389,7 +1485,16 @@ _REPLY_STATE_JS = """
     hash = h >>> 0;
     if (payload.withText) text = replyText(last);
   }
-  return { ok: true, count, generating, signal, length, hash, text };
+  // Which reply the last one is, by a stable id on it or its turn. A page that drops old
+  // messages as the chat grows keeps the count flat; the id still changes for a new reply.
+  let key = '';
+  for (let node = last, depth = 0; node && depth < 12 && !key; node = node.parentElement, depth += 1) {
+    for (const name of KEY_ATTRS) {
+      const value = node.getAttribute && node.getAttribute(name);
+      if (value) { key = name + '=' + value; break; }
+    }
+  }
+  return { ok: true, count, generating, signal, length, hash, text, key };
 }
 """
 
@@ -1534,7 +1639,7 @@ def stop_generation(page: Page, selectors: Selectors, *, wait_ms: int = _STOP_WA
         log.warn(f"the reply was still generating {wait_ms}ms after asking it to stop")
     # A stopped reply can render a moment later; let the count settle so the
     # next send does not take it as its own answer.
-    _stable_count(page, selectors.assistant_messages)
+    _stable_count(page, _reply_selector(selectors))
     return True
 
 
@@ -1575,7 +1680,7 @@ def _continue_cut_reply(
         button = None
     if button is None:
         return text
-    before = _count_replies(page, selectors.assistant_messages)
+    before = _count_replies(page, _reply_selector(selectors))
     try:
         button.click(timeout=_WAIT_SLICE_MS * 4)
     except Exception as exc:
@@ -1583,14 +1688,14 @@ def _continue_cut_reply(
         return text
     log.info("the reply was cut off; clicked the continue control once")
     deadline = time.monotonic() + _STOP_WAIT_MS / 1000
-    while not _stream_state(page, selectors)[0] and _count_replies(page, selectors.assistant_messages) <= before:
+    while not _stream_state(page, selectors)[0] and _count_replies(page, _reply_selector(selectors)) <= before:
         if time.monotonic() >= deadline:
             log.warn("the page did not resume after the continue click; keeping the cut reply")
             return text
         page.wait_for_timeout(POLL_MS)
     more = _wait_for_reply(
         page,
-        selectors.assistant_messages,
+        _reply_selector(selectors),
         previous_count=before - 1,
         timeout_ms=timeout_ms,
         idle_ms=idle_ms,
@@ -1614,19 +1719,41 @@ _COMPOSER_TEXT_JS = """
 
 def _composer_text(page: Page, selectors: Selectors) -> str:
     try:
-        return str(page.locator(selectors.prompt_input).first.evaluate(_COMPOSER_TEXT_JS) or "")
+        return str(page.locator(_prompt_selector(selectors)).first.evaluate(_COMPOSER_TEXT_JS) or "")
     except Exception as exc:
         log.debug(f"could not read the prompt box: {exc}")
         return ""
 
 
+def _is_new_reply(page: Page, state: dict, previous_count: int) -> bool:
+    """A reply after the send: more replies than before, or a different last reply.
+
+    The count alone misses a new reply on a page that drops old messages from the DOM
+    as the chat grows (ChatGPT does): the count stays flat while the last reply changes.
+    """
+    if int(state.get("count") or 0) > previous_count:
+        return True
+    before = getattr(page, "_critique_last_reply_key", None)
+    key = state.get("key") or ""
+    return bool(key) and before is not None and key != before
+
+
+def _remember_last_reply(page: Page, selectors: Selectors) -> None:
+    """Note which reply is last before a send, so a new one is known even when the count does not move."""
+    state = _reply_state(page, _reply_selector(selectors), selectors)
+    try:
+        page._critique_last_reply_key = (state or {}).get("key") or ""  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 def _reply_started(page: Page, selectors: Selectors, previous_count: int) -> bool:
-    state = _reply_state(page, selectors.assistant_messages, selectors)
+    state = _reply_state(page, _reply_selector(selectors), selectors)
     if state is not None:
-        return int(state.get("count") or 0) > previous_count or bool(state.get("generating"))
+        return _is_new_reply(page, state, previous_count) or bool(state.get("generating"))
     if _stream_state(page, selectors)[0]:
         return True
-    return _visible_count(page.locator(selectors.assistant_messages)) > previous_count
+    return _visible_count(page.locator(_reply_selector(selectors))) > previous_count
 
 
 def _wait_started(page: Page, selectors: Selectors, previous_count: int, start_ms: int) -> bool:
@@ -1736,6 +1863,7 @@ def _wait_for_reply_fast(
 
     last_status_log = 0.0
     count = previous_count
+    quiet_since = time.monotonic()  # last moment the page showed it was working on a reply
     while True:
         state = _reply_state(page, selector, selectors)
         if state is None:
@@ -1745,10 +1873,15 @@ def _wait_for_reply_fast(
         else:
             misses = 0
             count = int(state.get("count") or 0)
-            if count > previous_count:
+            if _is_new_reply(page, state, previous_count):
                 log.info(f"assistant message appeared (count {previous_count} -> {count})")
                 break
+            if state.get("generating"):
+                quiet_since = time.monotonic()
         now = time.monotonic()
+        if (now - quiet_since) * 1000 >= stall_ms:
+            # The send went out, but no reply message and no generating signal: the page is not answering.
+            raise ReplyStalled(f"no reply appeared and the page showed no generating signal for {stall_ms // 1000}s")
         if now >= deadline:
             log.error(
                 "no assistant message appeared "
@@ -1885,12 +2018,17 @@ def _wait_for_reply_locators(
     )
 
     last_status_log = 0.0
+    quiet_since = time.monotonic()
     while time.monotonic() < deadline:
         count = _visible_count(messages)
         if count > previous_count:
             log.info(f"assistant message appeared (count {previous_count} -> {count})")
             break
         now = time.monotonic()
+        if selectors is not None and _stream_state(page, selectors)[0]:
+            quiet_since = now
+        elif (now - quiet_since) * 1000 >= stall_ms:
+            raise ReplyStalled(f"no reply appeared and the page showed no generating signal for {stall_ms // 1000}s")
         if now - last_status_log >= 5:
             remaining = int((deadline - now) * 1000)
             log.debug(
@@ -2085,15 +2223,11 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
         raise ChatError(str(exc)) from exc
 
     warn_if_login_page(page)
-    _raise_if_cloudflare(page, selectors.prompt_input)
+    _raise_if_cloudflare(page, ", ".join([_prompt_selector(selectors), *COMPOSER_FALLBACKS]))
     frames = list(page.frames)
     log.debug(f"{len(frames)} frame(s): {[frame.url for frame in frames]}")
 
-    _wait_visible(
-        page.locator(selectors.prompt_input),
-        timeout_ms,
-        "prompt input after navigation",
-    )
+    _find_composer(page, selectors, timeout_ms)
     _warn_if_signed_out(page)
     _select_model(page, selectors, config.model, timeout_ms)
     log.info("chat UI is ready")
@@ -2123,22 +2257,23 @@ def send_turn(
     # send and must never be taken as this one's answer.
     started = time.monotonic()
     if _ensure_idle(page, selectors):
-        previous_count = _stable_count(page, selectors.assistant_messages)
+        previous_count = _stable_count(page, _reply_selector(selectors))
     else:
-        previous_count = _count_replies(page, selectors.assistant_messages)
+        previous_count = _count_replies(page, _reply_selector(selectors))
+    _remember_last_reply(page, selectors)
     log.info(
         "sending turn "
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
     )
     with log.loading("Thinking..."):
-        _fill_prompt(page.locator(selectors.prompt_input), prompt, timeout_ms)
+        _fill_prompt(page.locator(_prompt_selector(selectors)), prompt, timeout_ms)
         _send(page, selectors, timeout_ms)
         detail["send_seconds"] = round(time.monotonic() - started, 2)
         _ensure_started(page, selectors, prompt, previous_count, config)
 
         reply = _wait_for_reply(
             page,
-            selectors.assistant_messages,
+            _reply_selector(selectors),
             previous_count=previous_count,
             timeout_ms=max(timeout_ms, config.reply_max_ms),
             idle_ms=config.idle_ms,
