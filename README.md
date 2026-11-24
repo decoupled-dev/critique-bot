@@ -16,6 +16,8 @@ crit setup | worker | submit | queue-status | gitlab-post
 
 Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMANDS.md).
 
+How the code is layered (models, tools, engine, apps, routing) and the interface each layer offers: [`docs/architecture.md`](docs/architecture.md).
+
 ## Requirements
 
 - Python 3.10+

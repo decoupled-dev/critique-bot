@@ -6,12 +6,15 @@ Build from the repo root:
     python -m PyInstaller packaging/critique-bot.spec --noconfirm --clean
 """
 
+import sys
 from pathlib import Path
 
 from PyInstaller.compat import is_win
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).resolve().parent
+# collect_submodules("critique_bot") below imports the package; work from a plain checkout too.
+sys.path.insert(0, str(ROOT / "src"))
 
 datas = []
 binaries = []
@@ -61,25 +64,9 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports
+    # Every critique_bot module: several are imported lazily, and a new one must not be missed.
+    + collect_submodules("critique_bot")
     + [
-        "critique_bot",
-        "critique_bot.browser",
-        "critique_bot.chat_client",
-        "critique_bot.cli",
-        "critique_bot.config",
-        "critique_bot.log",
-        "critique_bot.output",
-        "critique_bot.patch",
-        "critique_bot.queue",
-        "critique_bot.worker",
-        "critique_bot.agent",
-        "critique_bot.agent_cli",
-        "critique_bot.agent_ui",
-        "critique_bot.agent_protocol",
-        "critique_bot.desktop_host",
-        "critique_bot.welcome",
-        "critique_bot.bot_home",
-        "critique_bot.code_index",
         "playwright.sync_api",
         "greenlet",
     ],
