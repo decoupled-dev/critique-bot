@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -39,7 +40,7 @@ class SandboxFlagTests(unittest.TestCase):
 def _cookie_db(profile: Path, rows: list[tuple[str, str]], *, fresh: bool = True) -> None:
     path = profile / "Default" / "Network" / "Cookies"
     path.parent.mkdir(parents=True, exist_ok=not fresh)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         if fresh:
             db.execute("create table cookies (host_key text, name text)")
         db.executemany("insert into cookies values (?, ?)", rows)
@@ -75,6 +76,7 @@ class SignInTests(unittest.TestCase):
             with patch.object(browser, "resolve_browser", return_value=("/usr/bin/msedge", "msedge")), \
                  patch.object(browser.subprocess, "Popen", side_effect=popen), \
                  patch.object(browser, "close_existing_edge_sessions"), \
+                 patch.object(browser, "private_dir"), \
                  patch.object(browser, "session_cookie_present", side_effect=lambda *_: next(checks)), \
                  patch.object(browser, "_close_gracefully") as close, \
                  patch.object(browser.time, "sleep"):
@@ -94,6 +96,7 @@ class SignInTests(unittest.TestCase):
             with patch.object(browser, "resolve_browser", return_value=("/usr/bin/msedge", "msedge")), \
                  patch.object(browser.subprocess, "Popen", return_value=proc), \
                  patch.object(browser, "close_existing_edge_sessions"), \
+                 patch.object(browser, "private_dir"), \
                  patch.object(browser, "session_cookie_present", return_value=False):
                 with self.assertRaises(browser.BrowserError):
                     browser.sign_in_with_plain_browser("https://chat.company.example/", profile, timeout_s=60)

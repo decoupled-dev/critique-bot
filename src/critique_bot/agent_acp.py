@@ -806,6 +806,9 @@ _IDLE_COMMANDS = {"/mode", "/permissions", "/role", "/undo", "/plan", "/auto", "
 
 def read_message(**_ignored: Any) -> str | None:
     """The next task. Ends the turn in flight, then waits for the next session/prompt."""
+    # End the turn first: the first call has no turn in flight, and a client (or a test)
+    # that acts on the session/new answer must not have its tool calls cleared after it.
+    _end_turn(_stop_reason(_state.last_status))
     with _lock:
         first = not _state.ready
         if first:
@@ -817,7 +820,6 @@ def read_message(**_ignored: Any) -> str | None:
         for request_id in waiting_new:
             _respond(request_id, _session_result(session))
         _send_commands()
-    _end_turn(_stop_reason(_state.last_status))
     inbox = _inbox
     while True:
         try:

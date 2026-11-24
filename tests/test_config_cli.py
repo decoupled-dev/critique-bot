@@ -66,14 +66,29 @@ class _Isolated(unittest.TestCase):
 
 
 class UserConfigPathTests(unittest.TestCase):
+    # Pure paths stand in for Path so the POSIX branch can be checked on Windows too
+    # (a PosixPath cannot be created there), and the reverse for test_windows_uses_appdata.
     def test_posix_uses_xdg_config_home(self) -> None:
-        with patch.object(os, "name", "posix"), patch.dict(os.environ, {"XDG_CONFIG_HOME": "/x/conf"}):
-            self.assertEqual(user_config_path(), Path("/x/conf") / "critique-bot" / "config.json")
+        from pathlib import PurePosixPath
+
+        with patch.object(os, "name", "posix"), patch.dict(os.environ, {"XDG_CONFIG_HOME": "/x/conf"}), patch(
+            "critique_bot.config.Path", PurePosixPath
+        ):
+            self.assertEqual(str(user_config_path()), "/x/conf/critique-bot/config.json")
 
     def test_posix_default_is_dot_config(self) -> None:
+        from pathlib import PurePosixPath
+
+        class _Home(PurePosixPath):
+            @classmethod
+            def home(cls) -> "_Home":
+                return cls("/home/me")
+
         env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
-        with patch.object(os, "name", "posix"), patch.dict(os.environ, env, clear=True):
-            self.assertEqual(user_config_path(), Path.home() / ".config" / "critique-bot" / "config.json")
+        with patch.object(os, "name", "posix"), patch.dict(os.environ, env, clear=True), patch(
+            "critique_bot.config.Path", _Home
+        ):
+            self.assertEqual(str(user_config_path()), "/home/me/.config/critique-bot/config.json")
 
     def test_windows_uses_appdata(self) -> None:
         from pathlib import PurePosixPath
