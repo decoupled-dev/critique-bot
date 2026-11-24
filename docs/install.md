@@ -7,8 +7,7 @@ Download from the repository's **Releases** page. Each release has:
 | `critique-bot_<version>_amd64.deb` | Ubuntu 22.04+, Debian 12+ (x64) |
 | `critique-bot_<version>_arm64.deb` | the same, on Arm (Graviton, Ampere, Raspberry Pi 5 with 64-bit OS) |
 | `critique-bot-<version>-linux-x64.zip`, `-linux-arm64.zip` | other Linux distributions with glibc 2.35 or newer (RHEL 9+, Fedora, ...) |
-| `critique-bot-<version>-windows-x64.zip` | Windows 10/11, 64-bit |
-| `critique-bot-<version>-windows-arm64.zip`, `-windows-x86.zip` | Windows on Arm, 32-bit Windows (when present: these builds are best effort) |
+| `critique-bot-<version>-windows-x64.zip` | Windows 10 and 11 (64-bit) |
 | `SHA256SUMS.txt` | checksums of every file |
 
 You need Microsoft Edge or Google Chrome installed (crit drives the browser that is already

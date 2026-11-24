@@ -21,10 +21,7 @@ jobs:
           - { os: ubuntu-22.04, tag: linux-x64, python_arch: x64, experimental: false }
           - { os: ubuntu-22.04-arm, tag: linux-arm64, python_arch: arm64, experimental: false }
           - { os: windows-2022, tag: windows-x64, python_arch: x64, experimental: false }
-          - { os: windows-2022, tag: windows-x86, python_arch: x86, experimental: true }
-          - { os: windows-11-arm, tag: windows-arm64, python_arch: arm64, experimental: true }
     runs-on: ${{ matrix.os }}
-    # A newer target (32-bit, Windows on Arm) that fails does not hold back the release.
     continue-on-error: ${{ matrix.experimental }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
