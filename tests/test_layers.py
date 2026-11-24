@@ -35,7 +35,8 @@ LAYERS: dict[str, int] = {
     "chat_client": MODELS,
     "local_model": MODELS,
     "setup_ui": MODELS,
-    # tools: what the agent can do on this machine
+    # tools: what the agent can do on this machine; tool_api is its interface
+    "tool_api": TOOLS,
     "agent_tools": TOOLS,
     "agent_shell": TOOLS,
     "agent_edit": TOOLS,
@@ -47,6 +48,7 @@ LAYERS: dict[str, int] = {
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
     "agent_helpers": ENGINE,
+    "ui_api": ENGINE,
     # apps: things built on the engine and the models
     "review_agent": APPS,
     "review_session": APPS,
@@ -70,16 +72,14 @@ LAYERS: dict[str, int] = {
 #: an implementation detail, reachable only from the same layer or from routing.
 INTERFACES: dict[int, frozenset[str]] = {
     MODELS: frozenset({"model_api"}),
+    # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
+    # services the engine drives directly are part of the interface.
+    TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "bot_home"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when
 #: a crossing not listed here appears, and when a listed one is gone (so the list shrinks).
-KNOWN: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("agent", "agent_ui"),  # the loop draws the terminal UI itself; to go behind the UI hooks
-        ("agent", "welcome"),
-    }
-)
+KNOWN: frozenset[tuple[str, str]] = frozenset()
 
 
 def _imports(path: Path) -> set[str]:

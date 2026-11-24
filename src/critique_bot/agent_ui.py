@@ -34,30 +34,8 @@ from rich.text import Text
 from rich.theme import Theme
 
 from critique_bot import log, roles
+from critique_bot.ui_api import _MODE_ALIASES, MODE_LABELS, MODES, NEW_CHAT, normalize_mode  # noqa: F401
 
-NEW_CHAT = "/new"
-
-#: Shift+Tab cycles through these, in this order.
-MODES = ("ask", "edits", "auto", "plan")
-MODE_LABELS = {
-    "ask": "ask before edits and commands",
-    "edits": "accept edits on (commands still ask)",
-    "auto": "auto mode on (asks only for risky commands)",
-    "plan": "plan mode on (reads only, then a plan to approve)",
-}
-_MODE_ALIASES = {
-    "default": "ask", "ask": "ask", "normal": "ask", "manual": "ask",
-    "edits": "edits", "edit": "edits", "accept": "edits", "accept-edits": "edits", "acceptedits": "edits",
-    "accept_edits": "edits",
-    "auto": "auto", "yes": "auto", "yolo": "auto", "bypass": "auto", "bypasspermissions": "auto", "allow": "auto",
-    "plan": "plan", "planning": "plan",
-}
-
-
-def normalize_mode(raw: Any, default: str = "ask") -> str:
-    """``ask``, ``edits``, ``auto``, or ``plan`` from a setting, flag, or command word."""
-    key = str(raw or "").strip().lower().replace(" ", "-")
-    return _MODE_ALIASES.get(key, default)
 _QUIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit", "/q"})
 
 # --------------------------------------------------------------------------- theme
@@ -1983,7 +1961,7 @@ def _save_setting(**values: Any) -> bool:
 
 
 def _skills_command(rest: str) -> None:
-    from critique_bot.agent_tools import discover_skills
+    from critique_bot.tool_api import discover_skills
 
     found = discover_skills(_state.workspace)
     names = {item["name"].lower(): item["name"] for item in found}
@@ -2142,7 +2120,7 @@ def _print_tools() -> None:
     names = _state.tools
     if not names:
         try:
-            from critique_bot.agent_tools import ALLOWED_TOOLS
+            from critique_bot.tool_api import ALLOWED_TOOLS
 
             names = tuple(ALLOWED_TOOLS)
         except Exception:

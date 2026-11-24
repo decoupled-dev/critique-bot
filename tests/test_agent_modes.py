@@ -23,6 +23,19 @@ def _edit(path: str, old: str, new: str) -> str:
     return _call("edit_file", path=path, old_string=old, new_string=new)
 
 
+
+def setUpModule() -> None:
+    # These tests drive the engine together with the terminal UI; the engine is headless by default.
+    from critique_bot import agent as _agent, agent_ui as _agent_ui
+
+    _agent.use_ui(_agent_ui)
+
+
+def tearDownModule() -> None:
+    from critique_bot import agent as _agent
+
+    _agent.use_ui(None)
+
 class _Scripted:
     def __init__(self, replies: list[str]) -> None:
         self.sent: list[str] = []

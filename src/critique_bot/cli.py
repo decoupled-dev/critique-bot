@@ -1367,6 +1367,7 @@ def _main_agent(args: argparse.Namespace) -> int:
     if rounds is not None and rounds < 1:
         return _config_error(ConfigError("--max-rounds must be at least 1"))
     output_dir = Path(args.output_dir) if args.output_dir else None
+    _use_terminal_ui()
     return run_agent(
         config,
         home,
@@ -1480,6 +1481,13 @@ def _welcome_login(config: BotConfig) -> bool:
     return True
 
 
+def _use_terminal_ui() -> None:
+    """The engine runs headless until a front end is installed; the command line uses the terminal."""
+    from critique_bot import agent, agent_ui
+
+    agent.use_ui(agent_ui)
+
+
 def _review_engine(args: argparse.Namespace) -> str:
     """--quick or --deep when given; otherwise the agent review under crit and the one-shot under critique-bot."""
     if getattr(args, "review_engine", None):
@@ -1519,6 +1527,7 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
         home = find_bot_home(workspace) or init_bot_home(workspace)
     except BotHomeError as exc:
         return _config_error(ConfigError(str(exc)))
+    _use_terminal_ui()
     code, turns = run_read_only_task(
         config,
         home,

@@ -28,8 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from critique_bot import agent_tools, log
-from critique_bot.agent_tools import TaskState, ToolContext, canonical_tool
+from critique_bot import log
+from critique_bot import tool_api as agent_tools
+from critique_bot.tool_api import TaskState, ToolContext, canonical_tool
 
 #: Rounds one brief may take before its helper stops and reports.
 HELPER_MAX_ROUNDS = 40

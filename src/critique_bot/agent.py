@@ -25,8 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_build, agent_edit, agent_shell, agent_tools, code_index, log, roles
-from critique_bot.agent_tools import (
+from critique_bot import agent_build, agent_edit, agent_shell, code_index, log, roles
+from critique_bot import tool_api as agent_tools
+from critique_bot.tool_api import (
     ALLOWED_TOOLS,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_TOOL_CHARS,
@@ -38,7 +39,7 @@ from critique_bot.agent_tools import (
     is_git_repo,
     normalize_args,
 )
-from critique_bot.agent_tools import execute as _execute
+from critique_bot.tool_api import execute as _execute
 from critique_bot.bot_home import BotHome, resolve_check_command
 from critique_bot import model_api
 from critique_bot.model_api import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
@@ -2869,9 +2870,9 @@ def run_agent_loop(
         task = pending.strip()
         pending = ""
         if task.lower() == "/theme":
-            from critique_bot.welcome import reopen_theme
-
-            reopen_theme(workspace)
+            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            if callable(handler):
+                handler("/theme", "")
             continue
         if task.lower() == "/new":
             if not chat.restart("you asked for one"):
@@ -3238,7 +3239,7 @@ def run_agent(
         instructions = ""
     role_id = _resolve_role(role, settings)
     if approve_mode not in _MODES:
-        approve_mode = agent_ui.normalize_mode(settings.get("permissions") or settings.get("mode"))
+        approve_mode = ui_api.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
     helpers = _int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0)
@@ -3646,16 +3647,20 @@ def format_transcript(turns: list[dict[str, str]]) -> str:
 
 # --------------------------------------------------------------------------- terminal output
 
-from critique_bot import agent_ui  # noqa: E402  (UI layer; kept with the terminal hooks)
+from critique_bot import ui_api  # noqa: E402
+
+#: The installed UI (see ui_api). The engine imports no front end: the caller installs one
+#: with use_ui, and until then the loop runs headless on NullUI.
+agent_ui: Any = ui_api.NullUI()
 
 
 def use_ui(module: Any) -> None:
-    """Swap the UI layer: ``agent_protocol`` for a GUI, ``agent_ui`` for the terminal.
+    """Install the UI: ``agent_ui`` for the terminal, ``agent_protocol`` for a GUI, ``agent_acp`` for ACP.
 
-    Every terminal hook below looks ``agent_ui`` up at call time, so this one
-    assignment moves all output, approvals, and questions to ``module``.
+    Every hook below looks ``agent_ui`` up at call time, so this one assignment moves
+    all output, approvals, and questions to ``module``. ``None`` goes back to NullUI.
     """
-    globals()["agent_ui"] = module
+    globals()["agent_ui"] = module if module is not None else ui_api.NullUI()
 
 
 def _one_line(text: str, limit: int = 120) -> str:
