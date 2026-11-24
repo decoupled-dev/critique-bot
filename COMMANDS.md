@@ -62,7 +62,8 @@ One command, `crit`, runs every mode. The first word picks it; with no mode word
 
 ```bash
 crit "fix the failing test"                 # agent (default)
-crit review --patch-file diff.patch         # code review
+crit review --patch-file diff.patch         # code review (reads the project with read-only tools)
+crit review --quick --patch-file diff.patch # one-shot review: one message, no tools
 git diff | crit review                      # review from stdin
 crit ask --prompt "Summarize this" notes.txt   # one-shot (alias: crit general)
 crit chat                                   # interactive conversation
@@ -70,6 +71,8 @@ crit setup | worker | submit | queue-status | gitlab-post
 ```
 
 `review`, `ask`, and `chat` use the `config.json` that `crit` stored for the project when `--config` is not given. A task that starts with a mode word must be quoted (`crit "review the auth code"`); unquoted, `review` is read as the mode.
+
+`crit review` is the agent review: the Code Reviewer reads the changed files, callers, and tests with read-only tools (up to `--max-rounds`, default 20) and then sends the review in the usual format. Edits, commands, fetches, and helper chats are refused. `--quick` is the one-shot review. `critique-bot` and `submit` use the one-shot review; `critique-bot review --deep` runs the agent review, and `submit --deep` is refused (the worker runs one-shot reviews only).
 
 `critique-bot` takes the same mode words and subcommands (`critique-bot chat`, `critique-bot agent "..."`). Without a mode word it keeps its old default, **review**, so existing CI scripts work unchanged. `--mode MODE` still works on both and means the same as the mode word; using both at once is an error.
 

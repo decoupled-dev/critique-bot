@@ -51,6 +51,8 @@ MODE_REVIEW = "review"
 MODE_GENERAL = "general"
 MODE_CHAT = "chat"
 MODE_AGENT = "agent"
+REVIEW_QUICK = "quick"
+REVIEW_AGENT = "agent"
 OUTPUT_STEM = {
     MODE_REVIEW: "review",
     MODE_GENERAL: "reply",
@@ -259,6 +261,69 @@ def _build_review_prompt(
     config=None,
 ) -> PromptPayload:
     repo_dir = Path(getattr(args, "repo_dir", None) or ".")
+    patch_input, extra_loaded, mr_context = _load_review_inputs(args, extra_files, limits, config)
+
+    context_inputs = list(extra_loaded)
+    seen = {item.name for item in context_inputs}
+    for item in load_changed_files(repo_dir, patch_input.text, limits):
+        if item.name in seen:
+            continue
+        context_inputs.append(item)
+        seen.add(item.name)
+
+    template = _load_template(_review_template_path(args), limits)
+    patch_body, patch_stats = _sanitized_patch(patch_input, limits)
+    file_pairs = [(item.name, item.text) for item in context_inputs]
+    file_attachments, file_stats = sanitize_context_files(file_pairs, limits)
+    patch_stats.merge(file_stats)
+    patch_stats.truncated_read = patch_stats.truncated_read or patch_input.truncated_read
+    if any(item.truncated_read for item in context_inputs):
+        patch_stats.truncated_read = True
+    payload = split_review_payload(
+        template,
+        patch_body,
+        mr_context,
+        file_attachments,
+        limits,
+        patch_stats,
+        changed_path_count=len(changed_file_paths(patch_input.text)),
+    )
+    log.info(
+        f"composed review prompt ({len(payload.prompt)} chars"
+        + (f", {len(file_attachments)} file(s)" if file_attachments else "")
+        + (", staged" if payload.files or payload.patch else "")
+        + (", sanitized" if patch_stats.did_sanitize else "")
+        + (", gitlab mr context" if mr_context else "")
+        + ")"
+    )
+    return payload
+
+
+def _review_template_path(args: argparse.Namespace) -> Path:
+    return Path(args.prompt_template) if args.prompt_template else default_prompt_template_path()
+
+
+def _sanitized_patch(patch_input: LoadedInput, limits: InputLimits):
+    patch_budget = max(limits.max_prompt_chars - NOTE_RESERVE_CHARS, 2_000)
+    patch_body, patch_stats = sanitize_one(
+        patch_input.name,
+        patch_input.text,
+        limits,
+        remaining_chars=patch_budget,
+        remaining_files=limits.max_files,
+    )
+    patch_stats.truncated_read = patch_input.truncated_read
+    return patch_body, patch_stats
+
+
+def _load_review_inputs(
+    args: argparse.Namespace,
+    extra_files: list[str],
+    limits: InputLimits,
+    config=None,
+) -> tuple[LoadedInput, list[LoadedInput], str]:
+    """The patch, any extra files named on the command line, and the GitLab MR context."""
+    repo_dir = Path(getattr(args, "repo_dir", None) or ".")
     patch_file = args.patch_file
     patch_input: LoadedInput | None = None
     extra_loaded: list[LoadedInput] = []
@@ -312,55 +377,7 @@ def _build_review_prompt(
 
     if patch_input is None:
         raise ConfigError("review mode needs a patch")
-
-    context_inputs = list(extra_loaded)
-    seen = {item.name for item in context_inputs}
-    for item in load_changed_files(repo_dir, patch_input.text, limits):
-        if item.name in seen:
-            continue
-        context_inputs.append(item)
-        seen.add(item.name)
-
-    template_path = (
-        Path(args.prompt_template)
-        if args.prompt_template
-        else default_prompt_template_path()
-    )
-    template = _load_template(template_path, limits)
-    patch_budget = max(limits.max_prompt_chars - NOTE_RESERVE_CHARS, 2_000)
-
-    patch_body, patch_stats = sanitize_one(
-        patch_input.name,
-        patch_input.text,
-        limits,
-        remaining_chars=patch_budget,
-        remaining_files=limits.max_files,
-    )
-    patch_stats.truncated_read = patch_input.truncated_read
-    file_pairs = [(item.name, item.text) for item in context_inputs]
-    file_attachments, file_stats = sanitize_context_files(file_pairs, limits)
-    patch_stats.merge(file_stats)
-    patch_stats.truncated_read = patch_stats.truncated_read or patch_input.truncated_read
-    if any(item.truncated_read for item in context_inputs):
-        patch_stats.truncated_read = True
-    payload = split_review_payload(
-        template,
-        patch_body,
-        mr_context,
-        file_attachments,
-        limits,
-        patch_stats,
-        changed_path_count=len(changed_file_paths(patch_input.text)),
-    )
-    log.info(
-        f"composed review prompt ({len(payload.prompt)} chars"
-        + (f", {len(file_attachments)} file(s)" if file_attachments else "")
-        + (", staged" if payload.files or payload.patch else "")
-        + (", sanitized" if patch_stats.did_sanitize else "")
-        + (", gitlab mr context" if mr_context else "")
-        + ")"
-    )
-    return payload
+    return patch_input, extra_loaded, mr_context
 
 
 def _split_patch_and_files(
@@ -664,6 +681,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-template",
         help="template file containing a {patch} placeholder (review mode)",
     )
+    engine = parser.add_mutually_exclusive_group()
+    engine.add_argument(
+        "--quick",
+        dest="review_engine",
+        action="store_const",
+        const=REVIEW_QUICK,
+        help=(
+            "review mode: one message with the patch and the changed files, no tools "
+            "(critique-bot's default, and what the CI worker runs)"
+        ),
+    )
+    engine.add_argument(
+        "--deep",
+        dest="review_engine",
+        action="store_const",
+        const=REVIEW_AGENT,
+        help=(
+            "review mode: the Code Reviewer reads the project with read-only tools before it reports "
+            "(crit's default)"
+        ),
+    )
+    parser.add_argument("--crit-defaults", dest="crit_defaults", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--max-rounds",
         type=int,
@@ -936,6 +975,10 @@ def _main_submit(argv: list[str]) -> int:
                 f"submit cannot run --mode {mode}; use review or general, "
                 "or run the mode locally"
             )
+        )
+    if getattr(args, "review_engine", None) == REVIEW_AGENT:
+        return _config_error(
+            ConfigError("submit runs the one-shot review; the worker does not run --deep reviews yet")
         )
     if args.headed:
         log.warn("--headed is ignored on submit; the worker owns the browser")
@@ -1436,6 +1479,73 @@ def _welcome_login(config: BotConfig) -> bool:
     return True
 
 
+def _review_engine(args: argparse.Namespace) -> str:
+    """--quick or --deep when given; otherwise the agent review under crit and the one-shot under critique-bot."""
+    if getattr(args, "review_engine", None):
+        return args.review_engine
+    return REVIEW_AGENT if getattr(args, "crit_defaults", False) else REVIEW_QUICK
+
+
+def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
+    """``crit review``: the Code Reviewer reads the project with read-only tools, then reports."""
+    from critique_bot import review_agent
+    from critique_bot.agent import run_review
+    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home
+
+    started = datetime.now(timezone.utc)
+    workspace = Path(args.repo_dir).resolve()
+    rounds = args.max_rounds or review_agent.DEFAULT_MAX_ROUNDS
+    try:
+        config = load_config(args.config, model_override=args.model, cdp_url_override=args.cdp_url)
+        _log_config(config)
+        limits = config.input_limits
+        extra_files = list(args.files or []) + list(args.paths or [])
+        patch_input, extra_loaded, mr_context = _load_review_inputs(args, extra_files, limits, config)
+        template = _load_template(_review_template_path(args), limits)
+        patch_body, _stats = _sanitized_patch(patch_input, limits)
+    except EmptyDiff:
+        print("empty diff; nothing to review", flush=True)
+        return 0
+    except ConfigError as exc:
+        return _config_error(exc)
+    changed = changed_file_paths(patch_input.text)
+    changed += [item.name for item in extra_loaded if item.name not in changed]
+    task = review_agent.build_task(
+        template, patch_body, changed_paths=changed, mr_context=mr_context, max_rounds=rounds
+    )
+    try:
+        home = find_bot_home(workspace) or init_bot_home(workspace)
+    except BotHomeError as exc:
+        return _config_error(ConfigError(str(exc)))
+    code, turns = run_review(config, home, task, max_rounds=rounds, headed=bool(args.headed))
+    review = review_agent.review_text(turns)
+    if not review:
+        message = "the agent review ended without a review; the transcript is in .bot/sessions"
+        if code == 0:
+            code = 1
+        log.error(message)
+        print(f"error: {message}. Try crit review --quick.", file=sys.stderr)
+        return code
+    if code != 0:
+        log.warn("the review task did not end cleanly; writing the last review it sent")
+    finished = datetime.now(timezone.utc)
+    payload = {
+        "mode": MODE_REVIEW,
+        "engine": REVIEW_AGENT,
+        "model": config.model,
+        "backend": config.backend,
+        "url": config.url,
+        "prompt_chars": len(task),
+        "response": review,
+        "tool_rounds_max": rounds,
+        "turns": len(turns),
+        "started_at": isoformat(started),
+        "finished_at": isoformat(finished),
+    }
+    write_output(output_dir, review, payload, stem=OUTPUT_STEM[MODE_REVIEW])
+    return 0
+
+
 def _stored_config(repo_dir: Path) -> str | None:
     """The config.json crit stored for this project, so ``crit review`` needs no --config."""
     from critique_bot.bot_home import BotHomeError, find_bot_home
@@ -1472,6 +1582,10 @@ def _main_run(argv: list[str]) -> int:
         return _config_error(
             ConfigError("--config is required (or run crit once in this project to store one)")
         )
+    if args.review_engine and mode != MODE_REVIEW:
+        return _config_error(ConfigError("--quick and --deep only apply to review mode"))
+    if mode == MODE_REVIEW and _review_engine(args) == REVIEW_AGENT:
+        return _main_review_agent(args, output_dir)
     stem = OUTPUT_STEM[mode]
     headed = args.headed
     log.info(

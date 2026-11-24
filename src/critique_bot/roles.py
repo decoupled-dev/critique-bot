@@ -22,6 +22,7 @@ class Role:
 
 
 GENERIC = "generic"
+CODE_REVIEWER = "code-reviewer"
 
 ROLES: tuple[Role, ...] = (
     Role(

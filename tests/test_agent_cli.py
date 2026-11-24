@@ -255,7 +255,7 @@ class OneCommandTests(unittest.TestCase):
             with patch("critique_bot.cli._main_run", return_value=0) as run:
                 self.assertEqual(agent_main([word, "--prompt", "x"]), 0)
                 self.assertEqual(run.call_args.args[0][:2], ["--mode", mode])
-                self.assertEqual(run.call_args.args[0][2:], ["--prompt", "x"])
+                self.assertEqual(run.call_args.args[0][2:], ["--crit-defaults", "--prompt", "x"])
             with patch("critique_bot.cli._main_run", return_value=0) as run:
                 self.assertEqual(main([word]), 0)
                 self.assertEqual(run.call_args.args[0], ["--mode", mode])
@@ -269,7 +269,7 @@ class OneCommandTests(unittest.TestCase):
         with patch("critique_bot.cli._main_run", return_value=0) as run:
             self.assertEqual(agent_main(["review the auth code", "-y"]), 0)
             self.assertEqual(
-                run.call_args.args[0], ["--mode", "agent", "review the auth code", "--yes"]
+                run.call_args.args[0], ["--mode", "agent", "--crit-defaults", "review the auth code", "--yes"]
             )
 
     def test_mode_word_and_flag_conflict(self) -> None:

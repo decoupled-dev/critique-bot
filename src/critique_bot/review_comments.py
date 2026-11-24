@@ -1331,6 +1331,12 @@ def _json_candidate_blobs(text: str) -> list[str]:
     return blobs
 
 
+def has_review_json(text: str) -> bool:
+    """True when the text holds a review payload: a JSON object with ``comments`` or ``risk``."""
+    payload = _extract_json(text)
+    return payload is not None and _is_review_payload(payload)
+
+
 def _extract_json(text: str) -> dict | None:
     last = None
     review = None

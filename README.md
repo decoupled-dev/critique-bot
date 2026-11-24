@@ -6,7 +6,7 @@ Patch-review bot and local coding agent. The model behind it is an adapter chose
 
 ```bash
 crit "fix the failing test"           # coding agent (the default)
-crit review --patch-file diff.patch   # code review of a patch
+crit review --patch-file diff.patch   # code review: reads the project, then reports
 crit ask --prompt "Summarize" a.txt   # one-shot prompt (alias: general)
 crit chat                             # interactive conversation
 crit setup | worker | submit | queue-status | gitlab-post
@@ -78,9 +78,17 @@ The setup UI has the same check: **Send test prompt**.
 
 ## Run
 
-### Review (default)
+### Review
 
-Wraps the patch in [`prompts/review.txt`](prompts/review.txt) and writes `{output-dir}/review.md` + `review.json`.
+`crit review` gives the patch and the review format in [`prompts/review.txt`](prompts/review.txt) to the Code Reviewer. Before it reports, the reviewer reads what it needs with read-only tools: the changed files, their callers, tests, interfaces, manifests, git history. Edits, commands, web fetches, helper chats, and paths outside the project are refused without asking, so a patch cannot make crit act. It has 20 tool rounds by default (`--max-rounds`), and its last reply is the review. It writes `{output-dir}/review.md` + `review.json` in the same format as before, so `gitlab-post` works unchanged. The transcript goes to `.bot/sessions/`.
+
+```bash
+crit review --patch-file diff.patch      # or: git diff main | crit review
+```
+
+`--quick` runs the one-shot review instead: one message with the patch and the changed files, and no tools. It's faster and uses fewer chat turns. `critique-bot` (with or without `review`) and the CI worker use the one-shot review; `critique-bot review --deep` asks for the agent review there. `submit` refuses `--deep` for now, because the worker only runs one-shot reviews.
+
+The one-shot review:
 
 ```bash
 python -m critique_bot --config config.json --patch-file diff.patch --output-dir ./out

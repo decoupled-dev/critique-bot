@@ -3,7 +3,8 @@
 The first word picks the mode; with no mode word crit runs the local coding agent:
 
     crit [TASK]                 coding agent (default; also: crit agent, crit init, crit undo)
-    crit review [PATCH]         code review of a patch (stdin, --patch-file, or the CI checkout)
+    crit review [PATCH]         code review: the Code Reviewer reads the project, then reports
+    crit review --quick         the one-shot review (one message, no tools; what CI runs)
     crit ask --prompt ...       one-shot prompt with optional files (also: crit general)
     crit chat                   interactive conversation in this terminal
     crit setup | worker | submit | queue-status | gitlab-post | desktop-host
@@ -23,9 +24,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     args = ["--yes" if arg == "-y" else arg for arg in args]
-    if args and (args[0] in MODE_WORDS or args[0] in SUBCOMMANDS):
+    if args and args[0] in MODE_WORDS:
+        # crit's own defaults (the agent review for crit review) after the mode word
+        return cli_main([args[0], "--crit-defaults", *args[1:]])
+    if args and args[0] in SUBCOMMANDS:
         return cli_main(args)
-    return cli_main(["--mode", "agent", *args])
+    return cli_main(["--mode", "agent", "--crit-defaults", *args])
 
 
 if __name__ == "__main__":

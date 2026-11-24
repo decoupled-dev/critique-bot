@@ -1585,6 +1585,17 @@ def _read_only_tools() -> frozenset[str]:
     return getattr(agent_tools, "READ_ONLY", None) or _READ_ONLY_FALLBACK
 
 
+#: What a review may run: reads in the project, and nothing that waits on a person or a command.
+_REVIEW_TOOLS = frozenset(_PARALLEL_SAFE | {"todo", "skill"})
+
+
+def _review_allows(call: ToolCall, perm: Any) -> bool:
+    """A review reads the project and git history only. A patch under review must not be able to
+    make crit edit, run, or fetch anything, or read outside the project."""
+    kind = getattr(perm, "kind", "read") or "read"
+    return kind == "read" and canonical_tool(call.tool) in _REVIEW_TOOLS
+
+
 def _stop_reply(session: Any) -> None:
     """Ask the chat page to stop a reply it is still writing. Best effort."""
     stop = getattr(session, "stop_generation", None)
@@ -1835,8 +1846,12 @@ class _TaskRun:
         ui_mode_at_start: str | None = None,
         confirm_risky: bool = True,
         hooks: "_Hooks | None" = None,
+        review: bool = False,
     ) -> None:
         self.hooks = hooks or _Hooks()
+        #: A read-only review: only reads run, and the task ends on the reply that holds the review.
+        self.review = review
+        self.review_nudges = 0
         self.chat = chat
         self.task = task
         self.ctx = ctx
@@ -1905,6 +1920,10 @@ class _TaskRun:
                 if self.chat.restart(reason):
                     self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
+            if self.review and self.max_rounds is not None and rounds == self.max_rounds:
+                from critique_bot import review_agent
+
+                self.payload = self.payload + "\n\n" + review_agent.LAST_ROUND
             try:
                 reply = self.chat.send(self.payload)
             except _ProviderFailed as exc:
@@ -1964,6 +1983,8 @@ class _TaskRun:
                 why = f": {self.denied_reason}" if self.denied_reason else ""
                 return self._end("BLOCKED", f"the user denied the tool calls of {self.denied_rounds} replies in a row{why}")
             return None
+        if self.review:
+            return self._review_reply(reply)
         if fabricated and not status:
             self._send_message("FABRICATED")
             self.last_failed = True
@@ -2127,6 +2148,19 @@ class _TaskRun:
                 continue
             perm = self._permission(call)
             kind = getattr(perm, "kind", "read") or "read"
+            if self.review and not _review_allows(call, perm):
+                flush()
+                result = {
+                    "tool": canonical_tool(call.tool) or call.tool,
+                    "ok": False,
+                    "error": "not run: this is a read-only review. Only reads, searches, and git history work; "
+                    "no edits, commands, fetches, helpers, or paths outside the project",
+                    "planned": True,
+                }
+                self.hooks.tool_start(call)
+                self.hooks.tool_done(call, result)
+                slots[index] = result
+                continue
             if kind == "read" and canonical_tool(call.tool) in _PARALLEL_SAFE:
                 batch.append((index, call))
                 continue
@@ -2404,6 +2438,22 @@ class _TaskRun:
 
     # ----------------------------------------------------------------- finishing
 
+    def _review_reply(self, reply: str) -> str | None:
+        """A review reply with no tool calls: the review itself ends the task; anything else asks for it."""
+        from critique_bot import review_agent
+
+        if review_agent.is_review(reply):
+            self.chat.good()
+            self.hooks.status("COMPLETED")
+            return "COMPLETED"
+        self.review_nudges += 1
+        if self.review_nudges > review_agent.MAX_NUDGES:
+            return self._end("FAILED", "the review never came back in the review format")
+        self.hooks.ui("note", "Asking for the review in the review format.")
+        self.payload = review_agent.NUDGE
+        self.turns.append({"role": "user", "content": self.payload})
+        return None
+
     def _finish(self, status: str, *, reply: str = "", unchanged_ok: bool = False) -> str | None:
         if status in {"FAILED", "BLOCKED"}:
             reason = _failure_reason(reply)
@@ -2640,6 +2690,7 @@ def run_agent_loop(
     helper_inline: bool = False,
     role: str | None = None,
     reseed: Callable[[str], str] | None = None,
+    review: bool = False,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
@@ -2773,6 +2824,8 @@ def run_agent_loop(
     announced = False
     carry = ""
     while True:
+        if not pending and review:
+            break  # a review is one task; there is no next one to wait for
         if not pending:
             if not announced:
                 _ui("note", "Ready. Type a task, or exit.")
@@ -2839,8 +2892,9 @@ def run_agent_loop(
             ask=ask,
             ui_mode_at_start=ui_mode_at_start,
             confirm_risky=confirm_risky,
+            review=review,
         )
-        if mode_now != "plan" or _answer_only(task):
+        if review or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes
         message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note)
@@ -3255,6 +3309,93 @@ def run_agent(
     return 0 if outcome[-1] in _STATUS_OK else 1
 
 
+def run_review(
+    config: BotConfig,
+    home: BotHome,
+    task: str,
+    *,
+    max_rounds: int,
+    headed: bool,
+) -> tuple[int, list[dict[str, str]]]:
+    """Run one read-only review task as the Code Reviewer and return (exit code, turns).
+
+    The model reads the project and git history with tools; edits, commands, fetches,
+    helper chats, and paths outside the project are refused without asking, so no
+    prompt waits for a person and a patch cannot make crit act. The turns are saved
+    as a transcript in ``.bot/sessions`` as an agent run is.
+    """
+    started = datetime.now(timezone.utc)
+    turns: list[dict[str, str]] = []
+    outcome = ["COMPLETED"]
+    settings = home.settings if isinstance(home.settings, dict) else {}
+    try:
+        instructions = load_agent_instructions()
+    except OSError as exc:
+        log.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1, turns
+    if settings.get("seed_instructions") is False:
+        instructions = ""
+    shell = agent_shell.detect_shell(preference=_shell_preference(settings))
+    agent_ui.configure(
+        workspace=home.root,
+        model=_model_label(config),
+        shell=shell,
+        approve_mode="plan",
+        theme=settings.get("theme") or "dark",
+        cache_dir=home.cache_dir,
+        tools=sorted(_REVIEW_TOOLS),
+        role=roles.CODE_REVIEWER,
+    )
+    agent_ui.install_log_bridge()
+    seed = seed_message(
+        home.root,
+        instructions,
+        shell=shell,
+        notes=home.project_notes(),
+        helpers=0,
+        offline=True,
+        role=load_role_instructions(roles.CODE_REVIEWER),
+    )
+    code = 1
+    try:
+        code = _run_session(
+            config,
+            home,
+            task,
+            headed=headed,
+            loop_kwargs={
+                "workspace": home.root,
+                "index_path": home.index_path,
+                "cache_dir": home.cache_dir,
+                "max_rounds": max_rounds,
+                "max_result_chars": _result_budget(config, settings),
+                "seed": seed,
+                "outcome": outcome,
+                "check_command": None,
+                "shell": shell,
+                "approve_mode": "plan",
+                "turns": turns,
+                "settings": _loop_settings(config, settings),
+                "ask_user": lambda _question: "",
+                "helper_count": 0,
+                "role": roles.CODE_REVIEWER,
+                "review": True,
+            },
+            turns=turns,
+        )
+    except KeyboardInterrupt:
+        outcome[:] = ["INTERRUPTED"]
+        _print_status("INTERRUPTED")
+        code = 130
+    finally:
+        agent_ui.shutdown()
+        _save_transcript(config, home, turns, started=started, output_dir=None)
+    if code == 0 and outcome[-1] not in _STATUS_OK:
+        code = 1
+    return code, turns
+
+
 def _model_label(config: BotConfig) -> str:
     """What the header and /status call the model: the name, and where it runs when local."""
     if not config.is_local:
@@ -3577,6 +3718,8 @@ def _friendly_error(error: str) -> str:
         return "That edit would break the file, so it was not applied."
     if "old_string" in text:
         return "Couldn't find the exact text to change."
+    if "read-only review" in text:
+        return "A review only reads; that step was skipped."
     if "not run:" in text:
         return "That command used the wrong shell syntax."
     if "unknown tool" in text:
