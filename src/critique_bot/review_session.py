@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 
 from critique_bot import log
-from critique_bot.chat_client import ChatError
+from critique_bot.model_api import ChatError
 from critique_bot.config import compose_prompt, format_attachments
 from critique_bot.patch import (
     InputLimits,

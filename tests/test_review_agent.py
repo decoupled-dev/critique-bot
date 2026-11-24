@@ -77,13 +77,13 @@ class ReviewLoopTests(unittest.TestCase):
                     REVIEW + "\n\nCOMPLETED",
                 ]
             )
-            turns = _loop(session, root, "review it", review=True, approve_mode="auto")
+            turns = _loop(session, root, "review it", read_only=True, answer=review_agent.CONTRACT, single_task=True, approve_mode="auto")
             self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "print('hi')\n")
             self.assertFalse((root / "made-by-review").exists())
             self.assertEqual(len(session.sent), 2)
             results = session.sent[1]
             self.assertIn("print('hi')", results)
-            self.assertIn("read-only review", results)
+            self.assertIn("task is read-only", results)
             text = review_agent.review_text(turns)
             self.assertTrue(text.startswith("**Risk: Moderate risk**"))
             self.assertNotIn("COMPLETED", text)
@@ -92,7 +92,7 @@ class ReviewLoopTests(unittest.TestCase):
         # "you should add a test" reads like a hand-back to the generic loop; a review is the answer.
         with tempfile.TemporaryDirectory() as tmp:
             session = _Scripted([REVIEW.replace("Add one.", "You should add a test yourself.")])
-            turns = _loop(session, Path(tmp), "review it", review=True)
+            turns = _loop(session, Path(tmp), "review it", read_only=True, answer=review_agent.CONTRACT, single_task=True)
             self.assertEqual(len(session.sent), 1)
             self.assertTrue(review_agent.review_text(turns))
 
@@ -100,7 +100,7 @@ class ReviewLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             session = _Scripted(["Looks fine to me."] * (review_agent.MAX_NUDGES + 1))
             outcome: list[str] = []
-            turns = _loop(session, Path(tmp), "review it", review=True, outcome=outcome)
+            turns = _loop(session, Path(tmp), "review it", read_only=True, answer=review_agent.CONTRACT, single_task=True, outcome=outcome)
             self.assertEqual(outcome, ["FAILED"])
             self.assertIn(review_agent.NUDGE, session.sent[1])
             self.assertEqual(review_agent.review_text(turns), "")
@@ -110,7 +110,7 @@ class ReviewLoopTests(unittest.TestCase):
             root = Path(tmp)
             (root / "a.txt").write_text("a\n", encoding="utf-8")
             session = _Scripted([_call("read_files", paths=["a.txt"]), REVIEW])
-            _loop(session, root, "review it", review=True, max_rounds=2)
+            _loop(session, root, "review it", read_only=True, answer=review_agent.CONTRACT, single_task=True, max_rounds=2)
             self.assertNotIn(review_agent.LAST_ROUND, session.sent[0])
             self.assertIn(review_agent.LAST_ROUND, session.sent[1])
 

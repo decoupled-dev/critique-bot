@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from critique_bot.output import isoformat, save_failure, write_output, write_review
+from critique_bot.browser import save_page_failure as save_failure
+from critique_bot.output import isoformat, write_output, write_review
 
 
 class WriteOutputTests(unittest.TestCase):

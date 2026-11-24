@@ -29,9 +29,8 @@ from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from critique_bot import log
-from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError
+from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError, ChatProvider, ChatSession
 from critique_bot.config import LOCAL_API_OLLAMA, LOCAL_API_OPENAI, BotConfig
-from critique_bot.provider import ChatProvider, ChatSession
 
 #: Ollama answers a chat request for a model it does not have with this.
 _MODEL_MISSING_RE = re.compile(r"model\s+['\"]?[^'\"]+['\"]?\s+not found|no such model|not found, try pulling", re.I)
@@ -125,7 +124,7 @@ class LocalModelSession(ChatSession):
         self.last_detail: dict[str, Any] | None = None
 
     def send(self, prompt: str) -> str:
-        from critique_bot.chat_client import redact_outgoing
+        from critique_bot.redaction import redact_outgoing
 
         prompt = redact_outgoing(prompt)
         self.messages.append({"role": "user", "content": prompt})

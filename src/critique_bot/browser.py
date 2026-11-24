@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from critique_bot import log
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
+from critique_bot.model_api import BackendError
 
 # Set by the desktop app: attach over CDP in a new tab of a shared browser instead of reusing one.
 ENV_CDP_OWN_TAB = "CRITIQUE_CDP_OWN_TAB"
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page
 
 
-class BrowserError(RuntimeError):
+class BrowserError(BackendError):
     """Edge could not be launched or the page could not be created."""
 
 
@@ -1730,3 +1731,27 @@ def launch_edge(
         if started_desktop_edge:
             _stop_desktop_edge(desktop_proc, profile_dir)
         log.debug("Playwright stopped")
+
+
+def save_page_failure(page: Page, output_dir: Path) -> None:
+    """Save a screenshot and the HTML of ``page`` into ``output_dir`` (best effort, logs what it saved)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    screenshot = output_dir / "screenshot.png"
+    html_path = output_dir / "page.html"
+    try:
+        log.error(f"saving failure artifacts for {describe_page(page)}")
+    except Exception:
+        log.error("saving failure artifacts")
+    try:
+        page.screenshot(path=str(screenshot), full_page=True)
+        log.info(f"saved screenshot {screenshot}")
+    except Exception as exc:
+        log.warn(f"could not save screenshot: {exc}")
+    try:
+        html = page.content()
+        if len(html) > 2_000_000:
+            html = html[:2_000_000] + "\n<!-- truncated: page HTML exceeded 2 MB -->\n"
+        html_path.write_text(html, encoding="utf-8")
+        log.info(f"saved page HTML {html_path} ({html_path.stat().st_size} bytes)")
+    except Exception as exc:
+        log.warn(f"could not save page HTML: {exc}")

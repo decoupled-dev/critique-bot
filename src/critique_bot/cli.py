@@ -18,7 +18,8 @@ from critique_bot.config import (
     default_prompt_template_path,
     load_config,
 )
-from critique_bot.output import isoformat, save_failure, write_output
+from critique_bot.model_api import save_failure
+from critique_bot.output import isoformat, write_output
 from critique_bot.patch import (
     NOTE_RESERVE_CHARS,
     InputError,
@@ -1489,7 +1490,8 @@ def _review_engine(args: argparse.Namespace) -> str:
 def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     """``crit review``: the Code Reviewer reads the project with read-only tools, then reports."""
     from critique_bot import review_agent
-    from critique_bot.agent import run_review
+    from critique_bot.agent import run_read_only_task
+    from critique_bot.roles import CODE_REVIEWER
     from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home
 
     started = datetime.now(timezone.utc)
@@ -1517,7 +1519,15 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
         home = find_bot_home(workspace) or init_bot_home(workspace)
     except BotHomeError as exc:
         return _config_error(ConfigError(str(exc)))
-    code, turns = run_review(config, home, task, max_rounds=rounds, headed=bool(args.headed))
+    code, turns = run_read_only_task(
+        config,
+        home,
+        task,
+        answer=review_agent.CONTRACT,
+        role=CODE_REVIEWER,
+        max_rounds=rounds,
+        headed=bool(args.headed),
+    )
     review = review_agent.review_text(turns)
     if not review:
         message = "the agent review ended without a review; the transcript is in .bot/sessions"
@@ -1653,14 +1663,8 @@ def _main_run(argv: list[str]) -> int:
                         response = session.send(prompt)
                         completion = getattr(session, "last_detail", None)
                 except Exception:
-                    page = getattr(session, "page", None)
-                    if page is not None:
-                        log.exception(
-                            "chat flow failed; capturing screenshot and HTML"
-                        )
-                        save_failure(page, output_dir)
-                    else:
-                        log.exception("chat flow failed")
+                    log.exception("chat flow failed")
+                    save_failure(session, output_dir)
                     raise
     except (BrowserError, ChatError) as exc:
         log.error(str(exc))

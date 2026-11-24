@@ -145,7 +145,7 @@ def load_changed_files(
 
 
 def _holds_secrets(path: str) -> bool:
-    from critique_bot.agent_tools import sensitive_file
+    from critique_bot.redaction import sensitive_file
 
     return sensitive_file(path)
 

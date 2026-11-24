@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from critique_bot.agent import AnswerContract, hide_tool_markup
 from critique_bot.config import compose_prompt
 from critique_bot.review_comments import has_review_json
 
@@ -75,19 +76,28 @@ def is_review(reply: str) -> bool:
     return bool(reply and reply.strip()) and has_review_json(reply)
 
 
+#: The engine's contract for a review: the task ends on a reply with the review JSON.
+CONTRACT = AnswerContract(
+    accepts=lambda reply: is_review(reply),
+    nudge=NUDGE,
+    last_round=LAST_ROUND,
+    max_nudges=MAX_NUDGES,
+    failure="the review never came back in the review format",
+    note="Asking for the review in the review format.",
+)
+
+
 def review_text(turns: list[dict[str, str]]) -> str:
     """The review from a finished review task: the last assistant reply that holds the review JSON.
 
     Tool markup and a trailing finish word are dropped. "" when no reply held a review.
     """
-    from critique_bot.agent import _hide_tool_markup
-
     for turn in reversed(turns):
         if turn.get("role") != "assistant":
             continue
         content = str(turn.get("content") or "")
         if not is_review(content):
             continue
-        cleaned = _STATUS_LINE_RE.sub("", _hide_tool_markup(content))
+        cleaned = _STATUS_LINE_RE.sub("", hide_tool_markup(content))
         return cleaned.strip() + "\n"
     return ""

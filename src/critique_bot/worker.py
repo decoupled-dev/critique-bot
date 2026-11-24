@@ -11,11 +11,12 @@ from types import FrameType
 from typing import Callable
 
 from critique_bot import log
-from critique_bot.browser import BrowserError, as_browser_error
 from critique_bot.config import BotConfig
-from critique_bot.chat_client import COMPLETION_IDLE, ChatError
-from critique_bot.provider import ChatProvider, open_provider
-from critique_bot.output import isoformat, save_failure, write_output
+from critique_bot.model_api import COMPLETION_IDLE, ChatError, ChatProvider, open_provider
+from critique_bot.model_api import BackendError as BrowserError
+from critique_bot.model_api import backend_error as as_browser_error
+from critique_bot.model_api import save_failure
+from critique_bot.output import isoformat, write_output
 from critique_bot.queue import (
     HEARTBEAT_EVERY_SEC,
     POLL_SEC,
@@ -301,13 +302,8 @@ class _JobWatchdog:
 
 
 def _save_job_failure(session, out_dir: Path) -> None:
-    page = getattr(session, "page", None) if session is not None else None
-    if page is None:
-        return
-    try:
-        save_failure(page, out_dir)
-    except Exception:
-        pass
+    if session is not None:
+        save_failure(session, out_dir)
 
 
 def _execute_job(

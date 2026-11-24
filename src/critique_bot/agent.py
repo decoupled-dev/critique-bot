@@ -40,7 +40,8 @@ from critique_bot.agent_tools import (
 )
 from critique_bot.agent_tools import execute as _execute
 from critique_bot.bot_home import BotHome, resolve_check_command
-from critique_bot.chat_client import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
+from critique_bot import model_api
+from critique_bot.model_api import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
 
@@ -51,8 +52,12 @@ __all__ = [
     "execute_tool",
     "format_tool_result",
     "parse_tool_calls",
+    "AnswerContract",
+    "READ_ONLY_TOOLS",
+    "hide_tool_markup",
     "run_agent",
     "run_agent_loop",
+    "run_read_only_task",
 ]
 
 # The canonical tag is <tool_call>. Models also print <tool_use>,
@@ -526,6 +531,11 @@ def _bare_tool_blobs(text: str) -> list[str]:
         if any(not call.error and canonical_tool(call.tool) for call in _calls_from_data(data)):
             blobs.append(blob)
     return blobs
+
+
+def hide_tool_markup(text: str) -> str:
+    """Text with the tool-call protocol removed, as the user should see it."""
+    return _hide_tool_markup(text)
 
 
 def _hide_tool_markup(text: str) -> str:
@@ -1585,15 +1595,32 @@ def _read_only_tools() -> frozenset[str]:
     return getattr(agent_tools, "READ_ONLY", None) or _READ_ONLY_FALLBACK
 
 
-#: What a review may run: reads in the project, and nothing that waits on a person or a command.
-_REVIEW_TOOLS = frozenset(_PARALLEL_SAFE | {"todo", "skill"})
+#: What a read-only task may run: reads in the project, and nothing that waits on a person or a command.
+READ_ONLY_TOOLS = frozenset(_PARALLEL_SAFE | {"todo", "skill"})
 
 
-def _review_allows(call: ToolCall, perm: Any) -> bool:
-    """A review reads the project and git history only. A patch under review must not be able to
-    make crit edit, run, or fetch anything, or read outside the project."""
+def _read_only_allows(call: ToolCall, perm: Any) -> bool:
+    """A read-only task reads the project and git history only. Input under review (a patch, an
+    issue) must not be able to make crit edit, run, or fetch anything, or read outside the project."""
     kind = getattr(perm, "kind", "read") or "read"
-    return kind == "read" and canonical_tool(call.tool) in _REVIEW_TOOLS
+    return kind == "read" and canonical_tool(call.tool) in READ_ONLY_TOOLS
+
+
+@dataclass(frozen=True)
+class AnswerContract:
+    """What the final answer of a task must look like, for callers that parse it (a review).
+
+    A reply without tool calls ends the task when ``accepts(reply)`` is true. Otherwise
+    ``nudge`` is sent back, up to ``max_nudges`` times, and then the task fails with
+    ``failure``. ``last_round`` (when set) goes with the last allowed tool round.
+    """
+
+    accepts: Callable[[str], bool]
+    nudge: str
+    last_round: str = ""
+    max_nudges: int = 2
+    failure: str = "the final answer never came in the required format"
+    note: str = "Asking for the answer in the required format."
 
 
 def _stop_reply(session: Any) -> None:
@@ -1846,12 +1873,15 @@ class _TaskRun:
         ui_mode_at_start: str | None = None,
         confirm_risky: bool = True,
         hooks: "_Hooks | None" = None,
-        review: bool = False,
+        read_only: bool = False,
+        answer: AnswerContract | None = None,
     ) -> None:
         self.hooks = hooks or _Hooks()
-        #: A read-only review: only reads run, and the task ends on the reply that holds the review.
-        self.review = review
-        self.review_nudges = 0
+        #: Only reads run (READ_ONLY_TOOLS); nothing is asked of the user.
+        self.read_only = read_only
+        #: The final answer must pass this contract (None: the usual finish rules).
+        self.answer = answer
+        self.answer_nudges = 0
         self.chat = chat
         self.task = task
         self.ctx = ctx
@@ -1920,10 +1950,8 @@ class _TaskRun:
                 if self.chat.restart(reason):
                     self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
-            if self.review and self.max_rounds is not None and rounds == self.max_rounds:
-                from critique_bot import review_agent
-
-                self.payload = self.payload + "\n\n" + review_agent.LAST_ROUND
+            if self.answer and self.answer.last_round and self.max_rounds is not None and rounds == self.max_rounds:
+                self.payload = self.payload + "\n\n" + self.answer.last_round
             try:
                 reply = self.chat.send(self.payload)
             except _ProviderFailed as exc:
@@ -1983,8 +2011,8 @@ class _TaskRun:
                 why = f": {self.denied_reason}" if self.denied_reason else ""
                 return self._end("BLOCKED", f"the user denied the tool calls of {self.denied_rounds} replies in a row{why}")
             return None
-        if self.review:
-            return self._review_reply(reply)
+        if self.answer is not None:
+            return self._contract_reply(reply)
         if fabricated and not status:
             self._send_message("FABRICATED")
             self.last_failed = True
@@ -2148,12 +2176,12 @@ class _TaskRun:
                 continue
             perm = self._permission(call)
             kind = getattr(perm, "kind", "read") or "read"
-            if self.review and not _review_allows(call, perm):
+            if self.read_only and not _read_only_allows(call, perm):
                 flush()
                 result = {
                     "tool": canonical_tool(call.tool) or call.tool,
                     "ok": False,
-                    "error": "not run: this is a read-only review. Only reads, searches, and git history work; "
+                    "error": "not run: this task is read-only. Only reads, searches, and git history work; "
                     "no edits, commands, fetches, helpers, or paths outside the project",
                     "planned": True,
                 }
@@ -2438,19 +2466,19 @@ class _TaskRun:
 
     # ----------------------------------------------------------------- finishing
 
-    def _review_reply(self, reply: str) -> str | None:
-        """A review reply with no tool calls: the review itself ends the task; anything else asks for it."""
-        from critique_bot import review_agent
-
-        if review_agent.is_review(reply):
+    def _contract_reply(self, reply: str) -> str | None:
+        """A reply with no tool calls under an answer contract: an accepted answer ends the task."""
+        contract = self.answer
+        assert contract is not None
+        if contract.accepts(reply):
             self.chat.good()
             self.hooks.status("COMPLETED")
             return "COMPLETED"
-        self.review_nudges += 1
-        if self.review_nudges > review_agent.MAX_NUDGES:
-            return self._end("FAILED", "the review never came back in the review format")
-        self.hooks.ui("note", "Asking for the review in the review format.")
-        self.payload = review_agent.NUDGE
+        self.answer_nudges += 1
+        if self.answer_nudges > contract.max_nudges:
+            return self._end("FAILED", contract.failure)
+        self.hooks.ui("note", contract.note)
+        self.payload = contract.nudge
         self.turns.append({"role": "user", "content": self.payload})
         return None
 
@@ -2690,7 +2718,9 @@ def run_agent_loop(
     helper_inline: bool = False,
     role: str | None = None,
     reseed: Callable[[str], str] | None = None,
-    review: bool = False,
+    read_only: bool = False,
+    answer: AnswerContract | None = None,
+    single_task: bool = False,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
@@ -2824,8 +2854,8 @@ def run_agent_loop(
     announced = False
     carry = ""
     while True:
-        if not pending and review:
-            break  # a review is one task; there is no next one to wait for
+        if not pending and single_task and turns:
+            break  # one task, and it ran: do not wait for another
         if not pending:
             if not announced:
                 _ui("note", "Ready. Type a task, or exit.")
@@ -2892,9 +2922,10 @@ def run_agent_loop(
             ask=ask,
             ui_mode_at_start=ui_mode_at_start,
             confirm_risky=confirm_risky,
-            review=review,
+            read_only=read_only,
+            answer=answer,
         )
-        if review or mode_now != "plan" or _answer_only(task):
+        if read_only or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes
         message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note)
@@ -3309,20 +3340,23 @@ def run_agent(
     return 0 if outcome[-1] in _STATUS_OK else 1
 
 
-def run_review(
+def run_read_only_task(
     config: BotConfig,
     home: BotHome,
     task: str,
     *,
+    answer: AnswerContract,
+    role: str,
     max_rounds: int,
     headed: bool,
 ) -> tuple[int, list[dict[str, str]]]:
-    """Run one read-only review task as the Code Reviewer and return (exit code, turns).
+    """Run one read-only task (a review) and return (exit code, turns).
 
     The model reads the project and git history with tools; edits, commands, fetches,
     helper chats, and paths outside the project are refused without asking, so no
-    prompt waits for a person and a patch cannot make crit act. The turns are saved
-    as a transcript in ``.bot/sessions`` as an agent run is.
+    prompt waits for a person and the input cannot make crit act. The task ends on a
+    reply that ``answer`` accepts. The turns are saved as a transcript in
+    ``.bot/sessions`` as an agent run is.
     """
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
@@ -3344,8 +3378,8 @@ def run_review(
         approve_mode="plan",
         theme=settings.get("theme") or "dark",
         cache_dir=home.cache_dir,
-        tools=sorted(_REVIEW_TOOLS),
-        role=roles.CODE_REVIEWER,
+        tools=sorted(READ_ONLY_TOOLS),
+        role=role,
     )
     agent_ui.install_log_bridge()
     seed = seed_message(
@@ -3355,7 +3389,7 @@ def run_review(
         notes=home.project_notes(),
         helpers=0,
         offline=True,
-        role=load_role_instructions(roles.CODE_REVIEWER),
+        role=load_role_instructions(role),
     )
     code = 1
     try:
@@ -3379,8 +3413,10 @@ def run_review(
                 "settings": _loop_settings(config, settings),
                 "ask_user": lambda _question: "",
                 "helper_count": 0,
-                "role": roles.CODE_REVIEWER,
-                "review": True,
+                "role": role,
+                "read_only": True,
+                "answer": answer,
+                "single_task": True,
             },
             turns=turns,
         )
@@ -3398,11 +3434,7 @@ def run_review(
 
 def _model_label(config: BotConfig) -> str:
     """What the header and /status call the model: the name, and where it runs when local."""
-    if not config.is_local:
-        return config.model or ""
-    from critique_bot.local_model import server_label
-
-    return f"{config.model or '(first served model)'} · local at {server_label(config.url)}"
+    return model_api.model_label(config)
 
 
 def _load_rules(options: dict[str, Any]) -> Any:
@@ -3421,11 +3453,9 @@ def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any
     hosted model with a large context. A local model has ``local.num_ctx`` tokens; a chat
     bigger than that is silently truncated, so a new chat starts well before that.
     """
-    if not config.is_local:
+    num_ctx = model_api.context_tokens(config)
+    if num_ctx is None:
         return settings
-    from critique_bot.local_model import DEFAULT_NUM_CTX
-
-    num_ctx = config.local.num_ctx or DEFAULT_NUM_CTX
     merged = dict(settings)
     # about 3 characters per token of code; leave room for the reply and the instructions
     merged.setdefault("compact_after_chars", max(10_000, int(num_ctx * 2)))
@@ -3514,9 +3544,7 @@ def _run_session(
     turns: list[dict[str, str]],
 ) -> int:
     """One browser session. A Cloudflare block in headless mode retries once, headed."""
-    from critique_bot.browser import BrowserError
-    from critique_bot.chat_client import ChatError
-    from critique_bot.provider import open_provider
+    from critique_bot.model_api import ModelError, open_provider
 
     kwargs = _loop_kwargs(loop_kwargs)
     try:
@@ -3534,11 +3562,7 @@ def _run_session(
                     if "turns" not in kwargs and result is not turns:
                         turns[:] = list(result or [])
                 except Exception:
-                    page = getattr(session, "page", None)
-                    if page is not None:
-                        from critique_bot.output import save_failure
-
-                        save_failure(page, home.sessions_dir)
+                    model_api.save_failure(session, home.sessions_dir)
                     raise
     except ChatError as exc:
         if not headed and "Cloudflare" in str(exc):
@@ -3548,7 +3572,7 @@ def _run_session(
         agent_ui.shutdown()
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    except BrowserError as exc:
+    except ModelError as exc:
         log.error(str(exc))
         agent_ui.shutdown()
         print(f"error: {exc}", file=sys.stderr)
@@ -3718,8 +3742,8 @@ def _friendly_error(error: str) -> str:
         return "That edit would break the file, so it was not applied."
     if "old_string" in text:
         return "Couldn't find the exact text to change."
-    if "read-only review" in text:
-        return "A review only reads; that step was skipped."
+    if "task is read-only" in text:
+        return "This task only reads; that step was skipped."
     if "not run:" in text:
         return "That command used the wrong shell syntax."
     if "unknown tool" in text:

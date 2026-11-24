@@ -7,20 +7,19 @@ from typing import TYPE_CHECKING
 
 from critique_bot import log
 from critique_bot.config import BotConfig, Selectors
+from critique_bot.model_api import (  # noqa: F401 (re-exported for older imports)
+    COMPLETION_IDLE,
+    COMPLETION_STOPPED,
+    ChatError,
+    CloudflareBlocked,
+    ReplyNotStarted,
+    ReplyStalled,
+)
 from critique_bot.patch import strip_unsafe_controls
+from critique_bot.redaction import redact_outgoing  # noqa: F401 (re-exported)
 
 if TYPE_CHECKING:
     from playwright.sync_api import Frame, Locator, Page
-
-
-class ChatError(RuntimeError):
-    """The web chat UI did not complete a reply."""
-
-
-#: The chat UI told us generation had finished. The reply is whole.
-COMPLETION_STOPPED = "stop-signal"
-#: The reply merely stopped changing. It may have been cut off mid-answer.
-COMPLETION_IDLE = "idle-timeout"
 
 
 POLL_MS = 250
@@ -1604,18 +1603,6 @@ def _continue_cut_reply(
     return head + "\n" + more
 
 
-class ReplyNotStarted(ChatError):
-    """The page showed no reply and no generating signal after the send (and a second send)."""
-
-
-class CloudflareBlocked(ChatError):
-    """A Cloudflare challenge that a headless window cannot pass. Retrying headless does not help."""
-
-
-class ReplyStalled(ChatError):
-    """A reply started, then nothing arrived: no text and no generating signal for too long."""
-
-
 _COMPOSER_TEXT_JS = """
 (el) => {
   if (!el) return '';
@@ -2110,16 +2097,6 @@ def prepare_chat(page: Page, config: BotConfig) -> None:
     _warn_if_signed_out(page)
     _select_model(page, selectors, config.model, timeout_ms)
     log.info("chat UI is ready")
-
-
-def redact_outgoing(prompt: str) -> str:
-    """``prompt`` with known secret formats replaced by ``[REDACTED:kind]`` (see agent_tools.redact_secrets)."""
-    from critique_bot.agent_tools import redact_secrets
-
-    text, hidden = redact_secrets(prompt)
-    if hidden:
-        log.info(f"redacted {hidden} secret(s) before sending")
-    return text
 
 
 def send_turn(

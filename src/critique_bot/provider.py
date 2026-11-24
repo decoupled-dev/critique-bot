@@ -13,68 +13,17 @@ from __future__ import annotations
 import re
 import urllib.parse
 from contextlib import ExitStack
+from pathlib import Path
 from dataclasses import replace
 from typing import Any
 
 from critique_bot import log
 from critique_bot.config import BACKEND_LOCAL, BotConfig
+from critique_bot.model_api import ChatProvider, ChatSession  # noqa: F401 (re-exported)
 
 #: How long the first-login window stays open. Longer than a normal turn so
 #: SSO and a second factor can finish before the window closes.
 _LOGIN_WINDOW_MS = 600_000
-
-
-class ChatSession:
-    """One conversation: one browser tab, or one message list sent to a local model."""
-
-    page: Any = None
-    #: How the last reply ended. Callers can distinguish a reply the UI
-    #: declared finished from one that went quiet.
-    last_detail: dict[str, Any] | None = None
-
-    def send(self, prompt: str) -> str:
-        raise NotImplementedError
-
-    def new_chat(self) -> bool:
-        """Start a fresh conversation for the next send. False when this session cannot."""
-        return False
-
-    def stop_generation(self) -> bool:
-        """Stop a reply the page is still writing. True when one was running."""
-        return False
-
-    def close(self) -> None:
-        return None
-
-    def __enter__(self) -> ChatSession:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
-
-
-class ChatProvider:
-    """Process-level backend resources: the Edge process, or nothing for a local model."""
-
-    #: More than one session may run at the same time (helper tabs, parallel review jobs).
-    can_parallelize: bool = False
-
-    def session(
-        self,
-        *,
-        isolated: bool = False,
-        model: str | None = None,
-    ) -> ChatSession:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        return None
-
-    def __enter__(self) -> ChatProvider:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
 
 
 def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
@@ -238,7 +187,20 @@ class BrowserProvider(ChatProvider):
         return PageBrowserSession(page, cfg, close_page=True)
 
 
-class PageBrowserSession(ChatSession):
+class _PageFailure:
+    """Browser sessions save a screenshot and the page HTML when a turn fails."""
+
+    page: Any = None
+
+    def save_failure(self, output_dir: Path) -> None:
+        if self.page is None:
+            return
+        from critique_bot.browser import save_page_failure
+
+        save_page_failure(self.page, output_dir)
+
+
+class PageBrowserSession(_PageFailure, ChatSession):
     def __init__(self, page: Any, config: BotConfig, *, close_page: bool) -> None:
         self.page = page
         self._config = config
@@ -279,7 +241,7 @@ class PageBrowserSession(ChatSession):
             log.debug(f"tab close: {exc}")
 
 
-class CdpBrowserSession(ChatSession):
+class CdpBrowserSession(_PageFailure, ChatSession):
     def __init__(self, cdp_url: str, config: BotConfig) -> None:
         self._cdp_url = cdp_url
         self._config = config
