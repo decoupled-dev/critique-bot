@@ -47,7 +47,8 @@ tools.
 
 ## Where standard protocols plug in
 
-- **OpenAI Responses format.** With `"tool_format": "openai"` the chat itself speaks it:
+- **OpenAI Responses format.** The default (`"tool_format": "openai"`): the chat itself speaks it,
+  with the chat page and with a local model alike:
   the first message carries the registry's tools as a Responses `tools` array, replies are
   `{"output": [...]}` with `function_call` and `message` items, and results go back as
   `function_call_output` items (`openai_format.py`; the format-specific prompt sections are in

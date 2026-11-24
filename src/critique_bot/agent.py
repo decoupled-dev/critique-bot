@@ -1381,12 +1381,22 @@ TOOL_FORMAT_OPENAI = "openai"
 TOOL_FORMATS = (TOOL_FORMAT_TAGS, TOOL_FORMAT_OPENAI)
 
 
-def tool_format_of(settings: dict[str, Any] | None) -> str:
-    """``"openai"`` or ``"tags"`` from the ``"tool_format"`` setting (tags when unset or unknown)."""
-    raw = str((settings or {}).get("tool_format") or TOOL_FORMAT_TAGS).strip().lower()
+#: What crit uses when ``"tool_format"`` is not set: the OpenAI Responses format.
+DEFAULT_TOOL_FORMAT = TOOL_FORMAT_OPENAI
+
+
+def tool_format_of(settings: dict[str, Any] | None, default: str = TOOL_FORMAT_TAGS) -> str:
+    """``"openai"`` or ``"tags"`` from the ``"tool_format"`` setting, else ``default``.
+
+    crit's sessions pass DEFAULT_TOOL_FORMAT (openai). The engine called directly with no
+    setting keeps tags, the format its own tests are written in.
+    """
+    raw = str((settings or {}).get("tool_format") or "").strip().lower()
     if raw in {"openai", "responses", "openai-responses", "json"}:
         return TOOL_FORMAT_OPENAI
-    return TOOL_FORMAT_TAGS
+    if raw in {"tags", "tag", "tool_call", "xml", "legacy"}:
+        return TOOL_FORMAT_TAGS
+    return default if default in TOOL_FORMATS else TOOL_FORMAT_TAGS
 
 
 def _read_sections(path: Path) -> dict[str, str]:
@@ -1714,6 +1724,8 @@ class _Chat:
         self.quiet = quiet
         self.seed = (seed or "").strip()
         self.retries = max(0, retries)
+        #: Where a failed send saves the page's screenshot and HTML before the retry (None: nowhere).
+        self.failure_dir: Path | None = None
         self.compact_after = compact_after
         self.chars = 0
         self.violations = 0
@@ -1768,6 +1780,11 @@ class _Chat:
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
                 stalled = isinstance(exc, ReplyStalled)
+                if self.failure_dir is not None:
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    folder = self.failure_dir / f"{stamp}-attempt{attempt + 1}"
+                    model_api.save_failure(self.session, folder)
+                    log.info(f"saved what the chat page showed to {folder}")
             finally:
                 if not self.quiet:
                     _waiting(False)
@@ -2844,6 +2861,8 @@ def run_agent_loop(
         compact_turns=_int_setting(options, "compact_after_turns", DEFAULT_COMPACT_AFTER_TURNS, 5),
         compact_minutes=_int_setting(options, "compact_after_minutes", DEFAULT_COMPACT_AFTER_MINUTES, 5),
     )
+    if cache_dir is not None:
+        chat.failure_dir = Path(cache_dir) / "failures"
     handoff_notes = options.get("handoff_notes") is not False
     check_timeout = _int_setting(options, "check_timeout", DEFAULT_CHECK_TIMEOUT, 1)
     build_timeout = _int_setting(options, "build_timeout", int(agent_build.DEFAULT_BUILD_TIMEOUT), 60)
@@ -3389,7 +3408,7 @@ def run_agent(
                 "approve_mode": approve_mode,
                 "session_shell": session_shell,
                 "turns": turns,
-                "settings": _loop_settings(config, settings),
+                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
                 "role": role_id,
@@ -3452,7 +3471,7 @@ def _tool_setup(
     settings: dict[str, Any], *, helpers: int, web: bool, only: Iterable[str] | None = None
 ) -> _ToolSetup:
     """The tool format, the tool set, and the tools block, from ``tool_format`` and ``tool_set``."""
-    fmt = tool_format_of(settings)
+    fmt = tool_format_of(settings, DEFAULT_TOOL_FORMAT)
     minimal = str(settings.get("tool_set") or "").strip().lower() == "minimal"
     names = list(only) if only is not None else list(MINIMAL_TOOLS if minimal else ALLOWED_TOOLS)
     if helpers < 1 and "delegate" in names:
@@ -3541,7 +3560,7 @@ def run_read_only_task(
                 "shell": shell,
                 "approve_mode": "plan",
                 "turns": turns,
-                "settings": _loop_settings(config, settings),
+                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format},
                 "ask_user": lambda _question: "",
                 "helper_count": 0,
                 "role": role,

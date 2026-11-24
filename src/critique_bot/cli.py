@@ -747,8 +747,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("tags", "openai"),
         default=None,
         help=(
-            "agent and review: how the model calls tools. openai: OpenAI Responses API items "
-            '(function_call / function_call_output); tags: <tool_call> blocks (default; "tool_format" in .bot/settings.json)'
+            "agent and review: how the model calls tools. openai (default): OpenAI Responses API items "
+            '(function_call / function_call_output); tags: the older <tool_call> blocks ("tool_format" in .bot/settings.json)'
         ),
     )
     parser.add_argument(

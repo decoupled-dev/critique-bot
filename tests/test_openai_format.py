@@ -81,6 +81,29 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(parsed.unclosed)
         self.assertEqual(parsed.calls, [])
 
+    def test_a_reply_repeated_on_the_page_runs_each_call_once(self) -> None:
+        once = _reply(_call_item("read_files", "c1", paths=["a.py"]))
+        parsed = openai_format.parse_reply("Checking.\n" + once + once)
+        assert parsed is not None
+        self.assertEqual([c.call_id for c in parsed.calls], ["c1"])
+
+    def test_same_tool_with_other_ids_still_runs_twice(self) -> None:
+        parsed = openai_format.parse_reply(_reply(
+            _call_item("run_command", "c1", command="make"), _call_item("run_command", "c2", command="make")))
+        assert parsed is not None
+        self.assertEqual(len(parsed.calls), 2)
+
+    def test_empty_output_is_an_empty_reply_not_an_answer(self) -> None:
+        parsed = openai_format.parse_reply('{"output":[]}')
+        assert parsed is not None
+        self.assertEqual((parsed.text, parsed.calls), ("", []))
+
+    def test_instruction_has_a_parseable_example(self) -> None:
+        example = openai_format.INSTRUCTION.rsplit("\n", 1)[1]
+        parsed = openai_format.parse_reply(example)
+        assert parsed is not None
+        self.assertEqual(parsed.calls[0].name, "read_files")
+
     def test_bad_arguments_become_a_call_error(self) -> None:
         raw = json.dumps({"type": "function_call", "call_id": "c1", "name": "read_files", "arguments": "{not json"})
         parsed = openai_format.parse_reply(raw)
@@ -153,6 +176,8 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(tool_format_of({"tool_format": "responses"}), TOOL_FORMAT_OPENAI)
         self.assertEqual(tool_format_of({}), "tags")
         self.assertEqual(tool_format_of({"tool_format": "nonsense"}), "tags")
+        self.assertEqual(tool_format_of({}, agent.DEFAULT_TOOL_FORMAT), TOOL_FORMAT_OPENAI)
+        self.assertEqual(tool_format_of({"tool_format": "tags"}, agent.DEFAULT_TOOL_FORMAT), "tags")
 
 
 class ToolSetTests(unittest.TestCase):
@@ -172,7 +197,12 @@ class ToolSetTests(unittest.TestCase):
         self.assertNotIn("web_fetch", names)
 
     def test_tag_format_sends_no_tools_block(self) -> None:
-        self.assertEqual(_tool_setup({}, helpers=2, web=True).tools_block, "")
+        self.assertEqual(_tool_setup({"tool_format": "tags"}, helpers=2, web=True).tools_block, "")
+
+    def test_crit_sessions_default_to_the_openai_format(self) -> None:
+        setup = _tool_setup({}, helpers=2, web=True)
+        self.assertEqual(setup.tool_format, TOOL_FORMAT_OPENAI)
+        self.assertTrue(setup.tools_block.startswith("TOOLS (OpenAI Responses API)"))
 
 
 class _Scripted:
@@ -223,6 +253,20 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(results["input"][0]["call_id"], "r1")
             self.assertTrue(results["input"][0]["output"]["ok"])
             self.assertIn('"call_id": "e1"', session.sent[2])
+
+    def test_an_empty_output_after_results_does_not_end_the_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "notes.txt").write_text("one\n", encoding="utf-8")
+            session, outcome = self._run(root, [
+                _reply(_call_item("read_files", "r1", paths=["notes.txt"])),
+                '{"output":[]}',
+                _reply(_call_item("edit_file", "e1", path="notes.txt", old_string="one\n", new_string="one\ntwo\n")),
+                _reply(_message("COMPLETED")),
+            ])
+            self.assertEqual((root / "notes.txt").read_text(encoding="utf-8"), "one\ntwo\n")
+            self.assertEqual(outcome, ["COMPLETED"])
+            self.assertEqual(len(session.sent), 4)
 
     def test_a_reply_without_the_format_still_works(self) -> None:
         # The format is the request; a model that answers with a tag block is still understood.

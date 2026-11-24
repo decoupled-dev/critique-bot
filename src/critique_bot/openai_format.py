@@ -34,9 +34,12 @@ _FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*[ \t]*\r?\n(.*?)```", re.S)
 _EMPTY_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*[ \t]*\r?\n?\s*```")
 
 INSTRUCTION = (
-    "FORMAT. Reply only as the OpenAI Responses API does: one JSON object {\"output\": [...]}, no other text. "
+    "FORMAT. The tools under TOOLS are not in your built-in tool list: you call them by writing function_call "
+    "items in your reply text, and this program runs them on the user's computer and sends back the results. "
+    "Reply only as the OpenAI Responses API does: one JSON object {\"output\": [...]}, no other text. "
     "Call tools with function_call items (call_id, name, arguments); put words for the user in a message item. "
-    "Tool results come back as function_call_output items with the same call_id."
+    "Results come back as function_call_output items with the same call_id. For example:\n"
+    '{"output": [{"type": "function_call", "call_id": "c1", "name": "read_files", "arguments": {"paths": ["README.md"]}}]}'
 )
 
 
@@ -77,23 +80,30 @@ def parse_reply(
     text = raw or ""
     spans: list[tuple[int, int]] = []
     items: list[dict[str, Any]] = []
+    shaped = False  # a {"output": [...]} was there, even an empty one
     for start, end, body in _candidates(text):
         try:
             value = loads(body)
         except (ValueError, TypeError):
             continue
         found = list(_items(value))
-        if not found:
+        empty_output = isinstance(value, dict) and value.get("output") == []
+        if not found and not empty_output:
             continue
+        shaped = shaped or empty_output
         items.extend(found)
         spans.append((start, end))
     unclosed = _has_unclosed_call(text, spans)
+    if not items and shaped:
+        # {"output": []}: a Responses reply with nothing in it, not plain text to take as an answer.
+        return WireReply(text=_outside(text, spans), unclosed=unclosed and complete is False)
     if not items:
         if unclosed:
             return WireReply(text=_outside(text, spans), unclosed=True)
         return None
     words: list[str] = []
     calls: list[WireCall] = []
+    seen: set[str] = set()
     fabricated = False
     for item in items:
         kind = str(item.get("type") or "").lower()
@@ -101,10 +111,15 @@ def parse_reply(
             fabricated = True
             break  # everything after a made-up result is ignored
         if kind in _CALL_TYPES or (not kind and ("name" in item and "arguments" in item)):
-            calls.append(_call(item, len(calls) + 1, loads))
+            call = _call(item, len(calls) + 1, loads)
+            key = json.dumps([call.call_id, call.name, call.arguments], sort_keys=True, default=str)
+            if key in seen:
+                continue  # the same item twice (a page that shows a reply's JSON twice): run it once
+            seen.add(key)
+            calls.append(call)
         elif kind == "message" or kind in _TEXT_TYPES or "content" in item:
             said = _message_text(item)
-            if said:
+            if said and said not in words:
                 words.append(said)
     outside = _outside(text, spans)
     if outside:
