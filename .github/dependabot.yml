@@ -1,0 +1,9 @@
+# Weekly pull requests that bump the SHA-pinned GitHub Actions. Python packages stay
+# pinned in constraints.txt and are bumped by hand (bump, test, commit); the weekly
+# CI run's pip-audit says when one has a known vulnerability.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
