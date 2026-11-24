@@ -1,8 +1,8 @@
-"""A scripted Ollama-style model server for end-to-end tests of ``crit --protocol``.
+"""A scripted OpenAI-compatible model server (as llama-server is) for end-to-end tests of ``crit --protocol``.
 
     python fake_model.py PORT
 
-Serves ``/api/tags`` and ``/api/chat``. The reply depends on how many
+Serves ``/v1/models`` and ``/v1/chat/completions`` (streamed as server-sent events). The reply depends on how many
 assistant turns the conversation already has (the last one repeats): first an
 edit to note.txt, then a finish. Each conversation starts over, so one server
 serves several tests.
@@ -35,8 +35,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path.endswith("/api/tags"):
-            self._json({"models": [{"name": "fake"}]})
+        if self.path.endswith("/v1/models"):
+            self._json({"object": "list", "data": [{"id": "fake"}]})
         else:
             self.send_error(404)
 
@@ -46,18 +46,18 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             request = {}
-        if not self.path.endswith("/api/chat"):
+        if not self.path.endswith("/v1/chat/completions"):
             self.send_error(404)
             return
         turns = sum(1 for m in request.get("messages") or [] if isinstance(m, dict) and m.get("role") == "assistant")
         reply = REPLIES[min(turns, len(REPLIES) - 1)]
-        lines = [
-            {"message": {"role": "assistant", "content": reply}, "done": False},
-            {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"},
+        events = [
+            {"choices": [{"index": 0, "delta": {"content": reply}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
         ]
-        body = "".join(json.dumps(line) + "\n" for line in lines).encode()
+        body = ("".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n").encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

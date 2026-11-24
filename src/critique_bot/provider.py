@@ -5,7 +5,7 @@ this layer. They see one interface: :class:`ChatProvider` opens the backend and
 hands out :class:`ChatSession` objects, and a session is ``send(prompt) -> reply``
 plus ``new_chat`` and ``stop_generation``. :func:`open_provider` picks the backend
 from ``backend`` in ``config.json``: ``browser`` (this module) or ``local``
-(:mod:`critique_bot.local_model`: Ollama, llama.cpp, LM Studio, vLLM, ...).
+(:mod:`critique_bot.local_model`: llama.cpp, LM Studio, vLLM, ...).
 """
 
 from __future__ import annotations

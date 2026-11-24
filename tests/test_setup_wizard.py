@@ -63,17 +63,17 @@ class WizardTests(unittest.TestCase):
             self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_local_on_this_pc_picks_a_model_from_the_server(self) -> None:
-        result = self._run(_Script("2", "y", "1", "", "2"), models=["qwen3:27b", "gemma3:12b"])
+        result = self._run(_Script("2", "y", "", "2"), models=["qwen3:27b", "gemma3:12b"])
         assert result is not None
         config = load_config(self.path)
         self.assertTrue(config.is_local)
-        self.assertEqual(config.url, "http://127.0.0.1:11434")
+        self.assertEqual(config.url, "http://127.0.0.1:8080")
         self.assertEqual(config.model, "gemma3:12b")
         self.assertEqual(config.allowed_hosts, ())
         self.assertEqual(json.loads(self.path.read_text())["local"]["num_ctx"], 32768)
 
     def test_local_on_another_pc_is_allowed_only_after_a_yes(self) -> None:
-        script = _Script("2", "n", "192.168.1.50", "2", "8080", "y", "1")
+        script = _Script("2", "n", "192.168.1.50", "8080", "y", "1")
         result = self._run(script, models=["qwen3-27b"])
         assert result is not None
         config = load_config(self.path)
@@ -84,12 +84,12 @@ class WizardTests(unittest.TestCase):
         self.assertTrue(any("ssh -N -L 8080:127.0.0.1:8080" in line for line in script.said))
 
     def test_declining_another_pc_writes_nothing(self) -> None:
-        result = self._run(_Script("2", "n", "gpu-box.corp.example", "1", "", "n"))
+        result = self._run(_Script("2", "n", "gpu-box.corp.example", "", "n"))
         self.assertIsNone(result)
         self.assertFalse(self.path.exists())
 
     def test_unreachable_server_falls_back_to_a_typed_model_name(self) -> None:
-        script = _Script("2", "y", "1", "", "n", "qwen3:27b")
+        script = _Script("2", "y", "", "n", "qwen3:27b")
         result = self._run(script, models=ChatError("connection refused"))
         assert result is not None
         self.assertEqual(load_config(self.path).model, "qwen3:27b")

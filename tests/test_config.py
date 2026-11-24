@@ -218,9 +218,9 @@ class ParseHelpersTests(unittest.TestCase):
     def test_backend_kind(self) -> None:
         for value in ("", None, "browser", "WEB", "playwright", "ui", "chat"):
             self.assertEqual(backend_kind(value), "browser", value)
-        for value in ("local", "Ollama", "llama.cpp", "lmstudio", "vllm", "openai-compatible"):
+        for value in ("local", "llama.cpp", "llama-server", "lmstudio", "vllm", "openai-compatible"):
             self.assertEqual(backend_kind(value), "local", value)
-        for value in ("openai", "anthropic", "palm"):
+        for value in ("openai", "anthropic", "palm", "ollama"):
             with self.assertRaises(ConfigError) as ctx:
                 backend_kind(value)
             self.assertIn("not supported", str(ctx.exception))

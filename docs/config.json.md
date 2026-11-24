@@ -6,7 +6,7 @@ Copy a starter to `config.json` next to the binary (CI default: `/opt/critique-b
 | --- | --- |
 | [`config.example.json`](../config.example.json) | Generic chat UI |
 | [`config.chatgpt.example.json`](../config.chatgpt.example.json) | ChatGPT |
-| [`config.local.example.json`](../config.local.example.json) | A model on this PC (Ollama, llama.cpp, LM Studio, vLLM) |
+| [`config.local.example.json`](../config.local.example.json) | A model behind an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) |
 
 `--config` is required on every command. The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
 
@@ -19,31 +19,36 @@ Optional. Which model crit talks to; everything above this layer (the agent, the
 | Value | Meaning |
 | --- | --- |
 | `browser` (default; also `web`, `playwright`, `ui`, `chat`) | The chat page at `url`, driven in Edge. Needs `selectors` and a signed-in profile. |
-| `local` (also `ollama`, `llama.cpp`, `lmstudio`, `vllm`, `openai-compatible`) | A model served on this PC over HTTP, such as Qwen or Gemma in Ollama. Needs `model`; `selectors` are ignored. See [Local model](#local-model-backend-local). |
+| `local` (also `llama.cpp`, `llama-server`, `lmstudio`, `vllm`, `openai-compatible`) | A model behind an OpenAI-compatible server, such as Qwen or Gemma in llama.cpp's `llama-server`. Needs `model`; `selectors` are ignored. See [Local model](#local-model-backend-local). |
 
 Hosted APIs (`openai`, `anthropic`, ...) are not a backend: the only data that leaves the PC is the conversation with the configured chat URL ([security.md](security.md)).
 
 ## Local model (`backend: local`)
 
-The model runs on this machine and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`.
+The model runs behind an OpenAI-compatible server (llama.cpp's `llama-server`, LM Studio, vLLM) and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`. Ollama is not supported.
+
+`crit configure` (or the first `crit` with no config) asks for these and writes the file. By hand:
+
+```bash
+llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8080 -c 32768
+```
 
 ```json
 {
   "backend": "local",
-  "url": "http://127.0.0.1:11434",
-  "model": "qwen2.5-coder:14b",
-  "local": { "api": "ollama", "num_ctx": 32768 }
+  "url": "http://127.0.0.1:8080",
+  "model": "qwen2.5-coder-14b",
+  "local": { "num_ctx": 32768 }
 }
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `url` | `http://127.0.0.1:11434` | Base URL of the server. For llama.cpp's `llama-server` that is usually `http://127.0.0.1:8080`, for LM Studio `http://127.0.0.1:1234`. A path such as `/v1` may be included. |
-| `model` | first model the server lists | The model name as the server knows it: `qwen2.5-coder:14b`, `gemma3:12b`, `deepseek-coder-v2:16b`. `--model` and `CRITIQUE_MODEL` override it, as for the browser. |
-| `local.api` | `ollama` on port 11434, else `openai` | `ollama` uses Ollama's `/api/chat`; `openai` uses `/v1/chat/completions`, which llama.cpp, LM Studio, vLLM, and most other servers offer. |
-| `local.num_ctx` | 32768 for `ollama`, server default otherwise | Context window in tokens asked for per request (Ollama's `num_ctx`). Ollama's own default is a few thousand tokens, smaller than the agent's instructions, so leave this at 32768 or more if the model and the memory allow. Servers using the `openai` API set their context at startup instead. |
+| `url` | `http://127.0.0.1:8080` | Base URL of the server (`llama-server`'s default port; LM Studio uses `1234`). A path such as `/v1` may be included. |
+| `model` | first model the server lists | The model name as the server lists it at `/v1/models` (llama-server: the file name, or `--alias`). `--model` and `CRITIQUE_MODEL` override it, as for the browser. |
+| `local.api` | `openai` | The only API crit speaks: `/v1/chat/completions` and `/v1/models`. |
+| `local.num_ctx` | 32768 | The context window the server was started with (`llama-server -c`). crit sizes its chats to it; it is not sent to the server. |
 | `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
-| `local.keep_alive_seconds` | server default | How long Ollama keeps the model loaded after a reply. |
 
 Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
 
@@ -51,28 +56,25 @@ The agent's chat-size defaults are scaled to the context window: a new chat star
 
 ### Model on another PC
 
-`crit configure` (or the first `crit` with no config) asks for the host and writes this for you. By hand:
-
-1. On the PC with the model, make the server listen on the network: Ollama with `OLLAMA_HOST=0.0.0.0:11434` (Linux: `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0:11434"`, restart; Windows: set it as a user environment variable and restart Ollama), llama.cpp with `--host 0.0.0.0`. Allow its port in that PC's firewall only from the developers' PCs.
+1. On the PC with the model, start the server on the network: `llama-server ... --host 0.0.0.0 --port 8080`. Allow that port in its firewall only from the developers' PCs.
 2. In config.json, set `url` to that PC's address and list its host in `allowed_hosts`, which is how crit is allowed to send code off this PC:
 
 ```json
 {
   "backend": "local",
-  "url": "http://192.168.1.50:11434",
-  "model": "qwen2.5-coder:14b",
+  "url": "http://192.168.1.50:8080",
+  "model": "qwen2.5-coder-14b",
   "allowed_hosts": ["192.168.1.50"],
-  "local": { "api": "ollama", "num_ctx": 32768 }
+  "local": { "num_ctx": 32768 }
 }
 ```
 
-The server's http is not encrypted, and Ollama has no sign-in, so anyone who can reach the port can use the model. An SSH tunnel fixes both without opening the port: leave the server on `127.0.0.1` on its PC, run `ssh -N -L 11434:127.0.0.1:11434 you@gpu-box` on yours, and keep `url` at `http://127.0.0.1:11434` with no `allowed_hosts`.
+The server's http is not encrypted, and anyone who can reach the port can use the model. An SSH tunnel fixes both without opening the port: start the server with `--host 127.0.0.1` on its PC, run `ssh -N -L 8080:127.0.0.1:8080 you@gpu-box` on yours, and keep `url` at `http://127.0.0.1:8080` with no `allowed_hosts`.
 
 A quick check that the server answers, before using the agent:
 
 ```bash
-ollama pull qwen2.5-coder:14b
-critique-bot --config config.local.json --mode general --prompt "Reply with exactly one word: PONG."
+crit ask --config config.local.json --prompt "Reply with exactly one word: PONG."
 ```
 
 ## Minimal file that will start
@@ -248,7 +250,7 @@ Placeholder `YOUR_MODEL_NAME` in `model` is rejected.
 
 **browser:** visible dropdown label. Empty is valid (uses whatever the signed-in session already has selected). Placeholder `YOUR_MODEL_NAME` is rejected.
 
-**local:** the model name the server knows (`ollama list` shows them), for example `qwen2.5-coder:14b` or `gemma3:12b`.
+**local:** the model name the server lists at `/v1/models`, for example `qwen2.5-coder-14b` or `gemma3-1b`.
 
 ---
 
@@ -519,9 +521,9 @@ Do not commit this file if it contains a private chat URL or a `storage_state` p
 ## Validation the loader enforces
 
 - File exists and is a JSON object.
-- If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui` / `chat`) or `local` (or `ollama` / `llama.cpp` / `lmstudio` / `vllm` / `openai-compatible`).
+- If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui` / `chat`) or `local` (or `llama.cpp` / `llama-server` / `lmstudio` / `vllm` / `openai-compatible`).
 - `browser`: `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
-- `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `ollama` or `openai`; `local.num_ctx` and `local.keep_alive_seconds` are > 0 when set.
+- `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `openai` when set; `local.num_ctx` is > 0 when set.
 - If `storage_state` is set, that path is a file.
 - Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 

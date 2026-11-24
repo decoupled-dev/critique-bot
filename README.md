@@ -1,6 +1,6 @@
 # Critique bot
 
-Patch-review bot and local coding agent. The model behind it is an adapter chosen in `config.json`: a ChatGPT-like web UI driven in Microsoft Edge (`backend: browser`, the default), or a model served on this PC such as Qwen or Gemma in Ollama, llama.cpp, LM Studio, or vLLM (`backend: local`). Prompt composition, the job queue, the agent, and review output are the same with both.
+Patch-review bot and local coding agent. The model behind it is an adapter chosen in `config.json`: a ChatGPT-like web UI driven in Microsoft Edge (`backend: browser`, the default), or a model served on this PC such as Qwen or Gemma behind llama.cpp's `llama-server`, LM Studio, or vLLM (`backend: local`). Prompt composition, the job queue, the agent, and review output are the same with both.
 
 **One command, `crit`, with modes.** The first word picks the mode:
 
@@ -22,7 +22,7 @@ How the code is layered (models, tools, engine, apps, routing) and the interface
 
 - Python 3.10+
 - For the web chat: Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed. On Linux CI you may also need `playwright install-deps`
-- For a local model: a server on this PC, such as [Ollama](https://ollama.com) with a pulled model (`ollama pull qwen2.5-coder:14b`), or llama.cpp, LM Studio, or vLLM with their OpenAI-compatible API
+- For a local model: an OpenAI-compatible server such as llama.cpp's `llama-server` with a GGUF model (`llama-server -m model.gguf --port 8080 -c 32768`), or LM Studio or vLLM
 
 ## Setup
 
@@ -41,7 +41,7 @@ Copy [`config.example.json`](config.example.json) (or [`config.chatgpt.example.j
 critique-bot setup --config config.json
 ```
 
-For a model on this PC, copy [`config.local.example.json`](config.local.example.json) instead: it names the server (`http://127.0.0.1:11434` for Ollama) and the model, and needs no selectors or sign-in. See [Local model](docs/config.json.md#local-model-backend-local).
+For a model on this PC, copy [`config.local.example.json`](config.local.example.json) instead: it names the server (`http://127.0.0.1:8080` for `llama-server`) and the model, and needs no selectors or sign-in. See [Local model](docs/config.json.md#local-model-backend-local).
 
 That serves a page on `127.0.0.1`, opens Edge on your chat URL, and lets you **click** the prompt box, the send button, a reply, and the stop button instead of hand-writing CSS. It ranks candidate selectors, saves them, and runs a live test round trip.
 

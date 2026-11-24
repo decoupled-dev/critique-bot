@@ -1,4 +1,4 @@
-"""A model served on this PC: Ollama, llama.cpp, LM Studio, vLLM, or any OpenAI-compatible server.
+"""A model served on this PC or the network: llama.cpp, LM Studio, vLLM, or any OpenAI-compatible server.
 
 This is the second backend behind :mod:`critique_bot.provider`. It offers the same
 session as the browser backend, ``send(prompt) -> reply``, so the agent loop, the
@@ -8,14 +8,10 @@ forgets them. Nothing leaves the PC: the server is reached over plain HTTP on
 loopback, without a proxy (``config.py`` refuses any other host unless it is
 listed in ``allowed_hosts``).
 
-Two wire formats, chosen by ``local.api`` in ``config.json``:
-
-- ``ollama``: ``POST /api/chat`` streaming NDJSON (Ollama).
-- ``openai``: ``POST /v1/chat/completions`` streaming SSE (llama.cpp ``llama-server``,
-  LM Studio, vLLM, and others).
-
-Both stream, so a reply that stops arriving is noticed after ``reply_stall_ms``
-instead of at the end of a long timeout.
+One wire format: the OpenAI-compatible ``POST /v1/chat/completions``, streamed as
+server-sent events (llama.cpp ``llama-server``, LM Studio, vLLM, and others serve it),
+and ``GET /v1/models`` for the model list. A reply that stops arriving is noticed after
+``reply_stall_ms`` instead of at the end of a long timeout.
 """
 
 from __future__ import annotations
@@ -30,16 +26,16 @@ from urllib.parse import urlsplit
 
 from critique_bot import log
 from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError, ChatProvider, ChatSession
-from critique_bot.config import LOCAL_API_OLLAMA, LOCAL_API_OPENAI, BotConfig
+from critique_bot.config import BotConfig
 
-#: Ollama answers a chat request for a model it does not have with this.
+#: How servers answer a chat request for a model they do not have.
 _MODEL_MISSING_RE = re.compile(r"model\s+['\"]?[^'\"]+['\"]?\s+not found|no such model|not found, try pulling", re.I)
 _CONTEXT_RE = re.compile(r"context (?:length|window|size)|too many tokens|maximum context|exceeds? the (?:model'?s )?context", re.I)
 #: Reasoning models (qwen3, deepseek-r1, ...) may put their thinking in the reply itself.
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.S | re.I)
 _LEADING_THINK_RE = re.compile(r"\A\s*<think>.*\Z", re.S | re.I)
-#: Context window asked from Ollama when the config does not say. Ollama's own default
-#: (a few thousand tokens) is smaller than the agent's instructions.
+#: The context window crit assumes when ``local.num_ctx`` is not set: the size the server
+#: should be started with (``llama-server -c 32768``). crit sizes its chats to it.
 DEFAULT_NUM_CTX = 32_768
 #: How long the first chunk may take: the model may still be loading from disk.
 _MIN_FIRST_CHUNK_SECONDS = 120.0
@@ -87,8 +83,8 @@ class LocalModelProvider(ChatProvider):
         if not self.client.model:
             if not self.models:
                 raise LocalModelError(
-                    f"no model is served at {self._config.url}. Pull one (for Ollama: "
-                    "ollama pull qwen2.5-coder:7b) or set model in config.json."
+                    f"no model is served at {self._config.url}. Start the server with one "
+                    "(llama-server -m model.gguf) or set model in config.json."
                 )
             self.client.model = self.models[0]
             log.info(f"local model: config has no model; using {self.client.model} from the server")
@@ -97,7 +93,7 @@ class LocalModelProvider(ChatProvider):
                 f"local model: {self.client.model} is not in the server's list "
                 f"({', '.join(self.models[:6])}); the first request will say so if it is missing"
             )
-        log.info(f"local model {self.client.model} at {self._config.url} ({self.client.api} API)")
+        log.info(f"local model {self.client.model} at {self._config.url}")
         return self
 
     def session(self, *, isolated: bool = False, model: str | None = None) -> ChatSession:
@@ -158,10 +154,9 @@ class LocalModelClient:
     def __init__(self, config: BotConfig, *, model: str | None = None) -> None:
         self.url = config.url.rstrip("/")
         self.model = (model if model is not None else config.model) or ""
-        self.api = config.local.api or LOCAL_API_OPENAI
-        self.num_ctx = config.local.num_ctx or (DEFAULT_NUM_CTX if self.api == LOCAL_API_OLLAMA else 0)
+        #: The server's context window when the config says (used to warn when a chat fills it).
+        self.num_ctx = config.local.num_ctx
         self.temperature = config.local.temperature
-        self.keep_alive_seconds = config.local.keep_alive_seconds
         self.first_chunk_seconds = max(config.reply_start_ms / 1000.0, _MIN_FIRST_CHUNK_SECONDS)
         self.stall_seconds = max(config.reply_stall_ms / 1000.0, 1.0)
         self.max_seconds = max(config.reply_max_ms / 1000.0, self.stall_seconds)
@@ -175,7 +170,7 @@ class LocalModelClient:
 
     def list_models(self) -> list[str]:
         """Names the server serves. An unreachable server is an error with the fix in it."""
-        path = "/api/tags" if self.api == LOCAL_API_OLLAMA else "/v1/models"
+        path = "/v1/models"
         try:
             status, body = self._request("GET", path, None, timeout=_PROBE_SECONDS, stream=False)
         except OSError as exc:
@@ -183,15 +178,12 @@ class LocalModelClient:
         if status != 200:
             raise LocalModelError(
                 f"the model server at {self.url} answered {status} to {path}: "
-                f"{_one_line(body.decode('utf-8', 'replace'), 160)}. Is local.api right ({self.api})?"
+                f"{_one_line(body.decode('utf-8', 'replace'), 160)}. Is it an OpenAI-compatible server?"
             )
         try:
             data = json.loads(body.decode("utf-8", "replace") or "{}")
         except ValueError:
             return []
-        if self.api == LOCAL_API_OLLAMA:
-            items = data.get("models") if isinstance(data, dict) else None
-            return [str(item.get("name") or item.get("model") or "") for item in items or [] if isinstance(item, dict)]
         items = data.get("data") if isinstance(data, dict) else None
         return [str(item.get("id") or "") for item in items or [] if isinstance(item, dict)]
 
@@ -245,25 +237,13 @@ class LocalModelClient:
     # ------------------------------------------------------------------ wire formats
 
     def _chat_request(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
-        if self.api == LOCAL_API_OLLAMA:
-            options: dict[str, Any] = {}
-            if self.num_ctx:
-                options["num_ctx"] = self.num_ctx
-            if self.temperature is not None:
-                options["temperature"] = self.temperature
-            body: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True}
-            if options:
-                body["options"] = options
-            if self.keep_alive_seconds:
-                body["keep_alive"] = f"{self.keep_alive_seconds}s"
-            return "/api/chat", body
-        body = {"model": self.model, "messages": messages, "stream": True}
+        body: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True}
         if self.temperature is not None:
             body["temperature"] = self.temperature
         return "/v1/chat/completions", body
 
     def _events(self, stream: _Stream) -> Iterator[dict[str, Any]]:
-        """Parsed JSON events: one per NDJSON line (Ollama) or ``data:`` line (SSE)."""
+        """Parsed JSON events, one per ``data:`` line of the server-sent event stream."""
         first = True
         while True:
             line = stream.readline()
@@ -297,19 +277,6 @@ class LocalModelClient:
         if error:
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise LocalModelError(self._server_said(str(message or error)))
-        if self.api == LOCAL_API_OLLAMA:
-            message = event.get("message") if isinstance(event.get("message"), dict) else {}
-            text = str(message.get("content") or "")
-            done = bool(event.get("done"))
-            if done:
-                detail["completion"] = COMPLETION_STOPPED
-                detail["done_reason"] = str(event.get("done_reason") or "stop")
-                for key in ("prompt_eval_count", "eval_count"):
-                    if isinstance(event.get(key), int):
-                        detail[key] = event[key]
-                if detail["done_reason"] == "length":
-                    detail["completion"] = COMPLETION_IDLE
-            return text, done
         choices = event.get("choices") or []
         text = ""
         done = False
@@ -346,7 +313,7 @@ class LocalModelClient:
     # ------------------------------------------------------------------ errors
 
     def _unreachable(self, exc: BaseException) -> str:
-        hint = "is Ollama running (ollama serve)?" if self.api == LOCAL_API_OLLAMA else "is the model server running?"
+        hint = "is the model server running (llama-server -m model.gguf --port ...)?"
         return f"no model server at {self.url}: {_one_line(str(exc) or type(exc).__name__, 100)}. {hint}"
 
     def _http_error(self, status: int, body: bytes) -> str:
@@ -360,10 +327,13 @@ class LocalModelClient:
                 text = str(error)
         except ValueError:
             pass
-        if status == 404 and self.api == LOCAL_API_OLLAMA and (_MODEL_MISSING_RE.search(text) or "model" in text.lower()):
-            return f"Ollama has no model {self.model!r}: {_one_line(text, 100)}. Run: ollama pull {self.model}"
+        if status == 404 and _MODEL_MISSING_RE.search(text):
+            return f"the model server has no model {self.model!r}: {_one_line(text, 100)}"
         if status == 404:
-            return f"the model server at {self.url} has no {self._prefix}{'/v1/chat/completions' if self.api == LOCAL_API_OPENAI else '/api/chat'} (HTTP 404). Is local.api right ({self.api})?"
+            return (
+                f"the model server at {self.url} has no {self._prefix}/v1/chat/completions (HTTP 404). "
+                "Is it an OpenAI-compatible server (llama-server, LM Studio, vLLM)?"
+            )
         return self._server_said(text, status=status)
 
     def _server_said(self, text: str, *, status: int | None = None) -> str:

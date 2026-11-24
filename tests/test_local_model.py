@@ -1,4 +1,4 @@
-"""The local-model backend: config, the adapter, the two wire formats, and the agent loop on it."""
+"""The local-model backend: config, the adapter, the OpenAI-compatible wire format, and the agent loop on it."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from critique_bot.provider import BrowserProvider, open_provider
 
 
 class _FakeServer:
-    """An Ollama-and-OpenAI-shaped server on 127.0.0.1 with a scripted reply per request.
+    """An OpenAI-compatible server (as llama-server is) on 127.0.0.1 with a scripted reply per request.
 
     ``replies`` is a list of strings; ``"ERROR:<text>"`` streams an error event instead,
     ``"HTTP:<code>:<text>"`` answers with that status, and ``"STALL"`` sends one chunk
@@ -54,9 +54,7 @@ class _FakeServer:
                 pass
 
             def do_GET(self) -> None:
-                if self.path == "/api/tags":
-                    self._json({"models": [{"name": name, "model": name} for name in server.models]})
-                elif self.path == "/v1/models":
+                if self.path == "/v1/models":
                     self._json({"object": "list", "data": [{"id": name} for name in server.models]})
                 else:
                     self._json({"error": "not found"}, status=404)
@@ -70,9 +68,7 @@ class _FakeServer:
                     _, code, text = reply.split(":", 2)
                     self._json({"error": text}, status=int(code))
                     return
-                if self.path == "/api/chat":
-                    self._stream_ollama(body, reply)
-                elif self.path == "/v1/chat/completions":
+                if self.path == "/v1/chat/completions":
                     self._stream_openai(body, reply)
                 else:
                     self._json({"error": "not found"}, status=404)
@@ -102,37 +98,16 @@ class _FakeServer:
             def _pieces(self, reply: str) -> list[str]:
                 return [reply[i : i + server.chunk] for i in range(0, len(reply), server.chunk)] or [""]
 
-            def _stream_ollama(self, body: dict, reply: str) -> None:
-                self._start_stream("application/x-ndjson")
-                model = body.get("model")
-                if reply.startswith("ERROR:"):
-                    self._chunked(json.dumps({"error": reply[6:]}).encode() + b"\n")
-                    self._end()
-                    return
-                if reply == "STALL":
-                    self._chunked(json.dumps({"model": model, "message": {"role": "assistant", "content": "part"}, "done": False}).encode() + b"\n")
-                    time.sleep(server.stall_seconds)
-                    self._end()
-                    return
-                if server.reasoning:
-                    self._chunked(json.dumps({"model": model, "message": {"role": "assistant", "content": "", "thinking": server.reasoning}, "done": False}).encode() + b"\n")
-                for piece in self._pieces(reply):
-                    self._chunked(json.dumps({"model": model, "message": {"role": "assistant", "content": piece}, "done": False}).encode() + b"\n")
-                final = {
-                    "model": model,
-                    "message": {"role": "assistant", "content": ""},
-                    "done": True,
-                    "done_reason": "stop",
-                    "prompt_eval_count": sum(len(m.get("content", "")) for m in body.get("messages", [])) // 4,
-                    "eval_count": len(reply) // 4,
-                }
-                self._chunked(json.dumps(final).encode() + b"\n")
-                self._end()
-
             def _stream_openai(self, body: dict, reply: str) -> None:
                 self._start_stream("text/event-stream")
                 if reply.startswith("ERROR:"):
                     self._chunked(b"data: " + json.dumps({"error": {"message": reply[6:]}}).encode() + b"\n\n")
+                    self._end()
+                    return
+                if reply == "STALL":
+                    first = {"choices": [{"index": 0, "delta": {"content": "part"}, "finish_reason": None}]}
+                    self._chunked(b"data: " + json.dumps(first).encode() + b"\n\n")
+                    time.sleep(server.stall_seconds)
                     self._end()
                     return
                 for piece in self._pieces(reply):
@@ -165,7 +140,7 @@ class _FakeServer:
         self.httpd.server_close()
 
 
-def _config(url: str, *, api: str = "ollama", model: str = "qwen2.5-coder:7b", **overrides: Any) -> BotConfig:
+def _config(url: str, *, api: str = "openai", model: str = "qwen2.5-coder:7b", **overrides: Any) -> BotConfig:
     values: dict[str, Any] = dict(
         url=url,
         selectors=None,  # type: ignore[arg-type]
@@ -193,40 +168,47 @@ class ConfigTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return load_config(path)
 
-    def test_local_backend_needs_no_selectors_and_defaults_to_ollama(self) -> None:
+    def test_local_backend_needs_no_selectors_and_defaults_to_llama_server(self) -> None:
         config = self._load({"backend": "local", "model": "gemma3:12b"})
         self.assertTrue(config.is_local)
-        self.assertEqual(config.url, "http://127.0.0.1:11434")
-        self.assertEqual(config.local.api, "ollama")
+        self.assertEqual(config.url, "http://127.0.0.1:8080")
+        self.assertEqual(config.local.api, "openai")
         self.assertEqual(config.local.num_ctx, 0)
         self.assertEqual(config.model, "gemma3:12b")
 
-    def test_openai_api_is_guessed_from_another_port_and_can_be_set(self) -> None:
+    def test_openai_api_settings(self) -> None:
         config = self._load({"backend": "local", "url": "http://localhost:8080/"})
         self.assertEqual(config.url, "http://localhost:8080")
         self.assertEqual(config.local.api, "openai")
         config = self._load({"backend": "lmstudio", "url": "http://127.0.0.1:1234/v1", "local": {"api": "openai-compatible"}})
         self.assertEqual(config.local.api, "openai")
         self.assertEqual(config.url, "http://127.0.0.1:1234/v1")
-        config = self._load({"backend": "local", "url": "127.0.0.1:9000", "local": {"api": "ollama", "num_ctx": 8192, "temperature": 0.1, "keep_alive_seconds": 300}})
+        config = self._load({"backend": "llama-server", "url": "127.0.0.1:9000", "local": {"num_ctx": 8192, "temperature": 0.1}})
         self.assertEqual(config.url, "http://127.0.0.1:9000")
-        self.assertEqual(config.local, LocalConfig(api="ollama", num_ctx=8192, temperature=0.1, keep_alive_seconds=300))
+        self.assertEqual(config.local, LocalConfig(api="openai", num_ctx=8192, temperature=0.1))
+
+    def test_ollama_is_refused_with_the_way_to_llama_server(self) -> None:
+        for payload in ({"backend": "ollama"}, {"backend": "local", "local": {"api": "ollama"}}):
+            with self.subTest(payload):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._load(payload)
+                self.assertIn("llama-server", str(ctx.exception))
 
     def test_a_model_on_another_machine_needs_allowed_hosts(self) -> None:
         with self.assertRaises(ConfigError) as ctx:
-            self._load({"backend": "local", "url": "http://gpu-box.lan:11434"})
+            self._load({"backend": "local", "url": "http://gpu-box.lan:8080"})
         self.assertIn("allowed_hosts", str(ctx.exception))
-        config = self._load({"backend": "local", "url": "http://gpu-box.lan:11434", "allowed_hosts": ["gpu-box.lan"]})
-        self.assertEqual(config.url, "http://gpu-box.lan:11434")
+        config = self._load({"backend": "local", "url": "http://gpu-box.lan:8080", "allowed_hosts": ["gpu-box.lan"]})
+        self.assertEqual(config.url, "http://gpu-box.lan:8080")
         with self.assertRaises(ConfigError):
             self._load({"backend": "local", "url": "ftp://127.0.0.1/"})
         with self.assertRaises(ConfigError):
-            self._load({"backend": "local", "url": "http://user:pw@127.0.0.1:11434"})
+            self._load({"backend": "local", "url": "http://user:pw@127.0.0.1:8080"})
         with self.assertRaises(ConfigError) as ctx:
             self._load({"backend": "local", "local": {"api": "grpc"}})
         self.assertIn("local.api", str(ctx.exception))
         with self.assertRaises(ConfigError):
-            self._load({"backend": "local", "local": "ollama"})
+            self._load({"backend": "local", "local": "openai"})
 
     def test_browser_config_is_unchanged(self) -> None:
         config = self._load({"url": "https://chat.example/", "selectors": {"prompt_input": "t", "assistant_messages": ".a"}})
@@ -236,19 +218,19 @@ class ConfigTests(unittest.TestCase):
         self.assertIsInstance(open_provider(config), BrowserProvider)
 
     def test_loop_settings_shrink_the_chat_for_a_local_model(self) -> None:
-        local = _config("http://127.0.0.1:11434")
+        local = _config("http://127.0.0.1:8080")
         merged = _loop_settings(local, {"theme": "dark"})
         self.assertEqual(merged["compact_after_chars"], DEFAULT_NUM_CTX * 2)
         self.assertEqual(merged["max_result_chars"], DEFAULT_NUM_CTX // 2)
         self.assertEqual(merged["theme"], "dark")
-        kept = _loop_settings(_config("http://127.0.0.1:11434", num_ctx=8192), {"compact_after_chars": 50_000})
+        kept = _loop_settings(_config("http://127.0.0.1:8080", num_ctx=8192), {"compact_after_chars": 50_000})
         self.assertEqual(kept["compact_after_chars"], 50_000)
         self.assertEqual(kept["max_result_chars"], 4_096)
         browser = BotConfig(url="https://chat.example", selectors=None, model="GPT")  # type: ignore[arg-type]
         settings = {"a": 1}
         self.assertIs(_loop_settings(browser, settings), settings)
         self.assertEqual(_model_label(browser), "GPT")
-        self.assertEqual(_model_label(local), "qwen2.5-coder:7b · local at 127.0.0.1:11434")
+        self.assertEqual(_model_label(local), "qwen2.5-coder:7b · local at 127.0.0.1:8080")
         self.assertEqual(server_label("http://localhost/v1"), "localhost")
 
 
@@ -286,20 +268,20 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(LocalModelError) as ctx:
             with open_provider(_config(self.server.url, model="")):
                 pass
-        self.assertIn("ollama pull", str(ctx.exception))
+        self.assertIn("llama-server -m", str(ctx.exception))
 
     def test_a_server_that_is_down_is_a_chat_error_with_the_fix(self) -> None:
         with self.assertRaises(ChatError) as ctx:
             with open_provider(_config("http://127.0.0.1:1")):
                 pass
-        self.assertIn("ollama serve", str(ctx.exception))
-        session = LocalModelSession(open_provider(_config("http://127.0.0.1:1", api="openai")).client)
+        self.assertIn("llama-server", str(ctx.exception))
+        session = LocalModelSession(open_provider(_config("http://127.0.0.1:1")).client)
         with self.assertRaises(LocalModelError) as ctx:
             session.send("hi")
         self.assertIn("no model server at http://127.0.0.1:1", str(ctx.exception))
         self.assertEqual(session.messages, [])
 
-    def test_ollama_conversation_keeps_its_history_until_new_chat(self) -> None:
+    def test_conversation_keeps_its_history_until_new_chat(self) -> None:
         self.server.replies = ["Hello there, friend.", "Second reply", "Fresh"]
         with open_provider(_config(self.server.url, num_ctx=4096)) as provider:
             session = provider.session()
@@ -308,29 +290,23 @@ class AdapterTests(unittest.TestCase):
             sent = self.server.requests[-1]["body"]
             self.assertEqual(sent["model"], "qwen2.5-coder:7b")
             self.assertTrue(sent["stream"])
-            self.assertEqual(sent["options"], {"num_ctx": 4096})
+            self.assertNotIn("options", sent)  # the context size is the server's, set when it starts
             self.assertEqual(
                 [(m["role"], m["content"]) for m in sent["messages"]],
                 [("user", "one"), ("assistant", "Hello there, friend."), ("user", "two")],
             )
             self.assertEqual(session.last_detail["completion"], COMPLETION_STOPPED)
             self.assertEqual(session.last_detail["done_reason"], "stop")
-            self.assertIn("prompt_eval_count", session.last_detail)
+            self.assertEqual(session.last_detail["prompt_eval_count"], 12)
             self.assertFalse(session.stop_generation())
             self.assertTrue(session.new_chat())
             self.assertEqual(session.send("three"), "Fresh")
             self.assertEqual([m["content"] for m in self.server.requests[-1]["body"]["messages"]], ["three"])
-            self.assertEqual(self.server.requests[-1]["path"], "/api/chat")
-
-    def test_ollama_default_context_window_is_asked_for(self) -> None:
-        self.server.replies = ["ok"]
-        with open_provider(_config(self.server.url)) as provider:
-            provider.session().send("x")
-        self.assertEqual(self.server.requests[-1]["body"]["options"], {"num_ctx": DEFAULT_NUM_CTX})
+            self.assertEqual(self.server.requests[-1]["path"], "/v1/chat/completions")
 
     def test_openai_compatible_conversation(self) -> None:
         self.server.replies = ["Streamed over SSE"]
-        with open_provider(_config(self.server.url, api="openai", model="local-model")) as provider:
+        with open_provider(_config(self.server.url, model="local-model")) as provider:
             session = provider.session()
             self.assertEqual(session.send("hello"), "Streamed over SSE")
             request = self.server.requests[-1]
@@ -359,7 +335,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(session.messages, [])
             with self.assertRaises(LocalModelError) as ctx:
                 session.send("b")
-            self.assertIn("ollama pull qwen2.5-coder:7b", str(ctx.exception))
+            self.assertIn("has no model", str(ctx.exception))
             with self.assertRaises(LocalModelError) as ctx:
                 session.send("c")
             self.assertIn("compact_after_chars", str(ctx.exception))
@@ -378,12 +354,12 @@ class AdapterTests(unittest.TestCase):
             self.assertIn("stopped arriving", str(ctx.exception))
             self.assertEqual(session.last_detail["completion"], COMPLETION_IDLE)
 
-    def test_wrong_api_for_the_server_is_explained(self) -> None:
+    def test_a_server_without_the_chat_endpoint_is_explained(self) -> None:
         self.server.replies = ["HTTP:404:not found"]
-        with open_provider(_config(self.server.url, api="openai")) as provider:
+        with open_provider(_config(self.server.url)) as provider:
             with self.assertRaises(LocalModelError) as ctx:
                 provider.session().send("x")
-        self.assertIn("local.api", str(ctx.exception))
+        self.assertIn("OpenAI-compatible", str(ctx.exception))
 
 
 class AgentLoopOnLocalModelTests(unittest.TestCase):

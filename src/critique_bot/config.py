@@ -32,15 +32,14 @@ ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
 ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
 
 BACKEND_BROWSER = "browser"
-#: A model served on this PC (Ollama, llama.cpp, LM Studio, vLLM, ...) over its HTTP API.
+#: A model served over the OpenAI-compatible API (llama.cpp, LM Studio, vLLM, ...).
 BACKEND_LOCAL = "local"
 
-#: Where Ollama listens by default; the ``url`` of a local backend when none is given.
-DEFAULT_LOCAL_URL = "http://127.0.0.1:11434"
-#: ``local.api``: Ollama's own chat API, or the OpenAI-compatible chat completions API.
-LOCAL_API_OLLAMA = "ollama"
+#: Where llama.cpp's llama-server listens by default; the ``url`` of a local backend when none is given.
+DEFAULT_LOCAL_URL = "http://127.0.0.1:8080"
+#: ``local.api``: the OpenAI-compatible chat completions API, the only one crit speaks.
 LOCAL_API_OPENAI = "openai"
-LOCAL_APIS = (LOCAL_API_OLLAMA, LOCAL_API_OPENAI)
+LOCAL_APIS = (LOCAL_API_OPENAI,)
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
@@ -55,7 +54,7 @@ DEFAULT_RESULT_RETENTION = 200
 
 _BROWSER_ALIASES = frozenset({"", "browser", "web", "playwright", "ui", "chat"})
 _LOCAL_ALIASES = frozenset(
-    {"local", "ollama", "llama.cpp", "llamacpp", "llama-cpp", "lmstudio", "lm-studio", "vllm", "openai-compatible", "http"}
+    {"local", "llama.cpp", "llamacpp", "llama-cpp", "llama-server", "lmstudio", "lm-studio", "vllm", "openai-compatible", "http"}
 )
 # a list of this PC's addresses, not a bind
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nosec B104
@@ -63,6 +62,13 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nos
 
 class ConfigError(ValueError):
     """Invalid or incomplete bot configuration."""
+
+
+_NO_OLLAMA = (
+    "Ollama is not supported. Serve the model with an OpenAI-compatible server instead, such as "
+    "llama.cpp's llama-server (llama-server -m model.gguf --port 8080 -c 32768), and set "
+    '"backend": "local", "url": "http://127.0.0.1:8080" (crit configure asks for these).'
+)
 
 
 @dataclass(frozen=True)
@@ -96,15 +102,13 @@ class Selectors:
 class LocalConfig:
     """The ``local`` object of ``config.json``: how a model on this PC is called."""
 
-    #: ``ollama`` (Ollama's ``/api/chat``) or ``openai`` (``/v1/chat/completions``, as llama.cpp,
-    #: LM Studio, and vLLM serve it). Empty means: ollama on port 11434, openai elsewhere.
-    api: str = ""
-    #: Context window asked for (Ollama ``num_ctx``). 0 leaves the server's default.
+    #: ``openai``: ``/v1/chat/completions``, as llama.cpp, LM Studio, and vLLM serve it.
+    api: str = "openai"
+    #: The server's context window in tokens (``llama-server -c``). crit sizes its chats to it;
+    #: 0 assumes 32768.
     num_ctx: int = 0
     #: Sampling temperature sent with every request. None leaves the server's default.
     temperature: float | None = None
-    #: Seconds the model stays loaded after a reply (Ollama ``keep_alive``). 0 leaves the default.
-    keep_alive_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -440,17 +444,19 @@ def backend_kind(value: object) -> str:
     """``browser`` or ``local`` for the ``backend`` key; anything else is an error.
 
     ``browser`` (also ``web``, ``playwright``, ``ui``, ``chat``, or nothing) drives the chat
-    page in Edge. ``local`` (also ``ollama``, ``llama.cpp``, ``lmstudio``, ``vllm``,
-    ``openai-compatible``) calls a model served on this PC.
+    page in Edge. ``local`` (also ``llama.cpp``, ``llama-server``, ``lmstudio``, ``vllm``,
+    ``openai-compatible``) calls a model over the OpenAI-compatible API.
     """
     key = _clean(value).lower().replace("_", "-").replace(" ", "-")
+    if key == "ollama":
+        raise ConfigError(_NO_OLLAMA)
     if key in _BROWSER_ALIASES:
         return BACKEND_BROWSER
     if key in _LOCAL_ALIASES:
         return BACKEND_LOCAL
     raise ConfigError(
         f"backend {value!r} is not supported. Use browser (the chat page in Edge) or local "
-        "(a model served on this PC, such as Ollama)."
+        "(a model behind an OpenAI-compatible server such as llama.cpp's llama-server)."
     )
 
 
@@ -494,9 +500,7 @@ def _local_url(url: str, allowed_hosts: tuple[str, ...]) -> str:
 
 
 def _load_local(raw: object, url: str) -> LocalConfig:
-    """The ``local`` object, with ``api`` guessed from the URL when it is not set."""
-    from urllib.parse import urlsplit
-
+    """The ``local`` object. Only the OpenAI-compatible API is spoken."""
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -504,11 +508,11 @@ def _load_local(raw: object, url: str) -> LocalConfig:
     api = _clean(raw.get("api")).lower()
     if api in ("openai-compatible", "openai_compatible", "chat-completions", "completions"):
         api = LOCAL_API_OPENAI
+    if api == "ollama":
+        raise ConfigError(_NO_OLLAMA)
     if api and api not in LOCAL_APIS:
-        raise ConfigError(f"local.api {raw.get('api')!r} is not one of: {', '.join(LOCAL_APIS)}")
-    if not api:
-        port = urlsplit(url).port
-        api = LOCAL_API_OLLAMA if port == 11434 else LOCAL_API_OPENAI
+        raise ConfigError(f"local.api {raw.get('api')!r} is not supported; use openai (or leave it out)")
+    api = LOCAL_API_OPENAI
     temperature: float | None = None
     if raw.get("temperature") is not None and _clean(raw.get("temperature")) != "":
         temperature = _non_negative_float("local.temperature", raw.get("temperature"), 0.0)
@@ -516,11 +520,6 @@ def _load_local(raw: object, url: str) -> LocalConfig:
         api=api,
         num_ctx=_positive_int("local.num_ctx", raw.get("num_ctx"), 0) if _clean(raw.get("num_ctx")) else 0,
         temperature=temperature,
-        keep_alive_seconds=(
-            _positive_int("local.keep_alive_seconds", raw.get("keep_alive_seconds"), 0)
-            if _clean(raw.get("keep_alive_seconds"))
-            else 0
-        ),
     )
 
 

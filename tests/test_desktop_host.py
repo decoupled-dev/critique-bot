@@ -41,7 +41,7 @@ class DesktopHostTests(unittest.TestCase):
 
     def test_local_model_reports_config_and_no_browser(self) -> None:
         (self.project / "config.json").write_text(
-            json.dumps({"backend": "local", "url": "http://127.0.0.1:1", "model": "m", "local": {"api": "ollama"}}),
+            json.dumps({"backend": "local", "url": "http://127.0.0.1:1", "model": "m", "local": {"api": "openai"}}),
             encoding="utf-8",
         )
         code, lines, _err = _host(["--repo-dir", str(self.project)])

@@ -14,7 +14,7 @@ wires the concrete pieces together.
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, bot_home
 1  models    model_api (interface), provider + browser + chat_client (web chat in Edge),
-             local_model (OpenAI-compatible or Ollama server), setup_ui
+             local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM), setup_ui
 0  core      config, log, patch (input limits), redaction, output, roles
 ```
 

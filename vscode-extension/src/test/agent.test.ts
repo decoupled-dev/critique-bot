@@ -25,7 +25,7 @@ function workspace(): string {
   fs.writeFileSync(path.join(dir, "note.txt"), "one\n");
   fs.writeFileSync(
     path.join(dir, "config.json"),
-    JSON.stringify({ backend: "local", url: `http://127.0.0.1:${port}`, model: "fake", local: { api: "ollama" } }),
+    JSON.stringify({ backend: "local", url: `http://127.0.0.1:${port}`, model: "fake" }),
   );
   execFileSync("git", ["init", "-q"], { cwd: dir });
   return dir;

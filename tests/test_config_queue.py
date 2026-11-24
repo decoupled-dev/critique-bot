@@ -102,16 +102,16 @@ class BackendConfigTests(unittest.TestCase):
         config = load_config(path)
         self.assertEqual(config.backend, "browser")
 
-    def test_ollama_backend_is_local(self) -> None:
+    def test_llama_server_backend_is_local(self) -> None:
         path = self.folder / "config.json"
         path.write_text(
-            json.dumps({"backend": "ollama", "model": "llama3"}),
+            json.dumps({"backend": "llama.cpp", "model": "gemma3-1b"}),
             encoding="utf-8",
         )
         config = load_config(path)
         self.assertEqual(config.backend, "local")
-        self.assertEqual(config.url, "http://127.0.0.1:11434")
-        self.assertEqual(config.local.api, "ollama")
+        self.assertEqual(config.url, "http://127.0.0.1:8080")
+        self.assertEqual(config.local.api, "openai")
 
     def test_unknown_backend_rejected(self) -> None:
         path = _write_config(self.folder, {"backend": "palm"})

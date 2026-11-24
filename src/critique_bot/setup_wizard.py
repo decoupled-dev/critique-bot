@@ -5,9 +5,9 @@
 - **Cloud**: the company's chat page in a browser. Asks for the chat URL, writes a config
   with starter selectors, and offers to open ``critique-bot setup`` to pick the page's
   real elements by clicking them.
-- **Local**: a model server on this PC or another PC on the network (Ollama, llama.cpp,
-  LM Studio, vLLM). Asks for the host, the server type and port, then lists the server's
-  models to pick from. A server on another PC must be allowed explicitly: its host goes into
+- **Local**: an OpenAI-compatible model server (llama.cpp's llama-server, LM Studio, vLLM)
+  on this PC or another PC on the network. Asks for the host and port, then lists the
+  server's models to pick from. A server on another PC must be allowed explicitly: its host goes into
   ``allowed_hosts`` only after a yes, with a note that plain http is not encrypted.
 
 The questions read and write through ``ask`` and ``say`` so they can be tested without a
@@ -82,7 +82,7 @@ def run_wizard(
         say("")
         say("Where does the model run?")
         say("  1) Cloud: the company chat page, used in a browser")
-        say("  2) Local: a model server on this PC or another PC on the network (Ollama, llama.cpp, LM Studio, vLLM)")
+        say("  2) Local: a model server (llama.cpp's llama-server, LM Studio, vLLM) on this PC or another PC on the network")
         choice = _choose(ask, say, "Choose 1 or 2", ("1", "2"))
         if choice is None:
             return None
@@ -143,15 +143,7 @@ def _local(
         host = _ask_host(ask, say)
         if host is None:
             return None
-    say("Which server?")
-    say("  1) Ollama (port 11434)")
-    say("  2) llama.cpp, LM Studio, vLLM, or another OpenAI-compatible server")
-    kind = _choose(ask, say, "Choose 1 or 2", ("1", "2"))
-    if kind is None:
-        return None
-    api = "ollama" if kind == "1" else "openai"
-    default_port = 11434 if api == "ollama" else 8080
-    port = _ask_port(ask, say, default_port)
+    port = _ask_port(ask, say, 8080)
     if port is None:
         return None
     remote = host not in _LOOPBACK
@@ -167,11 +159,9 @@ def _local(
         "backend": "local",
         "url": f"http://{_url_host(host)}:{port}",
         "model": "",
-        "local": {"api": api, "temperature": 0.2},
+        "local": {"api": "openai", "temperature": 0.2, "num_ctx": 32768},
         "reply_start_ms": 120000,
     }
-    if api == "ollama":
-        data["local"]["num_ctx"] = 32768
     if remote:
         data["allowed_hosts"] = [host]
     _write(path, data)
@@ -240,7 +230,7 @@ def _pick_model(
                 continue
             return None
         if not names:
-            say("The server lists no models. Pull or load one there (for example: ollama pull qwen2.5-coder:14b).")
+            say("The server lists no models. Start it with one (llama-server -m model.gguf).")
             if _yes_no(ask, "Try again?", default=True):
                 continue
             return None

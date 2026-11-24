@@ -464,17 +464,17 @@ Before moving, crit asks the old chat for a **handoff note** in its own words: t
 
 ### Use a local model instead of the chat page
 
-The model behind crit is an adapter chosen by `backend` in `config.json`. `browser` (the default) drives the chat page in Edge. `local` calls a model served on this PC, such as Qwen or Gemma in Ollama, or anything behind an OpenAI-compatible server (llama.cpp, LM Studio, vLLM). The agent, the roles, the skills, the modes, and the review commands are the same with both; only the way a message reaches the model changes.
+The model behind crit is an adapter chosen by `backend` in `config.json`. `browser` (the default) drives the chat page in Edge. `local` calls a model behind an OpenAI-compatible server, such as Qwen or Gemma in llama.cpp's `llama-server` (or LM Studio, vLLM). The agent, the roles, the skills, the modes, and the review commands are the same with both; only the way a message reaches the model changes.
 
 ```bash
-ollama pull qwen2.5-coder:14b
-cp config.local.example.json config.json
+llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --port 8080 -c 32768
+crit configure          # local, this PC, port 8080, pick the model
 crit "explain the build setup"
 ```
 
-With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder:14b · local at 127.0.0.1:11434`). The first run in a folder still asks for the text style and the role. Helper chat tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new chat is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
+With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder-14b · local at 127.0.0.1:8080`). The first run in a folder still asks for the text style and the role. Helper chat tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new chat is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
 
-A local model has a smaller context window than a hosted one, so crit starts a new chat sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). Set `local.num_ctx` in `config.json` to what the model and the memory allow; `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
+A local model has a smaller context window than a hosted one, so crit starts a new chat sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). Set `local.num_ctx` in `config.json` to the context size the server was started with (`llama-server -c`); `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
 
 ### Privacy
 

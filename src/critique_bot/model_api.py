@@ -159,7 +159,7 @@ def save_failure(session: Any, output_dir: Path) -> None:
 
 
 def list_models(config: BotConfig) -> list[str]:
-    """The models a local server offers (Ollama's /api/tags, or /v1/models). Raises ChatError when unreachable."""
+    """The models a local server offers (its /v1/models). Raises ChatError when unreachable."""
     from critique_bot.local_model import LocalModelClient
 
     return LocalModelClient(config).list_models()
