@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import log
-from critique_bot.output import isoformat
+from critique_bot.output import private_dir, isoformat
 
 HEARTBEAT_NAME = "worker.heartbeat"
 LOCK_NAME = "worker.lock"
@@ -139,8 +139,10 @@ class FileQueue:
         self.results = root / "results"
         self.heartbeat_path = root / HEARTBEAT_NAME
         self.lock_path = root / LOCK_NAME
+        # Jobs hold whole prompts (code) and failure snapshots of the chat page.
+        private_dir(root)
         for path in (self.inbox, self.processing, self.results):
-            path.mkdir(parents=True, exist_ok=True)
+            private_dir(path)
 
     def acquire_worker_lock(self) -> WorkerLock:
         lock = WorkerLock(self.lock_path)
@@ -322,9 +324,7 @@ class FileQueue:
         return None
 
     def result_dir(self, job_id: str) -> Path:
-        path = self.results / job_id
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return private_dir(self.results / job_id)
 
     def write_job_record(self, job: Job) -> None:
         _atomic_write_json(

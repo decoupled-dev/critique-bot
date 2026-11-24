@@ -170,12 +170,27 @@ def quote(project_id: str) -> str:
     return urllib.parse.quote(project_id, safe="")
 
 
+def _require_safe_url(url: str) -> None:
+    """The token goes only over https (http only to this PC, for a local test instance)."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https" and host:
+        return
+    if parts.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}:
+        return
+    raise GitLabError(
+        f"refusing to send the GitLab token to {parts.scheme or '(no scheme)'}://{host or '?'}: "
+        "gitlab.base_url must start with https://"
+    )
+
+
 def request(
     method: str,
     url: str,
     token: str,
     payload: dict[str, Any] | None = None,
 ) -> Any:
+    _require_safe_url(url)
     headers = {"PRIVATE-TOKEN": token}
     if token and token == os.environ.get("CI_JOB_TOKEN"):
         headers = {"JOB-TOKEN": token}
@@ -187,7 +202,8 @@ def request(
     log.info(f"GitLab {method} {_endpoint_label(url)} {url}" + extra)
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req) as resp:
+        # https checked by _require_safe_url
+        with urllib.request.urlopen(req) as resp:  # nosec B310
             status = _http_status(resp)
             raw = resp.read()
     except urllib.error.HTTPError as exc:

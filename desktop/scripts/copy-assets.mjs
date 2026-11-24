@@ -12,6 +12,8 @@ const copies = [
   [join(app, "..", "vscode-extension", "media", "chat.css"), "chat.css"],
   [join(app, "node_modules", "@xterm", "xterm", "lib", "xterm.js"), "xterm.js"],
   [join(app, "node_modules", "@xterm", "xterm", "css", "xterm.css"), "xterm.css"],
+  // xterm.js is MIT licensed: its copyright notice ships with the copy.
+  [join(app, "node_modules", "@xterm", "xterm", "LICENSE"), "xterm.LICENSE"],
 ];
 for (const [from, name] of copies) {
   cpSync(from, join(vendor, name));

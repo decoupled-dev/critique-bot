@@ -854,7 +854,7 @@ class OutboundTests(unittest.TestCase):
         text, count = redact_secrets(
             "storePassword=Abc12345!\nval key = BuildConfig.API_KEY\nurl=https://bob:hunter22@git.example/x.git\n"
             "<string name=\"maps_api_key\">AIzaSyA1234567890abcdefghijklmnopqrstuv</string>\n"
-            "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"
+            "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"  # gitleaks:allow (a stub key the redaction must catch)
         )
         self.assertEqual(count, 4)
         self.assertNotIn("Abc12345", text)

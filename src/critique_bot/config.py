@@ -57,7 +57,8 @@ _BROWSER_ALIASES = frozenset({"", "browser", "web", "playwright", "ui", "chat"})
 _LOCAL_ALIASES = frozenset(
     {"local", "ollama", "llama.cpp", "llamacpp", "llama-cpp", "lmstudio", "lm-studio", "vllm", "openai-compatible", "http"}
 )
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# a list of this PC's addresses, not a bind
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nosec B104
 
 
 class ConfigError(ValueError):
@@ -323,7 +324,7 @@ def load_config(
     raw_user_data = os.environ.get(ENV_USER_DATA_DIR) or _clean(raw.get("user_data_dir"))
     if os.environ.get(ENV_USER_DATA_DIR):
         log.debug(f"user_data_dir overridden by {ENV_USER_DATA_DIR}")
-    user_data_dir = _resolve_user_data_dir(raw_user_data)
+    user_data_dir = _resolve_user_data_dir(raw_user_data, config_path)
     queue_dir = _resolve_queue_dir(
         os.environ.get(ENV_QUEUE_DIR) or _clean(raw.get("queue_dir")),
         config_path,
@@ -584,13 +585,19 @@ def _resolve_queue_dir(value: str, config_path: Path) -> str:
     return str(resolved)
 
 
-def _resolve_user_data_dir(value: str) -> str:
+def _resolve_user_data_dir(value: str, config_path: Path | None = None) -> str:
+    """The browser profile folder. A relative path is next to config.json, never in the
+    folder crit happens to run from: the profile holds the signed-in session's cookies,
+    and a project folder is where they could be committed or shared."""
     raw = value or DEFAULT_USER_DATA_DIR
     if raw.lower() in {"system", "default"}:
         resolved = str(system_edge_user_data_dir())
         log.debug(f"user_data_dir {raw!r} -> system profile {resolved}")
         return resolved
-    resolved = str(Path(raw).expanduser().resolve())
+    path = Path(raw).expanduser()
+    if not path.is_absolute() and config_path is not None:
+        path = Path(config_path).parent / path
+    resolved = str(path.resolve())
     log.debug(f"user_data_dir {raw!r} -> {resolved}")
     return resolved
 

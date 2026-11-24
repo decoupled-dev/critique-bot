@@ -1,0 +1,3 @@
+# Fake secrets in redaction tests (made-up AWS key, stub private key), as first committed.
+2c00a9831967f7f2d3b28ec4a8f543e3aa86e19d:tests/test_egress_hardening.py:aws-access-token:239
+f033d2e726bf26fed928db5bfda8dd23941721e2:tests/test_agent_tools.py:private-key:746

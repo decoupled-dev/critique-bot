@@ -43,3 +43,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 critique_bot = ["prompts/*.txt", "skills/*/SKILL.md"]
+
+[tool.bandit]
+# Reviewed false positives (see docs/security.md, "Scans"):
+#   B604: crit's own functions take a shell *object* as `shell=`; running commands is the agent's job.
+#         subprocess(..., shell=True) is still caught by B602.
+#   B101: asserts narrow types for the type checker; they are not security checks.
+#   B110/B112: deliberate best-effort cleanup (closing tabs, removing temp files) that must not raise.
+skips = ["B604", "B101", "B110", "B112"]
+exclude_dirs = ["tests"]

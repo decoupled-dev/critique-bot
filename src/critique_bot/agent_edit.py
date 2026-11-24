@@ -62,7 +62,7 @@ def file_version(path: Path) -> str:
     except OSError:
         return "missing"
     raw = f"{stat.st_mtime_ns}:{stat.st_size}".encode("ascii")
-    return hashlib.sha1(raw).hexdigest()[:8]
+    return hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:8]  # a file-version fingerprint
 
 
 _EOL_RE = re.compile(r"\r\n|\r|\n")

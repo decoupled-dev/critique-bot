@@ -9,6 +9,25 @@ from critique_bot import log
 
 
 
+def private_dir(path: Path) -> Path:
+    """Create ``path`` (and its parents) readable by its owner only on POSIX; return it.
+
+    For folders that hold code, prompts, or a signed-in browser: the browser profile,
+    the CI queue, transcripts. An existing folder is narrowed too. On Windows the folder
+    keeps the permissions of its parent (the user's profile folders are private already).
+    """
+    import os
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            log.warn(f"could not make {path} private: {exc}")
+    return path
+
+
 def write_output(
     output_dir: Path,
     body: str,

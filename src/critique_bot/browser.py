@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 from critique_bot import log
+from critique_bot.output import private_dir
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
 from critique_bot.model_api import BackendError
 
@@ -152,7 +153,8 @@ _INTERNAL_SCHEMES = frozenset(
         "chrome-extension",
     }
 )
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# a list of this PC's addresses, not a bind
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nosec B104
 # No chat site gets extra hosts built in: the page may reach its own host (and subdomains)
 # plus exactly what config.json lists in "allowed_hosts". A public chat used for testing
 # (chatgpt.com) lists its API, CDN, and sign-in hosts there, on that PC only.
@@ -319,7 +321,7 @@ def sign_in_with_plain_browser(url: str, profile_dir: Path, *, timeout_s: float 
     appears (crit then closes the window) or when the user closes it.
     """
     executable, _channel = resolve_browser()
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    private_dir(profile_dir)
     close_existing_edge_sessions(profile_dir=profile_dir)
     cmd = [
         executable,
@@ -761,6 +763,8 @@ def _cdp_version_urls(cdp_url: str) -> tuple[str, ...]:
 
 def _open_cdp_version(url: str):
     parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise BrowserError(f"cdp_url must be an http(s) address, not {parsed.scheme or 'none'}://")
     request = urllib.request.Request(
         url,
         headers={
@@ -768,7 +772,8 @@ def _open_cdp_version(url: str):
             "Origin": f"{parsed.scheme}://{parsed.netloc}",
         },
     )
-    return urllib.request.urlopen(request, timeout=1)
+    # scheme checked above
+    return urllib.request.urlopen(request, timeout=1)  # nosec B310
 
 
 def _wait_for_cdp(
@@ -853,7 +858,7 @@ def _start_desktop_edge(
     """Start desktop Edge the same way a user would, plus CDP so we can drive it."""
     executable, _channel = resolve_browser()
     user_data_dir = user_data_dir.expanduser().resolve()
-    user_data_dir.mkdir(parents=True, exist_ok=True)
+    private_dir(user_data_dir)
     port = _free_port()
     cdp_url = f"http://127.0.0.1:{port}"
     cmd = [
@@ -1625,7 +1630,7 @@ def launch_edge(
 
         close_existing_edge_sessions(profile_dir=profile_dir)
 
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        private_dir(profile_dir)
         existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
         args = _launch_args() + [flag for flag in EDGE_PRIVATE_ARGS if flag.startswith(("--force-webrtc", "--dns-prefetch"))]

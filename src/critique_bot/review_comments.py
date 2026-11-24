@@ -327,7 +327,7 @@ def line_code_for(path: str, old_line: int | None, new_line: int | None) -> str:
 
     Added line N is ``{sha}_{N}_{N}`` (GitLab docs). Missing sides become 0.
     """
-    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(path.encode("utf-8"), usedforsecurity=False).hexdigest()  # GitLab's line_code format
     if old_line is None and new_line is not None:
         old_line = new_line
     old = 0 if old_line is None else old_line
