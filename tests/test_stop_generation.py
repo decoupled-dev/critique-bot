@@ -90,6 +90,9 @@ class _Locator:
 class _Page:
     """A chat page driven by a tick clock: each poll advances 250 ms and runs due events."""
 
+    #: On the configured chat site (see _config), as a real page would be.
+    url = "https://chat.example/c/1"
+
     def __init__(self, clock: _Clock) -> None:
         self.clock = clock
         self.tick = 0

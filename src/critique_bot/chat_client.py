@@ -710,6 +710,41 @@ def _fill_prompt_via_dom(locator: Locator, text: str) -> None:
     log.debug("prompt filled via chunked DOM value setter")
 
 
+def _page_on_chat_site(page: Page, chat_url: str) -> str | None:
+    """None when ``page`` is on the configured chat site; otherwise the host it is on.
+
+    The chat site is the configured host and the rest of its site (``chat.corp.example``
+    -> any ``*.corp.example``), the same rule as the page filter. A redirect to a sign-in
+    provider, an expired-session page, or any other site is not the chat.
+    """
+    from urllib.parse import urlsplit
+
+    from critique_bot.browser import chat_site
+
+    want = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
+    try:
+        here = (urlsplit(page.url).hostname or "").lower().rstrip(".")
+    except Exception:  # noqa: BLE001 - no URL to check: do not type
+        return "(unknown)"
+    if not want:
+        return None
+    site = chat_site(want)
+    if here == want or here == site or here.endswith("." + site):
+        return None
+    return here or "(no host)"
+
+
+def _require_chat_site(page: Page, chat_url: str) -> None:
+    """Refuse to type anything when the page left the configured chat site."""
+    elsewhere = _page_on_chat_site(page, chat_url)
+    if elsewhere is not None:
+        log.error(f"the page is on {elsewhere}, not the configured chat {chat_url}; nothing was typed")
+        raise ChatError(
+            f"the page moved to {elsewhere}, which is not the configured chat site; nothing was sent "
+            "(a sign-in or other page): the retry opens the chat URL again"
+        )
+
+
 def _fill_prompt(locator: Locator, text: str, timeout_ms: int) -> None:
     locator = locator.first
     text = strip_unsafe_controls(text)
@@ -2266,6 +2301,8 @@ def send_turn(
         + log.kv(prompt_chars=len(prompt), previous_messages=previous_count)
     )
     with log.loading("Thinking..."):
+        # Only the configured chat may receive the prompt, whatever page the browser ended up on.
+        _require_chat_site(page, config.url)
         _fill_prompt(page.locator(_prompt_selector(selectors)), prompt, timeout_ms)
         _send(page, selectors, timeout_ms)
         detail["send_seconds"] = round(time.monotonic() - started, 2)
