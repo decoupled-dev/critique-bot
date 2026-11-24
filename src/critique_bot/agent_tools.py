@@ -231,6 +231,10 @@ class ToolContext:
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
+        # Resolved like the workspace (no 8.3 short names on Windows), so a saved output
+        # under .bot/cache is reported workspace-relative, not as an outside path.
+        if self.cache_dir is not None:
+            self.cache_dir = Path(self.cache_dir).resolve()
 
 
 @dataclass
