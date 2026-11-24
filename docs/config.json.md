@@ -49,6 +49,25 @@ Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the 
 
 The agent's chat-size defaults are scaled to the context window: a new chat starts at about `num_ctx × 2` characters instead of 120,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
 
+### Model on another PC
+
+`crit configure` (or the first `crit` with no config) asks for the host and writes this for you. By hand:
+
+1. On the PC with the model, make the server listen on the network: Ollama with `OLLAMA_HOST=0.0.0.0:11434` (Linux: `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0:11434"`, restart; Windows: set it as a user environment variable and restart Ollama), llama.cpp with `--host 0.0.0.0`. Allow its port in that PC's firewall only from the developers' PCs.
+2. In config.json, set `url` to that PC's address and list its host in `allowed_hosts`, which is how crit is allowed to send code off this PC:
+
+```json
+{
+  "backend": "local",
+  "url": "http://192.168.1.50:11434",
+  "model": "qwen2.5-coder:14b",
+  "allowed_hosts": ["192.168.1.50"],
+  "local": { "api": "ollama", "num_ctx": 32768 }
+}
+```
+
+The server's http is not encrypted, and Ollama has no sign-in, so anyone who can reach the port can use the model. An SSH tunnel fixes both without opening the port: leave the server on `127.0.0.1` on its PC, run `ssh -N -L 11434:127.0.0.1:11434 you@gpu-box` on yours, and keep `url` at `http://127.0.0.1:11434` with no `allowed_hosts`.
+
 A quick check that the server answers, before using the agent:
 
 ```bash

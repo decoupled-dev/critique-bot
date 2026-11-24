@@ -62,6 +62,7 @@ LAYERS: dict[str, int] = {
     "agent_protocol": APPS,
     "agent_acp": APPS,
     "welcome": APPS,
+    "setup_wizard": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,

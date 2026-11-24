@@ -1328,12 +1328,24 @@ def _main_agent(args: argparse.Namespace) -> int:
             if picked is not None:
                 update_settings(home, role=picked)
 
+    reconfigure = words == ["configure"]
+    if reconfigure:
+        words = []
     has_task = bool(args.prompt or args.prompt_file or words or args.files)
     try:
         config_path = Path(args.config) if args.config else home.config_file()
     except BotHomeError as exc:
         return _config_error(ConfigError(str(exc)))
     missing_config = config_path is None or not config_path.is_file()
+    if (missing_config or reconfigure) and stdio_is_tty():
+        outcome = _first_run_config(args, home, config_path, reconfigure=reconfigure)
+        if isinstance(outcome, int):
+            return outcome
+        config_path, missing_config = outcome, False
+        if reconfigure and not has_task:
+            return 0
+    if reconfigure and missing_config:
+        return _config_error(ConfigError("crit configure needs a terminal to ask its questions"))
     if missing_config:
         if not has_task and (just_created or welcome):
             print(
@@ -1498,6 +1510,40 @@ def _welcome_login(config: BotConfig) -> bool:
         return True
     print("Already signed in.", file=sys.stderr)
     return True
+
+
+def _first_run_config(args: argparse.Namespace, home, config_path: Path | None, *, reconfigure: bool) -> Path | int:
+    """Ask local or cloud and write the config. The config path to use, or an exit code."""
+    from critique_bot.bot_home import update_settings
+    from critique_bot.setup_wizard import default_config_path, run_wizard
+
+    target = config_path or default_config_path()
+    if reconfigure and target.is_file():
+        answer = input(f"Replace {target}? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Kept the current config.")
+            return 0
+    if not reconfigure:
+        print("No config yet. A few questions set up where the model runs.")
+    result = run_wizard(target)
+    if result is None:
+        return 1
+    if not args.config:
+        update_settings(home, config=str(result.path.resolve()))
+    if result.needs_selectors:
+        print(
+            "Next, point crit at the chat page's prompt box, send button, and replies by clicking them."
+        )
+        answer = input("Open the selector setup page now? [Y/n] ").strip().lower()
+        if answer in {"", "y", "yes"}:
+            code = _main_setup(["--config", str(result.path)])
+            if code != 0:
+                return code
+            print("Done. Run crit again to start.")
+        else:
+            print(f"Later: critique-bot setup --config {result.path}")
+        return 0
+    return result.path
 
 
 def _apply_tool_flags(args: argparse.Namespace, home) -> None:

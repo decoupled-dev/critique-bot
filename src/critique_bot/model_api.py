@@ -32,6 +32,7 @@ __all__ = [
     "ReplyStalled",
     "backend_error",
     "context_tokens",
+    "list_models",
     "model_label",
     "open_provider",
     "save_failure",
@@ -155,6 +156,13 @@ def save_failure(session: Any, output_dir: Path) -> None:
         saver(Path(output_dir))
     except Exception:  # noqa: BLE001 - debugging help must not hide the real failure
         return
+
+
+def list_models(config: BotConfig) -> list[str]:
+    """The models a local server offers (Ollama's /api/tags, or /v1/models). Raises ChatError when unreachable."""
+    from critique_bot.local_model import LocalModelClient
+
+    return LocalModelClient(config).list_models()
 
 
 def model_label(config: BotConfig) -> str:
