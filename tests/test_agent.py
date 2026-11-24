@@ -259,7 +259,8 @@ class CommandArgvTests(unittest.TestCase):
             return script, base64.b64decode(command.group(1)).decode("utf-8") if command else ""
 
         windows = command_argv("Get-Location", platform_name="win32")
-        self.assertTrue(windows[0].lower().endswith(("powershell.exe", "pwsh.exe")))
+        # Windows PowerShell or PowerShell 7 (on a Linux CI runner with pwsh installed, its Linux path).
+        self.assertTrue(windows[0].lower().endswith(("powershell.exe", "pwsh.exe", "/pwsh", "/powershell")))
         self.assertEqual(windows[1:7], ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
         script, command = embedded(windows)
         self.assertEqual(command, "Get-Location")

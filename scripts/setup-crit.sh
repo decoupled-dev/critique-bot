@@ -109,7 +109,9 @@ redact_terms=""
 redact_terms_given=0
 
 need_arg() {
-    [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 needs a value (see --help)"
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        die "$1 needs a value (see --help)"
+    fi
 }
 
 while [ "$#" -gt 0 ]; do
