@@ -6,7 +6,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from critique_bot import log
+from critique_bot import egress, log
+from critique_bot import redaction
 from critique_bot.patch import (
     ABSOLUTE_MAX_FILE_CHARS,
     ABSOLUTE_MAX_FILES,
@@ -132,6 +133,10 @@ class BotConfig:
     #: True: the chat page may reach only its own site and allowed_hosts. False (the default):
     #: the page works as it does for a person; crit controls what it types into it.
     filter_chat_page: bool = False
+    #: "strict" (the default): crit connects to the chat host and allowed_hosts only, and the
+    #: agent's commands run offline. "open": the chat page and builds reach what they need.
+    #: See egress.py and docs/security.md.
+    egress: str = "strict"
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
@@ -150,6 +155,10 @@ class BotConfig:
     backend: str = BACKEND_BROWSER
     local: LocalConfig = LocalConfig()
     gitlab: GitLabConfig = GitLabConfig()
+    #: Company, customer, or project names replaced by ``[REDACTED:name]`` in everything sent.
+    redact_terms: tuple[str, ...] = ()
+    #: Personal data (emails, phone numbers, cards, IBANs, national IDs) is redacted too.
+    redact_pii: bool = True
 
     @property
     def is_local(self) -> bool:
@@ -341,7 +350,7 @@ def load_config(
 
     if model and PLACEHOLDER_MODEL in model:
         raise ConfigError(
-            "model is still a placeholder. Set model in config.json "
+            "model is still a placeholder. Set it with crit config --model NAME "
             "or pass --model / CRITIQUE_MODEL."
         )
     local = LocalConfig()
@@ -350,16 +359,40 @@ def load_config(
         local = _load_local(raw.get("local"), url)
     else:
         if not selectors.prompt_input:
-            raise ConfigError("selectors.prompt_input is required")
+            raise ConfigError(
+                "selectors.prompt_input is required: crit does not know the chat's message box yet. "
+                "Run crit setup to point at it, or crit config --preset chatgpt for ChatGPT"
+            )
         if not selectors.assistant_messages:
-            raise ConfigError("selectors.assistant_messages is required")
+            raise ConfigError(
+                "selectors.assistant_messages is required: crit does not know where the chat shows replies yet. "
+                "Run crit setup to point at them"
+            )
         if not url:
-            raise ConfigError("url is required (config or CRITIQUE_CHAT_URL)")
+            raise ConfigError(
+                "no chat address is set. Run crit config --preset chatgpt, or "
+                "crit config --url https://chat.company.com/ (or set CRITIQUE_CHAT_URL)"
+            )
         if PLACEHOLDER_URL in url:
             raise ConfigError(
-                "url is still a placeholder. Copy config.example.json to config.json "
-                "and set the real chat UI URL (or set CRITIQUE_CHAT_URL)."
+                "url is still a placeholder. Set the chat address with "
+                "crit config --url https://chat.company.com/ (or crit config --preset chatgpt)."
             )
+
+    egress_mode = _egress_mode(raw.get("egress"))
+    allowed_hosts = _host_list(raw.get("allowed_hosts"))
+    if egress_mode == egress.STRICT and cdp_url:
+        raise ConfigError(
+            'egress is "strict", but cdp_url attaches to a browser crit did not start, whose own traffic '
+            'crit cannot limit. Remove cdp_url (crit starts its own browser), or set "egress": "open".'
+        )
+    gitlab_raw = raw.get("gitlab") if isinstance(raw.get("gitlab"), dict) else {}
+    egress.configure(
+        egress_mode,
+        url if backend != BACKEND_LOCAL else "",
+        allowed_hosts,
+        gitlab_url=os.environ.get("CRITIQUE_GITLAB_URL") or _clean(gitlab_raw.get("base_url")),
+    )
 
     return BotConfig(
         url=url,
@@ -375,7 +408,8 @@ def load_config(
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
         allowed_hosts=_host_list(raw.get("allowed_hosts")),
-        filter_chat_page=_bool_field("filter_chat_page", raw.get("filter_chat_page"), False),
+        filter_chat_page=_bool_field("filter_chat_page", raw.get("filter_chat_page"), False) or egress_mode == egress.STRICT,
+        egress=egress_mode,
         queue_dir=queue_dir,
         min_interval_seconds=_non_negative_float(
             "min_interval_seconds",
@@ -437,7 +471,154 @@ def load_config(
         backend=backend,
         local=local,
         gitlab=_load_gitlab(raw),
+        **_redaction_settings(raw),
     )
+
+
+# --------------------------------------------------------------------------- where the config lives
+
+#: The config file to use when ``--config`` is not given.
+ENV_CONFIG = "CRITIQUE_CONFIG"
+CONFIG_FILE_NAME = "config.json"
+
+
+def user_config_path() -> Path:
+    """The person's own config: ``$XDG_CONFIG_HOME/critique-bot/config.json`` (default
+    ``~/.config/...``) on Linux and macOS, ``%APPDATA%\\critique-bot\\config.json`` on Windows."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "critique-bot" / CONFIG_FILE_NAME
+
+
+def read_config_dict(path: str | Path) -> dict:
+    """The JSON object in ``path``; ``{}`` when the file does not exist."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"could not read {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path} must hold a JSON object")
+    return raw
+
+
+def write_config_file(path: str | Path, data: dict) -> Path:
+    """Write ``data`` to ``path`` atomically, readable by its owner only (0600 on POSIX).
+
+    A new folder, and always the user config's folder, is made owner-only (0700 on POSIX,
+    an owner-only ACL on Windows). An existing project folder keeps its permissions.
+    """
+    from critique_bot.output import private_dir
+
+    path = Path(path)
+    parent = path.parent
+    if not parent.exists() or path.resolve() == user_config_path().resolve():
+        private_dir(parent)
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        if os.name != "nt":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+_LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def clean_https_url(value: str, what: str = "address") -> str:
+    """``value`` as an https URL (plain http only for this PC); ConfigError explains what is wrong."""
+    from urllib.parse import urlsplit
+
+    text = _clean(value)
+    try:
+        parts = urlsplit(text)
+    except ValueError as exc:
+        raise ConfigError(f"{text!r} is not a web address ({exc})") from exc
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https") or not host:
+        raise ConfigError(f"the {what} must be a full address starting with https://, not {text!r}")
+    if parts.scheme == "http" and host not in _LOCAL_HTTP_HOSTS:
+        raise ConfigError(f"the {what} must start with https:// (plain http would send your code unencrypted)")
+    if parts.username or parts.password:
+        raise ConfigError(f"the {what} must not contain a user name or password")
+    return text
+
+
+def clean_gitlab_url(value: str) -> str:
+    """``gitlab.base_url``: the instance's https address (query, fragment, and trailing slash dropped)."""
+    from urllib.parse import urlsplit
+
+    text = clean_https_url(value, "GitLab address")
+    parts = urlsplit(text)
+    port = f":{parts.port}" if parts.port else ""
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    path = parts.path.rstrip("/")
+    return f"{parts.scheme}://{host}{port}{path}"
+
+
+#: ``crit config --preset chatgpt``: kept equal to config.chatgpt.example.json (a test checks),
+#: embedded because a packaged binary may not ship the example files.
+CHATGPT_PRESET: dict = {
+    "backend": "browser",
+    "url": "https://chatgpt.com/",
+    "egress": "strict",
+    "allowed_hosts": [
+        "oaistatic.com",
+        "oaiusercontent.com",
+        "auth.openai.com",
+        "challenges.cloudflare.com",
+    ],
+    "selectors": {
+        "model_dropdown": "",
+        "model_dropdown_identifier": "model-switcher",
+        "model_option": "[role='menuitemradio'], [role='menuitem'], [role='option']",
+        "prompt_input": "#prompt-textarea, [data-testid='prompt-textarea'], #mobile-composer-prompt, textarea[data-mobile-composer-prompt]",
+        "send_button": "button[data-testid='send-button'], button[data-composer-submit], button.wm-composer-submitButton",
+        "stop_button": "button[data-testid='stop-button'], button[aria-label*='Stop' i]",
+        "assistant_messages": "[data-message-author-role='assistant'] .markdown, [data-assistant-markdown], [data-message-role='assistant']",
+    },
+    "timeout_ms": 180000,
+    "idle_ms": 6000,
+}
+
+#: Starter selectors for a chat page nobody has picked elements on yet. They match the
+#: common shapes; ``crit setup`` replaces them with the page's own.
+STARTER_SELECTORS: dict = {
+    "model_dropdown": "",
+    "model_dropdown_identifier": "",
+    "model_option": "",
+    "prompt_input": "textarea, [contenteditable='true'][role='textbox']",
+    "send_button": "button[type='submit'], button[aria-label='Send' i]",
+    "stop_button": "button[aria-label*='Stop' i]",
+    "assistant_messages": "[data-message-author-role='assistant'], .assistant-message",
+}
+
+SELECTOR_KEYS = (
+    "prompt_input",
+    "assistant_messages",
+    "send_button",
+    "stop_button",
+    "continue_button",
+    "model_dropdown",
+    "model_dropdown_identifier",
+    "model_option",
+)
 
 
 def backend_kind(value: object) -> str:
@@ -458,6 +639,17 @@ def backend_kind(value: object) -> str:
         f"backend {value!r} is not supported. Use browser (the chat page in Edge) or local "
         "(a model behind an OpenAI-compatible server such as llama.cpp's llama-server)."
     )
+
+
+def _egress_mode(value: object) -> str:
+    """config.json "egress": "strict" (the default) or "open"; CRITIQUE_EGRESS overrides it."""
+    raw = os.environ.get("CRITIQUE_EGRESS") or value
+    if raw is None or raw == "":
+        return egress.STRICT
+    mode = str(raw).strip().lower()
+    if mode not in egress.MODES:
+        raise ConfigError(f'egress must be "strict" or "open", not {raw!r}')
+    return mode
 
 
 def _bool_field(name: str, value: object, default: bool) -> bool:
@@ -741,3 +933,34 @@ def default_prompt_template_path() -> Path:
         "review prompt template not found. Place prompts/review.txt next to "
         "the binary or in the current directory, or pass --prompt-template."
     )
+
+
+ENV_REDACT_TERMS = "CRIT_REDACT_TERMS"
+
+
+def redact_term_list(value: object) -> tuple[str, ...]:
+    """``redact_terms``: a list of names (company, customer, project), each 3-200 characters, without duplicates."""
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError('redact_terms must be a list of names, for example ["Acme Corp", "Globex"]')
+    try:
+        return redaction.clean_terms(value)
+    except ValueError as exc:
+        raise ConfigError(f"redact_terms: {exc}") from exc
+
+
+def _redaction_settings(raw: dict) -> dict[str, object]:
+    """``redact_terms`` (plus comma-separated ``CRIT_REDACT_TERMS``) and ``redact_pii``, registered with redaction."""
+    terms = list(redact_term_list(raw.get("redact_terms")))
+    from_env = [item for item in os.environ.get(ENV_REDACT_TERMS, "").split(",") if item.strip()]
+    if from_env:
+        log.debug(f"{len(from_env)} redact term(s) added from {ENV_REDACT_TERMS}")
+    try:
+        cleaned = redaction.clean_terms(terms + from_env)
+    except ValueError as exc:
+        raise ConfigError(f"{ENV_REDACT_TERMS}: {exc}") from exc
+    pii = _bool_field("redact_pii", raw.get("redact_pii"), True)
+    redaction.set_custom_terms(cleaned)
+    redaction.set_pii_redaction(pii)
+    return {"redact_terms": cleaned, "redact_pii": pii}

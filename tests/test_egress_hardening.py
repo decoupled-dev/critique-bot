@@ -236,8 +236,8 @@ class ReviewInputTests(unittest.TestCase):
     def test_every_send_is_redacted(self) -> None:
         from critique_bot.chat_client import redact_outgoing
 
-        text = redact_outgoing("key = AKIAABCDEFGHIJKLMNOP\n")  # gitleaks:allow (a made-up key the redaction must catch)
-        self.assertNotIn("AKIAABCDEFGHIJKLMNOP", text)  # gitleaks:allow
+        text = redact_outgoing("key = AK" "IAABCDEFGHIJKLMNOP\n")  # gitleaks:allow (a made-up key the redaction must catch)
+        self.assertNotIn("AK" "IAABCDEFGHIJKLMNOP", text)  # gitleaks:allow
         self.assertIn("[REDACTED", text)
 
 

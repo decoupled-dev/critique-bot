@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from critique_bot import redaction
+
 from critique_bot.config import (
     ABSOLUTE_MAX_PARALLEL_TABS,
     BACKEND_BROWSER,
@@ -40,6 +42,8 @@ _ENV = (
     "CRITIQUE_QUEUE_DIR",
     "CRITIQUE_MAX_PARALLEL_TABS",
     "CRITIQUE_GITLAB_URL",
+    "CRIT_REDACT_TERMS",
+    "CRITIQUE_EGRESS",
 )
 
 
@@ -323,7 +327,7 @@ class LoadConfigErrorTests(EnvIsolated):
         )
         with self.assertRaises(ConfigError) as ctx:
             load_config(path)
-        self.assertIn("url is required", str(ctx.exception))
+        self.assertIn("no chat address is set", str(ctx.exception))
 
     def test_invalid_timeout(self) -> None:
         path = self._write(self._browser({"timeout_ms": "fast"}))
@@ -344,6 +348,7 @@ class LoadConfigErrorTests(EnvIsolated):
 
 
 class LoadConfigSuccessTests(EnvIsolated):
+    @patch.dict(os.environ, {"CRITIQUE_EGRESS": "open"})  # cdp_url needs "egress": "open"
     def test_selectors_and_top_level_identifier(self) -> None:
         path = self._write(
             self._browser(
@@ -382,6 +387,8 @@ class LoadConfigSuccessTests(EnvIsolated):
         config = load_config(path, model_override="cli-model")
         self.assertEqual(config.model, "cli-model")
 
+    @patch.dict(os.environ, {"CRITIQUE_EGRESS": "open"})  # cdp_url needs "egress": "open"
+
     def test_env_overrides_url_and_cdp(self) -> None:
         path = self._write(self._browser({"cdp_url": "http://old:1"}))
         os.environ["CRITIQUE_CHAT_URL"] = "https://from-env/chat"
@@ -389,6 +396,8 @@ class LoadConfigSuccessTests(EnvIsolated):
         config = load_config(path)
         self.assertEqual(config.url, "https://from-env/chat")
         self.assertEqual(config.cdp_url, "http://127.0.0.1:9")
+
+    @patch.dict(os.environ, {"CRITIQUE_EGRESS": "open"})  # cdp_url needs "egress": "open"
 
     def test_cdp_override_argument(self) -> None:
         path = self._write(self._browser())
@@ -470,6 +479,59 @@ class DefaultTemplateTests(unittest.TestCase):
             with self.assertRaises(ConfigError) as ctx:
                 default_prompt_template_path()
         self.assertIn("template not found", str(ctx.exception))
+
+
+class RedactSettingsTests(EnvIsolated):
+    def tearDown(self) -> None:
+        redaction.set_custom_terms(())
+        redaction.set_pii_redaction(True)
+        super().tearDown()
+
+    def test_defaults(self) -> None:
+        config = load_config(self._write(self._browser()))
+        self.assertEqual(config.redact_terms, ())
+        self.assertTrue(config.redact_pii)
+        self.assertEqual(redaction.custom_terms(), ())
+        self.assertTrue(redaction.pii_redaction_enabled())
+
+    def test_terms_are_cleaned_and_registered(self) -> None:
+        config = load_config(self._write(self._browser({"redact_terms": [" Acme   Corp ", "Globex", "GLOBEX"]})))
+        self.assertEqual(config.redact_terms, ("Acme Corp", "Globex"))
+        self.assertEqual(redaction.custom_terms(), ("Acme Corp", "Globex"))
+        self.assertEqual(redaction.redact_outgoing("globex ships acme-corp"), "[REDACTED:name] ships [REDACTED:name]")
+
+    def test_env_terms_are_merged(self) -> None:
+        os.environ["CRIT_REDACT_TERMS"] = "Initech, globex ,"
+        config = load_config(self._write(self._browser({"redact_terms": ["Globex"]})))
+        self.assertEqual(config.redact_terms, ("Globex", "Initech"))
+
+    def test_bad_terms_are_rejected(self) -> None:
+        for bad in ("Acme", {"a": 1}, ["ab"], [""], ["  "], [3], ["x" * 201], [None]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigError) as ctx:
+                    load_config(self._write(self._browser({"redact_terms": bad})))
+                self.assertIn("redact_terms", str(ctx.exception))
+        os.environ["CRIT_REDACT_TERMS"] = "ok-name,xy"
+        with self.assertRaisesRegex(ConfigError, "CRIT_REDACT_TERMS"):
+            load_config(self._write(self._browser()))
+
+    def test_a_reload_replaces_the_terms(self) -> None:
+        load_config(self._write(self._browser({"redact_terms": ["Globex"]})))
+        load_config(self._write(self._browser()))
+        self.assertEqual(redaction.custom_terms(), ())
+
+    def test_pii_can_be_turned_off(self) -> None:
+        config = load_config(self._write(self._browser({"redact_pii": False})))
+        self.assertFalse(config.redact_pii)
+        self.assertEqual(redaction.redact_outgoing("mail jane@corp.io"), "mail jane@corp.io")  # gitleaks:allow
+        with self.assertRaisesRegex(ConfigError, "redact_pii"):
+            load_config(self._write(self._browser({"redact_pii": "no"})))
+
+    def test_example_configs_carry_the_keys(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for name in ("config.example.json", "config.local.example.json"):
+            data = json.loads((root / name).read_text(encoding="utf-8"))
+            self.assertEqual((data["redact_terms"], data["redact_pii"]), ([], True), name)
 
 
 if __name__ == "__main__":

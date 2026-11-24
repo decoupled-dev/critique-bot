@@ -37,7 +37,7 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
         lock = queue.acquire_worker_lock()
     except QueueError as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1
 
     stop = _install_stop_flag()
@@ -420,7 +420,10 @@ def _execute_job(
                 f"job {job.id} reply ended on an idle timeout, not a "
                 "generation-finished signal; it may be truncated"
             )
-    write_output(out_dir, response, payload, stem=job.stem, print_body=False)
+    write_output(
+        out_dir, response, payload, stem=job.stem, print_body=False,
+        mode=getattr(queue, "file_mode", None),
+    )
     queue.finish(
         job.id,
         JobStatus(

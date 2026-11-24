@@ -372,6 +372,56 @@ def discussion_position(
     return position
 
 
+ZWSP = "\u200b"
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_QUICK_ACTION_IN_CODE_RE = re.compile(r"^\s*/[A-Za-z]")
+_MENTION_RE = re.compile(r"(?<![\w@.+-])@(?=[A-Za-z0-9_])")
+
+
+def _defang_mentions(line: str) -> str:
+    """Break ``@user`` / ``@group`` / ``@all`` outside inline code spans."""
+    parts = re.split(r"(`+[^`]*`+)", line)
+    for i in range(0, len(parts), 2):
+        parts[i] = _MENTION_RE.sub("@" + ZWSP, parts[i])
+    return "".join(parts)
+
+
+def defang_gitlab_markdown(text: str) -> str:
+    """Make model text safe to post as a GitLab note.
+
+    GitLab runs ``/command`` lines in a note body as quick actions (approve,
+    merge, close, assign...) and ``@name`` pings people or whole groups, so text
+    a model wrote must never do either. A zero-width space goes in front of
+    the slash on any line that starts with ``/`` (outside code fences; inside a
+    fence only lines that look like ``/command``, so ``//`` comments in a
+    suggestion stay intact) and right after the ``@`` of a mention outside
+    code. The text still reads the same. Running it twice changes nothing.
+    """
+    out: list[str] = []
+    fence = ""
+    for line in (text or "").split("\n"):
+        match = _FENCE_RE.match(line)
+        if fence:
+            if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence) \
+                    and not line.strip()[len(match.group(1)):].strip():
+                fence = ""
+            elif _QUICK_ACTION_IN_CODE_RE.match(line):
+                idx = len(line) - len(line.lstrip())
+                line = line[:idx] + ZWSP + line[idx:]
+            out.append(line)
+            continue
+        if match:
+            fence = match.group(1)
+            out.append(line)
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith("/"):
+            idx = len(line) - len(stripped)
+            line = line[:idx] + ZWSP + line[idx:]
+        out.append(_defang_mentions(line))
+    return "\n".join(out)
+
+
 def format_gitlab_comment(
     comment: InlineComment,
     *,
@@ -397,7 +447,7 @@ def format_gitlab_comment(
             lines.append(impact)
         else:
             lines.append(f"**Impact:** {impact}")
-    return "\n".join(lines).strip()
+    return defang_gitlab_markdown("\n".join(lines).strip())
 
 
 def summary_blurb(summary: str) -> str:
@@ -526,8 +576,10 @@ def format_gitlab_summary(
                 "_" + "; ".join(bits) + ". Reply on a thread to discuss._",
             ]
         )
-    return apply_gitlab_line_breaks(
-        truncate_markdown("\n".join(parts).strip(), MAX_SUMMARY_CHARS)
+    return defang_gitlab_markdown(
+        apply_gitlab_line_breaks(
+            truncate_markdown("\n".join(parts).strip(), MAX_SUMMARY_CHARS)
+        )
     )
 
 

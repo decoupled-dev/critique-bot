@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from critique_bot import log
-from critique_bot.config import ConfigError, load_config
+from critique_bot.config import ConfigError, load_config, redact_term_list, write_config_file
 
 BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -235,8 +235,9 @@ class BrowserBridge:
             raise RuntimeError(str(self._error))
 
     def _on_pick(self, result: Any) -> None:
+        # The chat page calls this, so treat its argument as untrusted input.
         with self._lock:
-            self.pick = result if isinstance(result, dict) else None
+            self.pick = clean_pick(result)
 
     def current_pick(self) -> dict[str, Any] | None:
         with self._lock:
@@ -337,7 +338,15 @@ class SetupState:
         return load_config(self.config_path)
 
     def save(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Merge edits into config.json, then report whether it still loads."""
+        """Merge edits into config.json, then report whether it still loads.
+
+        ``redact_terms`` is checked first: a bad list is reported and nothing is written.
+        """
+        if "redact_terms" in data:
+            try:
+                data["redact_terms"] = list(redact_term_list(data["redact_terms"]))
+            except ConfigError as exc:
+                return {"saved": False, "valid": False, "error": str(exc)}
         with self.lock:
             current = self.raw_config()
             selectors = dict(current.get("selectors") or {})
@@ -349,10 +358,7 @@ class SetupState:
             current.update(data)
             if selectors:
                 current["selectors"] = selectors
-            self.config_path.write_text(
-                json.dumps(current, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+            write_config_file(self.config_path, current)
         try:
             self.load()
         except ConfigError as exc:
@@ -362,6 +368,43 @@ class SetupState:
 
 def _json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, indent=2, default=str) + "\n").encode("utf-8")
+
+
+MAX_PICK_OPTIONS = 40
+MAX_SELECTOR_CHARS = 500
+
+
+def clean_pick(result: Any) -> dict[str, Any] | None:
+    """Keep only the expected shape of a picker result; drop everything else.
+
+    ``{"field": str in PICK_FIELDS, "cancelled": bool, "options": [{"selector": str,
+    "matches": int, "rank": number}, ...]}``. Anything malformed gives None.
+    """
+    if not isinstance(result, dict):
+        return None
+    field = result.get("field")
+    if not isinstance(field, str) or field not in PICK_FIELDS:
+        return None
+    raw_options = result.get("options")
+    if not isinstance(raw_options, list):
+        raw_options = []
+    options: list[dict[str, Any]] = []
+    for item in raw_options[:MAX_PICK_OPTIONS]:
+        if not isinstance(item, dict):
+            continue
+        selector = item.get("selector")
+        matches = item.get("matches")
+        rank = item.get("rank")
+        if not isinstance(selector, str) or not selector.strip() or len(selector) > MAX_SELECTOR_CHARS:
+            continue
+        if isinstance(matches, float) and matches.is_integer():
+            matches = int(matches)
+        if isinstance(matches, bool) or not isinstance(matches, int) or matches < 0:
+            continue
+        if isinstance(rank, bool) or not isinstance(rank, (int, float)) or rank != rank:
+            continue
+        options.append({"selector": selector, "matches": matches, "rank": float(rank)})
+    return {"field": field, "cancelled": result.get("cancelled") is True, "options": options}
 
 
 TOKEN_HEADER = "X-Crit-Token"
@@ -648,7 +691,7 @@ def run_setup(
     if not state.config_path.is_file():
         print(
             f"error: config file not found: {state.config_path}\n"
-            "Copy config.example.json to config.json first.",
+            "Set crit up first: run crit (it asks a few questions), or crit config --preset chatgpt.",
             flush=True,
         )
         return 1
@@ -657,7 +700,7 @@ def run_setup(
     try:
         server = ThreadingHTTPServer((BIND_HOST, port), handler)
     except OSError as exc:
-        print(f"error: cannot listen on {BIND_HOST}:{port}: {exc}", flush=True)
+        log.notice(f"Problem: the setup page could not open on {BIND_HOST}:{port} ({exc}). Close the program using that port, or try again.")
         return 1
     url = f"http://{BIND_HOST}:{server.server_port}/?t={token}"
     print(f"critique-bot setup UI: {url}   (Ctrl-C to stop)", flush=True)
@@ -784,6 +827,12 @@ PAGE_HTML = """<!doctype html>
       <input type="text" id="model" placeholder="GPT-5.1 (blank = leave as is)" />
       <span></span>
     </div>
+    <div class="field">
+      <label for="redactTerms">Names to hide</label>
+      <input type="text" id="redactTerms" placeholder="Company, customer, or project names, comma-separated" />
+      <span></span>
+    </div>
+    <div id="redactTermsList" class="sub"></div>
     <div id="selectorFields"></div>
     <div class="row" style="margin-top:16px">
       <button onclick="save()">Save config</button>
@@ -822,6 +871,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
+// Keep the token in this variable only: off the address bar, history, and Referer.
+try { history.replaceState(null, "", location.pathname); } catch (e) {}
 
 async function api(path, body) {
   const headers = { "X-Crit-Token": TOKEN };
@@ -863,6 +914,11 @@ async function refresh() {
   const config = state.config || {};
   if (document.activeElement !== el("url")) el("url").value = config.url || "";
   if (document.activeElement !== el("model")) el("model").value = config.model || "";
+  const terms = Array.isArray(config.redact_terms) ? config.redact_terms : [];
+  if (document.activeElement !== el("redactTerms")) el("redactTerms").value = terms.join(", ");
+  el("redactTermsList").innerHTML = terms.length
+    ? "Sent to the chat as [REDACTED:name]: " + terms.map((term) => `<b>${esc(term)}</b>`).join(", ")
+    : "";
   if (!document.querySelector("#selectorFields input")) renderSelectorFields(config);
   setBrowser(state.browser);
 }
@@ -922,7 +978,7 @@ async function pollPick() {
       <div class="option" data-field="${esc(pick.field)}"
            data-selector="${esc(option.selector)}">
         <span>${esc(option.selector)}</span>
-        <span>${option.matches} match${option.matches === 1 ? "" : "es"}</span>
+        <span>${esc(option.matches)} match${option.matches === 1 ? "" : "es"}</span>
       </div>`).join("")}</div>`;
 }
 
@@ -943,7 +999,9 @@ async function save() {
   const payload = { url: el("url").value.trim(), selectors };
   const model = el("model").value.trim();
   if (model) payload.model = model;
+  payload.redact_terms = el("redactTerms").value.split(",").map((term) => term.trim()).filter(Boolean);
   const result = await api("/api/config", { config: payload });
+  if (result.error && !result.saved) { el("saveStatus").textContent = "not saved: " + result.error; return; }
   el("saveStatus").textContent = result.valid
     ? "saved"
     : "saved, but the config does not load: " + (result.error || "unknown error");

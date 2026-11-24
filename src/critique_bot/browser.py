@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -8,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
-from critique_bot import log
+from critique_bot import egress, log
 from critique_bot.output import private_dir
 from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
 from critique_bot.model_api import BackendError
@@ -72,6 +74,173 @@ EDGE_PRIVATE_ARGS = (
     "--no-pings",
 )
 
+# What the flags above do not stop. Traced with strace on a local page (no chat open):
+# Chrome still contacted clients2.google.com (network time), www.gstatic.com (Safe
+# Browsing), accounts.google.com and www.google.com (browser sign-in services). The
+# features, switches, profile preferences, and resolver rules below stop all of it; what
+# is left is Chrome's IPv6 reachability check, a UDP connect that sends no packet.
+#
+# Playwright passes its own --disable-features list and Chromium keeps only the last
+# --disable-features, so this list repeats Playwright's (as of 1.63) and adds crit's.
+_PLAYWRIGHT_DISABLED_FEATURES = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync", "DestroyProfileOnBrowserClose", "DialMediaRouteProvider",
+    "GlobalMediaControls", "HttpsUpgrades", "LensOverlay", "MediaRouter", "PaintHolding",
+    "ThirdPartyStoragePartitioning", "BlockOriginHeaderModificationOnRedirect", "Translate",
+    "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn", "msEdgeUpdateLaunchServicesPreferredVersion",
+)
+_PRIVATE_DISABLED_FEATURES = (
+    "NetworkTimeServiceQuerying",
+    "OptimizationGuideModelDownloading",
+    "OptimizationHintsFetching",
+    "AutofillServerCommunication",
+    "CertificateTransparencyComponentUpdater",
+    "SafeBrowsingRealTimeUrlLookup",
+    "InterestFeedContentSuggestions",
+)
+BROWSER_QUIET_ARGS = (
+    "--disable-features=" + ",".join(dict.fromkeys(_PLAYWRIGHT_DISABLED_FEATURES + _PRIVATE_DISABLED_FEATURES)),
+    "--safebrowsing-disable-auto-update",
+    "--disable-field-trial-config",
+    "--variations-server-url=http://127.0.0.1:9",  # field-trial seed: a closed local port
+    "--no-service-autorun",
+    "--allow-browser-signin=false",
+)
+
+# Hosts only the browser's own services use (Google Chrome and Microsoft Edge). crit's
+# browser cannot resolve them, unless the chat itself lives on that site or the host is
+# in config.json "allowed_hosts" (a chat behind reCAPTCHA needs www.google.com there).
+BROWSER_SERVICE_HOSTS = (
+    "accounts.google.com", "www.google.com",
+    "clients1.google.com", "clients2.google.com", "clients4.google.com", "clients6.google.com",
+    "clientservices.googleapis.com", "update.googleapis.com", "safebrowsing.google.com",
+    "safebrowsing.googleapis.com", "sb-ssl.google.com", "optimizationguide-pa.googleapis.com",
+    "content-autofill.googleapis.com", "*.gvt1.com", "*.gvt2.com",
+    "config.edge.skype.com", "edge.microsoft.com", "*.events.data.microsoft.com",
+    "browser.events.data.msn.com", "smartscreen.microsoft.com", "*.smartscreen.microsoft.com",
+    "smartscreen-prod.microsoft.com", "msedge.api.cdp.microsoft.com", "edge.activity.windows.com",
+    "ntp.msn.com",
+)
+
+# Written into crit's own browser profile before each launch (never into a profile crit
+# did not create): secure DNS off (it would send every host name to a public resolver),
+# Safe Browsing off (it reports visited sites), browser sign-in, search suggestions,
+# link prediction, spelling service, translation, and usage reporting off.
+_LOCAL_STATE_PREFS = {"dns_over_https": {"mode": "off", "templates": ""}, "user_experience_metrics": {"reporting_enabled": False}}
+_PROFILE_PREFS = {
+    "safebrowsing": {"enabled": False, "enhanced": False},
+    "signin": {"allowed": False},
+    "search": {"suggest_enabled": False},
+    "alternate_error_pages": {"enabled": False},
+    "net": {"network_prediction_options": 2},
+    "url_keyed_anonymized_data_collection": {"enabled": False},
+    "spellcheck": {"use_spelling_service": False},
+    "translate": {"enabled": False},
+    "privacy_sandbox": {"m1": {"topics_enabled": False, "fledge_enabled": False, "ad_measurement_enabled": False}},
+}
+
+
+def _service_host_blocked(pattern: str, chat_url: str | None) -> bool:
+    """True when ``pattern`` (a host or ``*.suffix``) is not part of the chat's site or allowed_hosts."""
+    if not chat_url:
+        return True
+    host = pattern[2:] if pattern.startswith("*.") else pattern
+    return not any(_host_matches_suffix(host, suffix) for suffix in allowed_chat_hosts(chat_url))
+
+
+def strict_resolver_rules(hosts: tuple[str, ...]) -> str:
+    """Chromium resolver rules under which only ``hosts`` (and their subdomains) and loopback resolve.
+
+    Exclusions are checked before the catch-all, so their order does not matter.
+    """
+    parts = ["MAP * ~NOTFOUND", "EXCLUDE localhost", "EXCLUDE 127.0.0.1"]
+    for host in hosts:
+        parts += [f"EXCLUDE {host}", f"EXCLUDE *.{host}"]
+    return ", ".join(parts)
+
+
+def browser_quiet_args(chat_url: str | None) -> list[str]:
+    """Switches that keep the browser's own services quiet, plus resolver rules for their hosts.
+
+    Under ``"egress": "strict"`` the resolver rules allow nothing but the chat host and
+    allowed_hosts, for every request the browser makes (page, workers, its own services),
+    and the browser uses no proxy, since a proxy would resolve names past those rules.
+    """
+    args = list(BROWSER_QUIET_ARGS)
+    if egress.strict():
+        hosts = egress.policy().hosts()
+        if not hosts and chat_url:
+            hosts = ((urlsplit(chat_url).hostname or "").lower(),)
+        args += ["--host-resolver-rules=" + strict_resolver_rules(hosts), "--no-proxy-server"]
+        return args
+    blocked = [pattern for pattern in BROWSER_SERVICE_HOSTS if _service_host_blocked(pattern, chat_url)]
+    if blocked:
+        args.append("--host-resolver-rules=" + ", ".join(f"MAP {pattern} ~NOTFOUND" for pattern in blocked))
+    return args
+
+
+def merge_resolver_rules(args: list[str]) -> list[str]:
+    """Combine every --host-resolver-rules flag into one (Chromium keeps only the last).
+
+    Earlier rules come first. Under strict egress a MAP for a host the policy does not
+    permit is dropped, so no earlier flag can reopen a host the strict rules close.
+    """
+    rules: list[str] = []
+    others: list[str] = []
+    prefix = "--host-resolver-rules="
+    for arg in args:
+        if arg.startswith(prefix):
+            rules += [part.strip() for part in arg[len(prefix):].split(",") if part.strip()]
+        else:
+            others.append(arg)
+    if not rules:
+        return others
+    if egress.strict():
+        policy = egress.policy()
+        mapped = set()
+        kept = []
+        for rule in rules:
+            words = rule.split()
+            if len(words) == 3 and words[0].upper() == "MAP" and words[1] != "*":
+                if not policy.permits(words[1]) and not policy.permits(words[1].lstrip("*.")):
+                    continue
+                mapped.add(words[1].lower())
+            kept.append(rule)
+        # An exclusion is checked before any MAP: a host mapped on purpose must not also be excluded.
+        rules = [r for r in kept if not (r.split()[0].upper() == "EXCLUDE" and r.split()[-1].lower() in mapped)]
+    return others + [prefix + ", ".join(dict.fromkeys(rules))]
+
+
+def _merge_prefs(path: Path, prefs: dict) -> None:
+    def merge(into: dict, update: dict) -> None:
+        for key, value in update.items():
+            if isinstance(value, dict) and isinstance(into.get(key), dict):
+                merge(into[key], value)
+            else:
+                into[key] = value
+
+    data: dict = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            data = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+    merge(data, prefs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".crit-tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def apply_private_prefs(profile_dir: Path) -> None:
+    """Turn off the browser's reporting services in crit's own profile (call before launch)."""
+    try:
+        _merge_prefs(profile_dir / "Local State", _LOCAL_STATE_PREFS)
+        _merge_prefs(profile_dir / "Default" / "Preferences", _PROFILE_PREFS)
+    except OSError as exc:
+        log.warn(f"could not write private browser settings in {profile_dir}: {exc}")
+
+
 # Headless only, and only with CRIT_LEAN_HEADLESS=1: what the chat page would download
 # just to look nice. Off by default, so the chat page loads as it does for a person.
 LEAN_RESOURCE_TYPES = frozenset({"image", "media", "font", "texttrack", "manifest"})
@@ -92,7 +261,12 @@ def lean_headless_enabled() -> bool:
 
 
 def sandbox_disabled() -> bool:
-    """True only where Chromium's sandbox cannot start: Linux as root, in a container, or CRIT_NO_SANDBOX=1."""
+    """True only where Chromium's sandbox cannot start: a container, or CRIT_NO_SANDBOX=1.
+
+    As root on Linux the browser needs --no-sandbox, and an unsandboxed browser running
+    a third-party chat page as root is too much risk to take silently: crit stops with an
+    error unless CRIT_NO_SANDBOX=1 says to accept it. Run crit as a normal user instead.
+    """
     forced = os.environ.get("CRIT_NO_SANDBOX", "").strip().lower()
     if forced in {"1", "true", "yes", "on"}:
         return True
@@ -101,11 +275,19 @@ def sandbox_disabled() -> bool:
     if not sys.platform.startswith("linux"):
         return False
     try:
-        if os.geteuid() == 0:
-            return True
+        is_root = os.geteuid() == 0
     except AttributeError:
         return False
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    if is_root:
+        raise BrowserError(
+            "refusing to run the browser as root: Chromium would need --no-sandbox. "
+            "Run crit as a normal user (the worker service has User=critique-bot), "
+            "or set CRIT_NO_SANDBOX=1 to accept an unsandboxed browser."
+        )
+    in_container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    if in_container:
+        log.warn("in a container: the browser runs without its sandbox (set CRIT_NO_SANDBOX=0 to keep it)")
+    return in_container
 
 
 def _launch_args() -> list[str]:
@@ -868,7 +1050,10 @@ def _start_desktop_edge(
         "--no-default-browser-check",
         *EDGE_NO_THROTTLE_ARGS,
         *EDGE_PRIVATE_ARGS,
+        *browser_quiet_args(start_url),
     ]
+    cmd = merge_resolver_rules(cmd)
+    apply_private_prefs(user_data_dir)
     if headed:
         cmd.append("--start-maximized")
     else:
@@ -1133,6 +1318,9 @@ def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
     if not host:
         return frozenset()
+    if egress.strict():
+        # Strict egress: the chat's exact host, not its whole site.
+        return frozenset({host, *_extra_hosts})
     return frozenset({host, chat_site(host), *_extra_hosts})
 
 
@@ -1149,6 +1337,31 @@ def request_is_allowed(request_url: str, chat_url: str) -> bool:
         return False
     allowed = allowed_chat_hosts(chat_url)
     return any(_host_matches_suffix(host, suffix) for suffix in allowed)
+
+
+#: Sites the page filter blocked that nobody has been asked about yet (see drain_blocked_hosts).
+_blocked_lock = threading.Lock()
+_blocked_pending: set[str] = set()
+
+
+def _note_blocked_host(host: str) -> None:
+    """Remember a blocked site; called from Playwright's route callback, so it only records."""
+    if not host or host == "?":
+        return
+    with _blocked_lock:
+        _blocked_pending.add(host)
+
+
+def drain_blocked_hosts() -> list[str]:
+    """The sites blocked for the first time since the last call (sorted), and forget them.
+
+    The command line asks about them between steps (config_prompts.offer_blocked_hosts),
+    never inside the route callback.
+    """
+    with _blocked_lock:
+        hosts = sorted(_blocked_pending)
+        _blocked_pending.clear()
+    return hosts
 
 
 def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
@@ -1183,12 +1396,19 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
     if host not in seen:
         seen.add(host)
         log.info(f"blocking requests to {host} (outside chat URL)")
-        log.print_safe(
-            f"crit blocked the chat page from reaching {host}. If the chat page does not work and needs it "
-            f'(its API, files, or sign-in), and it belongs to the chat service, add "{host}" to "allowed_hosts" '
-            "in config.json.",
-            file=sys.stderr,
-            flush=True,
+        _note_blocked_host(host)
+        from critique_bot import config_prompts
+
+        if config_prompts.enabled():
+            follow_up = "crit will ask after this step whether to allow it."
+        else:
+            follow_up = (
+                f"If the chat stops working and {host} belongs to the chat service, allow it with: "
+                f"crit config --allow-host {host}"
+            )
+        log.notice(
+            f"Blocked: the chat page tried to contact {host}, which is not your chat. Nothing was sent there. "
+            + follow_up
         )
     try:
         route.abort("blockedbyclient")
@@ -1204,11 +1424,10 @@ def _filter_web_socket(ws, chat_url: str) -> None:
         except Exception as exc:
             log.debug(f"websocket connect failed {log.preview(url, 180)}: {exc}")
         return
+    # Not connected to its server, the socket goes nowhere: what the page sends on it stays in
+    # Playwright. (Calling ws.close() from inside this handler deadlocks Playwright's sync API.)
     log.info(f"blocking a WebSocket to {(urlsplit(url).hostname or url)} (outside the chat URL)")
-    try:
-        ws.close()
-    except Exception as exc:
-        log.debug(f"websocket close failed: {exc}")
+    _note_blocked_host((urlsplit(url).hostname or url).lower())
 
 
 _NO_SERVICE_WORKER_JS = """
@@ -1627,6 +1846,8 @@ def launch_edge(
         existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
         args = _launch_args() + [flag for flag in EDGE_PRIVATE_ARGS if flag.startswith(("--force-webrtc", "--dns-prefetch"))]
+        args = merge_resolver_rules(args + browser_quiet_args(start_url))
+        apply_private_prefs(profile_dir)
         no_sandbox = sandbox_disabled()
         debug_url = ""
         if cdp_out is not None:

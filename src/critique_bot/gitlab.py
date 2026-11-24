@@ -11,11 +11,16 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from critique_bot import log
+from critique_bot import egress, log
 from critique_bot.review_comments import parse_diff_lines
 
 TOKEN_ENV = ("CRITIQUE_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN")
 ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
+#: GitLab calls ignore http(s)_proxy by default, so a proxy set for other
+#: traffic never sees the PRIVATE-TOKEN. Set this to a proxy URL to send GitLab
+#: calls through it, or to ``env`` to use the usual proxy variables.
+ENV_GITLAB_PROXY = "CRITIQUE_GITLAB_PROXY"
+REQUEST_TIMEOUT_SECONDS = 60
 
 _MR_URL_RE = re.compile(
     r"(?P<base>https?://[^/\s]+)/(?P<project>.+)/-/merge_requests/(?P<iid>\d+)",
@@ -134,16 +139,29 @@ def resolve_target(
     parsed_project = parsed[1] if parsed else ""
     parsed_iid = parsed[2] if parsed else ""
 
+    # The token only goes to a host someone configured: never to the host of a
+    # pasted merge-request URL alone.
     resolved_api = (
         _s(api_url)
         or _s(os.environ.get("CI_API_V4_URL"))
         or api_v4_url(
             _s(os.environ.get(ENV_GITLAB_URL))
             or cfg_base
-            or parsed_base
             or _s(os.environ.get("CI_SERVER_URL"))
         )
     ).rstrip("/")
+    if parsed_base:
+        if not resolved_api:
+            raise GitLabError(
+                f"refusing to trust the host of the merge-request URL ({_host(parsed_base)}): "
+                "set gitlab.base_url in config.json (or CRITIQUE_GITLAB_URL / --api-url) "
+                "to your GitLab instance first"
+            )
+        if _host(parsed_base) != _host(resolved_api):
+            raise GitLabError(
+                f"merge-request URL host {_host(parsed_base)} does not match the "
+                f"configured GitLab host {_host(resolved_api)}; refusing to send the token there"
+            )
     resolved_project = (
         _s(project_id)
         or _s(os.environ.get("CI_PROJECT_ID"))
@@ -164,6 +182,12 @@ def resolve_target(
     )
 
 
+def _host(url: str) -> str:
+    parts = urllib.parse.urlsplit(url or "")
+    host = (parts.hostname or "").lower()
+    return f"{host}:{parts.port}" if parts.port else host
+
+
 def quote(project_id: str) -> str:
     if project_id.isdigit():
         return project_id
@@ -174,9 +198,11 @@ def _require_safe_url(url: str) -> None:
     """The token goes only over https (http only to this PC, for a local test instance)."""
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
-    if parts.scheme == "https" and host:
-        return
-    if parts.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}:
+    if (parts.scheme == "https" and host) or (parts.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}):
+        try:
+            egress.require(host, "posting to GitLab")
+        except PermissionError as exc:
+            raise GitLabError(str(exc)) from exc
         return
     raise GitLabError(
         f"refusing to send the GitLab token to {parts.scheme or '(no scheme)'}://{host or '?'}: "
@@ -203,7 +229,7 @@ def request(
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         # https checked by _require_safe_url
-        with urllib.request.urlopen(req) as resp:  # nosec B310
+        with _urlopen(req) as resp:  # nosec B310
             status = _http_status(resp)
             raw = resp.read()
     except urllib.error.HTTPError as exc:
@@ -228,6 +254,34 @@ def request(
         + (f" {summary}" if summary else "")
     )
     return result
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry PRIVATE-TOKEN to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        raise GitLabError(
+            f"GitLab answered HTTP {code} redirect to {newurl}; refusing to follow it with "
+            "the token. Set gitlab.base_url to the final https:// address of your instance"
+        )
+
+
+def _proxy_handler() -> urllib.request.ProxyHandler:
+    """No proxy unless CRITIQUE_GITLAB_PROXY opts in (a URL, or ``env``)."""
+    choice = os.environ.get(ENV_GITLAB_PROXY, "").strip()
+    if not choice:
+        return urllib.request.ProxyHandler({})
+    if choice.lower() == "env":
+        return urllib.request.ProxyHandler()
+    return urllib.request.ProxyHandler({"http": choice, "https": choice})
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_proxy_handler(), _NoRedirect())
+
+
+def _urlopen(req: urllib.request.Request) -> Any:
+    return _opener().open(req, timeout=REQUEST_TIMEOUT_SECONDS)
 
 
 def _endpoint_label(url: str) -> str:

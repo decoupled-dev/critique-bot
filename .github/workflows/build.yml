@@ -6,53 +6,85 @@ on:
     tags:
       - "v*"
 
+# Read-only by default; only the release job may write (to create the release).
 permissions:
-  contents: write
+  contents: read
 
+# Every action is pinned to a full commit SHA (the tag it was resolved from is
+# in the trailing comment). Every Python package comes from constraints.txt.
 jobs:
   bundle:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            tag: linux-x64
-          - os: windows-2022
-            tag: windows-x64
+          - { os: ubuntu-22.04, tag: linux-x64, python_arch: x64, experimental: false }
+          - { os: ubuntu-22.04-arm, tag: linux-arm64, python_arch: arm64, experimental: false }
+          - { os: windows-2022, tag: windows-x64, python_arch: x64, experimental: false }
+          - { os: windows-2022, tag: windows-x86, python_arch: x86, experimental: true }
+          - { os: windows-11-arm, tag: windows-arm64, python_arch: arm64, experimental: true }
     runs-on: ${{ matrix.os }}
+    # A newer target (32-bit, Windows on Arm) that fails does not hold back the release.
+    continue-on-error: ${{ matrix.experimental }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
 
       - name: Install package and PyInstaller
-        run: python -m pip install -e ".[packaging]"
+        run: python -m pip install -c constraints.txt -e ".[packaging]"
 
       - name: Build zip
         run: python scripts/build.py
 
+      - name: Build .deb
+        if: runner.os == 'Linux'
+        run: |
+          python scripts/build_deb.py
+          dpkg-deb --info dist/critique-bot_*.deb
+          dpkg-deb --contents dist/critique-bot_*.deb | head -20
+
+      - name: Test the .deb installs and runs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/critique-bot_*.deb
+          critique-bot --help > /dev/null
+          crit --help > /dev/null
+          systemctl cat critique-bot-worker.service | grep -q /etc/critique-bot/config.json
+          getent passwd critique-bot
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: critique-bot-${{ matrix.tag }}
-          path: dist/critique-bot-*.zip
+          path: |
+            dist/critique-bot-*.zip
+            dist/critique-bot_*.deb
           if-no-files-found: error
 
   wheel:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build wheel
+        env:
+          # The isolated build env (setuptools) follows the same pins.
+          PIP_CONSTRAINT: ${{ github.workspace }}/constraints.txt
         run: |
-          python -m pip install build
+          python -m pip install -c constraints.txt build
           python -m build --sdist --wheel
       - name: Upload wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: critique-bot-python
           path: dist/*
@@ -62,12 +94,31 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [bundle, wheel]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write      # signs the build provenance (Sigstore, keyless)
+      attestations: write  # stores it with the repository
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+      - name: Checksums
+        run: |
+          cd artifacts
+          find . -type f ! -name SHA256SUMS.txt -exec sha256sum {} + | sed 's|  \./[^/]*/|  |' | sort -k2 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Build provenance
+        # Lets anyone check a download came from this workflow:
+        #   gh attestation verify critique-bot-<version>-linux-x64.zip --repo <owner>/critique-bot
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            artifacts/**/*.zip
+            artifacts/**/*.deb
+            artifacts/**/*.whl
+            artifacts/**/*.tar.gz
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/**/*
           generate_release_notes: true

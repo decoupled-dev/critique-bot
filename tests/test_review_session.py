@@ -204,6 +204,17 @@ class RunReviewSessionTests(unittest.TestCase):
         self.assertEqual(out, "review body")
         self.assertEqual(session.prompts, ["ONE SHOT"])
 
+    def test_file_cut_by_the_cap_does_not_leak_its_key(self) -> None:
+        session = FakeSession(["READY", "ACK k.pem", "FINAL REVIEW"])
+        limits = InputLimits(max_prompt_chars=1_500)
+        line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n"  # gitleaks:allow
+        key = "-----BEGIN RSA PRIVATE KEY-----\n" + line * 60 + "-----END RSA PRIVATE KEY-----\n"  # gitleaks:allow
+        files = {"k.pem": "x = 1\n" * 100 + key}
+        run_review_session(session, "INSTRUCTIONS\nREADY please", files, limits, patch="+hi\n")
+        self.assertTrue(any("k.pem" in prompt for prompt in session.prompts))
+        for prompt in session.prompts:
+            self.assertNotIn("MIIEvQ", prompt)
+
     def test_split_sends_instructions_then_files_then_patch(self) -> None:
         session = FakeSession(
             ["READY", "ACK a.java", "ACK b.java", "FINAL REVIEW"]

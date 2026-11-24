@@ -105,9 +105,15 @@ class UnfilteredByDefaultTests(unittest.TestCase):
 
         from critique_bot.config import ConfigError, load_config
 
-        base = {"url": "https://chat.corp.example/", "selectors": {"prompt_input": "#p", "assistant_messages": ".a"}}
+        from critique_bot import egress
+
+        self.addCleanup(setattr, egress, "_policy", egress.policy())
+        strict = {"url": "https://chat.corp.example/", "selectors": {"prompt_input": "#p", "assistant_messages": ".a"}}
+        base = {**strict, "egress": "open"}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(strict), encoding="utf-8")
+            self.assertTrue(load_config(path).filter_chat_page)  # strict egress (the default) always filters
             path.write_text(json.dumps(base), encoding="utf-8")
             self.assertFalse(load_config(path).filter_chat_page)
             path.write_text(json.dumps({**base, "filter_chat_page": True}), encoding="utf-8")
@@ -181,7 +187,11 @@ class ChatNetworkGuardTests(unittest.TestCase):
             self.assertTrue(request_is_allowed(url, self.CHAT), url)
 
     def test_custom_chat_host_does_not_get_openai_family(self) -> None:
+        from critique_bot import egress
+
         chat = "https://chat.corp.example/"
+        self.addCleanup(setattr, egress, "_policy", egress.policy())
+        egress.configure("open", chat)  # the chat's whole site is allowed only with "egress": "open"
         self.assertTrue(request_is_allowed("https://chat.corp.example/api", chat))
         self.assertTrue(request_is_allowed("https://cdn.chat.corp.example/app.js", chat))
         self.assertFalse(request_is_allowed("https://chatgpt.com/", chat))

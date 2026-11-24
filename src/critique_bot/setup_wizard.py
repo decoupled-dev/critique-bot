@@ -2,13 +2,17 @@
 
 ``crit`` asks these when it has no config.json yet (and ``crit configure`` asks them again):
 
-- **Cloud**: the company's chat page in a browser. Asks for the chat URL, writes a config
-  with starter selectors, and offers to open ``critique-bot setup`` to pick the page's
-  real elements by clicking them.
+- **Cloud**: a chat page in a browser. ChatGPT is a preset (address, page elements, and
+  the few sites its page needs); a company chat asks for its https address, writes starter
+  selectors, and then ``crit setup`` opens so the person points at the page's real elements.
 - **Local**: an OpenAI-compatible model server (llama.cpp's llama-server, LM Studio, vLLM)
   on this PC or another PC on the network. Asks for the host and port, then lists the
   server's models to pick from. A server on another PC must be allowed explicitly: its host goes into
   ``allowed_hosts`` only after a yes, with a note that plain http is not encrypted.
+
+Either way it then asks for company, customer, or project names to hide (``redact_terms``)
+and says that personal data is hidden too. The answers go to the user config
+(``config.user_config_path()``) unless the command named another file.
 
 The questions read and write through ``ask`` and ``say`` so they can be tested without a
 terminal. Nothing here sends anything anywhere except the model list request to the
@@ -19,30 +23,26 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from critique_bot.config import BotConfig, ConfigError, load_config
+from critique_bot.config import (
+    CHATGPT_PRESET,
+    STARTER_SELECTORS,
+    BotConfig,
+    ConfigError,
+    load_config,
+    redact_term_list,
+    user_config_path,
+    write_config_file,
+)
 
 Ask = Callable[[str], str]
 Say = Callable[[str], None]
 
-#: Starter selectors for a chat page nobody has picked elements on yet. They match the
-#: common shapes; ``critique-bot setup`` replaces them with the page's own.
-STARTER_SELECTORS = {
-    "model_dropdown": "",
-    "model_dropdown_identifier": "",
-    "model_option": "",
-    "prompt_input": "textarea, [contenteditable='true'][role='textbox']",
-    "send_button": "button[type='submit'], button[aria-label='Send' i]",
-    "stop_button": "button[aria-label*='Stop' i]",
-    "assistant_messages": "[data-message-author-role='assistant'], .assistant-message",
-}
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 _HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
 
@@ -56,24 +56,20 @@ class WizardResult:
 
 
 def default_config_path() -> Path:
-    """Where a first-run config goes when no --config was given: the user's own config folder."""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return base / "critique-bot" / "config.json"
+    """Where a first-run config goes when no --config was given: the user config (see config.user_config_path)."""
+    return user_config_path()
 
 
 def run_wizard(
     path: Path,
     *,
-    ask: Ask = input,
-    say: Say = print,
+    ask: Ask | None = None,
+    say: Say | None = None,
     list_models: Callable[[BotConfig], list[str]] | None = None,
 ) -> WizardResult | None:
     """Ask where the model runs and write ``path``. None when the person stops (Ctrl+C, empty answers)."""
+    ask = ask or input
+    say = say or print
     if list_models is None:
         from critique_bot.model_api import list_models as _list
 
@@ -87,8 +83,18 @@ def run_wizard(
         if choice is None:
             return None
         if choice == "1":
-            return _cloud(path, ask, say)
-        return _local(path, ask, say, list_models)
+            result = _cloud(path, ask, say)
+        else:
+            result = _local(path, ask, say, list_models)
+        if result is not None:
+            try:
+                _ask_redact_terms(path, ask, say)
+            except (KeyboardInterrupt, EOFError):
+                say("")
+                say("No names added; the rest is saved.")
+            say(PII_LINE)
+            say(f"Saved to {path}. Review it any time with: crit config")
+        return result
     except (KeyboardInterrupt, EOFError):
         say("")
         say("Stopped; nothing was written.")
@@ -99,24 +105,39 @@ def run_wizard(
 
 
 def _cloud(path: Path, ask: Ask, say: Say) -> WizardResult | None:
+    say("")
+    say("Which chat?")
+    say("  1) ChatGPT (chatgpt.com)")
+    say("  2) Your company's chat (you type its address)")
+    choice = _choose(ask, say, "Choose 1 or 2", ("1", "2"))
+    if choice is None:
+        return None
+    if choice == "1":
+        data = json.loads(json.dumps(CHATGPT_PRESET))
+        _write(path, data)
+        say("crit will contact chatgpt.com, plus only the few sites the ChatGPT page needs to load: "
+            + ", ".join(data["allowed_hosts"]) + ".")
+        return WizardResult(path, "browser", needs_selectors=False)
     while True:
-        url = ask("Chat URL (for example https://chat.company.com/): ").strip()
+        url = ask("Chat address (for example https://chat.company.com/): ").strip()
         if not url:
             return None
         problem = _chat_url_problem(url)
         if problem is None:
             break
         say(f"  {problem}")
+    host = (urlsplit(url).hostname or "").lower()
     data = {
         "backend": "browser",
         "url": url,
+        "egress": "strict",
         "selectors": dict(STARTER_SELECTORS),
         "timeout_ms": 180000,
         "idle_ms": 6000,
     }
     _write(path, data)
-    say(f"Saved {path}.")
-    say("Prompts go only to that chat site: crit refuses to type into a page on any other site.")
+    say(f"crit will contact only {host}: it is the only site crit sends anything to, and it refuses "
+        "to type into a page on any other site.")
     return WizardResult(path, "browser", needs_selectors=True)
 
 
@@ -170,7 +191,6 @@ def _local(
         model = ask("Model name as the server knows it (empty: the first one it lists): ").strip()
     data["model"] = model
     _write(path, data)
-    say(f"Saved {path}.")
     return WizardResult(path, "local")
 
 
@@ -241,6 +261,40 @@ def _pick_model(
         return names[int(picked) - 1] if picked else None
 
 
+# --------------------------------------------------------------------------- names to hide
+
+PII_LINE = (
+    "Personal data (email addresses, phone numbers, card and account numbers, national IDs) "
+    "is hidden from the chat too; it is on by default."
+)
+
+TERMS_PROMPT = "Company, customer, or project names to hide from the chat (comma-separated, Enter for none): "
+
+
+def split_terms(text: str) -> list[str]:
+    """``"Acme Corp, Globex"`` as ``["Acme Corp", "Globex"]`` (blank entries dropped)."""
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _ask_redact_terms(path: Path, ask: Ask, say: Say) -> None:
+    """Ask for names to replace with [REDACTED:name] and add them to ``redact_terms`` in ``path``."""
+    while True:
+        answer = ask(TERMS_PROMPT).strip()
+        if not answer:
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        existing = data.get("redact_terms") if isinstance(data.get("redact_terms"), list) else []
+        try:
+            terms = redact_term_list(list(existing) + split_terms(answer))
+        except ConfigError as exc:
+            say(f"  {exc}")
+            continue
+        data["redact_terms"] = list(terms)
+        _write(path, data)
+        say(f"These names are sent as [REDACTED:name]: {', '.join(terms)}")
+        return
+
+
 # --------------------------------------------------------------------------- helpers
 
 
@@ -264,9 +318,4 @@ def _yes_no(ask: Ask, prompt: str, *, default: bool) -> bool:
 
 def _write(path: Path, data: dict[str, Any]) -> None:
     """Write the config readable by its owner only (it names hosts and, later, selectors)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    if os.name != "nt":
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    write_config_file(path, data)

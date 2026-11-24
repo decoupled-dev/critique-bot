@@ -124,3 +124,129 @@ class BotHomeHardeningTests(unittest.TestCase):
             self.assertEqual(stored["permissions"], "auto")
             leftovers = [p.name for p in home.bot_dir.iterdir() if p.name.endswith(".tmp")]
             self.assertEqual(leftovers, [])
+
+
+class GitTracksTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import shutil
+        import subprocess
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.git = shutil.which("git")
+        self.subprocess = subprocess
+
+    def _repo(self) -> Path:
+        if self.git is None:
+            self.skipTest("git is not installed")
+        repo = self.root / "repo"
+        (repo / "sub").mkdir(parents=True)
+        self.subprocess.run([self.git, "init", "-q", str(repo)], check=True)
+        (repo / "sub" / "config.json").write_text("{}", encoding="utf-8")
+        (repo / "sub" / "mine.json").write_text("{}", encoding="utf-8")
+        self.subprocess.run([self.git, "-C", str(repo), "add", "sub/config.json"], check=True)
+        return repo
+
+    def test_subfolder_of_a_repository_is_checked(self) -> None:
+        from critique_bot.bot_home import git_tracks
+
+        repo = self._repo()
+        workspace = repo / "sub"
+        self.assertTrue(git_tracks(workspace, workspace / "config.json"))
+        self.assertFalse(git_tracks(workspace, workspace / "mine.json"))
+
+    def test_outside_any_repository_is_untracked(self) -> None:
+        from unittest.mock import patch
+
+        from critique_bot.bot_home import git_tracks
+
+        if self.git is None:
+            self.skipTest("git is not installed")
+        (self.root / "c.json").write_text("{}", encoding="utf-8")
+        with patch.dict("os.environ", {"GIT_CEILING_DIRECTORIES": str(self.root.parent)}):
+            self.assertFalse(git_tracks(self.root, self.root / "c.json"))
+
+    def test_fails_closed_without_git_or_on_timeout(self) -> None:
+        from unittest.mock import patch
+
+        from critique_bot import bot_home
+
+        target = self.root / "c.json"
+        with patch.object(bot_home.shutil, "which", return_value=None):
+            self.assertTrue(bot_home.git_tracks(self.root, target))
+        with patch.object(bot_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
+            bot_home.subprocess, "run", side_effect=self.subprocess.TimeoutExpired("git", 10)
+        ):
+            self.assertTrue(bot_home.git_tracks(self.root, target))
+        failed = self.subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership")
+        with patch.object(bot_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
+            bot_home.subprocess, "run", return_value=failed
+        ):
+            self.assertTrue(bot_home.git_tracks(self.root, target))
+
+
+class PrivateBotDirTests(unittest.TestCase):
+    @unittest.skipIf(__import__("os").name == "nt", "POSIX permissions")
+    def test_existing_folders_are_narrowed_when_found(self) -> None:
+        import os
+
+        from critique_bot.bot_home import ensure_private_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bot = root / ".bot"
+            for folder in (bot, bot / "sessions", bot / "cache"):
+                folder.mkdir(parents=True, exist_ok=True)
+                os.chmod(folder, 0o755)
+            (bot / "settings.json").write_text("{}", encoding="utf-8")
+            find_bot_home(root)
+            for folder in (bot, bot / "sessions", bot / "cache"):
+                self.assertEqual(folder.stat().st_mode & 0o777, 0o700, folder)
+            undo = ensure_private_dir(bot / "cache" / "undo" / "x")
+            self.assertEqual(undo.stat().st_mode & 0o777, 0o700)
+
+    def test_windows_grants_before_dropping_inheritance(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        from critique_bot import output
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kw):
+            calls.append(list(argv))
+            if "/user" in argv:
+                return subprocess.CompletedProcess(argv, 0, '"corp\\me","S-1-5-21-1"\n', "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output._WINDOWS_DONE.clear()
+            with patch.object(output.shutil, "which", side_effect=lambda n: n), patch.object(
+                output.subprocess, "run", side_effect=fake_run
+            ):
+                output._restrict_windows(Path(tmp))
+        icacls = [c for c in calls if c[0] == "icacls"]
+        self.assertEqual(icacls[0][2:], ["/grant:r", "*S-1-5-21-1:(OI)(CI)F"])
+        self.assertEqual(icacls[1][2:], ["/inheritance:r"])
+
+    def test_windows_failed_grant_keeps_inheritance(self) -> None:
+        import subprocess
+        from unittest.mock import patch
+
+        from critique_bot import output
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kw):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 5, "", "denied")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output._WINDOWS_DONE.clear()
+            with patch.object(output.shutil, "which", side_effect=lambda n: n), patch.object(
+                output.subprocess, "run", side_effect=fake_run
+            ):
+                output._restrict_windows(Path(tmp))
+        self.assertFalse(any("/inheritance:r" in c for c in calls))
+

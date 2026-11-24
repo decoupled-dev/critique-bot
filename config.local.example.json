@@ -1,6 +1,8 @@
 {
   "backend": "local",
   "url": "http://127.0.0.1:8080",
+  "egress": "strict",
+  "allowed_hosts": [],
   "model": "qwen2.5-coder-14b",
   "local": {
     "num_ctx": 32768,
@@ -15,5 +17,7 @@
   "queue_dir": ".critique-queue",
   "min_interval_seconds": 0,
   "interval_jitter_seconds": 0,
-  "max_parallel_tabs": 1
+  "max_parallel_tabs": 1,
+  "redact_terms": [],
+  "redact_pii": true
 }

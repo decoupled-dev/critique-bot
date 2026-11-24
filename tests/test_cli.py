@@ -532,7 +532,7 @@ class MainDispatchTests(unittest.TestCase):
         with redirect_stderr(err):
             code = main(["--config", str(self.folder / "missing.json"), "--mode", "general", "--prompt", "x"])
         self.assertEqual(code, 1)
-        self.assertIn("error:", err.getvalue())
+        self.assertIn("Setup problem:", err.getvalue())
 
     def test_gitlab_post_missing_review(self) -> None:
         err = io.StringIO()
@@ -557,7 +557,7 @@ class MainDispatchTests(unittest.TestCase):
         with redirect_stderr(err):
             code = main(["worker", "--config", str(self.folder / "nope.json")])
         self.assertEqual(code, 1)
-        self.assertIn("error:", err.getvalue())
+        self.assertIn("Setup problem:", err.getvalue())
 
     def test_general_mode_without_prompt_fails(self) -> None:
         err = io.StringIO()
@@ -565,6 +565,13 @@ class MainDispatchTests(unittest.TestCase):
             code = main(["--config", str(self.config), "--mode", "general"])
         self.assertEqual(code, 1)
         self.assertIn("--prompt", err.getvalue())
+
+
+def tearDownModule() -> None:
+    """load_config sets the process-wide egress policy; leave none behind for the next module."""
+    from critique_bot import egress
+
+    egress._policy = egress.Policy()
 
 
 if __name__ == "__main__":

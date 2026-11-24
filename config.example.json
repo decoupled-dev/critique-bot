@@ -1,6 +1,8 @@
 {
   "backend": "browser",
   "url": "https://YOUR_CHAT_UI/",
+  "egress": "strict",
+  "allowed_hosts": [],
   "selectors": {
     "model_dropdown": "",
     "model_dropdown_identifier": "",
@@ -27,6 +29,8 @@
   "interval_jitter_seconds": 5,
   "turn_pause_seconds": 0,
   "max_parallel_tabs": 1,
+  "redact_terms": [],
+  "redact_pii": true,
   "gitlab": {
     "base_url": "https://gitlab.example.com"
   }

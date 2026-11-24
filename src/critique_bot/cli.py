@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import log
+from critique_bot import config_prompts, log, privacy
 from critique_bot.config import (
     BotConfig,
     ConfigError,
@@ -413,7 +413,24 @@ def _load_gitlab_mr_context(config, *, need_patch: bool):
     from critique_bot.gitlab import GitLabError, fetch_mr_context, resolve_target
 
     gitlab_cfg = getattr(config, "gitlab", None) if config is not None else None
-    target = resolve_target(gitlab_cfg)
+    configured = (
+        getattr(gitlab_cfg, "base_url", "")
+        or os.environ.get("CRITIQUE_GITLAB_URL")
+        or os.environ.get("CI_API_V4_URL")
+        or os.environ.get("CI_SERVER_URL")
+    )
+    if not configured and os.environ.get("CI_MERGE_REQUEST_URL"):
+        # A merge request is named but crit does not know the GitLab instance yet: ask (terminal only).
+        asked = config_prompts.ensure_gitlab_url("")
+        if asked:
+            from critique_bot.config import GitLabConfig
+
+            gitlab_cfg = GitLabConfig(base_url=asked)
+    try:
+        target = resolve_target(gitlab_cfg)
+    except GitLabError as exc:
+        log.warn(f"could not load GitLab MR context: {exc}")
+        return None
     if not target.api_url or not target.project_id or not target.mr_iid:
         return None
     if not target.token:
@@ -517,6 +534,7 @@ def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]
     def send(payload: str) -> None:
         reply = session.send(payload)
         _print_assistant(reply)
+        config_prompts.offer_blocked_hosts()
         if not reply.strip():
             log.warn("assistant returned an empty reply")
         turns.append({"role": "user", "content": payload})
@@ -540,7 +558,7 @@ def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]
             try:
                 payload = _chat_file_turn(message, config.input_limits)
             except ConfigError as exc:
-                print(f"error: {exc}", file=sys.stderr)
+                log.notice(f"Problem: {exc}")
                 continue
         else:
             payload = cap_text(message, config.max_prompt_chars, what="chat message")
@@ -557,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "One command for everything critique-bot does. The first word picks the mode; "
             "with no mode word crit runs the local coding agent. The model is a web chat "
-            "in Edge or a model on this PC (backend in config.json). critique-bot is the "
+            "in Edge or a model on this PC (see crit config). critique-bot is the "
             "same command, except that with no mode word it reviews a patch."
         ),
         epilog=(
@@ -568,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit chat               interactive conversation in this terminal\n"
             "\n"
             "service commands:\n"
+            "  crit config             see or change the settings (crit config --help)\n"
             "  crit setup              web UI to pick the chat page's selectors by clicking\n"
             "  crit worker             queue worker on the runner PC (owns the signed-in Edge)\n"
             "  crit submit             enqueue a review for the worker and wait for it\n"
@@ -581,8 +600,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit --plan TASK        plan first, approve, then build\n"
             "  crit --acp              Agent Client Protocol agent for JetBrains IDEs and Zed\n"
             "\n"
-            "review, ask, and chat use the config.json crit stored for this project\n"
-            "when --config is not given. Quote a task that starts with a mode word:\n"
+            "Settings come from --config, CRITIQUE_CONFIG, the project's own config, or your\n"
+            "user settings (crit config --path); the first run asks for them.\n"
+            "Quote a task that starts with a mode word:\n"
             "  crit \"review the auth code\"\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -590,8 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         help=(
-            "path to JSON config (see config.example.json). "
-            "Required unless crit has stored one for this project"
+            "settings file to use instead of the default (crit config shows which one that is; "
+            "the first run creates it)"
         ),
     )
     parser.add_argument(
@@ -852,7 +872,7 @@ def _copy_job_results(src: Path, dest: Path, stem: str) -> None:
 
 def _config_error(exc: BaseException) -> int:
     log.error(f"config error: {exc}")
-    print(f"error: {exc}", file=sys.stderr)
+    log.notice(f"Setup problem: {exc}")
     return 1
 
 
@@ -865,7 +885,7 @@ def build_worker_parser() -> argparse.ArgumentParser:
             "should call `critique-bot submit`, not this command."
         ),
     )
-    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument("--config", help="settings file (default: the one crit config shows)")
     parser.add_argument(
         "--headed",
         action="store_true",
@@ -896,6 +916,7 @@ def _add_submit_args(parser: argparse.ArgumentParser) -> None:
 
 
 SUBCOMMANDS = {
+    "config": "see or change crit's settings (crit config --help)",
     "worker": "run the long-lived queue worker on the runner PC",
     "submit": "enqueue a review and wait for the worker to finish it",
     "setup": "open a local web UI to configure selectors by clicking them",
@@ -916,6 +937,125 @@ MODE_WORDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run crit. Any failure ends in a plain sentence, never a traceback (those need --logs)."""
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        log.notice("Stopped.")
+        return 130
+    except PermissionError as exc:
+        log.exception(f"refused: {exc}")
+        log.notice(f"Blocked: {exc}")
+        return 1
+    except Exception as exc:  # the last line of defense: a readable message, details only with --logs
+        log.exception(f"unexpected error: {exc}")
+        detail = " ".join(str(exc).split())[:300] or type(exc).__name__
+        log.notice(f"crit stopped: {detail}. Run the command again with --logs for details.")
+        return 1
+    finally:
+        config_prompts.disable()
+
+
+def _main_config(argv: list[str]) -> int:
+    """``crit config``: show or change the settings (see config_cmd)."""
+    from critique_bot.config_cmd import main as config_main
+
+    return config_main(argv)
+
+
+def _may_ask(args: argparse.Namespace | None = None) -> bool:
+    """True when crit may ask questions: a terminal on both ends, not CI, not an ACP client."""
+    from critique_bot.welcome import stdio_is_tty
+
+    if args is not None and getattr(args, "acp", False):
+        return False
+    if os.environ.get("CI"):
+        return False
+    return stdio_is_tty()
+
+
+def _find_config(explicit: str | None, repo_dir: str | Path = ".", *, ask: bool = True) -> Path | int:
+    """The config file to use: found (see config_cmd.resolve_config_path), or set up now.
+
+    No config anywhere: in a terminal the first-run questions write the user config and
+    the command goes on; otherwise a sentence says which ``crit config`` command sets it up.
+    An exit code when the command cannot go on.
+    """
+    from critique_bot.config_cmd import NOT_SET_UP, resolve_config_path
+
+    try:
+        location = resolve_config_path(explicit, repo_dir)
+    except ConfigError as exc:
+        return _config_error(exc)
+    if location.exists:
+        return location.path
+    if not (ask and _may_ask()):
+        if location.source in ("flag", "env"):
+            return _config_error(ConfigError(f"config file not found: {location.path}"))
+        log.error("no config file found")
+        log.notice(NOT_SET_UP)
+        return 1
+    return _first_run_wizard(location.path)
+
+
+def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
+    """Ask the setup questions and write ``target``. The config path to go on with, or an exit code."""
+    from critique_bot.setup_wizard import run_wizard
+
+    if reconfigure and target.is_file():
+        answer = input(f"Replace {target}? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Kept the current settings.")
+            return 0
+    if not reconfigure:
+        print("crit is not set up yet. A few questions, then it carries on.")
+    result = run_wizard(target)
+    if result is None:
+        return 1
+    if result.needs_selectors:
+        print("crit will open the chat so you can point at the message box, the send button, and the replies.")
+        print("When the live test passes, close the setup page with Ctrl+C here.")
+        code = _main_setup(["--config", str(result.path)])
+        if code != 0:
+            return code
+        print("Done. Run your command again to start.")
+        return 0
+    return result.path
+
+
+def _agent_confirm(question: str) -> bool:
+    """A yes/no question in the agent's terminal UI (default No)."""
+    from critique_bot import agent
+
+    asker = getattr(agent.agent_ui, "ask_question", None)
+    if not callable(asker):
+        return False
+    answer = asker(question, ["No", "Yes, allow it"])
+    return str(answer or "").strip().lower().startswith("y")
+
+
+def _blocked_hosts() -> list[str]:
+    """Sites the chat page was blocked from (only when the browser was used in this process)."""
+    browser = sys.modules.get("critique_bot.browser")
+    drain = getattr(browser, "drain_blocked_hosts", None)
+    return list(drain()) if callable(drain) else []
+
+
+def _enable_prompts(args: argparse.Namespace, config_path: str | Path, *, agent_ui: bool = False) -> None:
+    """Ask for settings as they are needed (blocked sites, GitLab address), in a terminal only."""
+    if not _may_ask(args):
+        return
+    config_prompts.enable(
+        config_path,
+        confirm=_agent_confirm if agent_ui else None,
+        drain=_blocked_hosts,
+    )
+
+
+def _main(argv: list[str] | None = None) -> int:
+    # Before anything starts: telemetry and update checks off for crit, Playwright,
+    # the browser, and every program crit runs (see privacy.py).
+    privacy.apply_to_process()
     log.configure_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in MODE_WORDS:
@@ -926,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
         command = argv[0]
         rest = argv[1:]
         handlers = {
+            "config": _main_config,
             "worker": _main_worker,
             "submit": _main_submit,
             "setup": _main_setup,
@@ -940,9 +1081,12 @@ def _main_worker(argv: list[str]) -> int:
     parser = build_worker_parser()
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
+    found = _find_config(args.config, ask=False)
+    if isinstance(found, int):
+        return found
     try:
         config = load_config(
-            args.config,
+            found,
             model_override=args.model,
             cdp_url_override=args.cdp_url,
         )
@@ -984,6 +1128,10 @@ def _main_submit(argv: list[str]) -> int:
         )
     if args.headed:
         log.warn("--headed is ignored on submit; the worker owns the browser")
+    found = _find_config(args.config, args.repo_dir, ask=False)
+    if isinstance(found, int):
+        return found
+    args.config = str(found)
     stem = OUTPUT_STEM[mode]
     log.info(
         "critique-bot submit "
@@ -1020,7 +1168,7 @@ def _main_submit(argv: list[str]) -> int:
             f"critique-bot worker --config {args.config} --logs"
         )
         log.error(message)
-        print(f"error: {message}", file=sys.stderr)
+        log.notice(f"Problem: {message}")
         return 1
     try:
         meta = _ci_meta()
@@ -1038,7 +1186,7 @@ def _main_submit(argv: list[str]) -> int:
         status = queue.wait(job_id, timeout_sec=max(args.wait_timeout, 1))
     except QueueError as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1
 
     result_dir = queue.result_dir(job_id)
@@ -1047,7 +1195,7 @@ def _main_submit(argv: list[str]) -> int:
     if not status.ok:
         message = status.error or "worker reported failure"
         log.error(f"job {job_id} failed: {message}")
-        print(f"error: {message}", file=sys.stderr)
+        log.notice(f"Problem: {message}")
         return 1
     if body_path.is_file():
         log.print_safe(log.paint(body_path.read_text(encoding="utf-8"), log.MODEL_COLOR), flush=True)
@@ -1070,7 +1218,7 @@ def _main_setup(argv: list[str]) -> int:
             "Writes the result to your config file."
         ),
     )
-    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument("--config", help="settings file (default: the one crit config shows)")
     parser.add_argument(
         "--port",
         type=int,
@@ -1091,7 +1239,14 @@ def _main_setup(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
-    return run_setup(Path(args.config), port=args.port, open_page=bool(args.open))
+    if args.config:
+        target = Path(args.config)
+    else:
+        found = _find_config(None)
+        if isinstance(found, int):
+            return found
+        target = found
+    return run_setup(target, port=args.port, open_page=bool(args.open))
 
 
 def _main_queue_status(argv: list[str]) -> int:
@@ -1104,7 +1259,7 @@ def _main_queue_status(argv: list[str]) -> int:
             "and how recent jobs ended."
         ),
     )
-    parser.add_argument("--config", required=True, help="path to JSON config")
+    parser.add_argument("--config", help="settings file (default: the one crit config shows)")
     parser.add_argument(
         "--recent",
         type=int,
@@ -1121,8 +1276,12 @@ def _main_queue_status(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
+    found = _find_config(args.config, ask=False)
+    if isinstance(found, int):
+        return found
+    args.config = str(found)
     try:
-        config = load_config(args.config)
+        config = load_config(found)
     except ConfigError as exc:
         return _config_error(exc)
 
@@ -1190,7 +1349,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--config",
-        help="config.json with gitlab.base_url (or CRITIQUE_CONFIG)",
+        help="settings file with gitlab.base_url (default: the one crit config shows)",
     )
     parser.add_argument("--project-id", help="GitLab project ID or path")
     parser.add_argument("--mr-iid", help="merge request IID")
@@ -1211,12 +1370,33 @@ def _main_gitlab_post(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     log.configure(enabled=bool(args.logs))
     gitlab_cfg = None
-    config_path = args.config or os.environ.get("CRITIQUE_CONFIG") or ""
-    if config_path:
+    from critique_bot.config_cmd import resolve_config_path
+
+    try:
+        location = resolve_config_path(args.config, ".")
+    except ConfigError as exc:
+        return _config_error(exc)
+    if location.source in ("flag", "env") and not location.exists:
+        return _config_error(ConfigError(f"config file not found: {location.path}"))
+    if location.exists:
         try:
-            gitlab_cfg = load_config(config_path).gitlab
+            gitlab_cfg = load_config(location.path).gitlab
         except ConfigError as exc:
             return _config_error(exc)
+        configured = (
+            args.api_url
+            or os.environ.get("CI_API_V4_URL")
+            or os.environ.get("CRITIQUE_GITLAB_URL")
+            or os.environ.get("CI_SERVER_URL")
+            or gitlab_cfg.base_url
+        )
+        if not configured:
+            _enable_prompts(args, location.path)
+            asked = config_prompts.ensure_gitlab_url("")
+            if asked:
+                from critique_bot.config import GitLabConfig
+
+                gitlab_cfg = GitLabConfig(base_url=asked)
     try:
         return post_review(
             review_file=Path(args.review_file),
@@ -1229,7 +1409,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
         )
     except GitLabPostError as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Could not post the review to GitLab: {exc}")
         return 1
 
 
@@ -1255,16 +1435,14 @@ def _main_agent(args: argparse.Namespace) -> int:
             init_bot_home(workspace)
         except BotHomeError as exc:
             return _config_error(ConfigError(str(exc)))
-        home = find_bot_home(workspace)
+        from critique_bot.config_cmd import NOT_SET_UP, resolve_config_path
+
         try:
-            config_path = Path(args.config) if args.config else (home.config_file() if home else None)
-        except BotHomeError as exc:
-            return _config_error(ConfigError(str(exc)))
-        if config_path is None or not config_path.is_file():
-            print(
-                "Initialized. Add config.json, then run crit.",
-                file=sys.stderr,
-            )
+            config_ready = resolve_config_path(args.config, workspace).exists
+        except ConfigError as exc:
+            return _config_error(exc)
+        if not config_ready:
+            print(f"Initialized. {NOT_SET_UP}", file=sys.stderr)
         return 0
     if words and words[0] == "init":
         return _config_error(ConfigError("init does not take extra arguments"))
@@ -1315,32 +1493,32 @@ def _main_agent(args: argparse.Namespace) -> int:
     if reconfigure:
         words = []
     has_task = bool(args.prompt or args.prompt_file or words or args.files)
+    from critique_bot.config_cmd import NOT_SET_UP, resolve_config_path
+
     try:
-        config_path = Path(args.config) if args.config else home.config_file()
-    except BotHomeError as exc:
-        return _config_error(ConfigError(str(exc)))
-    missing_config = config_path is None or not config_path.is_file()
-    if (missing_config or reconfigure) and stdio_is_tty():
-        outcome = _first_run_config(args, home, config_path, reconfigure=reconfigure)
+        location = resolve_config_path(args.config, workspace)
+    except ConfigError as exc:
+        return _config_error(exc)
+    config_path = location.path
+    missing_config = not location.exists
+    if (missing_config or reconfigure) and _may_ask(args):
+        outcome = _first_run_wizard(config_path, reconfigure=reconfigure)
         if isinstance(outcome, int):
             return outcome
         config_path, missing_config = outcome, False
         if reconfigure and not has_task:
             return 0
     if reconfigure and missing_config:
-        return _config_error(ConfigError("crit configure needs a terminal to ask its questions"))
+        return _config_error(ConfigError("crit configure needs a terminal to ask its questions; use crit config instead"))
     if missing_config:
+        if location.source in ("flag", "env"):
+            return _config_error(ConfigError(f"config file not found: {config_path}"))
         if not has_task and (just_created or welcome):
-            print(
-                "Initialized. Add config.json, then run crit.",
-                file=sys.stderr,
-            )
+            print(f"Initialized. {NOT_SET_UP}", file=sys.stderr)
             return 0
-        return _config_error(
-            ConfigError(
-                "no config.json. Place config.json in the repo, or pass --config"
-            )
-        )
+        log.error("no config file found")
+        log.notice(NOT_SET_UP)
+        return 1
     try:
         config = load_config(
             config_path,
@@ -1350,6 +1528,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         _log_config(config)
     except ConfigError as exc:
         return _config_error(exc)
+    _enable_prompts(args, config_path, agent_ui=True)
 
     if welcome:
         # A local model has no sign-in: the first run goes straight to the task.
@@ -1382,7 +1561,7 @@ def _main_agent(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else None
     _use_terminal_ui()
     _apply_tool_flags(args, home)
-    return run_agent(
+    code = run_agent(
         config,
         home,
         task,
@@ -1392,6 +1571,8 @@ def _main_agent(args: argparse.Namespace) -> int:
         approve_mode=_agent_mode(args),
         role=role_flag,
     )
+    config_prompts.offer_blocked_hosts()
+    return code
 
 
 class _StderrTail:
@@ -1424,7 +1605,7 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
     try:
         os.chdir(cwd)
     except OSError as exc:
-        print(f"error: cannot open {cwd}: {exc}", file=sys.stderr)
+        log.notice(f"Problem: cannot open {cwd}: {exc}")
     agent.use_ui(agent_acp)
     code = 1
     try:
@@ -1432,7 +1613,7 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:
-        print(f"error: unexpected failure: {exc}", file=sys.stderr)
+        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
         raise
     finally:
         # Told to a client still waiting on session/new (no config.json, sign-in needed, ...).
@@ -1469,45 +1650,11 @@ def _welcome_login(config: BotConfig) -> bool:
         try:
             login_in_edge(config)
         except BrowserError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            log.notice(f"Problem: {exc}")
             return False
         return True
     print("Already signed in.", file=sys.stderr)
     return True
-
-
-def _first_run_config(args: argparse.Namespace, home, config_path: Path | None, *, reconfigure: bool) -> Path | int:
-    """Ask local or cloud and write the config. The config path to use, or an exit code."""
-    from critique_bot.bot_home import update_settings
-    from critique_bot.setup_wizard import default_config_path, run_wizard
-
-    target = config_path or default_config_path()
-    if reconfigure and target.is_file():
-        answer = input(f"Replace {target}? [y/N] ").strip().lower()
-        if answer not in {"y", "yes"}:
-            print("Kept the current config.")
-            return 0
-    if not reconfigure:
-        print("No config yet. A few questions set up where the model runs.")
-    result = run_wizard(target)
-    if result is None:
-        return 1
-    if not args.config:
-        update_settings(home, config=str(result.path.resolve()))
-    if result.needs_selectors:
-        print(
-            "Next, point crit at the chat page's prompt box, send button, and replies by clicking them."
-        )
-        answer = input("Open the selector setup page now? [Y/n] ").strip().lower()
-        if answer in {"", "y", "yes"}:
-            code = _main_setup(["--config", str(result.path)])
-            if code != 0:
-                return code
-            print("Done. Run crit again to start.")
-        else:
-            print(f"Later: critique-bot setup --config {result.path}")
-        return 0
-    return result.path
 
 
 def _apply_tool_flags(args: argparse.Namespace, home) -> None:
@@ -1548,6 +1695,7 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     try:
         config = load_config(args.config, model_override=args.model, cdp_url_override=args.cdp_url)
         _log_config(config)
+        _enable_prompts(args, args.config, agent_ui=True)
         limits = config.input_limits
         extra_files = list(args.files or []) + list(args.paths or [])
         patch_input, extra_loaded, mr_context = _load_review_inputs(args, extra_files, limits, config)
@@ -1578,13 +1726,14 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
         max_rounds=rounds,
         headed=bool(args.headed),
     )
+    config_prompts.offer_blocked_hosts()
     review = review_agent.review_text(turns)
     if not review:
         message = "the agent review ended without a review; the transcript is in .bot/sessions"
         if code == 0:
             code = 1
         log.error(message)
-        print(f"error: {message}. Try crit review --quick.", file=sys.stderr)
+        log.notice(f"Problem: {message}. Try crit review --quick.")
         return code
     if code != 0:
         log.warn("the review task did not end cleanly; writing the last review it sent")
@@ -1606,21 +1755,6 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     return 0
 
 
-def _stored_config(repo_dir: Path) -> str | None:
-    """The config.json crit stored for this project, so ``crit review`` needs no --config."""
-    from critique_bot.bot_home import BotHomeError, find_bot_home
-
-    home = find_bot_home(repo_dir.resolve())
-    if home is None:
-        return None
-    try:
-        path = home.config_file()
-    except BotHomeError as exc:
-        log.warn(str(exc))
-        return None
-    return str(path) if path is not None and path.is_file() else None
-
-
 def _main_run(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1634,12 +1768,10 @@ def _main_run(argv: list[str]) -> int:
         if getattr(args, "acp", False):
             return _main_agent_acp(args)
         return _main_agent(args)
-    if not args.config:
-        args.config = _stored_config(Path(args.repo_dir))
-    if not args.config:
-        return _config_error(
-            ConfigError("--config is required (or run crit once in this project to store one)")
-        )
+    found = _find_config(args.config, args.repo_dir)
+    if isinstance(found, int):
+        return found
+    args.config = str(found)
     if args.review_engine and mode != MODE_REVIEW:
         return _config_error(ConfigError("--quick and --deep only apply to review mode"))
     if mode == MODE_REVIEW and _review_engine(args) == REVIEW_AGENT:
@@ -1671,6 +1803,7 @@ def _main_run(argv: list[str]) -> int:
             cdp_url_override=args.cdp_url,
         )
         _log_config(config)
+        _enable_prompts(args, args.config)
         payload = _build_prompt_payload(args, mode, config.input_limits, config)
     except EmptyDiff:
         print("empty diff; nothing to review", flush=True)
@@ -1714,13 +1847,15 @@ def _main_run(argv: list[str]) -> int:
                     log.exception("chat flow failed")
                     save_failure(session, output_dir)
                     raise
+        config_prompts.offer_blocked_hosts()
     except (BrowserError, ChatError) as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
+        config_prompts.offer_blocked_hosts()
         return 1
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
-        print(f"error: unexpected failure: {exc}", file=sys.stderr)
+        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
         return 1
 
     finished = datetime.now(timezone.utc)
@@ -1739,7 +1874,7 @@ def _main_run(argv: list[str]) -> int:
         if not response.strip():
             kind = "review" if mode == MODE_REVIEW else "reply"
             log.error(f"assistant returned an empty {kind}")
-            print(f"error: assistant returned an empty {kind}", file=sys.stderr)
+            log.notice(f"Problem: assistant returned an empty {kind}")
             return 1
 
     payload = {

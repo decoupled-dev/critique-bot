@@ -13,6 +13,7 @@ from pathlib import Path
 
 from critique_bot import log
 from critique_bot.code_index import IndexStats, rebuild_index
+from critique_bot.output import private_dir, restrict_dir
 
 BOT_DIR_NAME = ".bot"
 SETTINGS_NAME = "settings.json"
@@ -89,7 +90,8 @@ class BotHome:
             path = self.root / path
         if git_tracks(self.root, path):
             raise BotHomeError(
-                f"{path} is committed in this repository, so crit does not use it: a config that comes "
+                f"{path} is committed in this repository (or git could not confirm it is not; see the "
+                "warning above), so crit does not use it: a config that comes "
                 "with the code could send your files to another chat. Keep config.json out of git "
                 "(git rm --cached it and add it to .gitignore), or pass --config with your own copy."
             )
@@ -186,10 +188,12 @@ def _load(root: Path, settings_path: Path) -> BotHome:
     if not isinstance(raw, dict):
         raise BotHomeError(f"{settings_path} must be a JSON object")
     bot_dir = settings_path.parent
+    _restrict_existing(bot_dir)
     ignored = sorted(key for key in raw if key in SECURITY_KEYS)
     if ignored and git_tracks(root, settings_path):
         log.warn(
-            f"{settings_path} is committed in this repository; ignoring {', '.join(ignored)} from it. "
+            f"{settings_path} is committed in this repository (or git could not confirm it is not); "
+            f"ignoring {', '.join(ignored)} from it. "
             "Settings that loosen permissions count only in your own, untracked settings file."
         )
         raw = {key: value for key, value in raw.items() if key not in SECURITY_KEYS}
@@ -205,27 +209,62 @@ def _load(root: Path, settings_path: Path) -> BotHome:
 
 
 def git_tracks(root: Path, path: Path) -> bool:
-    """True when git tracks ``path`` in the repository at ``root`` (False outside one, or without git)."""
-    try:
-        relative = Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(root)))
-    except ValueError:
-        return False
-    if not (Path(root) / ".git").exists():
-        return False
+    """True when git tracks ``path``, or when git cannot say for sure.
+
+    This guards settings and configs that a cloned repository could ship, so it
+    fails closed: no git, a timeout, or a git error all count as tracked. Only a
+    clear answer gives False: ``path`` is not inside any git work tree, or git
+    lists it as untracked. The repository is found from ``path`` itself, so a
+    workspace that is a subfolder of a repository (or a path outside ``root``)
+    is still checked against the right repository.
+    """
+    del root  # the repository is the one that holds ``path``
+    target = Path(os.path.abspath(path))
+    probe = target.parent
+    while not probe.is_dir() and probe != probe.parent:
+        probe = probe.parent
     exe = shutil.which("git")
     if exe is None:
-        log.warn(f"git is not installed; cannot tell whether {relative} is committed in {root}")
-        return False
+        log.warn(f"git is not installed; cannot confirm {target} is not committed, so treating it as committed")
+        return True
+    try:
+        top = subprocess.run(
+            [exe, "-C", str(probe), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warn(f"git failed ({exc}); cannot confirm {target} is not committed, so treating it as committed")
+        return True
+    if top.returncode != 0:
+        if "not a git repository" in (top.stderr or "").lower():
+            return False
+        log.warn(
+            f"git rev-parse failed in {probe}: {(top.stderr or '').strip()}; "
+            f"treating {target} as committed"
+        )
+        return True
+    toplevel = Path(top.stdout.strip())
+    try:
+        # The link itself (not where it points) is what git would track.
+        real = Path(os.path.realpath(target.parent)) / target.name
+        relative = real.relative_to(Path(os.path.realpath(toplevel)))
+    except ValueError:
+        log.warn(f"{target} is outside the git work tree {toplevel}; treating it as committed")
+        return True
     try:
         proc = subprocess.run(
-            [exe, "-C", str(root), "ls-files", "--error-unmatch", "--", relative.as_posix()],
-            capture_output=True,
-            check=False,
-            timeout=10,
+            [exe, "-C", str(toplevel), "ls-files", "--error-unmatch", "--", relative.as_posix()],
+            capture_output=True, text=True, check=False, timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warn(f"git ls-files failed ({exc}); treating {target} as committed")
+        return True
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
         return False
-    return proc.returncode == 0
+    log.warn(f"git ls-files failed: {(proc.stderr or '').strip()}; treating {target} as committed")
+    return True
 
 
 def update_settings(home: BotHome, **values: object) -> None:
@@ -277,14 +316,25 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def ensure_private_dir(path: Path) -> Path:
+    """Create ``path`` if needed and make it owner-only; return it.
+
+    Call this every time a folder under ``.bot`` that holds code or transcripts
+    (sessions, cache, undo copies) is created or written to. POSIX: 0700.
+    Windows: icacls, best effort (a warning is logged on failure).
+    """
+    return private_dir(path)
+
+
 def _private_dir(path: Path) -> None:
-    """Create ``path``; on POSIX only the owner can read it (transcripts, undo copies)."""
-    path.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        try:
-            os.chmod(path, 0o700)
-        except OSError as exc:
-            log.warn(f"could not restrict {path}: {exc}")
+    ensure_private_dir(path)
+
+
+def _restrict_existing(bot_dir: Path) -> None:
+    """Narrow ``.bot``, ``.bot/sessions``, ``.bot/cache`` (and undo) when they already exist."""
+    for folder in (bot_dir, bot_dir / "sessions", bot_dir / "cache", bot_dir / "cache" / "undo"):
+        if folder.is_dir() and not folder.is_symlink():
+            restrict_dir(folder)
 
 
 def _append_gitignore(workspace: Path) -> None:
@@ -312,6 +362,5 @@ def _append_gitignore(workspace: Path) -> None:
 
 
 def _print_stats(workspace: Path, stats: IndexStats) -> None:
-    message = f"indexed {stats.files} files, {stats.symbols} symbols in {workspace}"
-    log.info(message)
-    print(message, flush=True)
+    # Diagnostics only (--logs): the terminal shows plain messages, not bookkeeping.
+    log.info(f"indexed {stats.files} files, {stats.symbols} symbols in {workspace}")

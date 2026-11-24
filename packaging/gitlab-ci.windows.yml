@@ -43,17 +43,26 @@
 #   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
 #     or one-shot `--headed`).
 #   - Worker already running: packaging/worker-start.ps1 at logon or a scheduled task.
-#   - `critique-bot` on the runner user's PATH (worker-start.ps1 adds it),
-#     and config.json on a shared path. Edit the two `variables:` lines
+#   - CRITIQUE_BIN set to the full path of critique-bot.exe (or on the system
+#     PATH, admin-writable only), and config.json on a shared path. Edit the two `variables:` lines
 #     in this file — do not set CRITIQUE_BIN / CRITIQUE_CONFIG in GitLab
 #     Settings → CI/CD → Variables. If PATH is not an option, set
 #     CRITIQUE_BIN to the full path of critique-bot.exe here.
 #
-# Inline + summary comments need a project (or group) access token:
+# Security: the worker runs as its OWN OS user (not the runner user). This job
+# runs whatever a branch's .gitlab-ci.yml says, as the runner user; it must not
+# be able to read the worker's browser profile (SSO cookies). The runner user is
+# only in the worker's queue group: it may write inbox/ and read results/.
+# Register the runner for this project only; see DEPLOY.md "Separate the worker from CI".
+#
+# Inline + summary comments need a project access token:
 #   1. Settings → Access Tokens → project access token
-#      Role: Developer (or higher). Scope: api.
+#      Role: Reporter (lowest that can read the diff and post discussions).
+#      Scope: api. Set an expiry.
 #   2. Settings → CI/CD → Variables → CRITIQUE_GITLAB_TOKEN
-#      Masked: yes. Protect variable: no (so feature-branch MRs can post).
+#      Masked: yes. Protected: yes if reviewed MRs come from protected branches.
+#      Unprotected (needed for feature-branch MRs) means anyone who can push a
+#      branch can read it, so keep it Reporter-only and rotate it.
 # CI_JOB_TOKEN cannot create MR notes or inline discussions.
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the

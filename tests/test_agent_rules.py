@@ -80,8 +80,8 @@ class CommandRuleTests(unittest.TestCase):
     def test_suggest(self) -> None:
         self.assertEqual(suggest_rule("./gradlew test --info"), "./gradlew test*")
         self.assertEqual(suggest_rule("git status"), "git status*")
-        self.assertEqual(suggest_rule("npm run build"), "npm run*")
-        self.assertEqual(suggest_rule("python scripts/x.py"), "python*")
+        self.assertEqual(suggest_rule("npm run build"), "npm run build")
+        self.assertEqual(suggest_rule("python scripts/x.py"), "python scripts/x.py")
         self.assertEqual(suggest_rule("cd app && ./gradlew lint"), "./gradlew lint*")
         self.assertEqual(suggest_rule("npm test; git status"), "")
         self.assertEqual(suggest_rule("echo $(id)"), "")

@@ -4,7 +4,8 @@
 #
 # Usage: scripts/setup-crit.sh [--venv DIR] [--config FILE] [--bin-dir DIR]
 #                              [--proxy URL] [--with-index] [--no-path]
-#                              [--skip-browser-check] [--install-deps] [-h|--help]
+#                              [--skip-browser-check] [--install-deps]
+#                              [--redact-terms "A,B"] [-h|--help]
 #
 # Safe to re-run: every step checks what is already in place.
 set -euo pipefail
@@ -22,14 +23,17 @@ PATH. Safe to re-run.
 
 Options:
   --venv DIR            Virtual environment to create/use (default: <repo>/.venv)
-  --config FILE         Config file the commands use (default: <repo>/config.json)
+  --config FILE         Config file crit uses, via CRITIQUE_CONFIG (default: <repo>/config.json)
   --bin-dir DIR         Where the commands are written (default: ~/.local/bin)
-  --proxy URL           Proxy for every pip install, for example
+  --proxy URL           Proxy for every pip install (passed as PIP_PROXY), for example
                         http://username:password@10.1.2.3:8080
   --with-index          Also install the [index] extra (tree-sitter parsers)
   --no-path             Do not add the bin folder to PATH in your shell rc file
   --skip-browser-check  Do not look for Microsoft Edge / Google Chrome
   --install-deps        Linux: run `playwright install-deps` (may need sudo)
+  --redact-terms LIST   Company, customer, or project names to hide from the chat,
+                        comma-separated (added to redact_terms in config.json).
+                        Without it, a new config asks for them when run in a terminal.
   -h, --help            Show this help
 EOF
 }
@@ -101,6 +105,8 @@ with_index=0
 no_path=0
 skip_browser=0
 install_deps=0
+redact_terms=""
+redact_terms_given=0
 
 need_arg() {
     [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 needs a value (see --help)"
@@ -120,6 +126,8 @@ while [ "$#" -gt 0 ]; do
         --no-path) no_path=1; shift ;;
         --skip-browser-check) skip_browser=1; shift ;;
         --install-deps) install_deps=1; shift ;;
+        --redact-terms) [ "$#" -ge 2 ] || die "--redact-terms needs a value (see --help)"; redact_terms=$2; redact_terms_given=1; shift 2 ;;
+        --redact-terms=*) redact_terms=${1#*=}; redact_terms_given=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -132,7 +140,9 @@ if [ -n "$proxy" ]; then
         [a-zA-Z]*://*) ;;
         *) die "--proxy must be a URL such as http://username:password@10.1.2.3:8080" ;;
     esac
-    # pip install ... --proxy URL, and the same URL for uv via the environment.
+    # pip and uv read the proxy from the environment. It never goes on a command
+    # line, where a password in the URL would show up in ps / /proc to other users.
+    export PIP_PROXY="$proxy"
     export http_proxy="$proxy" https_proxy="$proxy" all_proxy="$proxy"
     export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" ALL_PROXY="$proxy"
 fi
@@ -150,13 +160,9 @@ if [ -n "$proxy" ]; then
     info "proxy:   $(redact_proxy "$proxy")"
 fi
 
-# Every pip install gets --proxy when one was given. pip --version stays local.
+# pip gets the proxy through PIP_PROXY (exported above), not --proxy on argv.
 run_pip() {
-    if [ -n "$proxy" ]; then
-        "$venv_python" -m pip "$@" --proxy "$proxy"
-    else
-        "$venv_python" -m pip "$@"
-    fi
+    "$venv_python" -m pip "$@"
 }
 
 # --- a. Python >= 3.10 --------------------------------------------------------
@@ -239,9 +245,16 @@ else
             uv pip install --quiet --python "$venv_python" -e "$target"
         fi
     else
-        info "upgrading pip"
-        run_pip install --quiet --upgrade pip \
-            || warn "pip upgrade failed; continuing with the installed pip"
+        # The pip version is pinned in constraints.txt like everything else.
+        pip_pin=""
+        [ -n "$pins" ] && pip_pin=$(grep -E '^pip==[0-9][0-9A-Za-z.]*$' "$pins" | head -n 1)
+        if [ -n "$pip_pin" ]; then
+            info "installing $pip_pin"
+            run_pip install --quiet "$pip_pin" \
+                || warn "pip install $pip_pin failed; continuing with the installed pip"
+        else
+            info "no pip pin in constraints.txt; keeping the installed pip"
+        fi
         if [ -n "$pins" ]; then
             run_pip install --quiet -c "$pins" -e "$target"
         else
@@ -302,19 +315,27 @@ fi
 
 # --- d. Config -------------------------------------------------------------------
 say "Preparing config $config"
+config_created=0
 if [ -e "$config" ]; then
     info "keeping existing $config"
 else
     cp -- "$repo/config.example.json" "$config"
+    config_created=1
     info "created $config from config.example.json"
-    info "set the chat URL and selectors next (critique-bot setup, below)"
+    info "set the chat next (crit config, below)"
 fi
-"$venv_python" - "$config" <<'PY'
+if [ "$redact_terms_given" = 0 ] && [ "$config_created" = 1 ] && [ -t 0 ]; then
+    printf 'Company, customer, or project names to hide from the chat (comma-separated, Enter for none): '
+    IFS= read -r redact_terms || redact_terms=""
+fi
+CRIT_SETUP_REDACT_TERMS=$redact_terms "$venv_python" - "$config" <<'PY'
 import json
 import os
 import sys
 
 path = sys.argv[1]
+terms_arg = os.environ.get("CRIT_SETUP_REDACT_TERMS", "")
+changed = False
 with open(path, encoding="utf-8") as fh:
     data = json.load(fh)
 if not isinstance(data, dict):
@@ -329,12 +350,44 @@ else:
     base = os.path.dirname(os.path.abspath(path))
     new = os.path.normpath(os.path.join(base, value or ".edge-profile"))
     data["user_data_dir"] = new
+    changed = True
+    print(f"    user_data_dir: {raw!r} -> {new!r}")
+
+new_terms = [item.strip() for item in terms_arg.split(",") if item.strip()]
+if new_terms:
+    existing = data.get("redact_terms")
+    if existing is not None and not isinstance(existing, list):
+        sys.exit(f"ERROR: redact_terms in {path} is not a list")
+    merged = list(existing or []) + new_terms
+    try:
+        from critique_bot.redaction import clean_terms
+    except ImportError:  # the package is not installed yet: strip and drop duplicates only
+        def clean_terms(values):
+            out = []
+            for value in values:
+                value = " ".join(str(value).split())
+                if value and value.casefold() not in {item.casefold() for item in out}:
+                    out.append(value)
+            return tuple(out)
+    try:
+        cleaned = list(clean_terms(merged))
+    except ValueError as exc:
+        sys.exit(f"ERROR: redact_terms: {exc}")
+    if cleaned != existing:
+        data["redact_terms"] = cleaned
+        changed = True
+    print(f"    redact_terms: {', '.join(cleaned)} (sent to the chat as [REDACTED:name])")
+
+if changed:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    print(f"    user_data_dir: {raw!r} -> {new!r}")
+if os.name != "nt":
+    os.chmod(path, 0o600)  # the config names internal hosts and, with redact_terms, customers
 PY
 
 # --- e. Wrappers -------------------------------------------------------------------
@@ -365,8 +418,9 @@ write_wrapper() {
     info "wrote $target"
 }
 q_config=$(sh_quote "$config")
-write_wrapper crit "exec $(sh_quote "$venv/bin/crit") --config $q_config \"\$@\""
-write_wrapper bot-agent "exec $(sh_quote "$venv/bin/bot-agent") --config $q_config \"\$@\""
+# CRITIQUE_CONFIG (not --config) so subcommands still come first: crit config, crit setup, crit review.
+write_wrapper crit "CRITIQUE_CONFIG=$q_config; export CRITIQUE_CONFIG; exec $(sh_quote "$venv/bin/crit") \"\$@\""
+write_wrapper bot-agent "CRITIQUE_CONFIG=$q_config; export CRITIQUE_CONFIG; exec $(sh_quote "$venv/bin/bot-agent") \"\$@\""
 write_wrapper critique-bot "exec $(sh_quote "$venv/bin/critique-bot") \"\$@\""
 
 # --- f. PATH ------------------------------------------------------------------------
@@ -418,9 +472,9 @@ if [ "$on_path" = 0 ] && [ -n "$rc_file" ]; then
 elif [ "$on_path" = 0 ]; then
     info "0. Put $bin_dir on PATH"
 fi
-info "1. Pick the chat URL and selectors, and sign in:"
-info "     critique-bot setup --config $q_cfg_show"
+info "1. Pick the chat, and any company names to keep out of it (crit uses $q_cfg_show):"
+info "     crit config --preset chatgpt --redact \"Your Company\"   (or: crit config --url https://chat.company.com/ ; crit setup)"
 info "2. Check a one-word reply:"
-info "     critique-bot --config $q_cfg_show --mode general --prompt \"Reply with exactly one word: PONG.\""
+info "     crit ask --prompt \"Reply with exactly one word: PONG.\""
 info "3. Use crit in any project:"
 info "     cd your-project && crit"

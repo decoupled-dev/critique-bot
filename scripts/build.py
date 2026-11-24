@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import platform
+import struct
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,9 @@ def _platform_tag() -> str:
     else:
         os_name = system
     machine = platform.machine().lower()
-    if machine in {"x86_64", "amd64"}:
+    if machine in {"x86_64", "amd64"} and struct.calcsize("P") == 4:
+        arch = "x86"  # 32-bit Python on a 64-bit OS builds a 32-bit bundle
+    elif machine in {"x86_64", "amd64"}:
         arch = "x64"
     elif machine in {"aarch64", "arm64"}:
         arch = "arm64"
@@ -111,11 +114,16 @@ def _write_readme(dest: Path, binary_name: str) -> None:
             [
                 "critique-bot standalone bundle",
                 "",
-                "Copy config.example.json to config.json and fill in the",
-                "chat URL and CSS selectors. If .edge-profile is missing, the",
-                "first run opens Edge so you can sign in. Later runs reuse it.",
+                "Set up: run crit (or critique-bot) in a terminal; the first run asks",
+                "where the model runs and which names to hide, and saves your settings.",
+                "Or in one line, for scripts and rollouts:",
+                f'  {invoke} config --preset chatgpt --redact "Your Company"',
+                f"  {invoke} config --url https://chat.company.com/   (then: {invoke} setup)",
+                f"  {invoke} config                                    (show the settings)",
+                "The first chat run opens Edge so you can sign in. Later runs reuse it.",
                 "",
-                "Production on a GitLab runner (keep one worker running):",
+                "Production on a GitLab runner (keep one worker running; a shared",
+                "config.json is named with --config):",
                 f"  {invoke} worker --config config.json --logs",
                 f"  {invoke} submit --config config.json",
                 "",
@@ -162,6 +170,9 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     prompts_src = ROOT / "prompts"
     if prompts_src.is_dir():
         shutil.copytree(prompts_src, payload / "prompts")
+    if sys.platform == "win32":
+        # "crit" on Windows: the same program, started as the coding agent.
+        (payload / "crit.cmd").write_text('@"%~dp0critique-bot.exe" --as-crit %*\r\n', encoding="ascii", newline="")
     _write_readme(payload / "README.txt", binary_name)
 
     zip_path = DIST / f"{bundle_name}.zip"

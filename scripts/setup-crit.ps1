@@ -9,8 +9,9 @@ Automates the manual steps in docs/bot-agent.md:
      Store python.exe stub is skipped),
   2. creates the virtual environment and runs pip install -e,
   3. checks for Microsoft Edge or Google Chrome,
-  4. creates config.json from config.example.json if missing and rewrites a
-     relative user_data_dir to a full path next to the config file,
+  4. creates config.json from config.example.json if missing, rewrites a
+     relative user_data_dir to a full path next to the config file, and adds
+     names to hide (-RedactTerms, or asked for on a new config),
   5. writes crit.cmd, bot-agent.cmd, and critique-bot.cmd into BinDir,
   6. puts BinDir first on the user PATH (and in this session),
   7. runs crit --help through the new command,
@@ -66,6 +67,12 @@ Do not change the user PATH.
 .PARAMETER SkipBrowserCheck
 Do not look for Microsoft Edge / Google Chrome.
 
+.PARAMETER RedactTerms
+Company, customer, or project names to hide from the chat, comma-separated,
+for example "Acme Corp,Globex". They are added to redact_terms in config.json
+and sent to the chat as [REDACTED:name]. Without it, a new config asks for
+them when the script runs in an interactive console.
+
 .EXAMPLE
 .\scripts\setup-crit.ps1
 
@@ -94,8 +101,10 @@ param(
     [string]$CaFile = "",
     [switch]$WithIndex,
     [switch]$NoPath,
-    [switch]$SkipBrowserCheck
+    [switch]$SkipBrowserCheck,
+    [string]$RedactTerms = ""
 )
+$RedactTermsGiven = $PSBoundParameters.ContainsKey("RedactTerms")
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
@@ -240,6 +249,7 @@ function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
     $names = New-Object System.Collections.Generic.List[string]
     if ($ProxyUrl) {
         $values = [ordered]@{
+            "PIP_PROXY" = $ProxyUrl
             "HTTP_PROXY" = $ProxyUrl
             "HTTPS_PROXY" = $ProxyUrl
             "ALL_PROXY" = $ProxyUrl
@@ -265,24 +275,32 @@ function Set-ProxyEnvironment([string]$ProxyUrl, [string]$CaPath) {
     return ,$names.ToArray()
 }
 
-# pip arguments with --proxy URL appended when a proxy was given.
+# pip arguments. The proxy is NOT added: pip reads PIP_PROXY / HTTPS_PROXY,
+# set by Set-ProxyEnvironment, so a password in the proxy URL never appears on a
+# command line other users can list. $ProxyUrl is kept for callers.
 function Get-PipInstallArgs([string]$ProxyUrl, [string[]]$Arguments) {
     $list = New-Object System.Collections.Generic.List[string]
     foreach ($item in @($Arguments)) {
         if ($null -ne $item -and "$item" -ne "") { $list.Add([string]$item) }
     }
-    if ($ProxyUrl) {
-        $list.Add("--proxy")
-        $list.Add($ProxyUrl)
-    }
     return ,$list.ToArray()
+}
+
+# "pip==X" from constraints.txt, or "" when it has no pip line.
+function Get-PipPin([string]$ConstraintsPath) {
+    if (-not $ConstraintsPath -or -not (Test-Path -LiteralPath $ConstraintsPath)) { return "" }
+    foreach ($line in Get-Content -LiteralPath $ConstraintsPath) {
+        if ($line -match '^pip==[0-9][0-9A-Za-z.]*$') { return $line }
+    }
+    return ""
 }
 
 # Text of one .cmd wrapper (CRLF line endings).
 function Get-WrapperText([string]$Exe, [string]$ConfigPath) {
     $exeQ = '"' + $Exe.Replace("%", "%%") + '"'
     if ($ConfigPath) {
-        $line = $exeQ + ' --config "' + $ConfigPath.Replace("%", "%%") + '" %*'
+        # CRITIQUE_CONFIG (not --config) so subcommands still come first: crit config, crit setup.
+        $line = "setlocal`r`n" + 'set "CRITIQUE_CONFIG=' + $ConfigPath.Replace("%", "%%") + '"' + "`r`n" + $exeQ + ' %*'
     } else {
         $line = $exeQ + " %*"
     }
@@ -339,6 +357,8 @@ import os
 import sys
 
 path = sys.argv[1]
+terms_arg = os.environ.get("CRIT_SETUP_REDACT_TERMS", "")
+changed = False
 with open(path, encoding="utf-8-sig") as fh:
     data = json.load(fh)
 if not isinstance(data, dict):
@@ -353,12 +373,44 @@ else:
     base = os.path.dirname(os.path.abspath(path))
     new = os.path.normpath(os.path.join(base, value or ".edge-profile"))
     data["user_data_dir"] = new
+    changed = True
+    print(f"    user_data_dir: {raw!r} -> {new!r}")
+
+new_terms = [item.strip() for item in terms_arg.split(",") if item.strip()]
+if new_terms:
+    existing = data.get("redact_terms")
+    if existing is not None and not isinstance(existing, list):
+        sys.exit(f"ERROR: redact_terms in {path} is not a list")
+    merged = list(existing or []) + new_terms
+    try:
+        from critique_bot.redaction import clean_terms
+    except ImportError:  # the package is not installed yet: strip and drop duplicates only
+        def clean_terms(values):
+            out = []
+            for value in values:
+                value = " ".join(str(value).split())
+                if value and value.casefold() not in {item.casefold() for item in out}:
+                    out.append(value)
+            return tuple(out)
+    try:
+        cleaned = list(clean_terms(merged))
+    except ValueError as exc:
+        sys.exit(f"ERROR: redact_terms: {exc}")
+    if cleaned != existing:
+        data["redact_terms"] = cleaned
+        changed = True
+    print(f"    redact_terms: {', '.join(cleaned)} (sent to the chat as [REDACTED:name])")
+
+if changed:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+    if os.name != "nt":
+        os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    print(f"    user_data_dir: {raw!r} -> {new!r}")
+if os.name != "nt":
+    os.chmod(path, 0o600)  # the config names internal hosts and, with redact_terms, customers
 '@
 
 function Invoke-Setup {
@@ -485,15 +537,19 @@ function Invoke-Setup {
             # uv reads HTTP_PROXY / HTTPS_PROXY, set above from -Proxy.
             $rc = Invoke-Native $uv.Path (@("pip", "install", "--quiet", "--python", $venvPython) + $pins + @("-e", $target))
         } else {
-            Write-Info "upgrading pip"
-            $upgradeArgs = @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
-            if ($Proxy) { $upgradeArgs += @("--proxy", $Proxy) }
-            if ($caPath) { $upgradeArgs += @("--cert", $caPath) }
-            if ((Invoke-Native $venvPython $upgradeArgs) -ne 0) {
-                Write-Warn "pip upgrade failed; continuing with the installed pip"
+            # pip itself is pinned in constraints.txt; the proxy comes from PIP_PROXY.
+            $pipPin = Get-PipPin $constraints
+            if ($pipPin) {
+                Write-Info "installing $pipPin"
+                $upgradeArgs = @("-m", "pip", "install", "--quiet", $pipPin)
+                if ($caPath) { $upgradeArgs += @("--cert", $caPath) }
+                if ((Invoke-Native $venvPython $upgradeArgs) -ne 0) {
+                    Write-Warn "pip install $pipPin failed; continuing with the installed pip"
+                }
+            } else {
+                Write-Info "no pip pin in constraints.txt; keeping the installed pip"
             }
             $installArgs = @("-m", "pip", "install", "--quiet") + $pins + @("-e", $target)
-            if ($Proxy) { $installArgs += @("--proxy", $Proxy) }
             if ($caPath) { $installArgs += @("--cert", $caPath) }
             $rc = Invoke-Native $venvPython $installArgs
         }
@@ -549,21 +605,30 @@ function Invoke-Setup {
     Write-Step "Preparing config $configPath"
     $configDir = Split-Path -Parent $configPath
     if (-not (Test-Path -LiteralPath $configDir)) { New-Item -ItemType Directory -Force -Path $configDir | Out-Null }
+    $configCreated = $false
     if (Test-Path -LiteralPath $configPath) {
         Write-Info "keeping existing $configPath"
     } else {
         Copy-Item -LiteralPath (Join-Path $repo "config.example.json") -Destination $configPath
+        $configCreated = $true
         Write-Info "created $configPath from config.example.json"
-        Write-Info "set the chat URL and selectors next (critique-bot setup, below)"
+        Write-Info "set the chat next (crit config, below)"
     }
+    $terms = $RedactTerms
+    if (-not $RedactTermsGiven -and $configCreated -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        $terms = Read-Host "Company, customer, or project names to hide from the chat (comma-separated, Enter for none)"
+    }
+    # Through the environment: Windows PowerShell 5.1 drops empty arguments and mangles quotes.
+    $env:CRIT_SETUP_REDACT_TERMS = [string]$terms
     $tmpScript = Join-Path ([IO.Path]::GetTempPath()) ("crit-setup-" + [guid]::NewGuid().ToString("N") + ".py")
     [IO.File]::WriteAllText($tmpScript, $ConfigScript, (New-Object Text.UTF8Encoding $false))
     try {
         if ((Invoke-Native $venvPython @($tmpScript, $configPath)) -ne 0) {
-            Stop-Setup "could not update user_data_dir in $configPath"
+            Stop-Setup "could not update user_data_dir or redact_terms in $configPath"
         }
     } finally {
         Remove-Item -LiteralPath $tmpScript -ErrorAction SilentlyContinue
+        Remove-Item Env:CRIT_SETUP_REDACT_TERMS -ErrorAction SilentlyContinue
     }
 
     # 5. Wrappers
@@ -619,10 +684,10 @@ function Invoke-Setup {
     } elseif ($NoPath) {
         Write-Info "0. Put $binPath on PATH"
     }
-    Write-Info "1. Pick the chat URL and selectors, and sign in:"
-    Write-Info "     critique-bot setup --config `"$configPath`""
+    Write-Info "1. Pick the chat, and any company names to keep out of it (crit uses $configPath):"
+    Write-Info "     crit config --preset chatgpt --redact `"Your Company`"   (or: crit config --url https://chat.company.com/ ; crit setup)"
     Write-Info "2. Check a one-word reply:"
-    Write-Info "     critique-bot --config `"$configPath`" --mode general --prompt `"Reply with exactly one word: PONG.`""
+    Write-Info "     crit ask --prompt `"Reply with exactly one word: PONG.`""
     Write-Info "3. Use crit in any project:"
     Write-Info "     cd your-project; crit"
 }

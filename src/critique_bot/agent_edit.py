@@ -22,6 +22,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from critique_bot.output import private_dir
+from critique_bot.redaction import sensitive_file
+
 _LINE_NO_RE = re.compile(r"^\s*\d+\|")
 _PUNCT_RE = re.compile(r"[`*_~\"'\u2018\u2019\u201c\u201d]")
 _MIN_FUZZY_RATIO = 0.9
@@ -639,7 +642,7 @@ class Checkpoints:
     def start_task(self) -> None:
         if self.root is None:
             return
-        self.root.mkdir(parents=True, exist_ok=True)
+        private_dir(self.root)
         self.task_dir = self.root / _task_stamp(self.root)
         self._step = 0
         self._saved = set()
@@ -671,29 +674,33 @@ class Checkpoints:
             chunks.append(hunk_diff(before, after, rel) or rel)
         return "\n".join(chunks)
 
-    def save(self, path: Path) -> None:
-        """Copy ``path`` before its first change in this task.
+    def save(self, path: Path) -> bool:
+        """Copy ``path`` before its first change in this task; False when it was not copied.
 
         A path outside the workspace is saved by its absolute path, so undo
         covers it too (the tool only gets there after the user approved it).
+        A file that usually holds secrets (.env, keys) is not copied: a second
+        copy under the cache would outlive the edit. Undo leaves it as it is.
         """
         if self.task_dir is None:
-            return
+            return False
         target = Path(os.path.abspath(path))
         if target.is_symlink():
             target = Path(os.path.realpath(target))
+        if target.is_file() and sensitive_file(target):
+            return False
         try:
             rel = target.relative_to(self.workspace).as_posix()
         except ValueError:
             rel = str(target)
         with self._lock:
             if rel in self._saved:
-                return
+                return True
             self._saved.add(rel)
             self._step += 1
             step = self._step
         folder = self.task_dir / f"{step:03d}"
-        folder.mkdir(parents=True, exist_ok=True)
+        private_dir(folder, windows_acl=False)  # inherits the undo root's ACL
         (folder / "path.txt").write_text(rel + "\n", encoding="utf-8")
         if target.is_file():
             shutil.copy2(target, folder / "before")
@@ -706,6 +713,7 @@ class Checkpoints:
             if missing:
                 (folder / "dirs.txt").write_text("\n".join(missing) + "\n", encoding="utf-8")
         self._prune()
+        return True
 
     def _prune(self, keep: int = 20) -> None:
         if self.root is None or not self.root.is_dir():

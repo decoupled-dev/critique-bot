@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -101,7 +102,7 @@ class SetupCritShTests(unittest.TestCase):
         self.assertIn("must be a URL", bad.stderr)
 
     def test_proxy_is_passed_to_every_pip_install(self) -> None:
-        """A stand-in venv records pip's argv so both installs get --proxy."""
+        """A stand-in venv records pip's argv and PIP_PROXY: the proxy is in the environment, never argv."""
         proxy = "http://alice:s3cret@10.1.2.3:8080"
         venv = self.tmp / "venv"
         bindir = venv / "bin"
@@ -110,7 +111,7 @@ class SetupCritShTests(unittest.TestCase):
         python = bindir / "python"
         python.write_text(
             "#!/bin/sh\n"
-            f"printf '%s\\n' \"$*\" >> '{log}'\n"
+            f"printf '%s PIP_PROXY=%s\\n' \"$*\" \"${{PIP_PROXY:-}}\" >> '{log}'\n"
             'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
             '  if [ "${3:-}" = "--version" ]; then echo "pip 24.0"; exit 0; fi\n'
             "  exit 0\n"
@@ -141,8 +142,11 @@ class SetupCritShTests(unittest.TestCase):
         installs = [line for line in lines if " install " in line]
         self.assertEqual(len(installs), 2, lines)
         for line in installs:
-            self.assertTrue(line.endswith(f"--proxy {proxy}"), line)
-        version_lines = [line for line in lines if line.endswith("pip --version") or "pip --version" in line]
+            self.assertNotIn("--proxy", line)
+            self.assertTrue(line.endswith(f"PIP_PROXY={proxy}"), line)
+            self.assertNotIn("--upgrade pip", line)
+        self.assertTrue(any(re.search(r"install --quiet pip==\d", line) for line in installs), installs)
+        version_lines = [line for line in lines if "pip --version" in line]
         self.assertTrue(version_lines, lines)
         for line in version_lines:
             self.assertNotIn("--proxy", line)
@@ -150,12 +154,12 @@ class SetupCritShTests(unittest.TestCase):
     def test_install_writes_wrappers_and_config(self) -> None:
         proc = self._run("--no-path")
         self.assertIn("==> Writing commands", proc.stdout)
-        self.assertIn("critique-bot setup --config", proc.stdout)
+        self.assertIn("crit config --preset chatgpt", proc.stdout)
         self.assertIn("PONG", proc.stdout)
 
         expected = {
-            "crit": f"exec '{VENV}/bin/crit' --config '{self.config}' \"$@\"",
-            "bot-agent": f"exec '{VENV}/bin/bot-agent' --config '{self.config}' \"$@\"",
+            "crit": f"CRITIQUE_CONFIG='{self.config}'; export CRITIQUE_CONFIG; exec '{VENV}/bin/crit' \"$@\"",
+            "bot-agent": f"CRITIQUE_CONFIG='{self.config}'; export CRITIQUE_CONFIG; exec '{VENV}/bin/bot-agent' \"$@\"",
             "critique-bot": f"exec '{VENV}/bin/critique-bot' \"$@\"",
         }
         for name, line in expected.items():
@@ -267,6 +271,77 @@ class SetupCritShTests(unittest.TestCase):
                 self.assertEqual(data["url"], "https://x/")
 
 
+@unittest.skipIf(os.name == "nt" or BASH is None, "setup-crit.sh needs bash")
+class SetupCritShRedactTermsTests(unittest.TestCase):
+    """--redact-terms with a stand-in venv: its python is this one, its crit only prints usage."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.venv = self.tmp / "venv"
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin" / "python").symlink_to(sys.executable)
+        for name in ("crit", "bot-agent", "critique-bot"):
+            stub = self.venv / "bin" / name
+            stub.write_text("#!/bin/sh\necho usage\n", encoding="utf-8")
+            stub.chmod(0o755)
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.config = self.tmp / "cfg" / "config.json"
+
+    def _run(self, *extra: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ, HOME=str(self.home), SHELL="/bin/bash", CRIT_SETUP_SKIP_INSTALL="1")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT / "src"), env.get("PYTHONPATH", "")]))
+        cmd = [
+            BASH, str(SH_SCRIPT), "--venv", str(self.venv), "--config", str(self.config),
+            "--bin-dir", str(self.tmp / "bin"), "--skip-browser-check", "--no-path", *extra,
+        ]
+        return subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+
+    def _data(self) -> dict:
+        return json.loads(self.config.read_text(encoding="utf-8"))
+
+    def test_terms_are_written_merged_and_the_file_is_private(self) -> None:
+        proc = self._run("--redact-terms", " Acme Corp , Globex,")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self._data()["redact_terms"], ["Acme Corp", "Globex"])
+        self.assertTrue(self._data()["redact_pii"])
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        self.assertIn("[REDACTED:name]", proc.stdout)
+
+        proc = self._run("--redact-terms=globex,Initech")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self._data()["redact_terms"], ["Acme Corp", "Globex", "Initech"])
+
+    def test_bad_term_fails_and_leaves_the_file(self) -> None:
+        self.assertEqual(self._run().returncode, 0)
+        before = self.config.read_text(encoding="utf-8")
+        proc = self._run("--redact-terms", "ab")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("too short", proc.stderr)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), before)
+
+    def test_no_prompt_without_a_terminal(self) -> None:
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("names to hide", proc.stdout)
+        self.assertEqual(self._data()["redact_terms"], [])
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+
+    def test_help_and_ps1_mention_the_option(self) -> None:
+        self.assertIn("--redact-terms", SH_SCRIPT.read_text(encoding="utf-8"))
+        ps1 = PS_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("[string]$RedactTerms", ps1)
+        self.assertIn(".PARAMETER RedactTerms", ps1)
+        self.assertIn("CRIT_SETUP_REDACT_TERMS", ps1)
+
+    def test_ps1_and_sh_share_the_config_script(self) -> None:
+        sh = SH_SCRIPT.read_text(encoding="utf-8").split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        ps1 = PS_SCRIPT.read_text(encoding="utf-8").split("$ConfigScript = @'\n", 1)[1].split("\n'@\n", 1)[0]
+        self.assertEqual(ps1.replace('encoding="utf-8-sig"', 'encoding="utf-8"'), sh)
+
+
 PWSH = os.environ.get("CRIT_TEST_PWSH")
 
 
@@ -338,7 +413,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertEqual(
             lines["WRAP"],
             '@echo off|rem critique-bot: written by scripts\\setup-crit.ps1|'
-            '"C:\\a b\\.venv\\Scripts\\crit.exe" --config "C:\\a b\\config.json" %*|',
+            'setlocal|set "CRITIQUE_CONFIG=C:\\a b\\config.json"|"C:\\a b\\.venv\\Scripts\\crit.exe" %*|',
         )
         self.assertEqual(
             lines["PLAIN"],
@@ -348,7 +423,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertEqual(lines["NOPASS"], "http://10.1.2.3:8080")
         self.assertEqual(
             lines["PIP"],
-            "install --quiet -e C:\\repo --proxy http://username:secret@10.1.2.3:8080",
+            "install --quiet -e C:\\repo",
         )
         self.assertEqual(lines["NOPROXY"], "install --quiet -e C:\\repo")
 

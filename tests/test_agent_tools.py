@@ -501,7 +501,7 @@ class GitEnvironmentTests(unittest.TestCase):
 
     def test_uses_shell_scrubbed_environment_when_present(self) -> None:
         with mock.patch.object(agent_tools.agent_shell, "scrubbed_environment", lambda extra=None: {"A": "1"}, create=True):
-            self.assertEqual(agent_tools._git_environment(), {"A": "1", "GIT_TERMINAL_PROMPT": "0"})
+            self.assertEqual(agent_tools._git_environment(), {"A": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"})
 
 
 class CommandArgTests(unittest.TestCase):

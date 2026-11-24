@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
+from critique_bot.privacy import TELEMETRY_OFF_ENV
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
 _PROMPT_RE = re.compile(
     r"(\[y/n\]|\(y/n\)|\[Y/n\]|\[y/N\]|press any key|continue\?|password:|passphrase|"
@@ -83,29 +85,9 @@ QUIET_ENV = {
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
     "PIP_NO_INPUT": "1",
     "npm_config_yes": "true",
-    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
-    "POWERSHELL_TELEMETRY_OPTOUT": "1",
     # Nothing leaves this machine except the chat itself: telemetry, usage
     # analytics, and update checks of the tools crit and the model run are off.
-    "DO_NOT_TRACK": "1",
-    "POWERSHELL_UPDATECHECK": "Off",
-    "DOTNET_NOLOGO": "1",
-    "npm_config_audit": "false",
-    "npm_config_fund": "false",
-    "npm_config_update_notifier": "false",
-    "YARN_ENABLE_TELEMETRY": "0",
-    "NEXT_TELEMETRY_DISABLED": "1",
-    "NUXT_TELEMETRY_DISABLED": "1",
-    "GATSBY_TELEMETRY_DISABLED": "1",
-    "STORYBOOK_DISABLE_TELEMETRY": "1",
-    "HOMEBREW_NO_ANALYTICS": "1",
-    "AZURE_CORE_COLLECT_TELEMETRY": "0",
-    "SAM_CLI_TELEMETRY": "0",
-    "VCPKG_DISABLE_METRICS": "1",
-    "CHECKPOINT_DISABLE": "1",
-    "FLUTTER_SUPPRESS_ANALYTICS": "true",
-    "HF_HUB_DISABLE_TELEMETRY": "1",
-    "GH_NO_UPDATE_NOTIFIER": "1",
+    **TELEMETRY_OFF_ENV,
 }
 
 # "offline": true in .bot/settings.json. Commands crit runs then reach nothing at all:

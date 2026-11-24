@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -26,6 +28,59 @@ POLL_SEC = 0.5
 DEFAULT_MAX_ATTEMPTS = 3
 #: Completed job folders kept under results/ before the oldest are removed.
 DEFAULT_RESULT_RETENTION = 200
+#: Job ids and output stems become folder and file names under results/, and the
+#: job file in inbox/ is written by the CI user, so both are checked against this.
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+#: Set to 1 on the worker (see packaging/critique-bot-worker.service) when the worker
+#: runs as its own user and CI jobs reach the queue through a shared group. A queue
+#: folder created with the setgid bit is treated the same way.
+ENV_QUEUE_SHARED = "CRITIQUE_QUEUE_SHARED"
+#: Shared-group modes (POSIX). CI may write job files into inbox/ and read results/;
+#: processing/ and failure snapshots stay with the worker user only.
+SHARED_DIR_MODES = {
+    "root": 0o2750,
+    "inbox": 0o2770,
+    "processing": 0o700,
+    "results": 0o2750,
+    "result": 0o2750,
+}
+SHARED_FILE_MODE = 0o640
+
+
+def _shared_requested(root: Path) -> bool:
+    if os.name == "nt":
+        return False
+    if os.environ.get(ENV_QUEUE_SHARED, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return bool(root.stat().st_mode & stat.S_ISGID)
+    except OSError:
+        return False
+
+
+def _shared_dir(path: Path, mode: int) -> Path:
+    """mkdir, then set ``mode`` only on a folder this user owns (the worker's)."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.stat().st_uid == os.geteuid():
+            os.chmod(path, mode)
+    except OSError as exc:
+        log.warn(f"could not set permissions on {path}: {exc}")
+    return path
+
+
+def valid_name(value: object) -> bool:
+    """True for a safe job id / output stem: no separators, no ``..``, ≤128 chars."""
+    return isinstance(value, str) and bool(_NAME_RE.match(value)) and ".." not in value
+
+
+def _file_job_id(stem: str) -> str:
+    """A job id for a queue file, even one whose name is unsafe (to record its failure)."""
+    if valid_name(stem):
+        return stem
+    return f"invalid-{_safe_slug(stem, 40)}-{uuid.uuid4().hex[:8]}"
 
 
 class QueueError(RuntimeError):
@@ -132,7 +187,7 @@ class WorkerLock:
 class FileQueue:
     """FIFO job inbox on disk. GitLab jobs enqueue; the worker claims."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, shared: bool | None = None) -> None:
         self.root = root
         self.inbox = root / "inbox"
         self.processing = root / "processing"
@@ -140,9 +195,19 @@ class FileQueue:
         self.heartbeat_path = root / HEARTBEAT_NAME
         self.lock_path = root / LOCK_NAME
         # Jobs hold whole prompts (code) and failure snapshots of the chat page.
-        private_dir(root)
-        for path in (self.inbox, self.processing, self.results):
-            private_dir(path)
+        self.shared = _shared_requested(root) if shared is None else bool(shared)
+        #: Mode for files the CI user must read (status, review); None keeps the umask.
+        self.file_mode: int | None = SHARED_FILE_MODE if self.shared else None
+        if self.shared:
+            _shared_dir(root, SHARED_DIR_MODES["root"])
+            _shared_dir(self.inbox, SHARED_DIR_MODES["inbox"])
+            _shared_dir(self.processing, SHARED_DIR_MODES["processing"])
+            _shared_dir(self.results, SHARED_DIR_MODES["results"])
+        else:
+            # Windows: the queue keeps the ACL the administrator set (worker-start.ps1).
+            private_dir(root, windows_acl=False)
+            for path in (self.inbox, self.processing, self.results):
+                private_dir(path, windows_acl=False)
 
     def acquire_worker_lock(self) -> WorkerLock:
         lock = WorkerLock(self.lock_path)
@@ -155,7 +220,7 @@ class FileQueue:
             "updated_at": isoformat(datetime.now(timezone.utc)),
             "monotonic": time.monotonic(),
         }
-        _atomic_write_json(self.heartbeat_path, payload)
+        _atomic_write_json(self.heartbeat_path, payload, mode=self.file_mode)
 
     def worker_alive(self, *, stale_sec: float = HEARTBEAT_STALE_SEC) -> bool:
         if not self.heartbeat_path.is_file():
@@ -209,6 +274,8 @@ class FileQueue:
         Returns False when the job ran out of attempts; it is failed instead, so
         a permanently broken browser cannot spin the queue forever.
         """
+        if not valid_name(job_id):
+            return False
         src = self.processing / f"{job_id}.json"
         dest = self.inbox / f"{job_id}.json"
         if dest.is_file() and not src.is_file():
@@ -218,7 +285,12 @@ class FileQueue:
         return self._requeue_path(src, max_attempts=max_attempts, reason=reason)
 
     def _requeue_path(self, src: Path, *, max_attempts: int, reason: str) -> bool:
-        job_id = src.stem
+        job_id = _file_job_id(src.stem)
+        if job_id != src.stem:
+            log.error(f"unsafe job file name {src.name!r}; failing it as {job_id}")
+            self.fail(job_id, "unsafe job file name", stem="review")
+            src.unlink(missing_ok=True)
+            return False
         try:
             payload = _read_json(src)
         except QueueError as exc:
@@ -234,7 +306,7 @@ class FileQueue:
             self.fail(
                 job_id,
                 f"gave up after {attempts} attempt(s): {reason}",
-                stem=str(payload.get("stem") or "review"),
+                stem=_safe_stem(payload.get("stem")),
                 label=str(payload.get("label") or ""),
                 meta=payload.get("meta") if isinstance(payload.get("meta"), dict) else None,
             )
@@ -264,6 +336,8 @@ class FileQueue:
         files: dict[str, str] | None = None,
         patch: str | None = None,
     ) -> str:
+        if stem and not valid_name(stem):
+            raise QueueError(f"output stem {stem!r} is not a plain file name")
         meta = dict(meta or {})
         file_map = _job_files({"files": files} if files else {})
         patch_text = patch if isinstance(patch, str) and patch.strip() else ""
@@ -285,7 +359,8 @@ class FileQueue:
         if patch_text:
             payload["patch"] = patch_text
         dest = self.inbox / f"{job_id}.json"
-        _atomic_write_json(dest, payload)
+        # The worker (another user when shared) must be able to read the job.
+        _atomic_write_json(dest, payload, mode=self.file_mode)
         log.info(
             f"enqueued job {job_id} ({len(prompt)} chars, mode={mode}, label={slug}"
             + (f", {len(file_map)} staged file(s)" if file_map else "")
@@ -314,8 +389,9 @@ class FileQueue:
             try:
                 return _job_from_payload(_read_json(dest), dest.stem)
             except QueueError as exc:
-                log.error(f"invalid job file {dest.name}: {exc}")
-                self.fail(dest.stem, str(exc), stem="review", label=dest.stem)
+                log.error(f"invalid job file {dest.name!r}: {exc}")
+                failed_id = _file_job_id(dest.stem)
+                self.fail(failed_id, str(exc), stem="review", label=failed_id)
                 try:
                     dest.unlink(missing_ok=True)
                 except OSError:
@@ -324,7 +400,15 @@ class FileQueue:
         return None
 
     def result_dir(self, job_id: str) -> Path:
-        return private_dir(self.results / job_id)
+        if not valid_name(job_id):
+            raise QueueError(f"invalid job id {job_id!r}")
+        base = self.results.resolve()
+        target = (base / job_id).resolve()
+        if target.parent != base:
+            raise QueueError(f"job id {job_id!r} leaves {base}")
+        if self.shared:
+            return _shared_dir(target, SHARED_DIR_MODES["result"])
+        return private_dir(target, windows_acl=False)
 
     def write_job_record(self, job: Job) -> None:
         _atomic_write_json(
@@ -355,7 +439,9 @@ class FileQueue:
             "label": status.label or "",
             "meta": status.meta or {},
         }
-        _atomic_write_json(self.result_dir(job_id) / "status.json", payload)
+        _atomic_write_json(
+            self.result_dir(job_id) / "status.json", payload, mode=self.file_mode
+        )
         processing = self.processing / f"{job_id}.json"
         try:
             processing.unlink(missing_ok=True)
@@ -388,6 +474,8 @@ class FileQueue:
         )
 
     def read_status(self, job_id: str) -> JobStatus | None:
+        if not valid_name(job_id):
+            return None
         path = self.results / job_id / "status.json"
         if not path.is_file():
             return None
@@ -397,7 +485,7 @@ class FileQueue:
             id=str(data.get("id") or job_id),
             ok=bool(data.get("ok")),
             error=str(data["error"]) if data.get("error") else None,
-            stem=str(data.get("stem") or "review"),
+            stem=_safe_stem(data.get("stem")),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
             elapsed_seconds=data.get("elapsed_seconds"),
@@ -585,9 +673,16 @@ def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
     if not isinstance(prompt, str) or not prompt.strip():
         raise QueueError("job prompt is empty")
     mode = str(data.get("mode") or "review")
-    stem = str(data.get("stem") or ("reply" if mode == "general" else "review"))
+    stem = data.get("stem") or ("reply" if mode == "general" else "review")
+    if not valid_name(stem):
+        raise QueueError(f"job stem {stem!r} is not a plain file name")
     meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-    job_id = str(data.get("id") or fallback_id)
+    job_id = data.get("id") or fallback_id
+    if not valid_name(job_id):
+        if not valid_name(fallback_id):
+            raise QueueError(f"job id {job_id!r} is not a plain name")
+        log.warn(f"job id {job_id!r} is not a plain name; using {fallback_id}")
+        job_id = fallback_id
     label = str(data.get("label") or "").strip() or job_label(meta)
     return Job(
         id=job_id,
@@ -602,6 +697,10 @@ def _job_from_payload(data: dict[str, Any], fallback_id: str) -> Job:
         files=_job_files(data),
         patch=_job_patch(data),
     )
+
+
+def _safe_stem(value: object) -> str:
+    return value if valid_name(value) else "review"
 
 
 def _job_patch(data: dict[str, Any]) -> str:
@@ -647,11 +746,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     return raw
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+def _atomic_write_json(path: Path, payload: dict[str, Any], *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    if mode is not None and os.name != "nt":
+        os.chmod(tmp, mode)
     tmp.replace(path)

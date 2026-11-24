@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_build, agent_edit, agent_shell, code_index, log, roles
+from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, log, roles
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
 from critique_bot.tool_api import (
@@ -2788,6 +2788,18 @@ class _TaskRun:
         self.turns.append({"role": "user", "content": self.payload})
 
 
+def effective_settings(settings: object) -> dict[str, Any]:
+    """``.bot/settings.json`` as the agent applies it: under strict egress nothing but the chat is reached.
+
+    With ``"egress": "strict"`` in config.json (the default), commands run offline, web_fetch is
+    off, and commands that can send data are blocked, whatever the settings file says.
+    """
+    options = dict(settings) if isinstance(settings, dict) else {}
+    if egress.strict():
+        options.update({"offline": True, "web_fetch": False, "network_commands": "block"})
+    return options
+
+
 def run_agent_loop(
     session: Any,
     *,
@@ -2851,7 +2863,7 @@ def run_agent_loop(
     workspace = Path(workspace).resolve()
     checkpoints = agent_edit.Checkpoints(cache_dir, workspace)
     chosen = shell or getattr(session_shell, "shell", None) or agent_shell.detect_shell()
-    options = settings if isinstance(settings, dict) else {}
+    options = effective_settings(settings)
     role_now = roles.normalize_role(role) or roles.normalize_role(options.get("role")) or roles.GENERIC
     chat = _Chat(
         session,
@@ -2956,6 +2968,8 @@ def run_agent_loop(
         if not pending and single_task and turns:
             break  # one task, and it ran: do not wait for another
         if not pending:
+            # Between tasks: ask about sites the chat page was blocked from (terminal sessions only).
+            config_prompts.offer_blocked_hosts()
             if not announced:
                 _ui("note", "Ready. Type a task, or exit.")
                 announced = True
@@ -3326,14 +3340,14 @@ def run_agent(
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
-    settings = home.settings if isinstance(home.settings, dict) else {}
+    settings = effective_settings(home.settings)
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
     setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)))
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
@@ -3509,13 +3523,13 @@ def run_read_only_task(
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
-    settings = home.settings if isinstance(home.settings, dict) else {}
+    settings = effective_settings(home.settings)
     setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS))
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
         log.error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1, turns
     if settings.get("seed_instructions") is False:
         instructions = ""
@@ -3720,19 +3734,19 @@ def _run_session(
             return _run_session(config, home, task, headed=True, loop_kwargs=loop_kwargs, turns=turns)
         log.error(str(exc))
         agent_ui.shutdown()
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1
     except ModelError as exc:
         log.error(str(exc))
         agent_ui.shutdown()
-        print(f"error: {exc}", file=sys.stderr)
+        log.notice(f"Problem: {exc}")
         return 1
     except KeyboardInterrupt:
         raise
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
         agent_ui.shutdown()
-        print(f"error: unexpected failure: {exc}", file=sys.stderr)
+        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
         return 1
     return 0
 
@@ -3772,7 +3786,7 @@ def _save_transcript(
             write_output(output_dir, body, payload, stem="agent", print_body=False)
     except OSError as exc:
         log.error(f"could not save the transcript: {exc}")
-        print(f"error: could not save the transcript: {exc}", file=sys.stderr)
+        log.notice(f"Problem: could not save the transcript: {exc}")
 
 
 def _result_budget(config: BotConfig, settings: dict[str, Any]) -> int:

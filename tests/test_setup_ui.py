@@ -12,6 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from critique_bot.redaction import set_custom_terms
 from critique_bot.setup_ui import (
     PICK_FIELDS,
     BrowserBridge,
@@ -107,6 +108,22 @@ class SetupStateTests(unittest.TestCase):
     def test_save_reports_a_valid_config(self) -> None:
         self.assertTrue(self.state.save({"model": "GPT-5.2"})["valid"])
 
+    def test_save_cleans_redact_terms(self) -> None:
+        result = self.state.save({"redact_terms": [" Acme  Corp ", "Globex", "acme corp"]})
+        self.assertTrue(result["valid"], result)
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["redact_terms"], ["Acme Corp", "Globex"])
+        set_custom_terms(())
+
+    def test_bad_redact_terms_are_not_saved(self) -> None:
+        before = self.path.read_text(encoding="utf-8")
+        for bad in (["ab"], "Acme", [""], [42], ["x" * 201]):
+            with self.subTest(bad=bad):
+                result = self.state.save({"redact_terms": bad, "model": "Other"})
+                self.assertFalse(result["saved"])
+                self.assertIn("redact_terms", result["error"])
+                self.assertEqual(self.path.read_text(encoding="utf-8"), before)
+
 
 class EndpointTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -189,10 +206,28 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(self.server.raw("/api/state", headers={**token, "Origin": "https://evil.example"}), 403)
         self.assertEqual(self.server.raw("/", headers={"Host": "evil.example"}), 403)
 
+    def test_redact_terms_through_the_api_and_page(self) -> None:
+        result = self.server.post("/api/config", {"config": {"redact_terms": ["Acme Corp"]}})
+        self.assertTrue(result["valid"], result)
+        payload = json.loads(self.server.get("/api/state")[1])
+        self.assertEqual(payload["config"]["redact_terms"], ["Acme Corp"])
+        refused = self.server.post("/api/config", {"config": {"redact_terms": ["no"]}})
+        self.assertFalse(refused["saved"])
+        page = self.server.get("/?t=" + self.server.token)[1].decode("utf-8")
+        self.assertIn('id="redactTerms"', page)
+        self.assertIn("<b>${esc(term)}</b>", page)
+        set_custom_terms(())
+
     def test_page_reads_the_token_from_its_address(self) -> None:
         status, body = self.server.get("/?t=" + self.server.token)
         self.assertEqual(status, 200)
         self.assertIn(b"X-Crit-Token", body)
+
+    def test_page_escapes_match_counts_and_drops_the_token_from_the_address(self) -> None:
+        _, body = self.server.get("/?t=" + self.server.token)
+        page = body.decode("utf-8")
+        self.assertIn("${esc(option.matches)}", page)
+        self.assertIn("history.replaceState", page)
 
     def test_unknown_path_is_404(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -221,6 +256,34 @@ class BrowserBridgeTests(unittest.TestCase):
         bridge._on_pick({"field": "prompt_input", "options": []})
         self.assertEqual(bridge.current_pick()["field"], "prompt_input")
         bridge.clear_pick()
+        self.assertIsNone(bridge.current_pick())
+
+    def test_pick_from_the_page_is_reduced_to_the_expected_shape(self) -> None:
+        bridge = BrowserBridge()
+        bridge._on_pick(
+            {
+                "field": "prompt_input",
+                "cancelled": False,
+                "extra": "<img src=x onerror=alert(1)>",
+                "options": [
+                    {"selector": "textarea", "matches": 1, "rank": 12.5, "html": "<b>"},
+                    {"selector": "div", "matches": "<img src=x onerror=alert(1)>", "rank": 1},
+                    {"selector": 5, "matches": 1, "rank": 1},
+                    {"selector": "p", "matches": 2, "rank": "high"},
+                    "garbage",
+                ],
+            }
+        )
+        pick = bridge.current_pick()
+        self.assertEqual(
+            pick,
+            {
+                "field": "prompt_input",
+                "cancelled": False,
+                "options": [{"selector": "textarea", "matches": 1, "rank": 12.5}],
+            },
+        )
+        bridge._on_pick({"field": "not-a-field", "options": []})
         self.assertIsNone(bridge.current_pick())
 
     def test_non_dict_pick_is_ignored(self) -> None:

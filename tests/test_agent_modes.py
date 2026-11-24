@@ -288,10 +288,10 @@ class RiskTests(unittest.TestCase):
                 self.assertEqual(agent_tools.risky_command(command), "")
 
     def test_read_only_commands(self) -> None:
-        for command in ["git log -5", "git diff HEAD~1", "ls -la", "Get-Content a.txt", "cat a | grep b", "java -version", "git stash list", "adb devices", "./gradlew tasks"]:
+        for command in ["git log -5", "git diff HEAD~1", "ls -la", "Get-Content a.txt", "cat a | grep b", "java -version", "git stash list", "adb devices"]:
             with self.subTest(command=command):
                 self.assertTrue(agent_tools.read_only_command(command))
-        for command in ["git commit -m x", "git stash", "rm a", "./gradlew build", "find . -delete", "echo x > a.txt", "npm test", "ls; rm a"]:
+        for command in ["git commit -m x", "git stash", "rm a", "./gradlew build", "find . -delete", "echo x > a.txt", "npm test", "ls; rm a", "./gradlew tasks"]:
             with self.subTest(command=command):
                 self.assertFalse(agent_tools.read_only_command(command))
 

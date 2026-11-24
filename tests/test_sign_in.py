@@ -19,9 +19,16 @@ class SandboxFlagTests(unittest.TestCase):
             self.assertFalse(browser.sandbox_disabled())
             self.assertNotIn("--no-sandbox", browser._launch_args())
 
-    def test_linux_root_or_forced(self) -> None:
-        with patch.object(browser.sys, "platform", "linux"), patch.object(browser.os, "geteuid", return_value=0, create=True):
-            self.assertTrue(browser.sandbox_disabled())
+    def test_linux_root_refuses_unless_forced(self) -> None:
+        with patch.object(browser.sys, "platform", "linux"), patch.object(browser.os, "geteuid", return_value=0, create=True), \
+                patch.dict("os.environ", {"CRIT_NO_SANDBOX": ""}):
+            # As root the sandbox is never dropped silently: crit stops and says why.
+            with self.assertRaises(browser.BrowserError):
+                browser.sandbox_disabled()
+            with self.assertRaises(browser.BrowserError):
+                browser._launch_args()
+        with patch.object(browser.sys, "platform", "linux"), patch.object(browser.os, "geteuid", return_value=0, create=True), \
+                patch.dict("os.environ", {"CRIT_NO_SANDBOX": "1"}):
             self.assertEqual(browser._launch_args()[0], "--no-sandbox")
         with patch.dict("os.environ", {"CRIT_NO_SANDBOX": "1"}):
             self.assertTrue(browser.sandbox_disabled())
@@ -94,7 +101,13 @@ class GuardTests(unittest.TestCase):
         page = MagicMock()
         page._critique_chat_guard = None
         browser.guard_page_network(page, "https://chatgpt.com/")
-        page.route.assert_called_once()
+        page.route.assert_not_called()  # the filter is opt-in ("filter_chat_page")
+        try:
+            browser.set_page_filter(True)
+            browser.guard_page_network(page, "https://chatgpt.com/")
+            page.route.assert_called_once()
+        finally:
+            browser.set_page_filter(False)
 
     def test_headless_reaches_only_the_chat_hosts(self) -> None:
         self.assertTrue(browser.request_is_allowed("https://chatgpt.com/backend-api/x", "https://chatgpt.com/"))
@@ -110,13 +123,19 @@ class GuardTests(unittest.TestCase):
     def test_internal_chat_allowed_hosts(self) -> None:
         from critique_bot.config import _host_list
 
+        from critique_bot import egress
+
         url = "https://ai-chat.company.net/"
+        self.addCleanup(setattr, egress, "_policy", egress.policy())
+        egress.configure("open", url)  # the chat's whole site is allowed only with "egress": "open"
         self.assertTrue(browser.request_is_allowed("https://ai-chat.company.net/api", url))
-        self.assertFalse(browser.request_is_allowed("https://api.company.net/v1", url))
+        # The chat's own site (company.net) is allowed, as docs/security.md describes.
+        self.assertTrue(browser.request_is_allowed("https://api.company.net/v1", url))
+        self.assertFalse(browser.request_is_allowed("https://api.other.net/v1", url))
         try:
-            browser.set_allowed_hosts(_host_list(["https://api.company.net/x", "*.cdn.company.net"]))
-            self.assertTrue(browser.request_is_allowed("https://api.company.net/v1", url))
-            self.assertTrue(browser.request_is_allowed("https://img.cdn.company.net/a.png", url))
+            browser.set_allowed_hosts(_host_list(["https://api.other.net/x", "*.cdn.example.org"]))
+            self.assertTrue(browser.request_is_allowed("https://api.other.net/v1", url))
+            self.assertTrue(browser.request_is_allowed("https://img.cdn.example.org/a.png", url))
             self.assertFalse(browser.request_is_allowed("https://tracker.example/x", url))
         finally:
             browser.set_allowed_hosts(())

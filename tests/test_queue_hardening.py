@@ -176,3 +176,94 @@ class SnapshotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PathTraversalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.queue = FileQueue(self.base / "q")
+
+    def _drop(self, name: str, payload: dict) -> None:
+        (self.queue.inbox / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    def _outside(self) -> list[Path]:
+        return [p for p in self.base.rglob("*") if self.queue.root not in (p, *p.parents)]
+
+    def test_bad_id_falls_back_to_file_stem(self) -> None:
+        self._drop("good-job.json", {"id": "../../escape", "prompt": "p"})
+        job = self.queue.claim()
+        assert job is not None
+        self.assertEqual(job.id, "good-job")
+        self.queue.result_dir(job.id)
+        self.assertEqual(self._outside(), [])
+
+    def test_bad_stem_is_rejected_and_failed_inside_results(self) -> None:
+        for stem in ("../../evil", "a/b", "..", ".hidden", "x" * 200, 5):
+            with self.subTest(stem=stem):
+                self._drop("job-1.json", {"id": "job-1", "prompt": "p", "stem": stem})
+                self.assertIsNone(self.queue.claim())
+                status = self.queue.read_status("job-1")
+                assert status is not None
+                self.assertFalse(status.ok)
+                self.assertEqual(status.stem, "review")
+        self.assertEqual(self._outside(), [])
+
+    def test_unsafe_file_name_is_failed_safely(self) -> None:
+        self._drop("...json", {"prompt": "p"})
+        self.assertIsNone(self.queue.claim())
+        self.assertEqual(self._outside(), [])
+        failed = [p.name for p in self.queue.results.iterdir()]
+        self.assertTrue(any(name.startswith("invalid-") for name in failed), failed)
+
+    def test_result_dir_and_read_status_refuse_traversal(self) -> None:
+        from critique_bot.queue import QueueError
+
+        for bad in ("..", "../x", "a/../../b", "/etc", ""):
+            with self.subTest(bad=bad):
+                with self.assertRaises(QueueError):
+                    self.queue.result_dir(bad)
+                self.assertIsNone(self.queue.read_status(bad))
+                self.assertFalse(self.queue.requeue_job(bad))
+
+    def test_enqueue_rejects_bad_stem(self) -> None:
+        from critique_bot.queue import QueueError
+
+        with self.assertRaises(QueueError):
+            self.queue.enqueue(mode="review", stem="../x", prompt="p")
+
+    def test_write_output_stays_in_its_folder(self) -> None:
+        from critique_bot.output import write_output
+
+        with self.assertRaises(ValueError):
+            write_output(self.base / "out", "b", {}, stem="../escape", print_body=False)
+        self.assertFalse((self.base / "escape.md").exists())
+
+
+@unittest.skipIf(__import__("os").name == "nt", "POSIX permissions")
+class SharedQueueTests(unittest.TestCase):
+    def test_shared_mode_sets_group_modes(self) -> None:
+        import stat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = FileQueue(Path(tmp) / "q", shared=True)
+            mode = lambda p: stat.S_IMODE(p.stat().st_mode)  # noqa: E731
+            self.assertEqual(mode(queue.root), 0o2750)
+            self.assertEqual(mode(queue.inbox), 0o2770)
+            self.assertEqual(mode(queue.processing), 0o700)
+            self.assertEqual(mode(queue.results), 0o2750)
+            job_id = queue.enqueue(mode="review", stem="review", prompt="p")
+            self.assertEqual(mode(queue.inbox / f"{job_id}.json"), 0o640)
+            queue.fail(job_id, "x", stem="review")
+            self.assertEqual(mode(queue.result_dir(job_id)), 0o2750)
+            self.assertEqual(mode(queue.result_dir(job_id) / "status.json"), 0o640)
+            # A second process (the CI side) detects shared mode from the setgid bit.
+            self.assertTrue(FileQueue(queue.root).shared)
+
+    def test_private_mode_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {"CRITIQUE_QUEUE_SHARED": ""}):
+                queue = FileQueue(Path(tmp) / "q")
+            self.assertFalse(queue.shared)
+            self.assertEqual(queue.inbox.stat().st_mode & 0o7777, 0o700)

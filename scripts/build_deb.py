@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Package a Linux bundle from scripts/build.py as a .deb (amd64 or arm64).
+
+Run on Linux after scripts/build.py, with dpkg-deb installed (Debian and Ubuntu have it):
+
+    python scripts/build.py
+    python scripts/build_deb.py
+
+Install with ``sudo apt install ./critique-bot_<version>_<arch>.deb``. The package puts
+the bundle in /opt/critique-bot, adds ``crit`` and ``critique-bot`` to /usr/bin, and ships
+the worker service (not enabled) with its config at /etc/critique-bot/config.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DIST = ROOT / "dist"
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from build import _platform_tag, _version  # noqa: E402
+
+_DEB_ARCH = {"x64": "amd64", "arm64": "arm64"}
+
+_CONTROL = """Package: critique-bot
+Version: {version}
+Section: devel
+Priority: optional
+Architecture: {arch}
+Maintainer: critique-bot maintainers <noreply@invalid>
+Depends: libc6 (>= 2.35)
+Recommends: microsoft-edge-stable | google-chrome-stable | chromium | chromium-browser
+Description: Code review and coding agent that drives a web chat UI
+ crit sends only the conversation to the chat URL in config.json (strict egress by
+ default), redacts secrets, personal data and configured company names, and keeps
+ every browser and tool telemetry switch off.
+"""
+
+_WRAPPER = """#!/bin/sh
+exec /opt/critique-bot/critique-bot {extra}"$@"
+"""
+
+_POSTINST = """#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+    if ! getent passwd critique-bot >/dev/null; then
+        useradd --system --home-dir /var/lib/critique-bot --create-home \\
+            --shell /usr/sbin/nologin critique-bot
+    fi
+    install -d -o critique-bot -g critique-bot -m 0750 /var/lib/critique-bot
+    install -d -o root -g critique-bot -m 0750 /etc/critique-bot
+    if [ ! -e /etc/critique-bot/config.json ]; then
+        install -o root -g critique-bot -m 0640 /opt/critique-bot/config.example.json /etc/critique-bot/config.json
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+    fi
+fi
+exit 0
+"""
+
+_PRERM = """#!/bin/sh
+set -e
+if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl stop critique-bot-worker.service 2>/dev/null || true
+    systemctl disable critique-bot-worker.service 2>/dev/null || true
+fi
+exit 0
+"""
+
+
+def _commit_time() -> str:
+    """The last commit's time, so file dates in the package are reproducible and real."""
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=ROOT, capture_output=True, text=True, check=True)
+        return out.stdout.strip() or "0"
+    except (OSError, subprocess.CalledProcessError):
+        return "0"
+
+
+def _write(path: Path, text: str, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    path.chmod(mode)
+
+
+def _normalize_modes(root: Path) -> None:
+    """Folders 0755, files 0644 unless executable (then 0755): no group or world write in the package."""
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+        else:
+            executable = path.stat().st_mode & stat.S_IXUSR
+            path.chmod(0o755 if executable else 0o644)
+
+
+def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
+    if shutil.which("dpkg-deb") is None:
+        raise SystemExit("dpkg-deb is required (Debian/Ubuntu: it ships with dpkg)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "pkg"
+        shutil.copytree(bundle, root / "opt" / "critique-bot", symlinks=True)
+        unit = (ROOT / "packaging" / "critique-bot-worker.service").read_text(encoding="utf-8")
+        unit = unit.replace("--config /opt/critique-bot/config.json", "--config /etc/critique-bot/config.json")
+        _write(root / "lib" / "systemd" / "system" / "critique-bot-worker.service", unit, 0o644)
+        (root / "opt" / "critique-bot" / "critique-bot-worker.service").unlink(missing_ok=True)
+        _write(root / "usr" / "bin" / "critique-bot", _WRAPPER.format(extra=""), 0o755)
+        _write(root / "usr" / "bin" / "crit", _WRAPPER.format(extra="--as-crit "), 0o755)
+        doc = root / "usr" / "share" / "doc" / "critique-bot"
+        doc.mkdir(parents=True)
+        for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
+            if (ROOT / name).is_file():
+                shutil.copy2(ROOT / name, doc / ("copyright" if name == "LICENSE" else name))
+        _normalize_modes(root)
+        control = root / "DEBIAN"
+        control.mkdir()
+        _write(control / "control", _CONTROL.format(version=version, arch=arch), 0o644)
+        _write(control / "conffiles", "/lib/systemd/system/critique-bot-worker.service\n", 0o644)
+        _write(control / "postinst", _POSTINST, 0o755)
+        _write(control / "prerm", _PRERM, 0o755)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        deb = out_dir / f"critique-bot_{version}_{arch}.deb"
+        env = {**os.environ, "SOURCE_DATE_EPOCH": os.environ.get("SOURCE_DATE_EPOCH") or _commit_time()}
+        subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "--build", str(root), str(deb)], check=True, env=env)
+    print(f"wrote {deb} ({deb.stat().st_size} bytes)")
+    return deb
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--bundle", help="the unzipped bundle folder (default: dist/critique-bot-<version>-<tag>)")
+    args = parser.parse_args(argv)
+    if not sys.platform.startswith("linux"):
+        raise SystemExit("build the .deb on Linux")
+    version = _version()
+    tag = _platform_tag()
+    arch = _DEB_ARCH.get(tag.split("-", 1)[1])
+    if arch is None:
+        raise SystemExit(f"no Debian architecture for {tag}")
+    bundle = Path(args.bundle) if args.bundle else DIST / f"critique-bot-{version}-{tag}"
+    if not (bundle / "critique-bot").is_file():
+        raise SystemExit(f"{bundle} has no critique-bot binary; run scripts/build.py first")
+    build_deb(bundle, version, arch, DIST)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

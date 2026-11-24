@@ -50,8 +50,13 @@ class SubcommandRoutingTests(_CliCase):
             self.assertEqual(ctx.exception.code, 0, name)
 
     def test_unknown_first_arg_falls_through_to_the_default_run(self) -> None:
-        with self.assertRaises(SystemExit):
-            self.run_cli(["not-a-subcommand"])
+        # Not a subcommand: the default run takes it (as a patch file or task) and fails in its own way.
+        try:
+            code, _out, err = self.run_cli(["not-a-subcommand"])
+        except SystemExit as exc:
+            code, err = exc.code, ""
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("Traceback", err)
 
 
 class QueueStatusTests(_CliCase):

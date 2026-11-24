@@ -14,16 +14,24 @@
 #     so the job sees the same queue directory as the long-running worker.
 #   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
 #     or one-shot `--headed`).
-#   - Worker already running, e.g. systemd --user
-#     ~/.config/systemd/user/critique-bot-worker.service
-#     or packaging/critique-bot-worker.service / packaging/worker-start.ps1
+#   - Worker already running as user critique-bot:
+#     packaging/critique-bot-worker.service / packaging/worker-start.ps1
 #   - critique-bot on PATH, config.json on a shared path.
 #
-# Inline + summary comments need a project (or group) access token:
+# Security: the worker runs as its OWN OS user (not the runner user). This job
+# runs whatever a branch's .gitlab-ci.yml says, as the runner user; it must not
+# be able to read the worker's browser profile (SSO cookies). The runner user is
+# only in the worker's queue group: it may write inbox/ and read results/.
+# Register the runner for this project only; see DEPLOY.md "Separate the worker from CI".
+#
+# Inline + summary comments need a project access token:
 #   1. Settings → Access Tokens → project access token
-#      Role: Developer (or higher). Scope: api.
+#      Role: Reporter (lowest that can read the diff and post discussions).
+#      Scope: api. Set an expiry.
 #   2. Settings → CI/CD → Variables → CRITIQUE_GITLAB_TOKEN
-#      Masked: yes. Protect variable: no (so feature-branch MRs can post).
+#      Masked: yes. Protected: yes if reviewed MRs come from protected branches.
+#      Unprotected (needed for feature-branch MRs) means anyone who can push a
+#      branch can read it, so keep it Reporter-only and rotate it.
 # CI_JOB_TOKEN cannot create MR notes or inline discussions.
 #
 # Several MRs can trigger this job at once. They enqueue and wait; the

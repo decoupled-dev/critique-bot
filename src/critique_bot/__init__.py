@@ -8,4 +8,4 @@ GitLab runner, ``worker`` keeps Edge open and ``submit`` enqueues reviews
 from CI jobs.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

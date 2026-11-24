@@ -832,3 +832,72 @@ class ReviewCommentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GitLabDefangTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from critique_bot.review_comments import (
+            InlineComment,
+            defang_gitlab_markdown,
+            format_gitlab_comment,
+            format_gitlab_summary,
+        )
+
+        self.defang = defang_gitlab_markdown
+        self.comment = format_gitlab_comment
+        self.summary = format_gitlab_summary
+        self.Inline = InlineComment
+
+    @staticmethod
+    def _slash_lines(text: str) -> list[str]:
+        return [line for line in text.split("\n") if line.lstrip().startswith("/")]
+
+    def test_quick_actions_outside_fences_are_neutralized(self) -> None:
+        body = "Looks fine.\n/approve\n  /merge\n/assign @alice\n/label ~security"
+        out = self.defang(body)
+        self.assertEqual(self._slash_lines(out), [])
+        self.assertIn("​/approve", out)
+        self.assertIn("  ​/merge", out)
+
+    def test_quick_action_inside_fences_is_neutralized_but_comments_kept(self) -> None:
+        body = "```java\n// keep me\n/* and me */\n/close\n```\n~~~\n/merge\n~~~"
+        out = self.defang(body)
+        self.assertIn("\n// keep me\n", out)
+        self.assertIn("\n/* and me */\n", out)
+        self.assertIn("​/close", out)
+        self.assertIn("​/merge", out)
+
+    def test_unclosed_fence_still_safe(self) -> None:
+        out = self.defang("```\n/approve")
+        self.assertIn("​/approve", out)
+
+    def test_mentions_defanged_outside_code(self) -> None:
+        out = self.defang("ping @all and @here and @my-group/sub, mail a@b.com, `@Override`")
+        for name in ("all", "here", "my-group"):
+            self.assertIn("@​" + name, out)
+        self.assertIn("a@b.com", out)
+        self.assertIn("`@Override`", out)
+        self.assertNotRegex(out.replace("@​", ""), r"(?<![\w`])@\w")
+
+    def test_annotations_in_fences_untouched(self) -> None:
+        body = "```kotlin\n@Override\nfun x() = 1\n```"
+        self.assertEqual(self.defang(body), body)
+
+    def test_idempotent(self) -> None:
+        body = "/approve @all\n```\n/merge\n```"
+        once = self.defang(body)
+        self.assertEqual(self.defang(once), once)
+
+    def test_format_comment_and_summary_are_defanged(self) -> None:
+        bad = self.Inline(path="a.py", line=3, side="new", body="Bug here.\n/merge\ncc @all", impact="/close")
+        out = self.comment(bad)
+        self.assertEqual(self._slash_lines(out), [])
+        self.assertIn("@​all", out)
+        summary = self.summary(
+            "Summary line.\n/approve\n@everyone look",
+            unmapped=[bad],
+            orphan_actions=["/unassign @bob"],
+        )
+        self.assertEqual(self._slash_lines(summary), [])
+        self.assertNotIn(" @bob", summary)
+        self.assertNotIn("\n@everyone", summary)

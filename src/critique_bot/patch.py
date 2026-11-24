@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from critique_bot import log
+from critique_bot.redaction import redact_secrets
 
 DEFAULT_MAX_PROMPT_CHARS = 120_000
 DEFAULT_MAX_FILE_CHARS = 32_000
@@ -322,6 +323,11 @@ def load_stdin(limits: InputLimits) -> LoadedInput:
 def cap_text(text: str, max_chars: int, *, what: str) -> str:
     if max_chars <= 0:
         return ""
+    if len(text) <= max_chars:
+        return text
+    # Redact before cutting: a cut can drop the END line of a key or split a token so the
+    # pattern no longer sees it when the message is redacted again on its way out.
+    text = redact_secrets(text)[0]
     if len(text) <= max_chars:
         return text
     marker = f"\n\n[truncated: {what} hit the size cap, {len(text) - max_chars} chars omitted]\n"

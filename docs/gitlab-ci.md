@@ -26,7 +26,8 @@ Copy the job definition into the **application** repo (the project whose MRs sho
 | Shared disk | Job and worker must see the **same** `config.json` and `queue_dir` |
 | Binary | `critique-bot` on `PATH` (zip unpack or pip). Default install: `/opt/critique-bot` (Linux) or `C:\critique-bot` (Windows) |
 | Session | First run opens Edge when `.edge-profile` is missing. Later runs reuse it |
-| Token | Project (or group) access token, scope `api`, role Developer+, in `CRITIQUE_GITLAB_TOKEN` |
+| Token | Project access token, role Reporter, scope `api`, in `CRITIQUE_GITLAB_TOKEN` (protected if you can; see below) |
+| Users | Worker as its own OS user (`critique-bot`); the runner user only in its group. See [DEPLOY.md](../DEPLOY.md#separate-the-worker-from-ci) |
 
 Shared GitLab.com / instance runners and Docker executors cannot run this bot: they have no signed-in Edge and no shared queue.
 
@@ -47,13 +48,12 @@ Shared GitLab.com / instance runners and Docker executors cannot run this bot: t
    /opt/critique-bot/critique-bot --config /opt/critique-bot/config.json \
      --mode general --prompt "Reply with exactly one word: PONG."
    ```
-5. Start the worker at boot, **as the same OS user as the GitLab runner** (so the job can read/write the queue):
+5. Start the worker at boot, **as its own OS user, not the GitLab runner user.** A CI job runs whatever the branch's `.gitlab-ci.yml` says as the runner user; if that is also the worker user, any developer who can push a branch can read the signed-in browser profile (SSO cookies), the queue, and the token.
 
-   - Linux: copy [`packaging/critique-bot-worker.service`](../packaging/critique-bot-worker.service) to `/etc/systemd/system/`, set `User=` / `Group=` to the runner account, then `systemctl enable --now critique-bot-worker`.
-   - User unit: `~/.config/systemd/user/critique-bot-worker.service` on that account.
-   - Windows: [`packaging/worker-start.ps1`](../packaging/worker-start.ps1) at logon or a scheduled task.
+   - Linux: copy [`packaging/critique-bot-worker.service`](../packaging/critique-bot-worker.service) to `/etc/systemd/system/` and run the one-time commands at its top: create user/group `critique-bot`, add `gitlab-runner` to that group, create the queue folder `2750`. The unit sets `CRITIQUE_QUEUE_SHARED=1`, so the worker keeps `inbox/` group-writable (`2770`), `results/` group-readable (`2750`, files `0640`), and `processing/`, failure snapshots and the profile owner-only. Then `systemctl enable --now critique-bot-worker`.
+   - Windows: install under `C:\Program Files\critique-bot`; run [`packaging/worker-start.ps1`](../packaging/worker-start.ps1) under a dedicated account and set `$RunnerAccount` to the runner's account.
 
-6. Register (or retag) the runner: tag `critique-bot`, executor **shell**, on this same machine.
+6. Register (or retag) the runner: tag `critique-bot`, executor **shell**, on this same machine, **for this project only** (not shared). Turn on *Protected* if reviews are only needed for protected branches, and turn off *Run untagged jobs*.
 
 Check the worker is alive with `critique-bot queue-status --config /opt/critique-bot/config.json`. It exits non-zero if no worker is running and also lists waiting jobs and how recent ones ended. (Under the hood: `queue_dir`, default `/opt/critique-bot/.critique-queue`, holds a `worker.heartbeat` updated every 5s; submit treats it stale after 20s.)
 
@@ -61,11 +61,11 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
 
 1. Copy [`.gitlab-ci.yml`](../.gitlab-ci.yml) (Linux) or [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml) (Windows) into the app repo as `.gitlab-ci.yml` (or merge the `review` job into an existing pipeline).
 2. Confirm the runner is available to that project (project or group runner).
-3. Create a **project access token**: Settings → Access Tokens → role Developer or higher, scope `api`.
+3. Create a **project access token**: Settings → Access Tokens → role **Reporter**, scope `api`, with an expiry. Reporter is the lowest role that can read a private MR's diff and create MR discussions; no scope narrower than `api` can post notes. Do not use a personal or group token.
 4. CI/CD variable `CRITIQUE_GITLAB_TOKEN`:
    - Value: that token
    - Masked: yes
-   - **Protect variable: no** (protected variables are hidden from feature-branch MR pipelines)
+   - **Protect variable: yes** when the reviewed MRs come from protected branches. Protected variables are hidden from pipelines on unprotected branches; if you must post on feature-branch MRs, leave it unprotected and treat the token as readable by everyone who can push a branch (hence Reporter, one project, short expiry, rotation).
 5. `CRITIQUE_BIN` and `CRITIQUE_CONFIG` belong in the job YAML (`variables:`), not in GitLab **Settings → CI/CD → Variables**. That UI is only needed for `CRITIQUE_GITLAB_TOKEN`.
 
    | YAML variable | Linux default | Windows default | Meaning |
@@ -76,7 +76,7 @@ Check the worker is alive with `critique-bot queue-status --config /opt/critique
    Put the install on the **runner PATH** so `CRITIQUE_BIN` can stay `critique-bot`:
 
    - Linux: install so `/usr/local/bin/critique-bot` (or similar) is on the runner user’s `PATH`.
-   - Windows: [`packaging/worker-start.ps1`](../packaging/worker-start.ps1) prepends the zip/`\.venv\Scripts` directory to the current user’s `PATH`. Restart `gitlab-runner` once so jobs see it. If the runner is a Windows service running as Local System, add that directory to the **system** PATH, or set `CRITIQUE_BIN` in the YAML to the full path of `critique-bot.exe`.
+   - Windows: set `CRITIQUE_BIN` in the YAML to the full path of `critique-bot.exe` (e.g. `C:\Program Files\critique-bot\critique-bot.exe`), or have an administrator add that folder to the **system** PATH. `worker-start.ps1` no longer edits `PATH`: a user-writable folder early in `PATH` lets anyone who can write there shadow other programs.
 
    `config.json` is not found via `PATH`. Edit `CRITIQUE_CONFIG` in `.gitlab-ci.yml` to the worker’s file (pip/venv: the clone’s `config.json`).
 
@@ -159,8 +159,8 @@ Start with a one-shot `--mode general` prompt (login, selectors, real round trip
 | Job queued forever | Worker logs; chat UI login expired (`worker --headed`); selectors in `config.json` |
 | Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup`. If the page shows a "Continue generating" button, set `selectors.continue_button` ([`config.json.md`](config.json.md#continue_button)) |
 | Same job retried and then failed | It hit `max_attempts` (default 3). The real error is in `status.json` and the worker log |
-| Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present, un-protected, scope `api`. `gitlab-post` exits non-zero when the summary fails to post |
+| Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present (a protected variable is missing on unprotected branches), scope `api`, role Reporter+. `gitlab.base_url` / `CI_SERVER_URL` must be the same host as the MR, and must not redirect. `gitlab-post` exits non-zero when the summary fails to post |
 | `No Chromium browser was found` | Edge installed for the runner user |
-| Permission denied on queue | Worker user ≠ GitLab runner user |
+| Permission denied on queue | Runner user not in group `critique-bot`, queue folder not `2750` setgid, or the worker unit lacks `CRITIQUE_QUEUE_SHARED=1` |
 | Cloudflare / login page | Headless is blocked; re-login with `--headed` |
 | `could not build git diff` / `no merge base` | Shallow clone missed the MR merge-base. Upgrade critique-bot (submit fetches that SHA and uses two-dot diff). Retry the job. |

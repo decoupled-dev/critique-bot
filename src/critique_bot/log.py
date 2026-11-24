@@ -105,6 +105,21 @@ def _write(level: str, message: str) -> None:
             spinner.render()
 
 
+def notice(message: str) -> None:
+    """A plain-language message for the person at the terminal; always shown, never a log line.
+
+    Use for anything crit blocked or refused, phrased as what happened and what to do
+    about it. Detailed diagnostics stay in debug/info/warn (shown only with --logs).
+    """
+    with _spinner_lock:
+        spinner = _active_spinner
+        if spinner is not None:
+            spinner.clear()
+        print_safe(paint(message, "33", file=sys.stderr), file=sys.stderr, flush=True)
+        if spinner is not None:
+            spinner.render()
+
+
 def debug(message: str) -> None:
     _write("DEBUG", message)
 

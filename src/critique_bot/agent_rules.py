@@ -41,6 +41,13 @@ _CD = {"cd", "set-location", "sl", "pushd", "popd", "chdir"}
 _FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "rg", "sort", "uniq", "wc", "cut", "tr", "findstr",
             "select-string", "sls", "select-object", "select", "out-string", "out-null", "format-table", "ft",
             "format-list", "fl", "measure-object", "more", "less", "column", "true"}
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Programs that run the code or script they are handed: a "*" after them covers any code.
+_INTERPRETER_RE = re.compile(
+    r"^(?:python[\d.]*w?|py|pypy\d*|node|nodejs|deno|bun|sh|bash|zsh|dash|ksh|fish|perl|ruby|php|pwsh|powershell|cmd|osascript|lua|tclsh|rscript)$"
+)
+_EVAL_FLAGS = {"-c", "-e", "-m", "--eval", "--command", "-command", "/c", "-encodedcommand", "--exec"}
+_SCRIPT_RUNNERS = {"npm", "yarn", "pnpm", "bun"}
 _HARMLESS_REDIRECT = re.compile(r"(?<![^\s])(?:[12*]?>&[12]|[12*]?>\s*(?:/dev/null|nul|\$null))(?=\s|$)", re.I)
 
 
@@ -156,13 +163,23 @@ def command_segments(command: str) -> list[str] | None:
             separator = part
             continue
         segment = part.strip()
+        if _ASSIGNMENT_RE.match(segment):
+            return None  # PATH=x or LD_PRELOAD=x in front changes what runs; no rule covers that
         program = _program(segment)
         if not program or program in _CD:
             continue
-        if separator in {"|", "||"} and program in _FILTERS:
+        if separator in {"|", "||"} and program in _FILTERS and _harmless_filter(segment):
             continue
         segments.append(segment)
     return segments or None
+
+
+def _harmless_filter(segment: str) -> bool:
+    """True for a filter with no option that writes or runs something (``sort -o``, ``rg --pre``)."""
+    from critique_bot import agent_tools
+
+    program, args = agent_tools._split_program(segment)
+    return bool(program) and agent_tools._segment_read_only(program, args, segment)
 
 
 def _command_matches(command: str, rule: Rule) -> bool:
@@ -189,27 +206,35 @@ def _command_denied(command: str, rule: Rule) -> bool:
 def suggest_rule(command: str) -> str:
     """The allow rule a "don't ask again" answer saves: ``./gradlew test --info`` -> ``./gradlew test*``.
 
-    The program and its first word that is not a flag or a path, so the rule covers that
-    kind of command and not every use of the program. "" when no rule can cover it.
+    The program and its first word, when that word is a plain subcommand (``test``,
+    ``status``), so the rule covers that kind of command and not every use of the
+    program. When the first word is a flag or a path, or the program runs code it is
+    handed (``python x.py``, ``node -e``, ``bash -c``, ``npm run build``), a ``*`` would
+    cover any script or any code, so the rule is the exact command. "" when no rule can cover it.
     """
     segments = command_segments(command)
     if not segments or len({_program(segment) for segment in segments}) != 1:
         return ""
+    exact = " ".join(segments[0].split())
     try:
         tokens = shlex.split(segments[0], posix=False)
     except ValueError:
         tokens = segments[0].split()
-    words: list[str] = []
-    for token in tokens:
-        if not words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
-            return ""  # an environment assignment in front: too specific to generalize
-        words.append(token)
-        if len(words) == 1:
-            continue
-        if token.startswith(("-", "/", "\\", ".", "~", "$", "%")) or re.search(r"[\\/=:*?\"'<>|]", token):
-            words.pop()
-        break
-    return " ".join(words) + "*" if words else ""
+    if not tokens or _ASSIGNMENT_RE.match(tokens[0]):
+        return ""  # an environment assignment in front: too specific to generalize
+    exact_rule = "" if "*" in exact else exact
+    program = _program(segments[0])
+    lowered = [token.strip("\"'").lower() for token in tokens[1:]]
+    if _INTERPRETER_RE.match(program) or set(lowered) & _EVAL_FLAGS:
+        return exact_rule
+    if program in _SCRIPT_RUNNERS and lowered[:1] == ["run"] or program in _SCRIPT_RUNNERS and lowered[:1] == ["run-script"]:
+        return exact_rule
+    if len(tokens) == 1:
+        return tokens[0] + "*"
+    second = tokens[1]
+    if second.startswith(("-", "/", "\\", ".", "~", "$", "%")) or re.search(r"[\\/=:*?\"'<>|]", second):
+        return exact_rule  # a flag or a path: never widen past it
+    return f"{tokens[0]} {second}*"
 
 
 # --------------------------------------------------------------------------- paths

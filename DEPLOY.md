@@ -318,17 +318,30 @@ $env:CRITIQUE_MODEL = "GPT-5.1"
 
 Also: `CRITIQUE_STORAGE_STATE`, `CRITIQUE_USER_DATA_DIR`, `CRITIQUE_CDP_URL`, `CRITIQUE_QUEUE_DIR`.
 
+GitLab API calls (`gitlab-post`, MR context) ignore `http_proxy` / `https_proxy` by default, so a proxy set for other traffic never sees the GitLab token. Set `CRITIQUE_GITLAB_PROXY` to a proxy URL to send them through one, or to `env` to use the usual proxy variables. They never follow HTTP redirects (set `gitlab.base_url` to the final `https://` address), and the token is only sent to the host in `gitlab.base_url` / `CRITIQUE_GITLAB_URL` / `CI_SERVER_URL`: an `--mr-url` on another host is refused.
+
 ## CI runner (GitLab)
 
 Keep **one worker** running on the runner PC. CI jobs only call `submit`. The job and the worker must share `queue_dir` (GitLab **shell** executor).
 
 1. Install Edge, unpack the zip (or pip-install) onto the runner, copy `config.example.json` to `config.json`.
 2. Sign in once: `critique-bot worker --config config.json --logs` (the window opens when `.edge-profile` is missing). Later runs reuse that profile.
-3. Start the worker at boot:
-   - **Linux:** copy [`packaging/critique-bot-worker.service`](packaging/critique-bot-worker.service) to `/etc/systemd/system/`, edit paths, then `systemctl enable --now critique-bot-worker`.
-   - **Windows:** [`packaging/worker-start.ps1`](packaging/worker-start.ps1) at logon, or a scheduled task.
-4. Attach GitLab: tag the runner `critique-bot`. Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux bash) or [`packaging/gitlab-ci.windows.yml`](packaging/gitlab-ci.windows.yml) (Windows PowerShell) into the project as `.gitlab-ci.yml`. Edit `CRITIQUE_BIN` / `CRITIQUE_CONFIG` in that YAML (`variables:`), not in GitLab CI/CD variables. Put `critique-bot` on the runner `PATH` (Windows: `worker-start.ps1` does this) so `CRITIQUE_BIN` can stay `critique-bot`. On Windows invoke with `& "$CRITIQUE_BIN" submit …`, not `$env:CRITIQUE_BIN submit`.
-5. Each MR job runs `critique-bot submit … --output-dir out` (submit builds `diff.patch` from the checkout and attaches changed files), then posts with `critique-bot gitlab-post` (`--review-file out/review.md --patch-file diff.patch`). That strips the machine-readable JSON block out of the comment and adds inline comments on the changed lines. Needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`).
+3. Start the worker at boot, **as its own user** (see "Separate the worker from CI" below):
+   - **Linux:** copy [`packaging/critique-bot-worker.service`](packaging/critique-bot-worker.service) to `/etc/systemd/system/`, follow the one-time commands at its top (user `critique-bot`, queue group), edit paths, then `systemctl enable --now critique-bot-worker`.
+   - **Windows:** install under `C:\Program Files\critique-bot` and run [`packaging/worker-start.ps1`](packaging/worker-start.ps1) at logon or as a scheduled task under a dedicated account. It sets the install folder's ACL (SYSTEM, Administrators, the worker account; read/execute for `$RunnerAccount`) and does not change `PATH`.
+4. Attach GitLab: tag the runner `critique-bot`. Copy [`.gitlab-ci.yml`](.gitlab-ci.yml) (Linux bash) or [`packaging/gitlab-ci.windows.yml`](packaging/gitlab-ci.windows.yml) (Windows PowerShell) into the project as `.gitlab-ci.yml`. Edit `CRITIQUE_BIN` / `CRITIQUE_CONFIG` in that YAML (`variables:`), not in GitLab CI/CD variables. Use the full path of the exe in `CRITIQUE_BIN`, or a `PATH` entry only administrators can write. On Windows invoke with `& "$CRITIQUE_BIN" submit …`, not `$env:CRITIQUE_BIN submit`.
+5. Each MR job runs `critique-bot submit … --output-dir out` (submit builds `diff.patch` from the checkout and attaches changed files), then posts with `critique-bot gitlab-post` (`--review-file out/review.md --patch-file diff.patch`). That strips the machine-readable JSON block out of the comment and adds inline comments on the changed lines. Needs `CRITIQUE_GITLAB_TOKEN` (see the token notes below).
+
+### Separate the worker from CI
+
+A shell runner runs each job as the runner's OS user, and the job runs whatever the branch's `.gitlab-ci.yml` says. If the worker runs as that same user, **any developer who can push a branch** can read the signed-in browser profile (`.edge-profile`, i.e. SSO cookies for the chat site), every queued prompt and result, `config.json`, and any token in the environment. So:
+
+- **Worker user.** Run the worker as a dedicated user (`critique-bot`), never as `gitlab-runner` and never as root (as root Chromium runs without its sandbox). The systemd unit does this and adds hardening (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges`, `UMask=0077`, …). Keep `user_data_dir` (the profile) and `queue_dir` under the worker's home, e.g. `/var/lib/critique-bot/`.
+- **Queue group.** Add `gitlab-runner` to group `critique-bot` and create the queue folder `2750 critique-bot:critique-bot`. With `CRITIQUE_QUEUE_SHARED=1` (set in the unit; a setgid queue folder is detected too) the worker keeps `inbox/` at `2770` (CI may drop jobs), `results/` and each result folder at `2750` with `0640` `status.json` / review files (CI reads them), and `processing/`, failure snapshots (`page.html`, `screenshot.png`) and the profile owner-only. Every CI job in the group can read every result folder; there is no per-job ACL.
+- **Install folder.** `root:critique-bot`, no access for others; the CI user only needs to read `config.json` and run the binary. `config.json` must not hold secrets.
+- **Runner scope.** Register the runner for the specific project(s) only (not shared/group-wide), turn on *Protected* (runs only for protected branches) when you can, and disable *Run untagged jobs*.
+- **Token.** Use a project access token, not a personal one, with role **Reporter** and scope **`api`**: Reporter is the lowest role that can read a private project's MR diff and create MR discussions, and no narrower scope than `api` can post notes. Set an expiry and rotate it. Prefer a **protected**, masked CI/CD variable. Protected variables are hidden from pipelines on unprotected branches, so if you must post on feature-branch MRs the variable has to be unprotected; then treat the token as readable by everyone who can push a branch (that is why it is Reporter-only and project-scoped).
+- **Windows.** Same model: the worker under its own account (`worker-start.ps1`), `$RunnerAccount` gets read/execute on the install folder and modify on the queue folder only; the browser profile is made private to the worker account by crit (icacls). Without a separate account, a CI job can read the profile.
 
 Concurrent jobs enqueue. The worker runs up to `max_parallel_tabs` reviews at once (default 1) and waits `min_interval_seconds` (default 30) plus jitter between starts.
 
@@ -352,7 +365,7 @@ Do not run two one-shot `critique-bot --patch-file` processes on the same profil
 | --- | --- |
 | `config.json` | Chat URL, selectors, model, timeouts, `queue_dir` (create from `config.example.json`) |
 | `prompts/review.txt` | Default review template (`{patch}` placeholder). Override with `--prompt-template` or a `prompts/review.txt` next to the binary / in the cwd |
-| `.edge-profile/` | Created on first run; keep it if you want to stay signed in |
+| `.edge-profile/` | Created on first run; keep it if you want to stay signed in. Holds SSO cookies: owner-only, never readable by the CI user |
 | `.critique-queue/` | Worker inbox (created automatically next to `config.json` unless `queue_dir` is set) |
 
 Do not ship `config.json` if it contains a private chat URL or session files (`storage_state.json`).

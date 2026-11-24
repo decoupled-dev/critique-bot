@@ -1081,6 +1081,42 @@ def _size_text(size: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+def _redact_lines(lines: list[str]) -> list[str]:
+    """``lines`` with known secret formats hidden, judged on the whole text, and the same number of lines.
+
+    A window of a file (or one search hit) can cut a secret in half, say a private
+    key's first lines without its END line, and the redaction of the outgoing message
+    would not know it any more. So the whole file is redacted first and windows are
+    taken from that. A secret that spanned lines leaves its marker on its first line
+    and :data:`REDACTED` on the rest, so line numbers still match the file.
+    """
+    clean, hidden = redact_secrets("\n".join(lines))
+    if not hidden:
+        return lines
+    new = clean.split("\n")
+    if len(new) == len(lines):
+        return new
+    out = list(lines)
+    matcher = difflib.SequenceMatcher(None, lines, new, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal" or i1 == i2:
+            continue
+        size = i2 - i1
+        block = new[j1:j2]
+        if len(block) > size:
+            block = block[: size - 1] + [" ".join(block[size - 1 :])]
+        out[i1:i2] = block + [REDACTED + "continued]"] * (size - len(block))
+    return out
+
+
+def _redacted_file_lines(path: Path) -> list[str] | None:
+    """A text file's lines after :func:`_redact_lines`, or None when it cannot be read."""
+    try:
+        return _redact_lines(agent_edit.load_text(path).text.split("\n"))
+    except (OSError, ValueError):
+        return None
+
+
 def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext) -> str:
     path = resolve(ctx.workspace, raw)
     name = rel(ctx.workspace, path)
@@ -1100,7 +1136,7 @@ def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: i
     if looks_binary_path(str(path)) or looks_binary_bytes(head):
         return f"--- {name} ---\n{_binary_note(path, head)}"
     loaded = agent_edit.load_text(path)
-    lines = loaded.text.split("\n")
+    lines = _redact_lines(loaded.text.split("\n"))
     if lines and lines[-1] == "":
         lines = lines[:-1]
     total = len(lines)
@@ -1231,15 +1267,19 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     order = sorted(hits, key=lambda item: (item not in touched, item.count("/"), item))
     shown = 0
     for path in order:
+        # Hit lines come from the whole file after redaction, so a hit inside a key shows no part of it.
+        full = _redacted_file_lines(ctx.workspace / path)
         for line_no, text in hits[path][:HITS_PER_FILE]:
             if (path, line_no) in seen:
                 continue
             if len(lines) >= limit:
                 break
+            if full is not None and 0 < line_no <= len(full):
+                text = full[line_no - 1].strip()
             lines.append(f"{path}:{line_no}: {_one_line(text, SNIPPET_CHARS)}")
             shown += 1
             if context:
-                lines.extend(_context_lines(ctx.workspace / path, line_no, context))
+                lines.extend(_context_lines(ctx.workspace / path, line_no, context, full))
     remaining = total - shown
     if remaining > 0:
         notes.append(f"{remaining} more hits in {files_hit} files; narrow with path, glob, or a longer pattern")
@@ -1265,11 +1305,11 @@ def risky_regex(pattern: str) -> bool:
     return bool(_NESTED_REPEAT_RE.search(pattern))
 
 
-def _context_lines(path: Path, line_no: int, context: int) -> list[str]:
-    try:
-        text = agent_edit.load_text(path).text.split("\n")
-    except OSError:
-        return []
+def _context_lines(path: Path, line_no: int, context: int, text: list[str] | None = None) -> list[str]:
+    if text is None:
+        text = _redacted_file_lines(path)
+        if text is None:
+            return []
     out = []
     for number in range(max(1, line_no - context), min(len(text), line_no + context) + 1):
         if number != line_no:
@@ -1544,8 +1584,8 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             if new_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
                 errors.append(f"{name} not replaced: the new contents have a syntax {new_check}")
                 continue
-        if ctx.checkpoints is not None:
-            ctx.checkpoints.save(path)
+        if ctx.checkpoints is not None and not ctx.checkpoints.save(path) and existed and sensitive_file(path):
+            notes.append(_NO_UNDO_NOTE)
         try:
             agent_edit.save_text(path, contents, like)
         except (ValueError, OSError) as exc:
@@ -1562,6 +1602,8 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if notes:
             summary += "; " + "; ".join(notes)
         diff = agent_edit.hunk_diff(before, contents.replace("\r\n", "\n"), name)
+        if diff and existed and sensitive_file(path):
+            diff = _SECRET_DIFF_NOTE
         if existed and diff:
             summary += "\n" + diff
         plus, minus = _diff_counts(diff)
@@ -1582,6 +1624,10 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             ui["summary"] += "; " + _one_line("; ".join(errors), 100)
         return err("write_files", "; ".join(errors), output=output, ctx=ctx, ui=ui)
     return ok("write_files", output, ctx, ui)
+
+
+_SECRET_DIFF_NOTE = "(diff not shown: this file usually holds secrets)"
+_NO_UNDO_NOTE = "crit undo will not restore it (files that hold secrets are not copied)"
 
 
 def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1638,7 +1684,9 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if result.text is None:
             label = f"edit {number} of {len(edits)}: " if len(edits) > 1 else ""
             output = ""
-            if result.candidate:
+            if result.candidate and sensitive_file(path):
+                output = "(the closest text is not shown: this file usually holds secrets; read it to see it)"
+            elif result.candidate:
                 output = (
                     "closest text in the file. Copy old_string from it exactly, without the N| prefix:\n"
                     + result.candidate
@@ -1658,6 +1706,8 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     before_check = agent_edit.syntax_check(name, loaded.text)
     after_check = agent_edit.syntax_check(name, text)
     diff = agent_edit.hunk_diff(loaded.text, text, name)
+    if sensitive_file(path):
+        diff = _SECRET_DIFF_NOTE if diff else ""  # its lines would carry the file's secrets to the chat
     strict = Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES
     if strict and before_check == "ok" and after_check.startswith("error"):
         return err(
@@ -1666,8 +1716,8 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             output=diff,
             ctx=ctx,
         )
-    if ctx.checkpoints is not None:
-        ctx.checkpoints.save(path)
+    if ctx.checkpoints is not None and not ctx.checkpoints.save(path) and sensitive_file(path):
+        notes.append(_NO_UNDO_NOTE)
     try:
         agent_edit.save_text(path, text, loaded)
     except ValueError as exc:
@@ -2399,11 +2449,47 @@ def _git_diff(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return _git(ctx, git_args, tool="git_diff")
 
 
+# Subcommands that take --no-ext-diff and --no-textconv.
+_GIT_DIFFING = {"diff", "show", "log"}
+
+
+def git_argv(workspace: Path, git_args: list[str]) -> list[str]:
+    """The argv for a git call crit makes itself, in ``workspace``.
+
+    The repository's own config could name programs that git runs on a plain
+    ``git status`` or ``git diff``: an fsmonitor hook, hooks, a pager, an external
+    diff, or a textconv filter. Each is switched off here, so reading the repo
+    never runs code from it. Pair it with :func:`_git_environment`.
+    """
+    hooks = "NUL" if sys.platform == "win32" else "/dev/null"
+    argv = [
+        "git", "-c", "core.quotepath=off", "-c", "core.fsmonitor=", "-c", f"core.hooksPath={hooks}",
+        "-c", "diff.external=", "-c", "core.pager=cat", "--no-pager", "-C", str(workspace),
+    ]
+    if git_args and git_args[0] in _GIT_DIFFING:
+        git_args = [git_args[0], "--no-ext-diff", "--no-textconv", *git_args[1:]]
+    return argv + list(git_args)
+
+
+def _git_names_blob(ctx: ToolContext, rev: Any) -> bool:
+    """True when ``rev`` (no ``:path`` part) names a file's contents (a blob), not a commit."""
+    if not isinstance(rev, str) or not rev or ":" in rev or rev.startswith("-") or not _REV_RE.fullmatch(rev):
+        return False
+    try:
+        proc = subprocess.run(
+            git_argv(ctx.workspace, ["cat-file", "-t", rev]),
+            capture_output=True, check=False, timeout=10, env=_git_environment(), stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == b"blob"
+
+
 def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
     run = ctx.runner or subprocess.run
     try:
         proc = run(
-            ["git", "-c", "core.quotepath=off", "-C", str(ctx.workspace), *git_args],
+            git_argv(ctx.workspace, git_args),
             capture_output=True,
             check=False,
             shell=False,
@@ -2434,7 +2520,12 @@ def _git_environment() -> dict[str, str]:
         env = dict(scrubbed())
     else:
         env = {key: value for key, value in agent_shell.environment().items() if not _SECRET_NAME_RE.search(key)}
+    for key in list(env):
+        # Set outside crit, these would still run a program or read other config.
+        if key.upper() in {"GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_WORK_TREE"}:
+            del env[key]
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
 
 
@@ -2868,6 +2959,8 @@ class _LimitedRedirects(urllib.request.HTTPRedirectHandler):
         scheme = parts.scheme.lower()
         if scheme not in {"http", "https"}:
             raise urllib.error.URLError(f"redirected to a {scheme or 'relative'} URL, which is not fetched")
+        if urllib.parse.urlsplit(req.full_url).scheme.lower() == "https" and scheme != "https":
+            raise urllib.error.URLError(f"redirected from https to plain http ({target}), which is not fetched")
         here = (urllib.parse.urlsplit(req.full_url).hostname or "").lower()
         if (parts.hostname or "").lower() != here:
             raise _CrossHostRedirect(target)
@@ -3172,6 +3265,9 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
         secret = [item for item in paths if sensitive_file(item)]
         if tool == "git_show":
             secret += [Path(item) for item in _rev_paths(args.get("rev")) if sensitive_file(item)]
+            if not secret and _git_names_blob(ctx, args.get("rev")):
+                # A bare blob id shows a file's contents with no name to check, so it asks like a secret file.
+                secret.append(Path(str(args.get("rev"))))
         if secret:
             shown = ", ".join(rel(ctx.workspace, item) for item in secret[:3])
             return Permission(
@@ -3194,6 +3290,10 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
             detail = str(_patch_text(args) or "")[:4000]
         elif tool == "edit_file":
             detail = _edit_preview(args)
+        secret = [item for item in paths if sensitive_file(item)]
+        if secret:
+            shown = ", ".join(rel(ctx.workspace, item) for item in secret[:3])
+            return Permission("outside", f"{summary} (a file that usually holds secrets: {shown})", "", detail, risk=SECRET_EDIT_RISK)
         if outside:
             shown = ", ".join(str(item) for item in outside[:3])
             return Permission(
@@ -3214,9 +3314,14 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
         reach = network_command(command)
         if reach:
             return Permission("network", f"{label} (it {reach})", "", command, risk=f"{reach}, which can send data off this machine")
-        named = _command_secret_paths(command, ctx)
+        base = paths[0] if paths else None
+        named = _command_secret_paths(command, ctx, base)
         if named:
             return Permission("outside", f"{label} (it names {named[0]})", "", command, risk=SECRET_RISK)
+        if read_only_command(command):
+            far = _command_outside_paths(command, ctx, base)
+            if far:
+                return Permission("outside", f"{label} (it reads {far[0]}, outside the workspace)", "", command, risk=OUTSIDE_READ_RISK)
         written = _command_runs_written(command, ctx)
         if written:
             program = command_key(command)
@@ -3240,6 +3345,10 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
         named = _command_secret_paths(text, ctx)
         if named:
             return Permission("outside", f"{label} (it names {named[0]})", "", text, risk=SECRET_RISK)
+        if read_only_command(text):
+            far = _command_outside_paths(text, ctx)
+            if far:
+                return Permission("outside", f"{label} (it reads {far[0]}, outside the workspace)", "", text, risk=OUTSIDE_READ_RISK)
         program = command_key(text)
         return Permission("command", label, f"command:{program}" if program else "", text)
     if tool == "delegate":
@@ -3269,11 +3378,12 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
 
 SECRET_RISK = "reads a file that usually holds secrets (its contents go to the chat, with known secret formats redacted)"
 OUTSIDE_READ_RISK = "reads outside the workspace (the contents go to the chat)"
+SECRET_EDIT_RISK = "changes a file that usually holds secrets"
 
 
 def _rev_paths(rev: Any) -> list[str]:
     """``HEAD:.env`` -> ``[".env"]``: the file a git revision names, if it names one."""
-    if not isinstance(rev, str) or ":" not in rev:
+    if not isinstance(rev, str) or ":" not in rev or "://" in rev or re.match(r"^[A-Za-z]:[\\/]", rev):
         return []
     return [rev.split(":", 1)[1]] if rev.split(":", 1)[1] else []
 
@@ -3292,23 +3402,115 @@ def _command_words(command: str) -> list[str]:
     return words
 
 
-def _command_secret_paths(command: str, ctx: ToolContext) -> list[str]:
-    """Words of ``command`` that name a file which usually holds secrets (``cat .env``, ``cp ~/.aws/credentials x``)."""
+_GLOB_CHARS = re.compile(r"[*?\[]")
+_GLOB_LIMIT = 5000
+
+
+def _command_cwd(ctx: ToolContext, cwd: Path | None = None) -> Path:
+    """The folder a command's relative words are read from: ``cwd``, else the session's cwd."""
+    return Path(cwd or getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+
+
+def _word_path(word: str, base: Path) -> Path | None:
+    """``word`` as an absolute path (``~`` expanded, relative to ``base``), links followed; None if it cannot be one."""
+    text = os.path.expanduser(word) if word.startswith("~") else word
+    try:
+        return Path(os.path.realpath(os.path.join(str(base), text)))
+    except (OSError, ValueError):
+        return None
+
+
+def _glob_hits(pattern: str, base: Path) -> list[Path] | None:
+    """What a shell glob in ``pattern`` could expand to, hidden files included; None if too many to check.
+
+    Shells and PowerShell differ on whether ``*`` matches dotfiles, so this one does.
+    """
+    text = os.path.expanduser(pattern) if pattern.startswith("~") else pattern
+    path = Path(text)
+    current = [Path(path.anchor)] if path.is_absolute() else [base]
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    match = fnmatch.fnmatch if _CASE_FOLD else fnmatch.fnmatchcase
+    checked = 0
+    for part in parts:
+        following: list[Path] = []
+        for folder in current:
+            if not _GLOB_CHARS.search(part):
+                if os.path.lexists(folder / part):
+                    following.append(folder / part)
+                continue
+            try:
+                entries = list(os.scandir(folder))
+            except OSError:
+                continue
+            checked += len(entries)
+            if checked > _GLOB_LIMIT:
+                return None
+            following.extend(Path(entry.path) for entry in entries if match(entry.name, part))
+        current = following
+        if not current:
+            break
+    return current
+
+
+def _command_secret_paths(command: str, ctx: ToolContext, cwd: Path | None = None) -> list[str]:
+    """Words of ``command`` that name, or could name, a file which usually holds secrets.
+
+    ``cat .env``, ``cp ~/.aws/credentials x``, ``git show HEAD:.env``, a link to a
+    secret file, and a glob that matches one (``cat .e*``). A glob after a ``cd`` in
+    the same command is read from a folder that cannot be known here, so it counts.
+    """
+    base = _command_cwd(ctx, cwd)
+    changes_folder = any(_program_of(part) in _CD_PROGRAMS for part in _SEGMENT_RE.split(command)[::2])
     found: list[str] = []
     for word in _command_words(command):
         text = os.path.expanduser(word) if word.startswith("~") else word
-        if sensitive_file(text):
+        if sensitive_file(text) or any(sensitive_file(item) for item in _rev_paths(word)):
+            found.append(word)
+            continue
+        if _GLOB_CHARS.search(word):
+            hits = None if changes_folder else _glob_hits(word, base)
+            if hits is None or any(sensitive_file(item) or sensitive_file(os.path.realpath(item)) for item in hits):
+                found.append(word)
+            continue
+        resolved = _word_path(word, base)
+        if resolved is not None and resolved.exists() and sensitive_file(resolved):
             found.append(word)
     return found
 
 
+def _module_files(command: str) -> list[str]:
+    """Files ``python -m pkg.mod`` runs: ``pkg/mod.py``, ``pkg/mod/__main__.py``, and the packages' ``__init__.py``."""
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    out: list[str] = []
+    for index, token in enumerate(tokens):
+        token = token.strip("\"'")
+        if token == "-m" and index + 1 < len(tokens):
+            module = tokens[index + 1].strip("\"'")
+        elif token.startswith("-m") and len(token) > 2 and re.fullmatch(r"-m[\w.]+", token):
+            module = token[2:]
+        else:
+            continue
+        if not re.fullmatch(r"[\w.]+", module):
+            continue
+        parts = [part for part in module.split(".") if part]
+        if not parts:
+            continue
+        stem = "/".join(parts)
+        out += [stem + ".py", stem + "/__main__.py", stem + "/__init__.py"]
+        out += ["/".join(parts[:depth]) + "/__init__.py" for depth in range(1, len(parts))]
+    return out
+
+
 def _command_runs_written(command: str, ctx: ToolContext) -> str:
-    """A file this task wrote or changed that ``command`` names (``python check.py``), or ""."""
+    """A file this task wrote or changed that ``command`` names (``python check.py``, ``python -m check``), or ""."""
     state = ctx.state
     if state is None or not state.edits:
         return ""
     current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
-    for word in _command_words(command):
+    for word in _command_words(command) + _module_files(command):
         try:
             candidates = [resolve(ctx.workspace, word)]
             if not Path(word).is_absolute():
@@ -3321,8 +3523,39 @@ def _command_runs_written(command: str, ctx: ToolContext) -> str:
     return ""
 
 
+def _command_outside_paths(command: str, ctx: ToolContext, cwd: Path | None = None) -> list[str]:
+    """Words of a read-only ``command`` that point outside the workspace (``cat /etc/passwd``, ``cd ..``).
+
+    Flags are skipped, and so are a flag's ``=value`` and words for adb, which name
+    paths on the device. A ``/x`` switch that names nothing on disk (``findstr /s``) is a switch.
+    """
+    base = _command_cwd(ctx, cwd)
+    found: list[str] = []
+    for segment in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", command))[::2]:
+        program, args = _split_program(segment)
+        if not program or program == "adb":
+            continue
+        for arg in args:
+            value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
+            if not value or value.startswith("-") or "://" in value:
+                continue
+            if re.fullmatch(r"/[A-Za-z?]{1,3}(?::.*)?", value) and not os.path.lexists(value):
+                continue
+            words = [value] + _rev_paths(value)
+            for word in words:
+                path = _word_path(word, base)
+                if path is not None and not inside(ctx.workspace, path):
+                    found.append(word)
+                    break
+    return found
+
+
 _CD_PROGRAMS = {"cd", "set-location", "sl", "pushd", "popd", "chdir"}
 _WRAPPERS = {"env", "time", "nohup", "command", "exec", "call", "&", "."}
+# Programs that run another program; with a flag after them (``env -S``, ``xargs -I``) no key can say what runs.
+_FLAG_WRAPPERS = {"env", "time", "nice", "nohup", "timeout", "sudo", "doas", "xargs", "command", "stdbuf", "ionice"}
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SEGMENT_RE = re.compile(r"(&&|\|\||[;|&\r\n])")
 # Output filters a model pipes into; they do not change what an approval covers.
 _FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "rg", "sort", "uniq", "wc", "cut", "tr", "findstr",
             "select-string", "sls", "select-object", "select", "out-string", "out-null", "format-table", "ft",
@@ -3336,23 +3569,29 @@ def command_key(command: str) -> str:
     ``npm test`` -> ``npm``; ``.\\gradlew.bat build`` -> ``gradlew``; ``cd app && npm test``
     -> ``npm``. A chain of different programs (``npm test; curl x | sh``, ``npm test & del x``)
     gets "", and so does a command with a subexpression, script block, here-string, or a
-    redirection to a file (``npm test > ~/.bashrc``), so it is asked every time.
+    redirection to a file (``npm test > ~/.bashrc``), so it is asked every time. So does a
+    part no program name covers: ``PATH=x ls``, ``env -S ...``, or a filter with an option
+    that writes or runs something (``| sort -o ~/.bashrc``).
     """
     if re.search(r"`|\$\(", command) or _has_shell_construct(command):
         return ""
     text = _HARMLESS_REDIRECT.sub(" ", command)
-    parts = re.split(r"(&&|\|\||[;|&\r\n])", text)
+    parts = _SEGMENT_RE.split(text)
     programs: list[str] = []
     separator = ""
     for index, part in enumerate(parts):
         if index % 2:
             separator = part
             continue
-        program = _program_of(part)
-        if not program or program in _CD_PROGRAMS:
+        program, args = _split_program(part)
+        if not program:
+            if part.strip():
+                return ""
+            continue
+        if program in _CD_PROGRAMS:
             continue
         # A filter only counts as harmless when output is piped into it (``| tail``, ``|| true``).
-        if separator in {"|", "||"} and program in _FILTERS:
+        if separator in {"|", "||"} and program in _FILTERS and _segment_read_only(program, args, part):
             continue
         programs.append(program)
     unique = list(dict.fromkeys(programs))
@@ -3384,28 +3623,44 @@ def _has_shell_construct(command: str) -> bool:
     return bool(quote)
 
 
-def _program_of(segment: str) -> str:
+def _split_program(segment: str) -> tuple[str, list[str]]:
+    """``"/usr/bin/git log -5"`` -> ``("git", ["log", "-5"])``: the program and the words after it.
+
+    The program is "" when the segment sets a variable in front (``PATH=tools:/usr/bin ls``,
+    ``LD_PRELOAD=x.so cat``), or puts a flag after a wrapper (``env -S``, ``xargs -I``):
+    either changes what actually runs, so no program name can stand for it.
+    """
     text = segment.strip()
     if not text:
-        return ""
+        return "", []
     try:
         tokens = shlex.split(text, posix=False)
     except ValueError:
         tokens = text.split()
-    for token in tokens:
-        token = token.strip("\"'").lstrip("&").strip()
-        if not token or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+    for index, raw in enumerate(tokens):
+        token = raw.strip("\"'").lstrip("&").strip()
+        if not token:
             continue
+        if _ASSIGNMENT_RE.match(token):
+            return "", []
         lowered = token.lower()
-        if lowered in _WRAPPERS:
-            continue
         base = re.split(r"[\\/]", lowered)[-1]
         for suffix in _EXEC_SUFFIXES:
             if base.endswith(suffix) and len(base) > len(suffix):
                 base = base[: -len(suffix)]
                 break
-        return base
-    return ""
+        if lowered in _WRAPPERS or base in _FLAG_WRAPPERS:
+            following = tokens[index + 1].strip("\"'") if index + 1 < len(tokens) else ""
+            if following.startswith("-"):
+                return "", []
+            if lowered in _WRAPPERS:
+                continue
+        return base, [item.strip("\"'") for item in tokens[index + 1 :]]
+    return "", []
+
+
+def _program_of(segment: str) -> str:
+    return _split_program(segment)[0]
 
 
 # --------------------------------------------------------------------------- command risk
@@ -3518,13 +3773,14 @@ def network_script(command: str, workspace: Path, cwd: Path | None = None) -> st
 
     The command text can look harmless (``python send.py``) while the file it
     runs talks to the network, so the file itself is read (first 256 KB).
+    ``python -m tool`` runs ``tool.py`` or ``tool/__main__.py``, and those are read too.
     """
     try:
         tokens = shlex.split(command, posix=False)
     except ValueError:
         tokens = command.split()
     base = Path(cwd or workspace)
-    for token in tokens:
+    for token in tokens + _module_files(command):
         name = token.strip("\"'").lstrip("&<").rstrip(";&|)").strip()
         if not name.lower().endswith(_SCRIPT_SUFFIXES):
             continue
@@ -3635,77 +3891,353 @@ def _broad_delete(command: str) -> str:
 
 
 # Programs that only look. In plan mode these run; anything else waits until the plan is approved.
+# A program with options that write, run, or widen a search is checked by _OPTION_CHECKS too.
 _LOOK_PROGRAMS = {
     "ls", "dir", "gci", "get-childitem", "cat", "type", "gc", "get-content", "head", "tail", "less", "more",
-    "grep", "egrep", "fgrep", "rg", "ag", "findstr", "select-string", "sls", "find", "fd", "wc", "pwd",
+    "grep", "egrep", "fgrep", "rg", "findstr", "select-string", "sls", "find", "fd", "wc", "pwd",
     "get-location", "gl", "which", "where", "get-command", "gcm", "tree", "file", "stat", "du", "df",
-    "echo", "write-output", "printenv", "env", "uname", "hostname", "whoami", "test-path", "get-item", "gi",
+    "echo", "write-output", "printenv", "uname", "hostname", "whoami", "test-path", "get-item", "gi",
     "resolve-path", "sort", "uniq", "cut", "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "get-filehash",
     "ps", "get-process", "tasklist", "readlink", "realpath", "basename", "dirname", "jq", "nl", "od", "xxd",
     "hexdump", "strings", "objdump", "readelf", "nm", "aapt", "aapt2", "apkanalyzer", "javap", "ver",
+    "tr", "column", "true", "select-object", "select", "out-string", "out-null", "format-table", "ft",
+    "format-list", "fl", "measure-object",
 }
 _GIT_LOOK = {
     "status", "log", "diff", "show", "blame", "grep", "ls-files", "ls-tree", "rev-parse", "describe",
-    "shortlog", "reflog", "cat-file", "merge-base", "show-ref", "whatchanged", "rev-list", "name-rev",
+    "shortlog", "reflog", "merge-base", "show-ref", "whatchanged", "rev-list", "name-rev",
 }
-_VERSION_FLAGS = {"--version", "-version", "-v", "version", "--help", "-h", "help"}
+# Options before the git subcommand that only change how output looks.
+_GIT_GLOBAL_OK = {"--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects"}
+# Options that write a file, run a program, or point git at another repository. git takes
+# unambiguous abbreviations (``--outp=x``), so a prefix of one of these counts too.
+_GIT_BAD_OPTIONS = (
+    "--output", "--output-directory", "--git-dir", "--work-tree", "--exec-path", "--ext-diff", "--textconv",
+    "--open-files-in-pager", "--exec", "--upload-pack", "--receive-pack", "--paginate", "--config-env",
+)
+_GIT_HARMLESS_SHORT = {"--text"}  # a real option, not an abbreviation of --textconv
+_VERSION_FLAGS = {"--version", "-version", "-v", "--help", "-h"}
+# Programs that list files: PowerShell pipes their file objects into Select-String and Get-Content, which read them.
+_LISTERS = {"ls", "dir", "gci", "get-childitem", "gi", "get-item", "resolve-path", "find", "fd"}
+_PIPE_READERS = {"select-string", "sls", "get-content", "gc", "cat", "type"}
+
+
+def _short_bundle(arg: str) -> str:
+    """``-rn`` -> ``"rn"``; "" for a long option, a lone ``-``, or a non-option."""
+    if arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
+        return arg[1:]
+    return ""
+
+
+def _long_name(arg: str) -> str:
+    return arg.split("=", 1)[0] if arg.startswith("--") else ""
+
+
+def _allowed_options(args: list[str], short: str, short_value: str, long: set[str], long_value: set[str]) -> bool:
+    """True when every option in ``args`` is a known harmless one (exact long names; no abbreviations).
+
+    ``short_value`` letters take a value (``-k2`` or ``-k 2``); ``long_value`` names take one too
+    (``--key=2`` or ``--key 2``). Anything else that starts with ``-`` makes the answer False.
+    """
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg == "--":
+            return True
+        if arg.startswith("--"):
+            name = _long_name(arg)
+            if name in long_value:
+                skip = "=" not in arg
+            elif name not in long:
+                return False
+            continue
+        bundle = _short_bundle(arg)
+        if not bundle:
+            continue
+        for position, letter in enumerate(bundle):
+            if letter in short_value:
+                skip = position == len(bundle) - 1
+                break
+            if letter not in short:
+                return False
+    return True
+
+
+def _positionals(args: list[str], short_value: str = "", long_value: set[str] | None = None) -> list[str]:
+    """The words of ``args`` that are not options or an option's separate value.
+
+    ``short_value`` letters and ``long_value`` names take a value: ``-k 2``, ``-k2``,
+    ``--key 2``, ``--key=2``. A single-dash word listed in ``long_value`` (``-cols``) does too.
+    """
+    long_value = long_value or set()
+    out: list[str] = []
+    skip = False
+    for index, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg == "--":
+            out.extend(args[index + 1 :])
+            break
+        if arg.startswith("--"):
+            skip = "=" not in arg and _long_name(arg) in long_value
+            continue
+        if arg.startswith("-") and len(arg) > 1:
+            if arg in long_value:
+                skip = True
+                continue
+            bundle = arg[1:]
+            for position, letter in enumerate(bundle):
+                if letter in short_value:
+                    skip = position == len(bundle) - 1
+                    break
+            continue
+        out.append(arg)
+    return out
+
+
+def _looks_like_file(word: str) -> bool:
+    """True for a path that names one file (``app.py``), not a folder a search would walk."""
+    if os.path.isdir(word) or word.rstrip("\\/") in {"", ".", ".."} or word.endswith(("/", "\\")):
+        return False
+    return os.path.isfile(word) or bool(re.search(r"[^\\/]\.\w{1,10}$", word))
+
+
+_RG_SHORT = "iSsnNlcwvFxoHIaU0qbhV"
+_RG_SHORT_VALUE = "ABCmegtTEjdrM"
+_RG_LONG = {
+    "--ignore-case", "--smart-case", "--case-sensitive", "--line-number", "--no-line-number", "--files-with-matches",
+    "--files-without-match", "--count", "--count-matches", "--word-regexp", "--invert-match", "--fixed-strings",
+    "--line-regexp", "--only-matching", "--with-filename", "--no-filename", "--no-heading", "--heading", "--vimgrep",
+    "--column", "--no-column", "--trim", "--json", "--stats", "--multiline", "--multiline-dotall", "--pcre2",
+    "--byte-offset", "--null", "--quiet", "--files", "--type-list", "--text", "--binary", "--passthru",
+    "--sort-files", "--no-messages", "--follow", "--crlf", "--null-data", "--auto-hybrid-regex", "--line-buffered",
+    "--block-buffered", "--no-config", "--debug", "--trace", "--version", "--help", "--engine",
+}
+_RG_LONG_VALUE = {
+    "--after-context", "--before-context", "--context", "--max-count", "--regexp", "--glob", "--iglob", "--type",
+    "--type-not", "--max-columns", "--max-depth", "--max-filesize", "--sort", "--sortr", "--color", "--colors",
+    "--encoding", "--threads", "--replace", "--context-separator", "--field-match-separator",
+    "--field-context-separator", "--path-separator", "--dfa-size-limit", "--regex-size-limit", "--engine",
+}
+_SORT_SHORT = "bdfgiMhnRrVsuzcCm"
+_SORT_SHORT_VALUE = "ktS"
+_SORT_LONG = {
+    "--ignore-leading-blanks", "--dictionary-order", "--ignore-case", "--general-numeric-sort", "--ignore-nonprinting",
+    "--month-sort", "--human-numeric-sort", "--numeric-sort", "--random-sort", "--reverse", "--version-sort",
+    "--stable", "--unique", "--zero-terminated", "--check", "--merge", "--debug", "--help", "--version",
+}
+_SORT_LONG_VALUE = {"--key", "--field-separator", "--buffer-size", "--parallel", "--sort"}
+_UNIQ_SHORT = "cdDiuz"
+_UNIQ_SHORT_VALUE = "fsw"
+_UNIQ_LONG = {"--count", "--repeated", "--all-repeated", "--ignore-case", "--unique", "--zero-terminated", "--group"}
+_UNIQ_LONG_VALUE = {"--skip-fields", "--skip-chars", "--check-chars"}
+_XXD_VALUE = {"-c", "-cols", "-g", "-groupsize", "-l", "-len", "-n", "-name", "-o", "-offset", "-s", "-seek", "-R"}
+
+
+def _rg_read_only(args: list[str]) -> bool:
+    # --pre runs a program on every file; -z runs decompressors; -u/--hidden/--no-ignore reach .env and
+    # ignored files. A search of a folder (or of the cwd, when no path is given) reads every file in it.
+    if not _allowed_options(args, _RG_SHORT, _RG_SHORT_VALUE, _RG_LONG, _RG_LONG_VALUE):
+        return False
+    if "--files" in args or "--type-list" in args:
+        return False
+    words = _positionals(args, _RG_SHORT_VALUE, _RG_LONG_VALUE)
+    pattern_given = any(
+        arg in {"-e", "--regexp"} or arg.startswith("--regexp=") or (_short_bundle(arg) and "e" in _short_bundle(arg))
+        for arg in args
+    )
+    paths = words if pattern_given else words[1:]
+    return bool(paths) and all(_looks_like_file(item) for item in paths)
+
+
+_GREP_SHORT_VALUE = "efmABCdD"
+_GREP_RECURSIVE = ("--recursive", "--dereference-recursive", "--directories", "--devices")
+
+
+def _grep_read_only(args: list[str]) -> bool:
+    """False for a recursive grep (``-r``, ``-R``, ``-d recurse``): it would read secret files in the tree."""
+    for arg in args:
+        if arg == "--":
+            break
+        name = _long_name(arg)
+        if name and len(name) > 2 and any(full.startswith(name) for full in _GREP_RECURSIVE):
+            return False
+        for letter in _short_bundle(arg):
+            if letter in "rRd":
+                return False
+            if letter in _GREP_SHORT_VALUE:
+                break
+    return True
+
+
+def _segment_options_ok(program: str, args: list[str]) -> bool:
+    """False when ``args`` hold an option that makes ``program`` write, run something, or read a whole tree."""
+    if program == "rg":
+        return _rg_read_only(args)
+    if program in {"grep", "egrep", "fgrep"}:
+        return _grep_read_only(args)
+    if program == "findstr":
+        return not any(re.match(r"^[/-][a-z]*s", arg, re.I) for arg in args)
+    if program == "sort":
+        return _allowed_options(args, _SORT_SHORT, _SORT_SHORT_VALUE, _SORT_LONG, _SORT_LONG_VALUE)
+    if program == "uniq":
+        # A second file name is where uniq writes.
+        return _allowed_options(args, _UNIQ_SHORT, _UNIQ_SHORT_VALUE, _UNIQ_LONG, _UNIQ_LONG_VALUE) and len(
+            _positionals(args, _UNIQ_SHORT_VALUE, _UNIQ_LONG_VALUE)
+        ) <= 1
+    if program == "find":
+        return not any(arg.lower().startswith(("-exec", "-ok", "-fprint", "-fls", "-delete")) for arg in args)
+    if program == "fd":
+        return not any(
+            _long_name(arg).startswith("--exec") or re.search(r"[xX]", _short_bundle(arg)) for arg in args
+        )
+    if program == "xxd":
+        # -r turns a dump back into bytes, and a second file name is where xxd writes.
+        return not any(re.match(r"^-+r", arg) for arg in args) and len(_positionals(args, "", _XXD_VALUE)) <= 1
+    if program == "tree":
+        # -o writes the listing to a file; -R with -H writes an HTML page into every folder.
+        return not any(
+            arg.startswith(("--o", "--fromfile", "--fromtabfile")) or re.search(r"[oRH]", _short_bundle(arg)) for arg in args
+        )
+    if program == "less":
+        return not any(arg.startswith("+") or re.search(r"[oO]", _short_bundle(arg)) or _long_name(arg).lower().startswith("--log") for arg in args)
+    if program == "diff":
+        # -r and -N print whole files, folders of them with -r.
+        return not any(
+            re.search(r"[rN]", _short_bundle(arg))
+            or any(name.startswith(_long_name(arg)) for name in ("--recursive", "--new-file", "--unidirectional-new-file") if len(_long_name(arg)) > 2)
+            for arg in args
+        )
+    if program == "file":
+        return not any(re.search(r"C", _short_bundle(arg)) or _long_name(arg).startswith("--comp") for arg in args)
+    if program in {"aapt", "aapt2"}:
+        words = _positionals(args)
+        return bool(words) and words[0] in {"dump", "version", "d", "v"}
+    return True
+
+
+def _git_read_only(args: list[str]) -> bool:
+    """True for a git command that only reads this repository (``git log``, ``git config --get x``)."""
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] not in _GIT_GLOBAL_OK:
+            return False  # -C, -c, --git-dir, --work-tree, --exec-path, -p, ...
+        index += 1
+    if index >= len(args):
+        return False
+    sub, rest = args[index].lower(), args[index + 1 :]
+    for arg in rest:
+        if arg == "--":
+            break
+        name = _long_name(arg)
+        if name and name not in _GIT_HARMLESS_SHORT and len(name) > 2 and any(
+            name == bad or bad.startswith(name) for bad in _GIT_BAD_OPTIONS
+        ):
+            return False
+        if arg.startswith("-O"):
+            return False  # git grep -O opens a pager; diff -O reads an order file
+    words = [arg.lower() for arg in rest if not arg.startswith("-")]
+    flags = set(rest)
+    if sub in _GIT_LOOK:
+        return not (sub == "reflog" and words and words[0] in {"delete", "expire"})
+    if sub == "config":
+        return rest in (["--list"], ["-l"]) or (
+            len(rest) == 2 and rest[0] in {"--get", "--get-all"} and not rest[1].startswith("-")
+        )
+    if sub == "remote":
+        return not words or (words[0] == "get-url" and len(words) == 2)
+    if sub == "stash":
+        return bool(words) and words[0] == "list"
+    if sub in {"branch", "tag"}:
+        names = {arg.split("=", 1)[0] for arg in flags}
+        if names & {"-d", "-D", "--delete", "-m", "-M", "-c", "-C", "-f", "--force", "-u", "--set-upstream-to",
+                    "--unset-upstream", "--edit-description", "-s", "-e", "--copy", "--move"}:
+            return False
+        if sub == "tag" and words and not flags & {"-l", "--list"}:
+            return False
+        if sub == "branch" and words and not flags & {"-l", "--list", "--contains", "--merged", "--no-merged", "--points-at"}:
+            return False
+        return True
+    return False
+
+
+def _dumps_environment(program: str, args: list[str]) -> bool:
+    """True for commands that print environment variables: ``printenv``, ``gci env:``, ``jq -n env``, ``/proc/*/environ``."""
+    lowered = [arg.lower() for arg in args]
+    if program == "printenv":
+        return True
+    if any(re.match(r"^(?:/proc/[^/]+/environ|env:.*|\$env:.*)$", arg) for arg in lowered):
+        return True
+    if program == "jq" and any(re.search(r"\benv\b|\$env\b|\$__loc__", arg) for arg in lowered):
+        return True
+    return False
+
+
+def _segment_read_only(program: str, args: list[str], segment: str = "") -> bool:
+    """True when one part of a command (``program`` and its ``args``) only reads."""
+    if any("$" in arg or "`" in arg for arg in args):
+        return False  # a variable can expand to any path or option
+    if _dumps_environment(program, args):
+        return False  # environment variables hold tokens (CI, cloud, GitLab); ask first
+    bare =not re.search(r"[\\/]", (segment.strip().split() or [""])[0])
+    if args and bare and all(arg.lower() in _VERSION_FLAGS for arg in args):
+        return True
+    if program == "git":
+        return _git_read_only(args)
+    if program == "repo":
+        words = [arg.lower() for arg in args if not arg.startswith("-")]
+        return bool(words) and words[0] in {"status", "info", "branches", "list", "diff", "overview", "manifest"} and not any(
+            arg == "-o" or arg.startswith("--output") for arg in args
+        )
+    if program == "adb":
+        joined = " ".join(arg.lower() for arg in args)
+        return bool(
+            re.match(r"^(?:-s \S+ )?(?:devices|get-state|get-serialno|logcat -d\b|shell (?:getprop|dumpsys|pm list|cmd package list|ls|cat|ps|df|id|uname|wm size|wm density|settings get))", joined)
+        )
+    if program not in _LOOK_PROGRAMS:
+        return False
+    return _segment_options_ok(program, args)
 
 
 def read_only_command(command: str) -> bool:
-    """True when ``command`` only reads: ``ls``, ``git log``, ``grep``, ``Get-Content``, ``x --version``."""
+    """True when ``command`` only reads: ``ls``, ``git log``, ``grep x a.py``, ``Get-Content a.txt``, ``x --version``.
+
+    Every part of a chain is checked, filters after a pipe included, and each program's
+    options too: ``rg --pre``, ``sort -o``, ``find -exec``, ``git log --output``, and a
+    variable in front (``PATH=x ls``) are not read-only. A recursive search (``grep -r``,
+    ``rg`` on a folder) is not either: it would read secret files too. Paths are not
+    checked here; :func:`permission_for` asks for ones outside the workspace or secret.
+    """
     text = str(command or "").strip()
     if not text or risky_command(text):
         return False
-    program = command_key(text)
-    if not program:
+    if not command_key(text):
         return False
-    segments = [seg for seg in re.split(r"&&|\|\||[;|\n]", text) if _program_of(seg) == program]
-    for segment in segments:
-        try:
-            tokens = shlex.split(segment, posix=False)
-        except ValueError:
-            tokens = segment.split()
-        args = [token.strip("\"'").lower() for token in tokens[1:]]
-        if args and all(arg in _VERSION_FLAGS for arg in args):
+    previous = ""
+    separator = ""
+    parts = _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", text))
+    for index, part in enumerate(parts):
+        if index % 2:
+            separator = part
             continue
-        if program == "git":
-            words = [arg for arg in args if not arg.startswith("-")]
-            sub = words[0] if words else ""
-            if sub in _GIT_LOOK:
-                if sub == "reflog" and len(words) > 1 and words[1] in {"delete", "expire"}:
-                    return False
-                continue
-            if sub in {"branch", "tag", "remote", "stash"} and not set(args) & {"-d", "-D", "--delete", "-m", "-M", "-f", "drop", "clear", "pop", "apply", "add", "remove", "rm", "rename", "set-url", "push", "save"}:
-                if sub == "stash" and (len(words) < 2 or words[1] != "list"):
-                    return False
-                if sub == "tag" and len(words) > 1 and not set(args) & {"-l", "--list"}:
-                    return False
-                if sub == "branch" and len(words) > 1 and not set(args) & {"-l", "--list", "--contains", "--merged"}:
-                    return False
-                continue
-            if sub == "config" and set(args) & {"--get", "--list", "-l", "--get-all", "--show-origin"}:
-                continue
+        if not part.strip():
+            continue
+        program, args = _split_program(part)
+        if not program:
             return False
-        if program == "repo":
-            words = [arg for arg in args if not arg.startswith("-")]
-            if words and words[0] in {"status", "info", "branches", "list", "diff", "overview", "manifest"}:
-                continue
+        if program in _CD_PROGRAMS:
+            if any("$" in arg for arg in args):
+                return False
+            previous = program
+            continue
+        if separator == "|" and program in _PIPE_READERS and previous in _LISTERS:
+            return False  # Get-ChildItem -Recurse | Select-String reads every file it lists
+        if not _segment_read_only(program, args, part):
             return False
-        if program == "adb":
-            joined = " ".join(args)
-            if re.match(r"^(?:-s \S+ )?(?:devices|get-state|get-serialno|logcat -d\b|shell (?:getprop|dumpsys|pm list|cmd package list|ls|cat|ps|df|id|uname|wm size|wm density|settings get))", joined):
-                continue
-            return False
-        if program in {"gradlew", "gradle"}:
-            if args and all(arg in {"tasks", "projects", "properties", "dependencies", "help", "--console=plain", "-q", "--quiet", "--all", "--offline"} or arg.startswith(("--configuration", ":")) for arg in args):
-                continue
-            return False
-        if program == "find" and set(args) & {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls"}:
-            return False
-        if program in {"sort"} and "-o" in args:
-            return False
-        if program not in _LOOK_PROGRAMS:
-            return False
+        previous = program
     return True
 
 

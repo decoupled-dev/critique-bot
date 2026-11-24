@@ -24,8 +24,11 @@ LAYERS: dict[str, int] = {
     "__init__": CORE,
     "log": CORE,
     "config": CORE,
+    "config_prompts": CORE,
     "patch": CORE,
     "redaction": CORE,
+    "privacy": CORE,
+    "egress": CORE,
     "output": CORE,
     "roles": CORE,
     # models: the model behind crit; model_api is its interface
@@ -62,6 +65,7 @@ LAYERS: dict[str, int] = {
     "agent_acp": APPS,
     "welcome": APPS,
     "setup_wizard": APPS,
+    "config_cmd": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,

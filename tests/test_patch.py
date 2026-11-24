@@ -246,6 +246,17 @@ class CapTextTests(unittest.TestCase):
         self.assertIn("[truncated:", out)
         self.assertIn("chars omitted", out)
 
+    def test_redacts_before_cutting(self) -> None:
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n" * 40  # gitleaks:allow
+        text = "-----BEGIN PRIVATE KEY-----\n" + body + "-----END PRIVATE KEY-----\n" + "x = 1\n" * 400  # gitleaks:allow
+        out = cap_text(text, 600, what="key.txt")
+        self.assertNotIn("MIIEvQ", out)
+        self.assertIn("[REDACTED:private key]", out)
+
+    def test_redaction_can_make_a_cut_unneeded(self) -> None:
+        text = "-----BEGIN PRIVATE KEY-----\n" + "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw\n" * 20 + "-----END PRIVATE KEY-----\n"  # gitleaks:allow
+        self.assertEqual(cap_text(text, 100, what="key"), "[REDACTED:private key]\n")
+
 
 class DiffSectionTests(unittest.TestCase):
     def test_split_git_positions(self) -> None:

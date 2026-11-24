@@ -59,6 +59,13 @@ index 111..222 100644
 """
 
 
+def setUpModule() -> None:
+    """Other modules' load_config calls leave a strict egress policy behind; start from none."""
+    from critique_bot import egress
+
+    egress._policy = egress.Policy()
+
+
 class EnvIsolated(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -701,7 +708,7 @@ class RequestTests(EnvIsolated):
             hdrs=None,  # type: ignore[arg-type]
             fp=io.BytesIO(b"nope"),
         )
-        with patch("urllib.request.urlopen", side_effect=error):
+        with patch("critique_bot.gitlab._urlopen", side_effect=error):
             with self.assertRaises(GitLabPostError) as ctx:
                 _request("GET", "https://g/api/v4/x", "tok")
         self.assertIn("HTTP 403", str(ctx.exception))
@@ -717,7 +724,7 @@ class RequestTests(EnvIsolated):
             def __exit__(self, *exc: object) -> None:
                 return None
 
-        with patch("urllib.request.urlopen", return_value=Resp()):
+        with patch("critique_bot.gitlab._urlopen", return_value=Resp()):
             self.assertIsNone(_request("POST", "https://g/x", "tok", {"a": 1}))
 
     def test_invalid_json_returns_none(self) -> None:
@@ -731,7 +738,7 @@ class RequestTests(EnvIsolated):
             def __exit__(self, *exc: object) -> None:
                 return None
 
-        with patch("urllib.request.urlopen", return_value=Resp()):
+        with patch("critique_bot.gitlab._urlopen", return_value=Resp()):
             self.assertIsNone(_request("GET", "https://g/x", "tok"))
 
     def test_job_token_header(self) -> None:
@@ -747,7 +754,7 @@ class RequestTests(EnvIsolated):
             def __exit__(self, *exc: object) -> None:
                 return None
 
-        with patch("urllib.request.urlopen", return_value=Resp()) as opener:
+        with patch("critique_bot.gitlab._urlopen", return_value=Resp()) as opener:
             data = _request("GET", "https://g/x", "jobtok")
         self.assertEqual(data, {"ok": True})
         headers = opener.call_args[0][0].headers
@@ -767,7 +774,7 @@ class RequestTests(EnvIsolated):
         log.configure(enabled=True)
         err = io.StringIO()
         try:
-            with patch("urllib.request.urlopen", side_effect=error):
+            with patch("critique_bot.gitlab._urlopen", side_effect=error):
                 with redirect_stderr(err):
                     with self.assertRaises(GitLabPostError) as ctx:
                         _request(
@@ -795,7 +802,7 @@ class RequestTests(EnvIsolated):
 
     def test_url_error_is_wrapped(self) -> None:
         with patch(
-            "urllib.request.urlopen",
+            "critique_bot.gitlab._urlopen",
             side_effect=URLError("connection refused"),
         ):
             with self.assertRaises(GitLabPostError) as ctx:
@@ -829,7 +836,7 @@ class RequestTests(EnvIsolated):
         log.configure(enabled=True)
         err = io.StringIO()
         try:
-            with patch("urllib.request.urlopen", return_value=Resp()):
+            with patch("critique_bot.gitlab._urlopen", return_value=Resp()):
                 with redirect_stderr(err):
                     data = _request(
                         "POST",
@@ -885,3 +892,14 @@ class PostReviewLogTests(EnvIsolated):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PostDefangTests(unittest.TestCase):
+    def test_post_discussion_defangs_body(self) -> None:
+        from critique_bot import gitlab_post
+
+        with patch.object(gitlab_post, "_request", return_value={}) as req:
+            gitlab_post._post_discussion("https://g/x", "t", "ok\n/approve\n@all")
+        body = req.call_args[0][3]["body"]
+        self.assertIn("​/approve", body)
+        self.assertIn("@​all", body)

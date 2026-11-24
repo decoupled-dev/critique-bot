@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from critique_bot.config import GitLabConfig
+from critique_bot import gitlab as gl
 from critique_bot.gitlab import (
+    GitLabError,
     GitLabTarget,
     MrContext,
     api_v4_url,
@@ -30,6 +32,7 @@ _ENV = (
     "CRITIQUE_GITLAB_TOKEN",
     "GITLAB_TOKEN",
     "CI_JOB_TOKEN",
+    "CRITIQUE_GITLAB_PROXY",
 )
 
 
@@ -112,7 +115,8 @@ class ResolveTargetTests(EnvIsolated):
 
     def test_mr_url_fills_gaps(self) -> None:
         target = resolve_target(
-            mr_url="https://gitlab.example.com/group/app/-/merge_requests/12"
+            GitLabConfig(base_url="https://gitlab.example.com"),
+            mr_url="https://gitlab.example.com/group/app/-/merge_requests/12",
         )
         self.assertEqual(target.api_url, "https://gitlab.example.com/api/v4")
         self.assertEqual(target.project_id, "group/app")
@@ -126,6 +130,52 @@ class ResolveTargetTests(EnvIsolated):
         self.assertEqual(target.api_url, "https://ci.example/api/v4")
         self.assertEqual(target.project_id, "77")
         self.assertEqual(target.mr_iid, "5")
+
+
+class HostPinningTests(EnvIsolated):
+    def test_mr_url_alone_is_not_trusted(self) -> None:
+        with self.assertRaises(GitLabError) as ctx:
+            resolve_target(mr_url="https://evil.example/group/app/-/merge_requests/12")
+        self.assertIn("base_url", str(ctx.exception))
+
+    def test_mr_url_on_another_host_is_refused(self) -> None:
+        with self.assertRaises(GitLabError):
+            resolve_target(
+                GitLabConfig(base_url="https://gitlab.example.com"),
+                mr_url="https://evil.example/group/app/-/merge_requests/12",
+            )
+
+    def test_ci_server_url_pins_the_host(self) -> None:
+        os.environ["CI_SERVER_URL"] = "https://gitlab.example.com"
+        with self.assertRaises(GitLabError):
+            resolve_target(mr_url="https://evil.example/g/a/-/merge_requests/1")
+        target = resolve_target(mr_url="https://gitlab.example.com/g/a/-/merge_requests/1")
+        self.assertEqual(target.api_url, "https://gitlab.example.com/api/v4")
+
+
+class TransportTests(EnvIsolated):
+    def test_redirects_are_refused(self) -> None:
+        import urllib.request
+
+        handler = gl._NoRedirect()
+        req = urllib.request.Request("https://gitlab.example.com/api/v4/x")
+        with self.assertRaises(GitLabError) as ctx:
+            handler.redirect_request(req, None, 302, "Found", {}, "https://other.example/x")
+        self.assertIn("redirect", str(ctx.exception))
+
+    def test_opener_uses_no_redirect_handler(self) -> None:
+        opener = gl._opener()
+        self.assertTrue(any(isinstance(h, gl._NoRedirect) for h in opener.handlers))
+
+    def test_env_proxy_ignored_unless_opted_in(self) -> None:
+        with patch.dict(os.environ, {"https_proxy": "http://proxy.example:3128"}):
+            self.assertEqual(gl._proxy_handler().proxies, {})
+            os.environ["CRITIQUE_GITLAB_PROXY"] = "env"
+            self.assertIn("https", gl._proxy_handler().proxies)
+            os.environ["CRITIQUE_GITLAB_PROXY"] = "http://gl-proxy.example:8080"
+            self.assertEqual(
+                gl._proxy_handler().proxies["https"], "http://gl-proxy.example:8080"
+            )
 
 
 class TicketTests(unittest.TestCase):

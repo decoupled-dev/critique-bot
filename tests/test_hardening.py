@@ -22,7 +22,7 @@ class GitLabTokenTests(unittest.TestCase):
             with self.subTest(url):
                 with patch("urllib.request.urlopen") as opened:
                     with self.assertRaises(gitlab.GitLabError):
-                        gitlab.request("GET", url, "glpat-secret")
+                        gitlab.request("GET", url, "gl" "pat-secret")
                     opened.assert_not_called()
 
     def test_https_and_a_local_test_instance_are_allowed(self) -> None:

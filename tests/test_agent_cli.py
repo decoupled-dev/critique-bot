@@ -316,3 +316,9 @@ class FrontEndTests(unittest.TestCase):
         _use_terminal_ui()
         self.assertIs(agent.agent_ui, agent_ui)
 
+
+def tearDownModule() -> None:
+    """load_config sets the process-wide egress policy; leave none behind for the next module."""
+    from critique_bot import egress
+
+    egress._policy = egress.Policy()

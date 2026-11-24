@@ -1,14 +1,81 @@
 # config.json reference
 
-Copy a starter to `config.json` next to the binary (CI default: `/opt/critique-bot/config.json`):
+You rarely edit this file by hand. `crit` asks for what it needs on the first run, and
+`crit config` changes any setting from the command line (below). The starters remain for
+reference and for CI images:
 
 | Starter | Use |
 | --- | --- |
 | [`config.example.json`](../config.example.json) | Generic chat UI |
-| [`config.chatgpt.example.json`](../config.chatgpt.example.json) | ChatGPT |
+| [`config.chatgpt.example.json`](../config.chatgpt.example.json) | ChatGPT (also built in: `crit config --preset chatgpt`) |
 | [`config.local.example.json`](../config.local.example.json) | A model behind an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) |
 
-`--config` is required on every command. The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
+The file is JSON. Unknown keys are ignored. Env vars override matching fields when set.
+
+## Where the file is
+
+Every command uses the first of these that applies:
+
+1. `--config FILE` on the command line;
+2. the `CRITIQUE_CONFIG` environment variable;
+3. the config recorded for the project in `.bot/settings.json` (`"config"`), if the file exists;
+4. a `config.json` in the project root, if it exists and git does not track it;
+5. your user config: `$XDG_CONFIG_HOME/critique-bot/config.json` (default
+   `~/.config/critique-bot/config.json`) on Linux and macOS, `%APPDATA%\critique-bot\config.json`
+   on Windows.
+
+crit writes the user config owner-only (0600 in a 0700 folder on Linux and macOS; an
+owner-only ACL on Windows), replacing it in one step so it is never half-written.
+
+When no file exists, a command in a terminal asks the first-run questions (cloud chat or local
+model; ChatGPT or a company chat address; names to hide) and writes the user config. Without
+a terminal (CI, the worker, `--acp`) it exits with a sentence naming the `crit config`
+command to run. `crit configure` asks the questions again.
+
+## `crit config`
+
+`crit config` (also `critique-bot config`) with no flags prints the settings in plain words:
+the file and why it was chosen, backend, chat address, network mode, allowed sites, hidden
+names, personal-data redaction, GitLab address, model. Tokens are never printed (they are
+not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
+
+| Flag | Sets |
+| --- | --- |
+| `--preset chatgpt` | `url`, `selectors`, and `allowed_hosts` for ChatGPT (`egress` strict unless set) |
+| `--preset custom` | a company chat: starter `selectors` (run `crit setup` next); needs `--url` |
+| `--url URL` | `url` (https only; plain http only for localhost), `backend: browser` |
+| `--backend browser\|local` | `backend` (local defaults `url` to `http://127.0.0.1:8080`) |
+| `--local-url URL` | the model server's `url`, `backend: local` (another PC must be in `allowed_hosts`) |
+| `--model NAME` | `model` (`""` for the default) |
+| `--allow-host H` / `--remove-host H` | `allowed_hosts` (repeatable; a URL is reduced to its host) |
+| `--redact NAMES` / `--unredact NAME` | `redact_terms` (repeatable or comma-separated; at least 3 letters or digits) |
+| `--pii on\|off` | `redact_pii` |
+| `--egress strict\|open` | `egress` |
+| `--gitlab-url URL` | `gitlab.base_url` (https only; `""` removes it) |
+| `--selector KEY=CSS` | one of `selectors` (repeatable) |
+| `--reset` | removes the file (asks first in a terminal; needs `--yes` otherwise) |
+| `--path` | prints the file's path |
+| `--config FILE` | changes that file instead |
+
+Every value is checked before anything is written, and a change that would stop a working
+file from loading is refused with the reason (exit code 2). A file that is not complete yet
+(for example only `--redact` so far) is saved with a "Not ready yet" note.
+
+```bash
+crit config --preset chatgpt --redact "Acme, Globex"
+crit config --url https://chat.company.com/ --allow-host static.company-cdn.net
+crit config --pii on --egress strict --gitlab-url https://gitlab.company.com
+```
+
+### Asked later, when needed
+
+In an interactive terminal session (never in CI, the worker, `--acp`, or piped runs; `--yes`
+does not answer these):
+
+- The chat page tried to reach a site that is not allowed: it is blocked, and after the
+  current step crit asks once per site "Allow it from now on? [y/N]". Yes adds it to
+  `allowed_hosts`, effective from the next start.
+- A command needs `gitlab.base_url` and none is set: crit asks for the https address and saves it.
 
 GitLab runner layout and the worker/submit split: [`gitlab-ci.md`](gitlab-ci.md).
 
@@ -27,7 +94,7 @@ Hosted APIs (`openai`, `anthropic`, ...) are not a backend: the only data that l
 
 The model runs behind an OpenAI-compatible server (llama.cpp's `llama-server`, LM Studio, vLLM) and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`. Ollama is not supported.
 
-`crit configure` (or the first `crit` with no config) asks for these and writes the file. By hand:
+`crit configure` (or the first `crit` with no config) asks for these and writes the file. In one line: `crit config --backend local --local-url http://127.0.0.1:8080 --model NAME`. By hand:
 
 ```bash
 llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8080 -c 32768
@@ -151,6 +218,22 @@ The browser may reach only the chat URL's host and its subdomains (for chatgpt.c
 ```
 
 When crit blocks a host for a non-ChatGPT URL, it prints the host and this setting. Add only hosts the chat page needs. See [security.md](security.md).
+
+## `redact_terms` and `redact_pii`
+
+| | |
+| --- | --- |
+| Type | list of names / true or false |
+| Default | `[]` / `true` |
+
+`redact_terms` lists company, customer, or project names that must not reach the chat. Each is sent as `[REDACTED:name]`, in any case, with spaces, hyphens, underscores, and dots between its words interchangeable or left out (`"Acme Corp"` also hides `acme-corp`, `ACME_CORP`, `AcmeCorp`, `acme.corp`), and inside identifiers at a camelCase, `_`, `.`, or `-` step (`AcmeClient`, `com.acme.app`, `ACME_API_URL`), but not inside a longer word (`Acmeville`). Each name needs at least 3 letters or digits and at most 200 characters; duplicates are dropped. `CRIT_REDACT_TERMS` (comma-separated) adds more, for CI. The setup scripts (`--redact-terms` / `-RedactTerms`), the first-run questions, and `critique-bot setup` fill this list.
+
+```json
+"redact_terms": ["Acme Corp", "Globex"],
+"redact_pii": true
+```
+
+`redact_pii` (default `true`) also hides personal data: emails, phone numbers, payment cards, IBANs, US SSNs, Aadhaar and PAN numbers, and UK National Insurance numbers. Set `false` to send them as they are. See [security.md](security.md#what-goes-to-the-chat).
 
 ## `selectors` (object, required for `browser`)
 
@@ -471,6 +554,7 @@ Posting still needs `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`
 | `CRITIQUE_QUEUE_DIR` | `queue_dir` |
 | `CRITIQUE_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
 | `CRITIQUE_GITLAB_URL` | `gitlab.base_url` |
+| `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
 
 `--model` and `--cdp-url` override env and file. GitLab comment posting uses `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
 
@@ -525,6 +609,7 @@ Do not commit this file if it contains a private chat URL or a `storage_state` p
 - `browser`: `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
 - `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `openai` when set; `local.num_ctx` is > 0 when set.
 - If `storage_state` is set, that path is a file.
+- `redact_terms` is a list of strings, each with at least 3 letters or digits and at most 200 characters; `redact_pii` is `true` or `false`.
 - Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 
 A one-shot `--mode general` prompt (or **Send test prompt** in `critique-bot setup`) is the check the loader cannot do: Edge is installed, the profile holds a session, the selectors match the live page, and a real reply comes back.
