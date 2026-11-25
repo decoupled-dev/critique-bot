@@ -132,4 +132,7 @@ def _run() -> int:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # the bundle's index workers start through this program
     raise SystemExit(main())

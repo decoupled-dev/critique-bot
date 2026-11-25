@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import functools
 import html
 import json
 import os
@@ -36,6 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
+from critique_bot import file_catalog
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -725,6 +727,7 @@ def rel(workspace: Path, path: Path) -> str:
     return str(resolved)
 
 
+@functools.lru_cache(maxsize=256)
 def glob_regex(pattern: str) -> re.Pattern[str]:
     """Glob to regex. ``**`` spans directories; ``*`` and ``?`` stay inside one.
 
@@ -783,28 +786,24 @@ def glob_match(rel_path: str, pattern: str | None) -> bool:
 
 
 def walk_files(workspace: Path, root: Path) -> list[str]:
-    """Workspace-relative file paths under ``root``, skipping generated trees."""
+    """Workspace-relative file paths under ``root``, skipping generated trees.
+
+    Served from the cached :mod:`file_catalog`, so repeated calls on a big tree (an AOSP
+    ``repo`` checkout) cost a few ``stat`` calls, not a fresh walk.
+    """
     if root.is_file():
         return [rel(workspace, root)]
     prefix = rel(workspace, root)
     if prefix in {".", ""} or root == workspace:
         prefix = ""
-    listed = code_index._git_files(workspace)
-    if listed is not None:
-        out = []
-        for item in listed:
-            if prefix and not (item == prefix or item.startswith(prefix + "/")):
-                continue
-            if any(part in SKIP_DIR_NAMES for part in item.split("/")[:-1]):
-                continue
-            out.append(item)
-        return out
-    rows: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIR_NAMES)
-        for name in sorted(filenames):
-            rows.append(rel(workspace, Path(dirpath) / name))
-    return rows
+    if Path(prefix).is_absolute():  # outside the workspace: walk it directly
+        rows: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIR_NAMES)
+            for name in sorted(filenames):
+                rows.append(rel(workspace, Path(dirpath) / name))
+        return rows
+    return file_catalog.catalog_for(workspace).files(prefix)
 
 
 # --------------------------------------------------------------------------- results
@@ -1132,6 +1131,7 @@ def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: i
         return f"--- {name}/ (a folder; its entries) ---\n{listing}"
     if not path.is_file():
         return f"--- {name} ---\nnot found: {raw}{_path_hint(ctx, raw)}"
+    widen_index(ctx, name)
     try:
         with open(path, "rb") as handle:
             head = handle.read(8192)
@@ -1256,6 +1256,7 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         matcher = re.compile(source, re.IGNORECASE if ignore_case else 0)
         notes.append("pattern was not a valid regular expression; searched it as literal text")
     prefix = "" if root == ctx.workspace else rel(ctx.workspace, root)
+    widen_index(ctx, prefix)
     lines: list[str] = []
     seen: set[tuple[str, int]] = set()
     if ctx.index_path is not None and (not literal or re.fullmatch(r"[\w.]+", pattern)):
@@ -1445,6 +1446,13 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
     version = agent_edit.file_version(path)
     if ctx.state is not None:
         ctx.state.note_write(name, version)
+    if not Path(name).is_absolute():
+        widen_index(ctx, name)
+        catalog = file_catalog.catalog_for(ctx.workspace)
+        if path.is_file():
+            catalog.note_write(name)
+        else:
+            catalog.note_delete(name)
     with _INDEX_LOCK:  # helper tabs write at the same time; the index is shared
         if ctx.index_path is not None:
             refresh_path(ctx.workspace, ctx.index_path, path)
@@ -1452,6 +1460,43 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
 
 
 _INDEX_LOCK = threading.Lock()
+_WIDENING: set[tuple[str, str]] = set()
+_WIDEN_LOCK = threading.Lock()
+
+
+def widen_index(ctx: ToolContext, rel_path: str, *, wait: bool = False) -> None:
+    """On a repo tree, index the project holding ``rel_path`` if it is not yet indexed.
+
+    The index of an AOSP tree covers only the projects the agent works in. The first
+    read, search, or edit in a project starts indexing it in the background, so symbol
+    lookups there work from the next call on.
+    """
+    if ctx.index_path is None or not rel_path or Path(rel_path).is_absolute():
+        return
+    catalog = file_catalog.catalog_for(ctx.workspace)
+    if catalog.kind != "repo":
+        return
+    project = catalog.project_of(rel_path.strip("/"))
+    if not project:
+        return
+    key = (str(ctx.index_path), project)
+    with _WIDEN_LOCK:
+        if key in _WIDENING:
+            return
+        _WIDENING.add(key)
+    workspace, index_path = ctx.workspace, ctx.index_path
+
+    def run() -> None:
+        try:
+            code_index.add_scope(workspace, index_path, project)
+        except Exception:  # the index is a hint; never break a tool call over it
+            with _WIDEN_LOCK:
+                _WIDENING.discard(key)
+
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, name=f"crit-index-{project}", daemon=True).start()
 
 
 def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:

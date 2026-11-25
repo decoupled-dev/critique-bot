@@ -15,15 +15,18 @@ is importable, otherwise a regex pass per language. The catalog holds:
 from __future__ import annotations
 
 import ast
+import json
 import math
 import os
 import re
 import sqlite3
 import subprocess
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from critique_bot import log
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 
 SCHEMA_VERSION = "2"
@@ -238,13 +241,23 @@ def rebuild_index(workspace: Path, index_path: Path) -> IndexStats:
     """Replace the catalog with a fresh walk of ``workspace``."""
     index_path = Path(index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    if index_path.exists():
-        index_path.unlink()
+    _remove_db(index_path)
     return refresh_index(workspace, index_path)
 
 
-def refresh_index(workspace: Path, index_path: Path) -> IndexStats:
+def _remove_db(index_path: Path) -> None:
+    """Delete the database and its WAL sidecar files."""
+    for item in (index_path, Path(f"{index_path}-wal"), Path(f"{index_path}-shm")):
+        item.unlink(missing_ok=True)
+
+
+def refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | None = None) -> IndexStats:
     """Reparse only files whose mtime or size changed; drop missing files.
+
+    On a ``repo``-tool tree (AOSP) only the projects in the index's *scope* are walked:
+    the ones the agent has worked in (:func:`add_scope`). Indexing all of AOSP would take
+    hours and many GB; text search covers the rest. ``only`` limits this refresh to some
+    folders (workspace-relative), for example the one project just added.
 
     Missing or outdated catalogs are rebuilt in full. The walk uses ``git
     ls-files`` when the workspace is a checkout so ignored files are skipped.
@@ -256,18 +269,23 @@ def refresh_index(workspace: Path, index_path: Path) -> IndexStats:
     try:
         if not _schema_current(conn):
             conn.close()
-            index_path.unlink(missing_ok=True)
+            _remove_db(index_path)
             conn = _connect(index_path)
             _create_schema(conn)
         known = {
             str(row["path"]): (int(row["mtime_ns"]), int(row["size"]))
             for row in conn.execute("SELECT path, mtime_ns, size FROM files")
         }
+        prefixes = _refresh_prefixes(conn, workspace, only)
+        if prefixes is not None:
+            known = {rel: value for rel, value in known.items() if _under(rel, prefixes)}
         seen: set[str] = set()
+        jobs: list[tuple[Path, str, int, int]] = []
         changed = 0
         symbols = 0
-        for path, rel in _walk(workspace):
-            if looks_binary_path(rel):
+        own = {str(index_path.resolve()) + suffix for suffix in ("", "-wal", "-shm", "-journal")}
+        for path, rel in _walk(workspace, prefixes):
+            if looks_binary_path(rel) or str(path) in own:
                 continue
             try:
                 stat = path.stat()
@@ -279,12 +297,21 @@ def refresh_index(workspace: Path, index_path: Path) -> IndexStats:
             previous = known.get(rel)
             if previous == (stat.st_mtime_ns, stat.st_size):
                 continue
-            _forget(conn, rel)
-            added = _index_file(conn, path, rel, stat.st_mtime_ns, stat.st_size)
-            if added is None:
+            jobs.append((path, rel, stat.st_mtime_ns, stat.st_size))
+        # A repo tree is searched with rg (or a scan); trigram text of whole AOSP
+        # projects would make the index many GB.
+        fts = _has_fts(conn) and prefixes is None
+        for rel, mtime_ns, size, parsed in _parse_many(jobs):
+            if rel in known:  # new files have nothing to forget (the FTS delete scans the table)
+                _forget(conn, rel)
+            if parsed is None:
                 continue
+            # refs only feed the PageRank map, which a scoped index does not use; on
+            # frameworks/base they were 10M rows and most of the database
+            symbols += _store(conn, rel, mtime_ns, size, parsed, fts, refs_too=prefixes is None)
             changed += 1
-            symbols += added
+            if changed % 500 == 0:  # short write transactions, so other writers are not starved
+                conn.commit()
         removed = 0
         for rel in known:
             if rel not in seen:
@@ -296,6 +323,69 @@ def refresh_index(workspace: Path, index_path: Path) -> IndexStats:
     finally:
         conn.close()
     return IndexStats(files=total_files, symbols=total_symbols, changed=changed, removed=removed)
+
+
+def _under(rel: str, prefixes: list[str]) -> bool:
+    return any(not prefix or rel == prefix or rel.startswith(prefix + "/") for prefix in prefixes)
+
+
+def _refresh_prefixes(conn: sqlite3.Connection, workspace: Path, only: Iterable[str] | None) -> list[str] | None:
+    """Folders a refresh walks: ``only``, the scope of a repo tree, or None for everything."""
+    if only is not None:
+        return [item.strip("/") for item in only]
+    from critique_bot import file_catalog
+
+    if file_catalog.catalog_for(workspace).kind != "repo":
+        return None
+    return scope(conn)
+
+
+def scope(conn: sqlite3.Connection) -> list[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'scope'").fetchone()
+    if row is None:
+        return []
+    try:
+        items = json.loads(str(row[0]))
+    except ValueError:
+        return []
+    return [str(item) for item in items if isinstance(item, str)]
+
+
+def indexed_projects(index_path: Path) -> list[str]:
+    """The projects of a repo tree that the index covers (empty when it covers everything)."""
+    if not Path(index_path).is_file():
+        return []
+    conn = _connect(Path(index_path))
+    try:
+        return scope(conn) if _schema_current(conn) else []
+    finally:
+        conn.close()
+
+
+def add_scope(workspace: Path, index_path: Path, folder: str) -> IndexStats | None:
+    """Index one more project of a repo tree, and keep it in later refreshes.
+
+    Returns None when ``folder`` was already in the scope or the index is missing.
+    """
+    index_path = Path(index_path)
+    folder = folder.strip("/")
+    if not index_path.is_file() or not folder:
+        return None
+    conn = _connect(index_path)
+    try:
+        if not _schema_current(conn):
+            return None
+        current = scope(conn)
+        if folder in current:
+            return None
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('scope', ?)",
+            (json.dumps(sorted({*current, folder})),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return refresh_index(workspace, index_path, only=[folder])
 
 
 def refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
@@ -477,8 +567,8 @@ def candidate_files(
     prefix = _clean_prefix(path_prefix)
     conn = _connect(index_path)
     try:
-        if not _schema_current(conn) or not _has_fts(conn):
-            return None
+        if not _schema_current(conn) or not _has_fts(conn) or scope(conn):
+            return None  # a scoped (repo tree) index has no text for most files
         query = '"' + literal.replace('"', '""') + '"'
         try:
             rows = conn.execute(
@@ -540,9 +630,12 @@ def repo_map(
     try:
         if not _schema_current(conn):
             return ""
-        files = [str(row[0]) for row in conn.execute("SELECT path FROM files")]
-        if not files:
+        count = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+        if not count:
             return ""
+        if count > LARGE_MAP_FILES or scope(conn):
+            return _repo_map_large(conn, keywords, budget_chars)
+        files = [str(row[0]) for row in conn.execute("SELECT path FROM files")]
         definers: dict[str, list[str]] = {}
         symbols_by_file: dict[str, list[Symbol]] = {}
         for row in conn.execute(
@@ -598,6 +691,59 @@ def repo_map(
             block.append(f"  {item.line} {label[:100]}")
         if len(items) > 12:
             block.append(f"  ... {len(items) - 12} more")
+        text = "\n".join(block)
+        if used + len(text) + 1 > budget_chars:
+            if lines:
+                break
+            text = text[: max(0, budget_chars - 1)]
+        lines.append(text)
+        used += len(text) + 1
+    return "\n".join(lines)
+
+
+# Above this many files the PageRank map is too slow for every task (minutes on
+# frameworks/base); the map is then built from keyword matches in SQL instead.
+LARGE_MAP_FILES = 20_000
+_LARGE_MAP_WORDS = 6
+_LARGE_MAP_FILES_SHOWN = 40
+
+
+def _repo_map_large(conn: sqlite3.Connection, keywords: Iterable[str], budget_chars: int) -> str:
+    """Map for a big index: files whose path or symbols match the task's words.
+
+    Without task words there is no useful ranking of tens of thousands of files, so
+    the map is empty and the model searches instead.
+    """
+    words = sorted({word.lower() for word in keywords if len(word) >= 4}, key=len, reverse=True)[:_LARGE_MAP_WORDS]
+    if not words:
+        return ""
+    score: dict[str, float] = {}
+    for word in words:
+        like = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        for (path,) in conn.execute("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT 2000", (like,)):
+            score[str(path)] = score.get(str(path), 0.0) + 3.0
+        for path, hits in conn.execute(
+            "SELECT path, COUNT(*) FROM symbols WHERE name LIKE ? ESCAPE '\\' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 2000",
+            (like,),
+        ):
+            score[str(path)] = score.get(str(path), 0.0) + min(float(hits), 10.0)
+    ordered = sorted(score, key=lambda rel: (-score[rel], len(rel), rel))[:_LARGE_MAP_FILES_SHOWN]
+    lines: list[str] = []
+    used = 0
+    for rel in ordered:
+        items = [
+            _symbol_from_row(row)
+            for row in conn.execute(
+                "SELECT path, line, end_line, kind, name, parent, signature FROM symbols WHERE path = ? ORDER BY line LIMIT 13",
+                (rel,),
+            )
+        ]
+        block = [rel + ":"]
+        for item in items[:12]:
+            label = item.signature.strip() or item.qualified
+            block.append(f"  {item.line} {label[:100]}")
+        if len(items) > 12:
+            block.append("  ...")
         text = "\n".join(block)
         if used + len(text) + 1 > budget_chars:
             if lines:
@@ -714,8 +860,13 @@ def _symbol_from_row(row: sqlite3.Row) -> Symbol:
 
 
 def _connect(index_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(index_path))
+    conn = sqlite3.connect(str(index_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    try:  # readers keep working while a background refresh writes
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -785,13 +936,13 @@ def _forget(conn: sqlite3.Connection, rel: str) -> None:
         conn.execute("DELETE FROM content WHERE path = ?", (rel,))
 
 
-def _walk(workspace: Path):
-    listed = _git_files(workspace)
-    if listed is not None:
+def _walk(workspace: Path, prefixes: list[str] | None = None):
+    from critique_bot import file_catalog  # imports this module for SKIP_DIR_NAMES
+
+    catalog = file_catalog.catalog_for(workspace)
+    if catalog.kind != "walk" or prefixes is not None:
+        listed = catalog.files() if prefixes is None else [rel for prefix in prefixes for rel in catalog.files(prefix)]
         for rel in listed:
-            parts = rel.split("/")
-            if any(part in SKIP_DIR_NAMES for part in parts[:-1]):
-                continue
             path = workspace / rel
             if path.is_file():
                 yield path, rel
@@ -834,6 +985,48 @@ def _git_files(workspace: Path) -> list[str] | None:
     return sorted({item for item in raw.split("\0") if item})
 
 
+def _parse_file(path: str, size: int) -> tuple | None:
+    """Read and parse one file: (language, symbols, refs, fts text or None). Picklable,
+    so a process pool can run it; the database writes stay in the parent."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if looks_binary_bytes(data):
+        return None
+    text = data.decode("utf-8", "replace")
+    language = _LANG_BY_SUFFIX.get(Path(path).suffix.lower(), "text")
+    with warnings.catch_warnings():  # odd escapes in parsed Python files are not ours to report
+        warnings.simplefilter("ignore", SyntaxWarning)
+        symbols = extract_symbols(text, language)
+    rows = [(item.name, item.kind, item.line, item.end_line, item.parent, item.signature) for item in symbols]
+    defined = {item.name for item in symbols}
+    refs = [(name, line, count) for name, (line, count) in _references(text, language, defined).items()]
+    return language, rows, refs, text if size <= _MAX_FTS_BYTES else None
+
+
+def _store(
+    conn: sqlite3.Connection, rel: str, mtime_ns: int, size: int, parsed: tuple, fts: bool, refs_too: bool = True
+) -> int:
+    language, rows, refs, text = parsed
+    conn.execute(
+        "INSERT OR REPLACE INTO files (path, mtime_ns, size, language) VALUES (?, ?, ?, ?)",
+        (rel, mtime_ns, size, language),
+    )
+    conn.executemany(
+        "INSERT INTO symbols (name, kind, path, line, end_line, parent, signature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(name, kind, rel, line, end, parent, sig) for name, kind, line, end, parent, sig in rows],
+    )
+    if refs_too:
+        conn.executemany(
+            "INSERT INTO refs (name, path, line, count) VALUES (?, ?, ?, ?)",
+            [(name, rel, line, count) for name, line, count in refs],
+        )
+    if fts and text is not None:
+        conn.execute("INSERT INTO content (path, body) VALUES (?, ?)", (rel, text))
+    return len(rows)
+
+
 def _index_file(
     conn: sqlite3.Connection,
     path: Path,
@@ -841,38 +1034,33 @@ def _index_file(
     mtime_ns: int,
     size: int,
 ) -> int | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
+    parsed = _parse_file(str(path), size)
+    if parsed is None:
         return None
-    if looks_binary_bytes(data):
-        return None
-    text = data.decode("utf-8", "replace")
-    language = _LANG_BY_SUFFIX.get(path.suffix.lower(), "text")
-    conn.execute(
-        "INSERT OR REPLACE INTO files (path, mtime_ns, size, language) VALUES (?, ?, ?, ?)",
-        (rel, mtime_ns, size, language),
-    )
-    symbols = extract_symbols(text, language)
-    conn.executemany(
-        "INSERT INTO symbols (name, kind, path, line, end_line, parent, signature) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            (item.name, item.kind, rel, item.line, item.end_line, item.parent, item.signature)
-            for item in symbols
-        ],
-    )
-    defined = {item.name for item in symbols}
-    conn.executemany(
-        "INSERT INTO refs (name, path, line, count) VALUES (?, ?, ?, ?)",
-        [
-            (name, rel, line, count)
-            for name, (line, count) in _references(text, language, defined).items()
-        ],
-    )
-    if _has_fts(conn) and size <= _MAX_FTS_BYTES:
-        conn.execute("INSERT INTO content (path, body) VALUES (?, ?)", (rel, text))
-    return len(symbols)
+    scoped = bool(scope(conn))
+    return _store(conn, rel, mtime_ns, size, parsed, _has_fts(conn) and not scoped, refs_too=not scoped)
+
+
+# Parse in worker processes when at least this many files changed.
+PARALLEL_PARSE_MIN = 200
+
+
+def _parse_many(jobs: list[tuple[Path, str, int, int]]):
+    """Yield (rel, mtime_ns, size, parsed) for each job, in parallel when there are many."""
+    if len(jobs) >= PARALLEL_PARSE_MIN and (os.cpu_count() or 1) > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+
+            workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                results = pool.map(_parse_file, [str(job[0]) for job in jobs], [job[3] for job in jobs], chunksize=64)
+                for job, parsed in zip(jobs, results):
+                    yield job[1], job[2], job[3], parsed
+            return
+        except (OSError, RuntimeError, ImportError) as exc:  # no processes here: parse in-line
+            log.debug(f"parallel parse unavailable: {exc}")
+    for path, rel, mtime_ns, size in jobs:
+        yield rel, mtime_ns, size, _parse_file(str(path), size)
 
 
 def extract_symbols(text: str, language: str) -> list[Symbol]:
@@ -896,6 +1084,8 @@ def _regex_symbols(text: str, language: str) -> list[Symbol]:
     brace = language in {"java", "kotlin", "go", "rust", "c", "cpp", "csharp", "javascript", "typescript"}
     for match in _CLASS_RE.finditer(text):
         line = _line_of(text, match.start())
+        if _in_comment(lines[line - 1], text, match.start()):
+            continue
         end = _brace_end(text, match.end(), line) if brace else line
         found.append(
             Symbol("", line, end, "class", match.group(1), "", lines[line - 1].strip())
@@ -907,11 +1097,22 @@ def _regex_symbols(text: str, language: str) -> list[Symbol]:
             if not name or name in {"if", "for", "while", "switch", "catch", "return"}:
                 continue
             line = _line_of(text, match.start())
+            if _in_comment(lines[line - 1], text, match.start()):
+                continue
             end = _brace_end(text, match.end(), line) if brace else line
             parent = _enclosing(found, line)
             found.append(Symbol("", line, end, "function", name, parent, lines[line - 1].strip()))
     found.sort(key=lambda item: item.line)
     return found
+
+
+def _in_comment(line_text: str, text: str, offset: int) -> bool:
+    """True when a regex match sits in a comment (a doc line, or after ``//``)."""
+    stripped = line_text.lstrip()
+    if stripped.startswith(("*", "//", "/*")):
+        return True
+    start = text.rfind("\n", 0, offset) + 1
+    return "//" in text[start:offset]
 
 
 def _enclosing(classes: list[Symbol], line: int) -> str:

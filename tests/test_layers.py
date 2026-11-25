@@ -47,6 +47,7 @@ LAYERS: dict[str, int] = {
     "agent_build": TOOLS,
     "agent_rules": TOOLS,
     "code_index": TOOLS,
+    "file_catalog": TOOLS,
     "workspace": TOOLS,
     "project_home": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
