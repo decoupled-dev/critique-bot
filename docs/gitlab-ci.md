@@ -42,7 +42,7 @@ Shared GitLab.com / instance runners and Docker executors cannot run this bot: t
    /opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --logs
    ```
 
-   Log in to the chat UI, confirm a prompt works, then Ctrl-C. Then confirm the whole setup with a one-shot prompt:
+   Log in to the page, confirm a prompt works, then Ctrl-C. Then confirm the whole setup with a one-shot prompt:
 
    ```bash
    /opt/critique-bot/critique-bot --config /opt/critique-bot/config.json \
@@ -101,7 +101,7 @@ Artifacts (always, 1 week): `out/`, `diff.patch`. Job timeout: 1 hour. Submit wa
 
 ### Original files (file-by-file)
 
-**`submit` prepares the files. The worker only chats** (pastes what submit queued into Edge). The YAML job never talks to the chat UI.
+**`submit` prepares the files. The worker only talks to the page** (pastes what submit queued into Edge). The YAML job never talks to the page.
 
 Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, submit uses the job checkout:
 
@@ -114,7 +114,7 @@ Do **not** add `--patch-file` or `--file` to the CI script. With those omitted, 
    - If template + HEAD files + patch fit in `max_prompt_chars` (default `120000`): **one prompt**, ordered instructions → original files → patch.
    - If they would overflow: **instructions** (`prompt`), **staged HEAD file bodies** (`files`, one path each, cap `max_files` default `80`), and the **patch** as its own field. The worker pastes them as separate turns in that order.
 
-The worker then pastes that job (chat only):
+The worker then pastes that job (page only):
 
 | What submit queued | What the worker pastes |
 | --- | --- |
@@ -156,7 +156,7 @@ Start with a one-shot `--mode general` prompt (login, selectors, real round trip
 | --- | --- |
 | `$env:CRITIQUE_BIN submit` / `submit` not found | Windows job used `$env:CRITIQUE_BIN` without `&`. Use [`packaging/gitlab-ci.windows.yml`](../packaging/gitlab-ci.windows.yml): `& "$CRITIQUE_BIN" submit …` |
 | `worker is not running` | `queue-status`; systemd status; same `queue_dir` as the job |
-| Job queued forever | Worker logs; chat UI login expired (`worker --headed`); selectors in `config.json` |
+| Job queued forever | Worker logs; page login expired (`worker --headed`); selectors in `config.json` |
 | Review cut off mid-sentence | `selectors.stop_button` is missing or wrong, so a long pause reads as "done". Re-pick it with `critique-bot setup`. If the page shows a "Continue generating" button, set `selectors.continue_button` ([`config.json.md`](config.json.md#continue_button)) |
 | Same job retried and then failed | It hit `max_attempts` (default 3). The real error is in `status.json` and the worker log |
 | Review artifact, no MR comments | `CRITIQUE_GITLAB_TOKEN` present (a protected variable is missing on unprotected branches), scope `api`, role Reporter+. `gitlab.base_url` / `CI_SERVER_URL` must be the same host as the MR, and must not redirect. `gitlab-post` exits non-zero when the summary fails to post |

@@ -41,8 +41,8 @@ _drain: Callable[[], list[str]] | None = None
 _asked_hosts: set[str] = set()
 
 BLOCKED_QUESTION = (
-    "The chat page tried to reach {host}. Allow it from now on? "
-    "Only say yes if it belongs to your chat service."
+    "The page tried to reach {host}. Allow it from now on? "
+    "Only say yes if it belongs to the service at your url."
 )
 
 
@@ -165,7 +165,7 @@ def ensure_gitlab_url(current: str = "") -> str:
         policy = egress.policy()
         if policy.configured:
             chat = f"https://{policy.chat_host}/" if policy.chat_host else ""
-            egress.configure(policy.mode, chat, policy.allowed_hosts, gitlab_url=url)
+            egress.configure(policy.mode, chat, policy.allowed_hosts, gitlab_url=url, page_network=policy.page_network)
         _say(f"Saved. crit uses {url} for GitLab from now on.")
         return url
     return ""

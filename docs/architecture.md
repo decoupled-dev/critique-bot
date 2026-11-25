@@ -10,10 +10,10 @@ wires the concrete pieces together.
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
-3  engine    agent (the loop), agent_helpers (helper chats), ui_api, openai_format
+3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, bot_home
-1  models    model_api (interface), provider + browser + chat_client (web chat in Edge),
+1  models    model_api (interface), provider + browser + chat_client (web page in Edge),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM), setup_ui
 0  core      config, log, patch (input limits), redaction, output, roles
 ```
@@ -47,8 +47,8 @@ tools.
 
 ## Where standard protocols plug in
 
-- **OpenAI Responses format.** The default (`"tool_format": "openai"`): the chat itself speaks it,
-  with the chat page and with a local model alike:
+- **OpenAI Responses format.** The default (`"tool_format": "openai"`): the model itself speaks it,
+  on the web page and with a local model alike:
   the first message carries the registry's tools as a Responses `tools` array, replies are
   `{"output": [...]}` with `function_call` and `message` items, and results go back as
   `function_call_output` items (`openai_format.py`; the format-specific prompt sections are in

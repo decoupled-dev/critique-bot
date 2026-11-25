@@ -1,5 +1,10 @@
 """First-run questions: where the model runs, and what crit needs to reach it.
 
+First comes the config file (url, selectors, names to hide, ...), which a team hands out:
+one found at ``CRITIQUE_CONFIG_FILE`` or the system location (``/etc/critique-bot/crit.json``,
+``%ProgramData%\\critique-bot\\crit.json``) is used without a question; otherwise crit asks
+for its path, and Enter goes on to the questions below (the do-it-yourself path).
+
 ``crit`` asks these when it has no config.json yet (and ``crit configure`` asks them again):
 
 - **Cloud**: the company chat page in a browser. Asks for its https address, writes starter
@@ -29,9 +34,16 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from critique_bot.config import (
+    COMPANY_CONFIG_KEY,
     STARTER_SELECTORS,
     BotConfig,
+    CompanySettings,
     ConfigError,
+    backend_kind,
+    check_company_file,
+    company_config_location,
+    company_summary,
+    load_company_settings,
     load_config,
     redact_term_list,
     user_config_path,
@@ -51,6 +63,46 @@ class WizardResult:
     backend: str
     #: True when the cloud config still has the starter selectors (run critique-bot setup).
     needs_selectors: bool = False
+    #: The config file in use ("" when the person answered the questions instead).
+    config_file: str = ""
+
+
+CONFIG_FILE_PROMPT = "Config file path (Enter if none): "
+DIY_PREFACE = "No config file: crit needs the url and the page elements."
+
+
+def use_found_config_file(path: Path, *, say: Say | None = None) -> WizardResult | None:
+    """A config file found without asking (CRITIQUE_CONFIG_FILE or the system location): write
+    ``path`` (an empty user config: the file keeps being found where it is) and say which.
+    None when there is none; ConfigError when it is there but unusable."""
+    say = say or print
+    found = company_config_location({})
+    if found is None:
+        return None
+    settings = load_company_settings(*found)
+    _write(path, {})
+    say(company_summary(settings))
+    return _company_result(path, settings)
+
+
+def _company_result(path: Path, settings: CompanySettings) -> WizardResult:
+    return WizardResult(path, backend_kind(settings.data.get("backend")), config_file=settings.path)
+
+
+def ask_config_file(path: Path, ask: Ask, say: Say) -> WizardResult | None:
+    """Ask for the config file's path until it is good or the person presses Enter (None)."""
+    while True:
+        answer = ask(CONFIG_FILE_PROMPT).strip()
+        if not answer:
+            return None
+        try:
+            settings = check_company_file(answer)
+        except ConfigError as exc:
+            say(f"  {exc}")
+            continue
+        _write(path, {COMPANY_CONFIG_KEY: settings.path})
+        say(company_summary(settings))
+        return _company_result(path, settings)
 
 
 def default_config_path() -> Path:
@@ -73,9 +125,17 @@ def run_wizard(
 
         list_models = _list
     try:
+        found = use_found_config_file(path, say=say)
+        if found is not None:
+            return found
+        say("")
+        chosen = ask_config_file(path, ask, say)
+        if chosen is not None:
+            return chosen
+        say(DIY_PREFACE)
         say("")
         say("Where does the model run?")
-        say("  1) Cloud: the company chat page, used in a browser")
+        say("  1) Cloud: a web page (your url), used in a browser")
         say("  2) Local: a model server (llama.cpp's llama-server, LM Studio, vLLM) on this PC or another PC on the network")
         choice = _choose(ask, say, "Choose 1 or 2", ("1", "2"))
         if choice is None:
@@ -105,7 +165,7 @@ def run_wizard(
 def _cloud(path: Path, ask: Ask, say: Say) -> WizardResult | None:
     say("")
     while True:
-        url = ask("Your company's chat address (for example https://chat.company.com/): ").strip()
+        url = ask("url (for example https://ai.company.com/): ").strip()
         if not url:
             return None
         problem = _chat_url_problem(url)
@@ -251,10 +311,10 @@ def _pick_model(
 
 PII_LINE = (
     "Personal data (email addresses, phone numbers, card and account numbers, national IDs) "
-    "is hidden from the chat too; it is on by default."
+    "is hidden from what crit sends too; it is on by default."
 )
 
-TERMS_PROMPT = "Company, customer, or project names to hide from the chat (comma-separated, Enter for none): "
+TERMS_PROMPT = "Company, customer, or project names to hide (comma-separated, Enter for none): "
 
 
 def split_terms(text: str) -> list[str]:
@@ -303,5 +363,14 @@ def _yes_no(ask: Ask, prompt: str, *, default: bool) -> bool:
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
-    """Write the config readable by its owner only (it names hosts and, later, selectors)."""
-    write_config_file(path, data)
+    """Write the config readable by its owner only (it names hosts and, later, selectors).
+
+    The person's preferences already in the file (theme, welcomed) are kept."""
+    from critique_bot.config import USER_PREF_KEYS, read_config_dict
+
+    try:
+        old = read_config_dict(path)
+    except ConfigError:
+        old = {}
+    kept = {key: old[key] for key in USER_PREF_KEYS if key in old and key not in data}
+    write_config_file(path, {**data, **kept})

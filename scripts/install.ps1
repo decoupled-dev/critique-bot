@@ -6,6 +6,8 @@
 # SHA256SUMS.txt, and runs "critique-bot.exe install", which puts crit in
 # %LOCALAPPDATA%\Programs\critique-bot and adds it to your PATH. Settings are asked
 # the first time crit needs them. Set $env:CRIT_VERSION = "1.0.1" for a given version.
+# Set $env:CRIT_CONFIG_FILE = "\\server\share\crit.json" to also set the config file
+# (url, page elements, ...), so crit asks nothing on first run.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -38,7 +40,11 @@ try {
     Expand-Archive (Join-Path $work $zipName) -DestinationPath $work -Force
     $exe = Get-ChildItem $work -Recurse -Filter "critique-bot.exe" | Select-Object -First 1
     if (-not $exe) { throw "critique-bot.exe not found in $zipName" }
-    & $exe.FullName install
+    if ($env:CRIT_CONFIG_FILE) {
+        & $exe.FullName install --config-file $env:CRIT_CONFIG_FILE
+    } else {
+        & $exe.FullName install
+    }
     if ($LASTEXITCODE -ne 0) { throw "crit install failed (exit $LASTEXITCODE)" }
     # This window does not see the new PATH yet; make crit work in it right away.
     $bin = Join-Path $env:LOCALAPPDATA "Programs\critique-bot\bin"

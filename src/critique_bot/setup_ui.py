@@ -624,7 +624,7 @@ def _validate(state: SetupState) -> dict[str, Any]:
                     "name": "login",
                     "status": "fail",
                     "detail": hint,
-                    "hint": "Sign in on the chat page, then retry.",
+                    "hint": "Sign in on the page, then retry.",
                 }
             )
         else:
@@ -734,7 +734,7 @@ def run_setup(
     if not state.config_path.is_file():
         print(
             f"error: config file not found: {state.config_path}\n"
-            "Set crit up first: run crit (it asks a few questions), or crit config --url https://chat.company.com/.",
+            "Set crit up first: run crit, or crit config --config-file /path/to/crit.json.",
             flush=True,
         )
         return 1
@@ -848,7 +848,7 @@ PAGE_HTML = """<!doctype html>
 </header>
 <main>
   <section>
-    <h2>1. Chat UI and selectors</h2>
+    <h2>1. Page and selectors</h2>
     <p class="sub">
       Open Edge, sign in if asked, then click <b>Pick</b> and click the element on
       the page. Selectors are saved to your config file.
@@ -861,15 +861,15 @@ PAGE_HTML = """<!doctype html>
     </div>
     <div id="configError" class="check-hint"></div>
     <div id="blockedBox" class="check-hint" style="display:none">
-      <b>The chat page tried to reach other sites</b>, which crit blocked (only the chat address and
+      <b>The page tried to reach other sites</b>, which crit blocked (only the url's site and
       the allowed sites are reachable). If the page stays blank or cannot sign in, allow the sites that
-      belong to your company's chat or its sign-in, then the browser reopens:
+      belong to its service or its sign-in, then the browser reopens:
       <div id="blockedList" style="margin-top:8px"></div>
     </div>
     <div id="allowedList" class="sub"></div>
     <div class="field">
-      <label for="url">Chat URL</label>
-      <input type="text" id="url" placeholder="https://chat.company.com/" />
+      <label for="url">url</label>
+      <input type="text" id="url" placeholder="https://ai.company.com/" />
       <span></span>
     </div>
     <div class="field">
@@ -967,7 +967,7 @@ async function refresh() {
   const terms = Array.isArray(config.redact_terms) ? config.redact_terms : [];
   if (document.activeElement !== el("redactTerms")) el("redactTerms").value = terms.join(", ");
   el("redactTermsList").innerHTML = terms.length
-    ? "Sent to the chat as [REDACTED:name]: " + terms.map((term) => `<b>${esc(term)}</b>`).join(", ")
+    ? "Sent as [REDACTED:name]: " + terms.map((term) => `<b>${esc(term)}</b>`).join(", ")
     : "";
   const blocked = Array.isArray(state.blocked_hosts) ? state.blocked_hosts : [];
   el("blockedBox").style.display = blocked.length ? "" : "none";
@@ -976,8 +976,8 @@ async function refresh() {
       <button class="ghost" data-host="${esc(host)}" onclick="allowHost(this.dataset.host)">Allow</button></div>`).join("");
   const allowed = Array.isArray(config.allowed_hosts) ? config.allowed_hosts : [];
   el("allowedList").innerHTML = allowed.length
-    ? "Allowed sites besides the chat: " + allowed.map((h) => `<code>${esc(h)}</code>`).join(", ")
-    : "No other sites allowed: crit reaches only the chat address.";
+    ? "Allowed sites besides the url's: " + allowed.map((h) => `<code>${esc(h)}</code>`).join(", ")
+    : "No other sites allowed: crit reaches only the url.";
   if (!document.querySelector("#selectorFields input")) renderSelectorFields(config);
   setBrowser(state.browser);
 }

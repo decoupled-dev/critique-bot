@@ -49,23 +49,6 @@ class BuildScriptTests(unittest.TestCase):
         with patch.object(self.build.sys, "platform", "linux"):
             self.assertEqual(self.build._binary_name(), "critique-bot")
 
-    def test_write_readme_linux(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "README.txt"
-            with patch.object(self.build.sys, "platform", "linux"):
-                self.build._write_readme(dest, "critique-bot")
-            text = dest.read_text(encoding="utf-8")
-            self.assertIn("./critique-bot worker", text)
-            self.assertIn("config.json", text)
-
-    def test_write_readme_windows(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "README.txt"
-            with patch.object(self.build.sys, "platform", "win32"):
-                self.build._write_readme(dest, "critique-bot.exe")
-            text = dest.read_text(encoding="utf-8")
-            self.assertIn(".\\critique-bot.exe", text)
-
     def test_main_missing_spec(self) -> None:
         with patch.object(self.build, "SPEC", Path("/no/such.spec")):
             with self.assertRaises(SystemExit) as ctx:
@@ -101,7 +84,7 @@ class BuildScriptTests(unittest.TestCase):
     def test_package_version_dunder(self) -> None:
         from critique_bot import __version__
 
-        self.assertEqual(__version__, "1.0.1")
+        self.assertEqual(__version__, "1.0.2")
 
 
 if __name__ == "__main__":

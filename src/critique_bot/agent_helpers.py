@@ -126,14 +126,14 @@ def _helper_run_class():
             # fetches, network commands, secret files, and paths outside the workspace.
             if kind in {"network", "outside"} or getattr(perm, "risk", ""):
                 why = getattr(perm, "risk", "") or "it needs the user's yes"
-                return False, f"not done in a helper chat: {why}. Put it in your report for the coordinator"
+                return False, f"not done in a helper: {why}. Put it in your report for the coordinator"
             if name == "run_command":
                 command = str((call.arguments or {}).get("command") or "")
                 if agent_tools.read_only_command(command):
                     return True, ""
                 risky = agent_tools.risky_command(command)
                 if risky:
-                    return False, f"not run in a helper chat: {risky}. Put it in your report for the coordinator"
+                    return False, f"not run in a helper: {risky}. Put it in your report for the coordinator"
                 return False, (
                     "helper chats use only read-only commands; do not build or test here. "
                     "Put the command the coordinator should run in your report"
@@ -474,7 +474,7 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     """The delegate call's result for the coordinator, and its line in the terminal."""
     changed = sorted({name for report in reports for name in report.changed})
     lines = [
-        f"{len(reports)} helper chat{'s' if len(reports) != 1 else ''} finished in {seconds:.0f}s. "
+        f"{len(reports)} helper{'s' if len(reports) != 1 else ''} finished in {seconds:.0f}s. "
         + (
             "Review what it changed (git_diff or read_files) and trust only the results it quotes."
             if len(reports) == 1
@@ -492,7 +492,7 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     if changed:
         lines.append("Files changed by helpers: " + ", ".join(changed))
     ok = any(report.status in {"COMPLETED", "FINISHED", "DONE"} for report in reports)
-    summary = f"{len(reports)} helper chat{'s' if len(reports) != 1 else ''} · {seconds:.0f}s" + (f" · changed {len(changed)} file{'s' if len(changed) != 1 else ''}" if changed else "")
+    summary = f"{len(reports)} helper{'s' if len(reports) != 1 else ''} · {seconds:.0f}s" + (f" · changed {len(changed)} file{'s' if len(changed) != 1 else ''}" if changed else "")
     ui_lines = [
         f"{report.name}: {report.status.lower()}" + (f" · {', '.join(report.changed[:3])}" if report.changed else "")
         for report in reports

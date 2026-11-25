@@ -215,12 +215,14 @@ def _strict_proxy_args() -> tuple[list[str], list[str]]:
 def browser_quiet_args(chat_url: str | None) -> list[str]:
     """Switches that keep the browser's own services quiet, plus resolver rules for their hosts.
 
-    Under ``"egress": "strict"`` the resolver rules allow nothing but the chat host and
-    allowed_hosts, for every request the browser makes (page, workers, its own services),
-    and the browser uses no proxy, since a proxy would resolve names past those rules.
+    Under ``"egress": "strict"`` with ``"page_network": "strict"`` the resolver rules allow nothing
+    but the chat host and allowed_hosts, for every request the browser makes (page, workers,
+    its own services), and the browser uses no proxy unless the PC has one. With
+    ``"page_network": "open"`` (the default) the page resolves what it needs through the system
+    proxy, as for a person; only the browser's own service hosts are kept unresolvable.
     """
     args = list(BROWSER_QUIET_ARGS)
-    if egress.strict():
+    if egress.page_restricted():
         hosts = egress.policy().hosts()
         if not hosts and chat_url:
             hosts = ((urlsplit(chat_url).hostname or "").lower(),)
@@ -238,8 +240,9 @@ def browser_quiet_args(chat_url: str | None) -> list[str]:
 def merge_resolver_rules(args: list[str]) -> list[str]:
     """Combine every --host-resolver-rules flag into one (Chromium keeps only the last).
 
-    Earlier rules come first. Under strict egress a MAP for a host the policy does not
-    permit is dropped, so no earlier flag can reopen a host the strict rules close.
+    Earlier rules come first. When the page is restricted (strict egress, page_network strict) a
+    MAP for a host the policy does not permit is dropped, so no earlier flag can reopen a
+    host the strict rules close.
     """
     rules: list[str] = []
     others: list[str] = []
@@ -251,7 +254,7 @@ def merge_resolver_rules(args: list[str]) -> list[str]:
             others.append(arg)
     if not rules:
         return others
-    if egress.strict():
+    if egress.page_restricted():
         policy = egress.policy()
         mapped = set()
         kept = []
@@ -657,7 +660,7 @@ def wait_until_signed_in(
         while time.monotonic() < deadline:
             try:
                 if _chat_box_ready(page, prompt_selector):
-                    log.info("signed in; chat box is visible")
+                    log.info("signed in; the message box is visible")
                     return
             except Exception as exc:
                 log.debug(f"sign-in check failed: {exc}")
@@ -665,11 +668,11 @@ def wait_until_signed_in(
                 page.wait_for_timeout(_LOGIN_POLL_MS)
             except Exception as exc:
                 raise BrowserError(
-                    "the login window closed before the chat box was ready"
+                    "the login window closed before the message box was ready"
                 ) from exc
     raise BrowserError(
         "timed out waiting for you to sign in in the Edge window. "
-        "Finish login before the chat box appears, then run again."
+        "Finish login before the message box appears, then run again."
     )
 
 
@@ -1378,8 +1381,8 @@ def allowed_chat_hosts(chat_url: str) -> frozenset[str]:
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
     if not host:
         return frozenset()
-    if egress.strict():
-        # Strict egress: the chat's exact host, not its whole site.
+    if egress.page_restricted():
+        # A restricted page: the chat's exact host, not its whole site.
         return frozenset({host, *_extra_hosts})
     return frozenset({host, chat_site(host), *_extra_hosts})
 
@@ -1426,14 +1429,14 @@ def _report_resolver_block(host: str, *, navigation: bool) -> None:
     log.info(f"strict egress: {host} is not resolvable for the browser")
     if navigation:
         log.notice(
-            f"Blocked: the chat page sent the browser to {host} (often its sign-in page), which is not your "
-            f"chat, so the page cannot load. If {host} belongs to your company's chat or sign-in, allow it with: "
+            f"Blocked: the page sent the browser to {host} (often its sign-in page), which is not the url's site, "
+            f"so the page cannot load. If {host} belongs to the service or its sign-in, allow it with: "
             f"crit config --allow-host {host}"
         )
     else:
         log.notice(
-            f"Blocked: the chat page tried to contact {host}, which is not your chat. Nothing was sent there. "
-            f"If the chat does not work and {host} belongs to it, allow it with: crit config --allow-host {host}"
+            f"Blocked: the page tried to contact {host}, which is not the url's site. Nothing was sent there. "
+            f"If the page does not work and {host} belongs to it, allow it with: crit config --allow-host {host}"
         )
 
 
@@ -1480,7 +1483,7 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
         _filter_chat_route._warned = seen  # type: ignore[attr-defined]
     if host not in seen:
         seen.add(host)
-        log.info(f"blocking requests to {host} (outside chat URL)")
+        log.info(f"blocking requests to {host} (outside the url's site)")
         _note_blocked_host(host)
         from critique_bot import config_prompts
 
@@ -1488,11 +1491,11 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
             follow_up = "crit will ask after this step whether to allow it."
         else:
             follow_up = (
-                f"If the chat stops working and {host} belongs to the chat service, allow it with: "
+                f"If the page stops working and {host} belongs to its service, allow it with: "
                 f"crit config --allow-host {host}"
             )
         log.notice(
-            f"Blocked: the chat page tried to contact {host}, which is not your chat. Nothing was sent there. "
+            f"Blocked: the page tried to contact {host}, which is not the url's site. Nothing was sent there. "
             + follow_up
         )
     try:
@@ -1511,7 +1514,7 @@ def _filter_web_socket(ws, chat_url: str) -> None:
         return
     # Not connected to its server, the socket goes nowhere: what the page sends on it stays in
     # Playwright. (Calling ws.close() from inside this handler deadlocks Playwright's sync API.)
-    log.info(f"blocking a WebSocket to {(urlsplit(url).hostname or url)} (outside the chat URL)")
+    log.info(f"blocking a WebSocket to {(urlsplit(url).hostname or url)} (outside the url's site)")
     _note_blocked_host((urlsplit(url).hostname or url).lower())
 
 
@@ -1555,7 +1558,7 @@ def guard_page_network(page: Page, chat_url: str) -> None:
         return
     if not _filter_page:
         if not getattr(page, "_critique_unfiltered_noted", False):
-            log.debug("chat page runs unfiltered (filter_chat_page is off)")
+            log.debug("the page runs unfiltered (filter_chat_page is off)")
             try:
                 page._critique_unfiltered_noted = True  # type: ignore[attr-defined]
             except Exception:
@@ -1569,7 +1572,7 @@ def guard_page_network(page: Page, chat_url: str) -> None:
     try:
         page.route("**/*", handle)
     except Exception as exc:
-        log.warn(f"could not restrict browser network to the chat URL: {exc}")
+        log.warn(f"could not restrict browser network to the url: {exc}")
         return
     # The same filter on the whole context: a popup (window.open) or a new tab is
     # covered from its first request, before a per-page route could be added to it.
@@ -1589,7 +1592,7 @@ def guard_page_network(page: Page, chat_url: str) -> None:
         try:
             route_ws(re.compile(".*"), lambda ws: _filter_web_socket(ws, chat_url))
         except Exception as exc:
-            log.warn(f"could not restrict WebSockets to the chat URL: {exc}")
+            log.warn(f"could not restrict WebSockets to the url: {exc}")
     # A service worker's requests bypass page.route; no service worker may register.
     _block_service_workers(page)
     try:
@@ -1710,10 +1713,10 @@ def friendly_navigation_error(url: str, error: str) -> str:
     text = (error or "").upper()
     fix = "Check the address with: crit config"
     if "ERR_NAME_NOT_RESOLVED" in text:
-        if egress.strict() and not egress.policy().permits(host):
-            return (f"The chat address {url} is outside the allowed sites. Set it with crit config --url, "
+        if egress.page_restricted() and not egress.policy().permits(host):
+            return (f"The url {url} is outside the allowed sites. Set it with crit config --url, "
                     f"or allow {host} with: crit config --allow-host {host}")
-        return (f"The chat address {url} could not be found: {host} does not resolve. If it is a company "
+        return (f"The url {url} could not be found: {host} does not resolve. If it is a company "
                 f"site, connect to the company network or VPN. {fix}")
     if "ERR_PROXY" in text or "ERR_TUNNEL_CONNECTION_FAILED" in text:
         return (f"The company proxy did not let the browser reach {host}. Ask IT to allow it through the proxy, "
@@ -1722,11 +1725,11 @@ def friendly_navigation_error(url: str, error: str) -> str:
         return (f"The browser does not trust the certificate of {host}. If your company inspects HTTPS traffic, "
                 "its root certificate must be installed on this PC (ask IT).")
     if "ERR_CONNECTION_REFUSED" in text or "ERR_CONNECTION_RESET" in text or "ERR_CONNECTION_CLOSED" in text:
-        return f"{host} refused the connection. Check that the chat is up and the address is right. {fix}"
+        return f"{host} refused the connection. Check that the service is up and the url is right. {fix}"
     if "ERR_INTERNET_DISCONNECTED" in text or "ERR_NETWORK" in text or "ERR_ADDRESS_UNREACHABLE" in text:
         return f"This PC has no network route to {host}. Check the network or VPN connection."
     if "TIMEOUT" in text or "TIMED_OUT" in text:
-        return (f"The chat at {url} did not load in time. Check the network or VPN; if the page needs a sign-in "
+        return (f"The page at {url} did not load in time. Check the network or VPN; if the page needs a sign-in "
                 f"or file site, crit names it above and how to allow it.")
     first = (error or "").strip().splitlines()[0] if (error or "").strip() else "unknown error"
     return f"The browser could not open {url} ({first.strip(': ')}). {fix}"
@@ -1752,10 +1755,10 @@ def navigate(page: Page, url: str, timeout_ms: int) -> None:
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
     except PlaywrightTimeoutError as exc:
-        log.error(f"timed out loading chat UI: {url} ({describe_page(page)})")
+        log.error(f"timed out loading the page: {url} ({describe_page(page)})")
         raise BrowserError(friendly_navigation_error(url, "timeout")) from exc
     except Exception as exc:
-        log.error(f"could not load chat UI: {url}: {exc}")
+        log.error(f"could not load the page: {url}: {exc}")
         raise BrowserError(friendly_navigation_error(url, str(exc))) from exc
     loaded = _page_url(page)
     log.info(f"loaded {describe_page(page)}")
@@ -1820,7 +1823,7 @@ def attach_page_debug(page: Page) -> None:
         error_text = failure.get("errorText") if isinstance(failure, dict) else failure
         err = str(error_text or "").lower()
         host = (urlsplit(str(getattr(request, "url", "") or "")).hostname or "").lower()
-        if "name_not_resolved" in err and egress.strict() and host and not egress.policy().permits(host):
+        if "name_not_resolved" in err and egress.page_restricted() and host and not egress.policy().permits(host):
             # Strict egress made the name unresolvable (the browser's resolver rules), so
             # nothing reached that site. Say so once; the command line asks about it after the step.
             _report_resolver_block(host, navigation=bool(getattr(request, "is_navigation_request", lambda: False)()))

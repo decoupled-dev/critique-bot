@@ -74,7 +74,7 @@ class ChatHelperTests(unittest.TestCase):
                 {"role": "assistant", "content": "hello"},
             ]
         )
-        self.assertIn("# Chat", text)
+        self.assertIn("# Conversation", text)
         self.assertIn("## You", text)
         self.assertIn("hi", text)
         self.assertIn("## Assistant", text)

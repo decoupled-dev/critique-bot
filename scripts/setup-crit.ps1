@@ -68,9 +68,9 @@ Do not change the user PATH.
 Do not look for Microsoft Edge / Google Chrome.
 
 .PARAMETER RedactTerms
-Company, customer, or project names to hide from the chat, comma-separated,
+Company, customer, or project names to hide from the service, comma-separated,
 for example "Acme Corp,Globex". They are added to redact_terms in config.json
-and sent to the chat as [REDACTED:name]. Without it, a new config asks for
+and sent to the service as [REDACTED:name]. Without it, a new config asks for
 them when the script runs in an interactive console.
 
 .EXAMPLE
@@ -399,7 +399,7 @@ if new_terms:
     if cleaned != existing:
         data["redact_terms"] = cleaned
         changed = True
-    print(f"    redact_terms: {', '.join(cleaned)} (sent to the chat as [REDACTED:name])")
+    print(f"    redact_terms: {', '.join(cleaned)} (sent to the service as [REDACTED:name])")
 
 if changed:
     tmp = path + ".tmp"
@@ -612,11 +612,11 @@ function Invoke-Setup {
         Copy-Item -LiteralPath (Join-Path $repo "config.example.json") -Destination $configPath
         $configCreated = $true
         Write-Info "created $configPath from config.example.json"
-        Write-Info "set the chat next (crit config, below)"
+        Write-Info "set the url next (crit config, below)"
     }
     $terms = $RedactTerms
     if (-not $RedactTermsGiven -and $configCreated -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
-        $terms = Read-Host "Company, customer, or project names to hide from the chat (comma-separated, Enter for none)"
+        $terms = Read-Host "Company, customer, or project names to hide from the service (comma-separated, Enter for none)"
     }
     # Through the environment: Windows PowerShell 5.1 drops empty arguments and mangles quotes.
     $env:CRIT_SETUP_REDACT_TERMS = [string]$terms
@@ -684,8 +684,8 @@ function Invoke-Setup {
     } elseif ($NoPath) {
         Write-Info "0. Put $binPath on PATH"
     }
-    Write-Info "1. Pick the chat, and any company names to keep out of it (crit uses $configPath):"
-    Write-Info "     crit config --url https://chat.company.com/ --redact `"Your Company`" ; crit setup   (or: crit config --backend local)"
+    Write-Info "1. Set the url, and any company names to keep out of the conversation (crit uses $configPath):"
+    Write-Info "     crit config --url https://ai.company.com/ --redact `"Your Company`" ; crit setup   (or: crit config --backend local)"
     Write-Info "2. Check a one-word reply:"
     Write-Info "     crit ask --prompt `"Reply with exactly one word: PONG.`""
     Write-Info "3. Use crit in any project:"

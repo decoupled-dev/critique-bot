@@ -137,6 +137,12 @@ class BotConfig:
     #: agent's commands run offline. "open": the chat page and builds reach what they need.
     #: See egress.py and docs/security.md.
     egress: str = "strict"
+    #: "open" (the default): the chat page loads what it needs, as for a person (its CDNs and
+    #: sign-in hosts resolve); crit's own traffic still follows ``egress``. "strict": under
+    #: strict egress the page reaches only the chat host and allowed_hosts too.
+    page_network: str = "open"
+    #: The company settings file in use ("" when none). See load_company_settings.
+    company_config: str = ""
     storage_state: str | None = None
     user_data_dir: str | None = None
     cdp_url: str | None = None
@@ -279,6 +285,12 @@ def load_config(
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a JSON object")
 
+    company = find_company_settings(raw)
+    locked: frozenset[str] = frozenset()
+    if company is not None:
+        raw, locked = merge_company(company.data, raw)
+        log.info(f"config file {company.path}" + (f" (saved copy of {company.cached_at})" if company.cached_at else ""))
+
     selectors_raw = raw.get("selectors") or {}
     if not isinstance(selectors_raw, dict):
         raise ConfigError("selectors must be a JSON object")
@@ -299,8 +311,9 @@ def load_config(
         continue_button=_clean(selectors_raw.get("continue_button")),
     )
 
-    url = os.environ.get(ENV_CHAT_URL) or _clean(raw.get("url"))
-    if os.environ.get(ENV_CHAT_URL):
+    env_url = os.environ.get(ENV_CHAT_URL) if "url" not in locked else ""
+    url = env_url or _clean(raw.get("url"))
+    if env_url:
         log.debug(f"url overridden by {ENV_CHAT_URL}")
     model = (
         _clean(model_override)
@@ -324,9 +337,13 @@ def load_config(
             raise ConfigError(f"storage_state file not found: {state_path}")
         storage_state = str(state_path)
 
+    if "cdp_url" in locked:
+        if _clean(cdp_url_override) or os.environ.get(ENV_CDP_URL):
+            log.info("cdp_url is set in the config file; --cdp-url / CRITIQUE_CDP_URL ignored")
+        cdp_url_override = None
     cdp_url = (
         _clean(cdp_url_override)
-        or os.environ.get(ENV_CDP_URL)
+        or (os.environ.get(ENV_CDP_URL) if "cdp_url" not in locked else "")
         or _clean(raw.get("cdp_url"))
         or None
     )
@@ -360,38 +377,42 @@ def load_config(
     else:
         if not selectors.prompt_input:
             raise ConfigError(
-                "selectors.prompt_input is required: crit does not know the chat's message box yet. "
-                "Run crit setup to point at it (after crit config --url https://chat.company.com/)"
+                "selectors.prompt_input is required: crit does not know the page's message box yet. "
+                "Run crit setup to point at it (after crit config --url https://ai.company.com/)"
             )
         if not selectors.assistant_messages:
             raise ConfigError(
-                "selectors.assistant_messages is required: crit does not know where the chat shows replies yet. "
+                "selectors.assistant_messages is required: crit does not know where the page shows replies yet. "
                 "Run crit setup to point at them"
             )
         if not url:
             raise ConfigError(
-                "no chat address is set. Run crit config --url https://chat.company.com/ "
+                "no url is set. Run crit config --config-file /path/to/crit.json or crit config --url https://ai.company.com/ "
                 "(or set CRITIQUE_CHAT_URL)"
             )
         if PLACEHOLDER_URL in url:
             raise ConfigError(
-                "url is still a placeholder. Set the chat address with "
-                "crit config --url https://chat.company.com/."
+                "url is still a placeholder. Set it with "
+                "crit config --url https://ai.company.com/."
             )
 
     egress_mode = _egress_mode(raw.get("egress"))
+    if company is not None and "egress" in locked and _clean(company.data.get("egress")).lower() == egress.STRICT:
+        egress_mode = egress.STRICT  # CRITIQUE_EGRESS=open never loosens the config file's strict
+    page_network = _page_network_mode(raw.get("page_network"))
     allowed_hosts = _host_list(raw.get("allowed_hosts"))
     if egress_mode == egress.STRICT and cdp_url:
         raise ConfigError(
             'egress is "strict", but cdp_url attaches to a browser crit did not start, whose own traffic '
             'crit cannot limit. Remove cdp_url (crit starts its own browser), or set "egress": "open".'
         )
-    gitlab_raw = raw.get("gitlab") if isinstance(raw.get("gitlab"), dict) else {}
+    gitlab = _load_gitlab(raw, env="gitlab.base_url" not in locked)
     egress.configure(
         egress_mode,
         url if backend != BACKEND_LOCAL else "",
         allowed_hosts,
-        gitlab_url=os.environ.get("CRITIQUE_GITLAB_URL") or _clean(gitlab_raw.get("base_url")),
+        gitlab_url=gitlab.base_url,
+        page_network=page_network,
     )
 
     return BotConfig(
@@ -408,8 +429,11 @@ def load_config(
         user_data_dir=user_data_dir,
         cdp_url=cdp_url,
         allowed_hosts=_host_list(raw.get("allowed_hosts")),
-        filter_chat_page=_bool_field("filter_chat_page", raw.get("filter_chat_page"), False) or egress_mode == egress.STRICT,
+        filter_chat_page=_bool_field("filter_chat_page", raw.get("filter_chat_page"), False)
+        or (egress_mode == egress.STRICT and page_network == egress.STRICT),
         egress=egress_mode,
+        page_network=page_network,
+        company_config=company.path if company is not None else "",
         queue_dir=queue_dir,
         min_interval_seconds=_non_negative_float(
             "min_interval_seconds",
@@ -470,7 +494,7 @@ def load_config(
         ),
         backend=backend,
         local=local,
-        gitlab=_load_gitlab(raw),
+        gitlab=gitlab,
         **_redaction_settings(raw),
     )
 
@@ -490,6 +514,48 @@ def user_config_path() -> Path:
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "critique-bot" / CONFIG_FILE_NAME
+
+
+#: Per-user preferences kept in the user config next to the settings (never in a config file
+#: from the team): the terminal style, and whether the first-run welcome was shown.
+USER_PREF_KEYS = ("theme", "syntax_preview", "welcomed")
+
+
+def has_settings(data: dict) -> bool:
+    """True when a config object sets crit up: an empty one (a config file is found elsewhere), or one
+    with a setting. Only preferences (theme, welcomed) is not set up: the first-run questions still apply."""
+    return not data or any(key not in USER_PREF_KEYS for key in data)
+
+
+def user_preferences() -> dict:
+    """theme / syntax_preview / welcomed from the user config ({} when unreadable)."""
+    try:
+        data = read_config_dict(user_config_path())
+    except ConfigError:
+        return {}
+    return {key: data[key] for key in USER_PREF_KEYS if key in data}
+
+
+def set_user_preferences(**values: object) -> None:
+    """Store preferences in the user config, keeping everything else in it."""
+    path = user_config_path()
+    try:
+        data = read_config_dict(path)
+    except ConfigError:
+        return
+    data.update({key: value for key, value in values.items() if key in USER_PREF_KEYS})
+    try:
+        write_config_file(path, data)
+    except OSError as exc:
+        log.debug(f"could not save preferences in {path}: {exc}")
+
+
+def effective_theme(project_settings: object) -> str:
+    """The terminal style: the project's own when one was set there, else the user's, else dark."""
+    if isinstance(project_settings, dict) and isinstance(project_settings.get("theme"), str) and project_settings["theme"]:
+        return project_settings["theme"]
+    theme = user_preferences().get("theme")
+    return theme if isinstance(theme, str) and theme else "dark"
 
 
 def read_config_dict(path: str | Path) -> dict:
@@ -534,6 +600,280 @@ def write_config_file(path: str | Path, data: dict) -> Path:
             pass
         raise
     return path
+
+
+# --------------------------------------------------------------------------- the config file
+#
+# The config file (internally "company" settings) is the shared file with url, selectors, and
+# the rest, that a team hands out; the user config only names it (``config_file``).
+
+#: User config key naming the config file (an absolute path, UNC kept as given).
+COMPANY_CONFIG_KEY = "config_file"
+#: Names the config file when the user config does not.
+ENV_COMPANY_CONFIG = "CRITIQUE_CONFIG_FILE"
+COMPANY_FILE_NAME = "crit.json"
+#: A copy of the last config file that loaded, next to the user config.
+COMPANY_CACHE_NAME = "config-file.cache.json"
+
+#: Keys the company file decides when it sets them; the user's own value is ignored.
+#: ``selectors`` (key by key) and ``gitlab.base_url`` are locked the same way, ``egress``
+#: and ``page_network`` may only be tightened, and ``redact_terms`` are added together.
+COMPANY_LOCKED_KEYS = ("url", "backend", "allowed_hosts", "egress", "page_network", "redact_pii", "local", "cdp_url")
+#: Every top-level key crit knows; others in a company file are reported (log.info) and ignored.
+KNOWN_CONFIG_KEYS = frozenset(
+    {
+        "url", "backend", "selectors", "model", "model_dropdown_identifier", "timeout_ms", "idle_ms",
+        "reply_start_ms", "reply_stall_ms", "thinking_max_ms", "reply_max_ms", "allowed_hosts",
+        "filter_chat_page", "egress", "page_network", "storage_state", "user_data_dir", "cdp_url", "queue_dir",
+        "min_interval_seconds", "interval_jitter_seconds", "turn_pause_seconds", "max_parallel_tabs",
+        "max_attempts", "result_retention", "job_timeout_seconds", "max_prompt_chars", "max_file_chars",
+        "max_files", "max_read_bytes", "local", "gitlab", "gitlab_base_url", "redact_terms", "redact_pii",
+    }
+)
+
+
+
+@dataclass(frozen=True)
+class CompanySettings:
+    """A company settings file that loaded (or its saved copy)."""
+
+    #: The file's path as configured (UNC paths as given).
+    path: str
+    data: dict
+    #: "settings" (company_config in the user's config), "env" (CRITIQUE_COMPANY_CONFIG), or "system".
+    source: str
+    #: When the saved copy was made, if the file itself could not be read ("" otherwise).
+    cached_at: str = ""
+
+
+def system_company_config_path() -> Path:
+    """Where IT may place the config file for everyone on the PC: ``/etc/critique-bot/crit.json``
+    on Linux and macOS, ``%ProgramData%\\critique-bot\\crit.json`` on Windows."""
+    if os.name == "nt":
+        base = os.environ.get("ProgramData") or os.environ.get("PROGRAMDATA") or "C:\\ProgramData"
+        return Path(base) / "critique-bot" / COMPANY_FILE_NAME
+    return Path("/etc/critique-bot") / COMPANY_FILE_NAME
+
+
+def company_cache_path() -> Path:
+    return user_config_path().parent / COMPANY_CACHE_NAME
+
+
+def company_path_value(text: str) -> str:
+    """The path to store in ``config_file``: absolute; a UNC path (``\\\\server\\share\\...``) as given."""
+    value = _clean(text)
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()  # a pasted "Copy as path" keeps its quotes
+    if value.startswith(("\\\\", "//")):
+        return value
+    if os.name == "nt":
+        import ntpath
+
+        return ntpath.abspath(ntpath.expanduser(value))
+    return os.path.abspath(os.path.expanduser(value))
+
+
+def company_config_location(raw: dict | None = None) -> tuple[str, str] | None:
+    """Which company file applies, and why: ``(path, source)``; None when there is none.
+
+    ``company_config`` in the loaded config (``raw``), then in the user config, then
+    ``CRITIQUE_COMPANY_CONFIG``, then the system default when that file exists.
+    """
+    candidates = [raw or {}]
+    try:
+        candidates.append(read_config_dict(user_config_path()))
+    except ConfigError as exc:
+        log.debug(f"user config not read for company_config: {exc}")
+    for data in candidates:
+        value = _clean(data.get(COMPANY_CONFIG_KEY))
+        if value and value.lower() != "none":
+            return value, "settings"
+    from_env = _clean(os.environ.get(ENV_COMPANY_CONFIG))
+    if from_env and from_env.lower() != "none":
+        return from_env, "env"
+    system = system_company_config_path()
+    try:
+        present = system.is_file()
+    except OSError:
+        present = False
+    if present:
+        return str(system), "system"
+    return None
+
+
+def validate_company_data(data: object, path: str) -> dict:
+    """Check a company file's object; ConfigError (naming the file) when crit cannot use it."""
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must hold a JSON object.")
+    unknown = sorted(str(key) for key in data if key not in KNOWN_CONFIG_KEYS and key != COMPANY_CONFIG_KEY)
+    if unknown:
+        log.info(f"config file {path}: keys this version of crit does not know, ignored: {', '.join(unknown)}")
+    try:
+        backend = backend_kind(data.get("backend"))
+        if data.get("selectors") is not None and not isinstance(data.get("selectors"), dict):
+            raise ConfigError("selectors must be a JSON object")
+        _host_list(data.get("allowed_hosts"))
+        redact_term_list(data.get("redact_terms"))
+        if data.get("redact_pii") is not None:
+            _bool_field("redact_pii", data.get("redact_pii"), True)
+        for key in ("egress", "page_network"):
+            value = data.get(key)
+            if value is not None and str(value).strip().lower() not in egress.MODES:
+                raise ConfigError(f'{key} must be "strict" or "open", not {value!r}')
+        if data.get("local") is not None and not isinstance(data.get("local"), dict):
+            raise ConfigError("local must be a JSON object")
+        if data.get("gitlab") is not None and not isinstance(data.get("gitlab"), dict):
+            raise ConfigError("gitlab must be a JSON object")
+    except ConfigError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+    selectors = data.get("selectors") or {}
+    missing = []
+    if not _clean(data.get("url")):
+        missing.append("url")
+    if backend == BACKEND_BROWSER:
+        for key in ("prompt_input", "assistant_messages"):
+            if not _clean(selectors.get(key)):
+                missing.append(f"selectors.{key}")
+    if missing:
+        raise ConfigError(f"{path} is missing: {', '.join(missing)}")
+    return {key: value for key, value in data.items() if key != COMPANY_CONFIG_KEY}
+
+
+def read_company_file(path: str) -> dict:
+    """The company file's checked object. OSError when it cannot be read; ConfigError when it is wrong."""
+    text = Path(path).read_text(encoding="utf-8-sig")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} is not valid JSON ({exc}).") from exc
+    return validate_company_data(data, path)
+
+
+def check_company_file(text: str) -> CompanySettings:
+    """A company file the person named (first run, ``crit config --config-file``), checked; no saved copy is used."""
+    path = company_path_value(text)
+    try:
+        if not Path(path).is_file():
+            raise ConfigError(f"{path} does not exist.")
+        data = read_company_file(path)
+    except OSError as exc:
+        raise ConfigError(f"{path} cannot be read ({exc.strerror or exc}).") from exc
+    _save_company_cache(path, data)
+    return CompanySettings(path, data, "settings")
+
+
+def _save_company_cache(path: str, data: dict) -> None:
+    from datetime import datetime, timezone
+
+    cache = company_cache_path()
+    try:
+        old = read_config_dict(cache)
+    except ConfigError:
+        old = {}
+    if old.get("source") == path and old.get("config") == data:
+        return
+    record = {"source": path, "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "config": data}
+    try:
+        write_config_file(cache, record)
+    except OSError as exc:
+        log.debug(f"could not save the config file copy {cache}: {exc}")
+
+
+def _cached_company(path: str) -> tuple[dict, str] | None:
+    """The saved copy of the company file at ``path`` and when it was saved; None when there is none."""
+    try:
+        record = read_config_dict(company_cache_path())
+    except ConfigError:
+        return None
+    if record.get("source") != path or not isinstance(record.get("config"), dict):
+        return None
+    try:
+        data = validate_company_data(record["config"], path)
+    except ConfigError:
+        return None
+    return data, str(record.get("saved_at") or "")
+
+
+def _plain_time(iso: str) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso or "an earlier run"
+
+
+def load_company_settings(path: str, source: str) -> CompanySettings:
+    """The company file at ``path``; its saved copy (with a notice) when the file cannot be read."""
+    try:
+        data = read_company_file(path)
+    except OSError as exc:
+        cached = _cached_company(path)
+        if cached is None:
+            raise ConfigError(
+                f"{path} cannot be read ({exc.strerror or exc}) and there is no saved copy of it. "
+                "Check the network or VPN."
+            ) from exc
+        data, saved_at = cached
+        when = _plain_time(saved_at)
+        log.notice(f"{path} cannot be read; using its copy from {when}.")
+        return CompanySettings(path, data, source, cached_at=when)
+    _save_company_cache(path, data)
+    return CompanySettings(path, data, source)
+
+
+def find_company_settings(raw: dict | None = None) -> CompanySettings | None:
+    """The company settings that apply to a config whose object is ``raw`` (None when there are none)."""
+    found = company_config_location(raw)
+    if found is None:
+        return None
+    return load_company_settings(*found)
+
+
+def _tighter(company: object, user: object) -> object:
+    """egress / page_network: the user may tighten the company's "open" to "strict", never loosen."""
+    if _clean(company).lower() == egress.OPEN and _clean(user).lower() == egress.STRICT:
+        return egress.STRICT
+    return company
+
+
+def merge_company(company: dict, user: dict) -> tuple[dict, frozenset[str]]:
+    """Built-in defaults < ``company`` < ``user``, with the company's locked keys kept.
+
+    Returns the merged object and the locked keys the company set (``selectors.<key>`` and
+    ``gitlab.base_url`` for nested ones). ``redact_terms`` are both lists together.
+    """
+    merged = {key: value for key, value in company.items() if key != COMPANY_CONFIG_KEY}
+    locked = {key for key in COMPANY_LOCKED_KEYS if key in company}
+    company_selectors = company.get("selectors") if isinstance(company.get("selectors"), dict) else {}
+    locked |= {f"selectors.{key}" for key in company_selectors}
+    company_gitlab = company.get("gitlab") if isinstance(company.get("gitlab"), dict) else {}
+    if _clean(company_gitlab.get("base_url")):
+        locked.add("gitlab.base_url")
+    for key, value in user.items():
+        if key in ("egress", "page_network") and key in company:
+            merged[key] = _tighter(company[key], value)
+        elif key in locked:
+            if value != company.get(key):
+                log.info(f"{key} is set in the config file; the value in your settings is not used")
+        elif key == "selectors" and isinstance(value, dict):
+            merged["selectors"] = {**value, **company_selectors}
+        elif key == "model_dropdown_identifier" and "selectors.model_dropdown_identifier" in locked:
+            continue
+        elif key == "redact_terms" and "redact_terms" in company and isinstance(value, list):
+            merged["redact_terms"] = list(redact_term_list(company.get("redact_terms"))) + value
+        elif key == "gitlab" and isinstance(value, dict):
+            merged["gitlab"] = {**value, **company_gitlab}
+        elif key == "gitlab_base_url" and "gitlab.base_url" in locked:
+            continue
+        else:
+            merged[key] = value
+    return merged, frozenset(locked)
+
+
+def company_summary(settings: CompanySettings) -> str:
+    """``Using <path>``."""
+    return f"Using {settings.path}"
 
 
 _LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -611,7 +951,7 @@ def backend_kind(value: object) -> str:
     if key in _LOCAL_ALIASES:
         return BACKEND_LOCAL
     raise ConfigError(
-        f"backend {value!r} is not supported. Use browser (the chat page in Edge) or local "
+        f"backend {value!r} is not supported. Use browser (a web page in Edge) or local "
         "(a model behind an OpenAI-compatible server such as llama.cpp's llama-server)."
     )
 
@@ -624,6 +964,16 @@ def _egress_mode(value: object) -> str:
     mode = str(raw).strip().lower()
     if mode not in egress.MODES:
         raise ConfigError(f'egress must be "strict" or "open", not {raw!r}')
+    return mode
+
+
+def _page_network_mode(value: object) -> str:
+    """config.json "page_network": "open" (the default: the page loads its own sites) or "strict"."""
+    if value is None or value == "":
+        return egress.OPEN
+    mode = str(value).strip().lower()
+    if mode not in egress.MODES:
+        raise ConfigError(f'page_network must be "open" or "strict", not {value!r}')
     return mode
 
 
@@ -768,14 +1118,14 @@ def _resolve_user_data_dir(value: str, config_path: Path | None = None) -> str:
     return resolved
 
 
-def _load_gitlab(raw: dict) -> GitLabConfig:
+def _load_gitlab(raw: dict, *, env: bool = True) -> GitLabConfig:
     nested = raw.get("gitlab") if isinstance(raw.get("gitlab"), dict) else {}
     base_url = (
-        os.environ.get(ENV_GITLAB_URL)
+        (os.environ.get(ENV_GITLAB_URL) if env else "")
         or _clean(nested.get("base_url"))
         or _clean(raw.get("gitlab_base_url"))
     )
-    if os.environ.get(ENV_GITLAB_URL):
+    if env and os.environ.get(ENV_GITLAB_URL):
         log.debug(f"gitlab.base_url overridden by {ENV_GITLAB_URL}")
     return GitLabConfig(
         base_url=base_url,
@@ -877,21 +1227,18 @@ def _frozen_root() -> Path | None:
 
 
 def default_prompt_template_path() -> Path:
-    """Resolve the bundled review template (cwd, next to the binary, or package)."""
+    """crit's own review template (the package, or the bundle's copy).
+
+    Never one from the current folder: a project under review is untrusted input, and a
+    prompts/review.txt in it must not replace crit's instructions (--prompt-template is
+    the explicit way to use another template).
+    """
     package_dir = Path(__file__).resolve().parent
-    candidates = [
-        Path.cwd() / "prompts" / "review.txt",
-        Path(sys.executable).resolve().parent / "prompts" / "review.txt",
-        package_dir / "prompts" / "review.txt",
-    ]
+    candidates = [package_dir / "prompts" / "review.txt"]
     frozen_root = _frozen_root()
     if frozen_root is not None:
-        candidates.append(frozen_root / "prompts" / "review.txt")
         candidates.append(frozen_root / "critique_bot" / "prompts" / "review.txt")
-    try:
-        candidates.append(package_dir.parents[2] / "prompts" / "review.txt")
-    except IndexError:
-        pass
+        candidates.append(frozen_root / "prompts" / "review.txt")
 
     seen: set[Path] = set()
     for path in candidates:

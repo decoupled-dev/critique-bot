@@ -38,8 +38,8 @@ Architecture: {arch}
 Maintainer: critique-bot maintainers <noreply@invalid>
 Depends: libc6 (>= {glibc})
 Recommends: microsoft-edge-stable | google-chrome-stable | chromium | chromium-browser
-Description: Code review and coding agent that drives a web chat UI
- crit sends only the conversation to the chat URL in config.json (strict egress by
+Description: Code review and coding agent that drives an AI service's web page
+ crit sends only the conversation to the url in config.json (strict egress by
  default), redacts secrets, personal data and configured company names, and keeps
  every browser and tool telemetry switch off.
 """
@@ -56,9 +56,11 @@ if [ "$1" = "configure" ]; then
             --shell /usr/sbin/nologin critique-bot
     fi
     install -d -o critique-bot -g critique-bot -m 0750 /var/lib/critique-bot
-    install -d -o root -g critique-bot -m 0750 /etc/critique-bot
+    # 0755: every user's crit reads the config file /etc/critique-bot/crit.json (0644) here;
+    # the worker's config.json stays 0640.
+    install -d -o root -g critique-bot -m 0755 /etc/critique-bot
     if [ ! -e /etc/critique-bot/config.json ]; then
-        install -o root -g critique-bot -m 0640 /opt/critique-bot/config.example.json /etc/critique-bot/config.json
+        install -o root -g critique-bot -m 0640 /usr/share/doc/critique-bot/examples/config.example.json /etc/critique-bot/config.json
     fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload || true
@@ -131,7 +133,9 @@ def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
         _write(root / "usr" / "bin" / "critique-bot", _WRAPPER.format(extra=""), 0o755)
         _write(root / "usr" / "bin" / "crit", _WRAPPER.format(extra="--as-crit "), 0o755)
         doc = root / "usr" / "share" / "doc" / "critique-bot"
-        doc.mkdir(parents=True)
+        (doc / "examples").mkdir(parents=True)
+        for name in ("config.example.json", "config-file.example.json"):
+            shutil.copy2(ROOT / name, doc / "examples" / name)
         for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
             if (ROOT / name).is_file():
                 shutil.copy2(ROOT / name, doc / ("copyright" if name == "LICENSE" else name))

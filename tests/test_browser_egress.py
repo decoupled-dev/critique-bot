@@ -127,7 +127,7 @@ class BrowserEgressTests(unittest.TestCase):
 
         saved = egress.policy()
         self.addCleanup(setattr, egress, "_policy", saved)
-        egress.configure("strict", self.chat_url)
+        egress.configure("strict", self.chat_url, page_network="strict")
         worker = (
             f"fetch('{self.tracker_url}/worker-fetch', {{method: 'POST', body: 'secret'}}).catch(() => {{}});"
             f"try {{ new WebSocket('{self.tracker_url.replace('http', 'ws')}/worker-ws'); }} catch (e) {{}}"

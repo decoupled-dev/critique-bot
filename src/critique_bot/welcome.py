@@ -337,8 +337,8 @@ def ask_login(
 ) -> bool:
     """Ask before opening Edge. Enter means yes."""
     _say(write, "")
-    _say(write, f"Sign in with Microsoft Edge so {COMMAND} can use the chat.")
-    _say(write, "The login window closes after the chat box is ready.")
+    _say(write, f"Sign in with Microsoft Edge so {COMMAND} can use the page at your url.")
+    _say(write, "The login window closes after the message box is ready.")
     try:
         line = (prompt or input)("Open the login window? [Y/n] ")
     except EOFError:
@@ -355,21 +355,20 @@ def reopen_theme(workspace: Path) -> None:
         )
         return
     from critique_bot.bot_home import find_bot_home, update_settings
+    from critique_bot.config import effective_theme, set_user_preferences, user_preferences
 
     home = find_bot_home(workspace)
-    selected = "dark"
-    syntax = True
-    if home is not None:
-        raw = home.settings.get("theme")
-        if isinstance(raw, str) and raw:
-            selected = raw
-        if home.settings.get("syntax_preview") is False:
-            syntax = False
+    selected = effective_theme(home.settings if home is not None else None)
+    prefs = user_preferences()
+    syntax = not (prefs.get("syntax_preview") is False or (home is not None and home.settings.get("syntax_preview") is False))
     chosen = pick_theme(selected=selected, syntax=syntax)
-    if chosen is None or home is None:
+    if chosen is None:
         return
     theme_id, syntax_on = chosen
-    update_settings(home, theme=theme_id, syntax_preview=syntax_on)
+    # The style is the user's; a project that set its own keeps it, changed too.
+    set_user_preferences(theme=theme_id, syntax_preview=syntax_on)
+    if home is not None and home.settings.get("theme"):
+        update_settings(home, theme=theme_id, syntax_preview=syntax_on)
 
 
 def _say(write: Callable[[str], None] | None, text: str) -> None:

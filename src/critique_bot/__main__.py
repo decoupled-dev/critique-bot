@@ -4,9 +4,13 @@ The bundle ships one program, ``critique-bot``. ``crit`` is the same program sta
 with ``--as-crit`` first (the .deb's /usr/bin/crit and the Windows zip's crit.cmd do
 that), or under a name that starts with ``crit``/``bot-agent`` other than critique-bot.
 
+A downloaded program (Windows exe or the Linux zip) installs itself the first time it
+runs, without a question (see installer.should_auto_install), then does what was asked.
+
 Double-clicked in Windows Explorer, crit is not in a project folder and its console
-window would close the moment it exits. So it then sets itself up if needed, says how
-to use it from a terminal, and waits for Enter before the window closes.
+window would close the moment it exits. So it then sets itself up if needed (the config
+file question), says how to use it from a terminal, and waits for Enter before the window
+closes.
 """
 
 import os
@@ -44,13 +48,6 @@ def _double_click_main() -> int:
 
     code = 0
     try:
-        if installer.frozen_bundle_dir() is not None and not installer.is_installed_copy():
-            answer = input("Install crit for your user, so you can run it from any terminal? [Y/n] ").strip().lower()
-            if answer in ("", "y", "yes"):
-                code = installer.install()
-                if code != 0:
-                    return code
-                print("")
         location = resolve_config_path(None, os.path.expanduser("~"))
         if not location.exists:
             outcome = cli._first_run_wizard(location.path)
@@ -84,7 +81,19 @@ def _wait_for_enter() -> None:
         pass
 
 
+def _maybe_auto_install() -> None:
+    """Install the downloaded program first (once; never from sources, the .deb, or with CRIT_NO_AUTO_INSTALL=1)."""
+    try:
+        from critique_bot import installer
+
+        if installer.should_auto_install([a for a in sys.argv[1:] if a != "--as-crit"]):
+            installer.auto_install()
+    except Exception as exc:  # installing is a convenience; the command still runs
+        print(f"crit could not install itself: {exc}", file=sys.stderr)
+
+
 def main() -> int:
+    _maybe_auto_install()
     if launched_from_explorer():
         args = [a for a in sys.argv[1:] if a != "--as-crit"]
         if not args:

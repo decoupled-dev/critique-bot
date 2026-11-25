@@ -615,7 +615,7 @@ def format_sanitize_note(stats: SanitizeStats) -> str:
         return ""
     lines = [
         "NOTE: Input was sanitized so a huge patch, hundreds of files, or binaries "
-        "cannot crash the chat UI. Review only the included text.",
+        "cannot crash the page. Review only the included text.",
         (
             f"- size: {stats.original_chars:,} chars in -> "
             f"{stats.output_chars:,} chars sent"

@@ -1,6 +1,6 @@
 # Critique bot
 
-Patch-review bot and local coding agent. The model behind it is an adapter chosen in `config.json`: the company's chat web UI driven in Microsoft Edge (`backend: browser`, the default), or a model served on this PC such as Qwen or Gemma behind llama.cpp's `llama-server`, LM Studio, or vLLM (`backend: local`). Prompt composition, the job queue, the agent, and review output are the same with both.
+Patch-review bot and local coding agent. The model behind it is an adapter chosen in `config.json`: your company's AI service, its web page driven in Microsoft Edge (`backend: browser`, the default), or a model served on this PC such as Qwen or Gemma behind llama.cpp's `llama-server`, LM Studio, or vLLM (`backend: local`). Prompt composition, the job queue, the agent, and review output are the same with both.
 
 **One command, `crit`, with modes.** The first word picks the mode:
 
@@ -23,7 +23,7 @@ Prebuilt downloads for Linux (.deb and zip) and Windows: see [docs/install.md](d
 ## Requirements
 
 - Python 3.10+
-- For the web chat: Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed. On Linux CI you may also need `playwright install-deps`
+- For the web page: Microsoft Edge (`microsoft-edge-stable` on Linux; Edge is usually already on Windows), or Google Chrome if Edge is not installed. On Linux CI you may also need `playwright install-deps`
 - For a local model: an OpenAI-compatible server such as llama.cpp's `llama-server` with a GGUF model (`llama-server -m model.gguf --port 8080 -c 32768`), or LM Studio or vLLM
 
 ## Setup
@@ -37,19 +37,19 @@ pip install -e .
 
 That installs Playwright plus `rich` and `prompt_toolkit` for the `crit` screen. To install everything and put `crit` on `PATH` in one step, use `scripts/setup-crit.sh` (Linux, macOS) or `scripts\setup-crit.ps1` (Windows): [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script).
 
-Installed from a release (`.deb` or zip)? See [docs/install.md](docs/install.md). Either way there is no config to copy: run `crit` in a project and the first run asks where the model runs (your company chat's address, or a local model server) and which company, customer, or project names to hide, writes your user settings (`~/.config/critique-bot/config.json`; `%APPDATA%\critique-bot\config.json` on Windows), and carries on. For scripts and rollouts, set it up in one line and review it:
+Installed from a release (`.deb` or zip)? See [docs/install.md](docs/install.md). Either way there is no config to copy: run `crit` in a project and the first run asks where the model runs (the url of your company's AI service, or a local model server) and which company, customer, or project names to hide, writes your user settings (`~/.config/critique-bot/config.json`; `%APPDATA%\critique-bot\config.json` on Windows), and carries on. For scripts and rollouts, set it up in one line and review it:
 
 ```bash
-crit config --url https://chat.company.com/ --redact "Acme, Globex"     # or: crit config --backend local
+crit config --url https://ai.company.com/ --redact "Acme, Globex"     # or: crit config --backend local
 crit config                                              # show the settings in plain words
-crit setup                                               # company chat: point at its message box and replies
+crit setup                                               # web page: point at its message box and replies
 ```
 
 Field-by-field reference, every `crit config` flag, and which file a command uses: [`docs/config.json.md`](docs/config.json.md). For a model on this PC: `crit config --backend local --local-url http://127.0.0.1:8080 --model NAME` (no selectors or sign-in; see [Local model](docs/config.json.md#local-model-backend-local)).
 
-`crit setup` serves a page on `127.0.0.1`, opens Edge on your chat URL, and lets you **click** the prompt box, the send button, a reply, and the stop button instead of hand-writing CSS. It ranks candidate selectors, saves them, and runs a live test round trip.
+`crit setup` serves a page on `127.0.0.1`, opens Edge on the url, and lets you **click** the prompt box, the send button, a reply, and the stop button instead of hand-writing CSS. It ranks candidate selectors, saves them, and runs a live test round trip.
 
-The chat page runs as it does in a normal browser, so the chat UI works as usual. crit controls what leaves on its own side, by what it types into the page: secrets are redacted and secret files need your yes. `"filter_chat_page": true` also restricts the page to the chat's own site and `allowed_hosts`. Sign-in happens in a separate window.
+The page runs as it does in a normal browser, so it works as usual. crit controls what leaves on its own side, by what it types into the page: secrets are redacted and secret files need your yes. `"filter_chat_page": true` also restricts the page to the url's own site and `allowed_hosts`. Sign-in happens in a separate window.
 
 Set `model` to the **visible label** to pick (for example `GPT-5.1`). The picker is a **button or clickable div that opens a panel**. Set `selectors.model_dropdown_identifier` (or top-level `model_dropdown_identifier`) to unique text, `aria-label`, `id`, or `data-testid` on that opener so other buttons are ignored. After that click, the bot looks for the model name in the panel. `selectors.model_dropdown` is an optional CSS selector for the same opener; `selectors.model_option` can target items inside the open panel.
 
@@ -73,7 +73,7 @@ Env overrides: `CRITIQUE_CHAT_URL`, `CRITIQUE_MODEL`, `CRITIQUE_STORAGE_STATE`, 
 
 ## Check the install
 
-Send a one-shot prompt through the signed-in chat page. The first run opens Edge when `.edge-profile` is missing so you can sign in, then closes that window and continues headless. Later runs reuse that profile. Pass `--headed` to show the window anyway.
+Send a one-shot prompt through the signed-in page. The first run opens Edge when `.edge-profile` is missing so you can sign in, then closes that window and continues headless. Later runs reuse that profile. Pass `--headed` to show the window anyway.
 
 ```bash
 critique-bot --config config.json --mode general \
@@ -86,13 +86,13 @@ The setup UI has the same check: **Send test prompt**.
 
 ### Review
 
-`crit review` gives the patch and the review format in [`prompts/review.txt`](prompts/review.txt) to the Code Reviewer. Before it reports, the reviewer reads what it needs with read-only tools: the changed files, their callers, tests, interfaces, manifests, git history. Edits, commands, web fetches, helper chats, and paths outside the project are refused without asking, so a patch cannot make crit act. It has 20 tool rounds by default (`--max-rounds`), and its last reply is the review. It writes `{output-dir}/review.md` + `review.json` in the same format as before, so `gitlab-post` works unchanged. The transcript goes to `.bot/sessions/`.
+`crit review` gives the patch and the review format in [`prompts/review.txt`](prompts/review.txt) to the Code Reviewer. Before it reports, the reviewer reads what it needs with read-only tools: the changed files, their callers, tests, interfaces, manifests, git history. Edits, commands, web fetches, helper conversations, and paths outside the project are refused without asking, so a patch cannot make crit act. It has 20 tool rounds by default (`--max-rounds`), and its last reply is the review. It writes `{output-dir}/review.md` + `review.json` in the same format as before, so `gitlab-post` works unchanged. The transcript goes to `.bot/sessions/`.
 
 ```bash
 crit review --patch-file diff.patch      # or: git diff main | crit review
 ```
 
-`--quick` runs the one-shot review instead: one message with the patch and the changed files, and no tools. It's faster and uses fewer chat turns. `critique-bot` (with or without `review`) and the CI worker use the one-shot review; `critique-bot review --deep` asks for the agent review there. `submit` refuses `--deep` for now, because the worker only runs one-shot reviews.
+`--quick` runs the one-shot review instead: one message with the patch and the changed files, and no tools. It's faster and uses fewer turns. `critique-bot` (with or without `review`) and the CI worker use the one-shot review; `critique-bot review --deep` asks for the agent review there. `submit` refuses `--deep` for now, because the worker only runs one-shot reviews.
 
 The one-shot review:
 
@@ -119,7 +119,7 @@ python -m critique_bot --config config.json --mode general \
 
 `--file` and trailing paths both attach files. If the prompt contains `{files}` or `{patch}`, those contents replace the placeholder; otherwise they are appended after the prompt, labeled with each path.
 
-### Chat
+### Interactive conversation
 
 Interactive conversation in this terminal. Edge stays headless when a profile already exists; a missing profile opens the window so you can sign in, then closes it and continues headless. Pass `--headed` to show the window anyway. Type a message at `You>`; a `Thinking...` spinner shows until the assistant reply is printed. `exit` / `quit` / Ctrl-D ends the session and writes `{output-dir}/chat.md` + `chat.json`. Diagnostic logs are off by default; pass `--logs` to print them on stderr.
 
@@ -145,9 +145,9 @@ In-session commands: `/help`, `/file PATH [message]` to attach a file to the nex
 
 ### Agent
 
-`crit` is the local coding agent (`bot-agent` is the same command). It edits the repo on this machine. The first run in a folder creates `.bot/`, asks which text style looks right in this terminal, asks which role crit plays in this project (Code Reviewer, AOSP Expert, Expert Developer, AI Expert, Test Engineer, Android App Engineer, or Generic; the role's paragraph follows the instructions, and `/role` or `--role` changes it), and, when crit has no settings yet, asks where the model runs: the company chat page in a browser (it asks for the https address and opens the selector setup page), or a local model server on this PC or another PC on the network (it asks for the host and port and lists the server's models to pick from); the answers go to your user settings. `crit configure` asks again, and `crit config` shows or changes any setting. Then it asks you to sign in and opens Edge when the profile is not signed in yet. Later runs go straight to the task. The instructions in [`prompts/agent.txt`](prompts/agent.txt) go out in front of the first task, in the same message, so the first reply already works on it and emits `<tool_call>` blocks. Later turns are tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long chat. Edits run as soon as you approve them, or at once in auto mode (`--yes`). Shift+Tab switches between ask, accept-edits, auto, and plan modes; `crit --plan` makes the model send a plan you approve before anything changes. Built-in skills (Android, AOSP, Android Automotive, JUnit/Espresso, Gradle, Java, Kotlin, Compose, C++/JNI, ASPICE, functional safety) go with the tasks they fit. A self-contained part of a task (an investigation, a contained change, a test run) can go to a short helper chat that reports back (`delegate`), which keeps the main chat small; several run at the same time. Only the conversation with the chat URL leaves the PC, and with a local model nothing does: see [docs/security.md](docs/security.md). Switching between the chat page and a local model is a `config.json` change (`backend`); see [Use a local model](docs/bot-agent.md#use-a-local-model-instead-of-the-chat-page). See [docs/bot-agent.md](docs/bot-agent.md#modes). A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes; after three in a row the next one ends the task as FAILED. A real question that needs your decision (or an `ask_user` call) is shown to you, and your answer goes back to the model. When the model says no edit is needed, or replies COMPLETED or DONE, that task ends; after an edit, a configured check command runs first. `crit undo` restores the files changed by the last task.
+`crit` is the local coding agent (`bot-agent` is the same command). It edits the repo on this machine. The first run in a folder creates `.bot/`, asks which text style looks right in this terminal, asks which role crit plays in this project (Code Reviewer, AOSP Expert, Expert Developer, AI Expert, Test Engineer, Android App Engineer, or Generic; the role's paragraph follows the instructions, and `/role` or `--role` changes it), and, when crit has no settings yet, asks where the model runs: your company's web page in a browser (it asks for the https address and opens the selector setup page), or a local model server on this PC or another PC on the network (it asks for the host and port and lists the server's models to pick from); the answers go to your user settings. `crit configure` asks again, and `crit config` shows or changes any setting. Then it asks you to sign in and opens Edge when the profile is not signed in yet. Later runs go straight to the task. The instructions in [`prompts/agent.txt`](prompts/agent.txt) go out in front of the first task, in the same message, so the first reply already works on it and emits `<tool_call>` blocks. Later turns are tool results, each followed by a short STATE block (files read, files changed, last command) so the model keeps track in a long conversation. Edits run as soon as you approve them, or at once in auto mode (`--yes`). Shift+Tab switches between ask, accept-edits, auto, and plan modes; `crit --plan` makes the model send a plan you approve before anything changes. Built-in skills (Android, AOSP, Android Automotive, JUnit/Espresso, Gradle, Java, Kotlin, Compose, C++/JNI, ASPICE, functional safety) go with the tasks they fit. A self-contained part of a task (an investigation, a contained change, a test run) can go to a short helper conversation that reports back (`delegate`), which keeps the main conversation small; several run at the same time. Only the conversation with the url leaves the PC, and with a local model nothing does: see [docs/security.md](docs/security.md). Switching between the web page and a local model is a `config.json` change (`backend`); see [Use a local model](docs/bot-agent.md#use-a-local-model-instead-of-the-web-page). See [docs/bot-agent.md](docs/bot-agent.md#modes). A question with no file change is answered in words and that task ends. A reply that answers and also prints tool calls shows the answer and runs the calls. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes; after three in a row the next one ends the task as FAILED. A real question that needs your decision (or an `ask_user` call) is shown to you, and your answer goes back to the model. When the model says no edit is needed, or replies COMPLETED or DONE, that task ends; after an edit, a configured check command runs first. `crit undo` restores the files changed by the last task.
 
-The session screen works like Claude Code: a header box with the folder, model, shell, permission mode, and role; a `>` input box with history (`.bot/history`), Alt+Enter or Ctrl+J for a new line, `/` for commands (`/help`, `/new`, `/clear`, `/undo`, `/permissions`, `/role`, `/status`, `/shell`, `/tools`, `/theme`, `/exit`), and `@` to complete file paths. Each tool step prints `● Read(src/app.py)` with a `⎿` result line; edits show a numbered diff. Edits, commands, web fetches, and paths outside the project ask first (yes / yes for this session / no with a note to the model); `crit --yes` or `"permissions": "auto"` in `.bot/settings.json` skips the prompts. Ctrl+C stops a task and the reply the chat page is still writing; twice on an empty prompt (or Ctrl+D, or `exit`) leaves. Piped output is plain text, and `NO_COLOR` is honored. Details: [`docs/bot-agent.md`](docs/bot-agent.md).
+The session screen works like Claude Code: a header box with the folder, model, shell, permission mode, and role; a `>` input box with history (`.bot/history`), Alt+Enter or Ctrl+J for a new line, `/` for commands (`/help`, `/new`, `/clear`, `/undo`, `/permissions`, `/role`, `/status`, `/shell`, `/tools`, `/theme`, `/exit`), and `@` to complete file paths. Each tool step prints `● Read(src/app.py)` with a `⎿` result line; edits show a numbered diff. Edits, commands, web fetches, and paths outside the project ask first (yes / yes for this session / no with a note to the model); `crit --yes` or `"permissions": "auto"` in `.bot/settings.json` skips the prompts. Ctrl+C stops a task and the reply the page is still writing; twice on an empty prompt (or Ctrl+D, or `exit`) leaves. Piped output is plain text, and `NO_COLOR` is honored. Details: [`docs/bot-agent.md`](docs/bot-agent.md).
 
 ```bash
 crit

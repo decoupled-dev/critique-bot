@@ -518,7 +518,7 @@ def _chat_file_turn(command: str, limits: InputLimits) -> str:
 
 
 def _format_chat_transcript(turns: list[dict[str, str]]) -> str:
-    parts = ["# Chat", ""]
+    parts = ["# Conversation", ""]
     for turn in turns:
         heading = "You" if turn["role"] == "user" else "Assistant"
         parts.append(f"## {heading}")
@@ -544,7 +544,7 @@ def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]
         send(first_prompt)
 
     print(
-        "Chat session ready. Type a message, /help, or exit / Ctrl-D to quit.",
+        "Session ready. Type a message, /help, or exit / Ctrl-D to quit.",
         file=sys.stderr,
     )
     while True:
@@ -561,7 +561,7 @@ def _run_chat_session(session, config, first_prompt: str) -> list[dict[str, str]
                 log.notice(f"Problem: {exc}")
                 continue
         else:
-            payload = cap_text(message, config.max_prompt_chars, what="chat message")
+            payload = cap_text(message, config.max_prompt_chars, what="message")
         if not payload.strip():
             continue
         send(payload)
@@ -574,7 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
         usage="crit [MODE] [options] [TASK or FILE ...]",
         description=(
             "One command for everything critique-bot does. The first word picks the mode; "
-            "with no mode word crit runs the local coding agent. The model is a web chat "
+            "with no mode word crit runs the local coding agent. The model is a web page "
             "in Edge or a model on this PC (see crit config). critique-bot is the "
             "same command, except that with no mode word it reviews a patch."
         ),
@@ -587,7 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "service commands:\n"
             "  crit config             see or change the settings (crit config --help)\n"
-            "  crit setup              web UI to pick the chat page's selectors by clicking\n"
+            "  crit setup              web UI to pick the page's selectors by clicking\n"
             "  crit worker             queue worker on the runner PC (owns the signed-in Edge)\n"
             "  crit submit             enqueue a review for the worker and wait for it\n"
             "  crit queue-status       worker liveness, queued jobs, recent results\n"
@@ -990,6 +990,10 @@ def _find_config(explicit: str | None, repo_dir: str | Path = ".", *, ask: bool 
         return _config_error(exc)
     if location.exists:
         return location.path
+    if location.source == "user":
+        found = _use_found_config_file(location.path)
+        if found is not None:
+            return found
     if not (ask and _may_ask()):
         if location.source in ("flag", "env"):
             return _config_error(ConfigError(f"config file not found: {location.path}"))
@@ -997,6 +1001,18 @@ def _find_config(explicit: str | None, repo_dir: str | Path = ".", *, ask: bool 
         log.notice(NOT_SET_UP)
         return 1
     return _first_run_wizard(location.path)
+
+
+def _use_found_config_file(target: Path) -> Path | int | None:
+    """A config file found without asking (CRITIQUE_CONFIG_FILE, the system location): set up
+    ``target`` with it and say so. None when there is none; an exit code when it is unusable."""
+    from critique_bot.setup_wizard import use_found_config_file
+
+    try:
+        result = use_found_config_file(target, say=lambda text: print(text, file=sys.stderr))
+    except ConfigError as exc:
+        return _config_error(exc)
+    return None if result is None else result.path
 
 
 def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
@@ -1009,12 +1025,17 @@ def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
             print("Kept the current settings.")
             return 0
     if not reconfigure:
-        print("crit is not set up yet. A few questions, then it carries on.")
-    result = run_wizard(target)
+        found = _use_found_config_file(target)
+        if found is not None:
+            return found
+    try:
+        result = run_wizard(target)
+    except ConfigError as exc:
+        return _config_error(exc)
     if result is None:
         return 1
     if result.needs_selectors:
-        print("crit will open the chat so you can point at the message box, the send button, and the replies.")
+        print("crit will open the page so you can point at the message box, the send button, and the replies.")
         print("When the live test passes, close the setup page with Ctrl+C here.")
         code = _main_setup(["--config", str(result.path)])
         if code != 0:
@@ -1214,7 +1235,7 @@ def _main_setup(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="critique-bot setup",
         description=(
-            "Open a small web UI on 127.0.0.1 to pick the chat UI selectors "
+            "Open a small web UI on 127.0.0.1 to pick the page's selectors "
             "by clicking them in a real browser window, and run a live test. "
             "Writes the result to your config file."
         ),
@@ -1419,7 +1440,7 @@ def _main_agent(args: argparse.Namespace) -> int:
     from critique_bot.agent import run_agent
     from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home, update_settings
     from critique_bot.roles import ROLE_IDS, normalize_role
-    from critique_bot.welcome import pick_role, pick_theme, stdio_is_tty
+    from critique_bot.welcome import pick_theme, stdio_is_tty
 
     role_flag: str | None = None
     if getattr(args, "role", None):
@@ -1463,32 +1484,14 @@ def _main_agent(args: argparse.Namespace) -> int:
             print(f"restored {path}")
         return 0
 
-    welcome = stdio_is_tty() and (home is None or not home.settings.get("welcomed"))
-    chosen = None
-    if welcome and (home is None or not home.settings.get("theme")):
-        chosen = pick_theme()
-        if chosen is None:
-            return 1
     just_created = home is None
     if home is None:
         try:
             home = init_bot_home(workspace)
         except BotHomeError as exc:
             return _config_error(ConfigError(str(exc)))
-    if chosen is not None:
-        theme_id, syntax = chosen
-        update_settings(home, theme=theme_id, syntax_preview=syntax)
     if args.config and not home.settings.get("config"):
         update_settings(home, config=str(Path(args.config).resolve()))
-    # The role is asked once per project. --role on a project without one stores it; a later
-    # --role only applies to that run. Esc on the screen means Generic for now and ask again next time.
-    if not home.settings.get("role"):
-        if role_flag is not None:
-            update_settings(home, role=role_flag)
-        elif stdio_is_tty():
-            picked = pick_role()
-            if picked is not None:
-                update_settings(home, role=picked)
 
     reconfigure = words == ["configure"]
     if reconfigure:
@@ -1502,6 +1505,12 @@ def _main_agent(args: argparse.Namespace) -> int:
         return _config_error(exc)
     config_path = location.path
     missing_config = not location.exists
+    if missing_config and not reconfigure and location.source == "user":
+        found = _use_found_config_file(config_path)
+        if isinstance(found, int):
+            return found
+        if found is not None:
+            config_path, missing_config = found, False
     if (missing_config or reconfigure) and _may_ask(args):
         outcome = _first_run_wizard(config_path, reconfigure=reconfigure)
         if isinstance(outcome, int):
@@ -1509,6 +1518,29 @@ def _main_agent(args: argparse.Namespace) -> int:
         config_path, missing_config = outcome, False
         if reconfigure and not has_task:
             return 0
+
+    # The role is set once per project, from its files (no question). --role on a project
+    # without one stores it; a later --role only applies to that run.
+    if not home.settings.get("role"):
+        if role_flag is not None:
+            update_settings(home, role=role_flag)
+        else:
+            from critique_bot.roles import detect_role, role_label
+
+            detected = detect_role(home.root)
+            update_settings(home, role=detected)
+            print(f"Role for this project: {role_label(detected)} (change with: crit --role <name>)", file=sys.stderr)
+
+    # The style and the sign-in welcome are once per user, not per project.
+    from critique_bot.config import set_user_preferences, user_preferences
+
+    prefs = user_preferences()
+    welcome = stdio_is_tty() and not prefs.get("welcomed") and not home.settings.get("welcomed")
+    if welcome and not prefs.get("theme") and not home.settings.get("theme"):
+        chosen = pick_theme()
+        theme_id, syntax = chosen if chosen is not None else ("dark", True)
+        set_user_preferences(theme=theme_id, syntax_preview=syntax)
+
     if reconfigure and missing_config:
         return _config_error(ConfigError("crit configure needs a terminal to ask its questions; use crit config instead"))
     if missing_config:
@@ -1535,7 +1567,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         # A local model has no sign-in: the first run goes straight to the task.
         if not config.is_local and not _welcome_login(config):
             return 0 if not has_task else 1
-        update_settings(home, welcomed=True)
+        set_user_preferences(welcomed=True)
 
     task = ""
     if args.prompt_file:
@@ -1845,7 +1877,7 @@ def _main_run(argv: list[str]) -> int:
                         response = session.send(prompt)
                         completion = getattr(session, "last_detail", None)
                 except Exception:
-                    log.exception("chat flow failed")
+                    log.exception("conversation flow failed")
                     save_failure(session, output_dir)
                     raise
         config_prompts.offer_blocked_hosts()

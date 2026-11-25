@@ -24,7 +24,7 @@ _GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history", ".bot/setti
 _LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\nsettings.json\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
-Lines below the marker are sent to the chat at the start of every session,
+Lines below the marker are sent to the model at the start of every session,
 like CLAUDE.md or .cursorrules. Nothing is sent while the space below is
 empty. Keep the notes short and specific, for example:
 
@@ -92,7 +92,7 @@ class BotHome:
             raise BotHomeError(
                 f"{path} is committed in this repository (or git could not confirm it is not; see the "
                 "warning above), so crit does not use it: a config that comes "
-                "with the code could send your files to another chat. Keep config.json out of git "
+                "with the code could send your files to another site. Keep config.json out of git "
                 "(git rm --cached it and add it to .gitignore), or pass --config with your own copy."
             )
         return path

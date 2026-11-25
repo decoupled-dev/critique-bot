@@ -20,18 +20,23 @@ curl -fsSL https://github.com/decoupled-dev/critique-bot/releases/latest/downloa
 Then, in any project folder:
 
 ```
-crit            # the coding agent; the first run asks for your company's chat address
+crit            # the coding agent; the first run asks for the config file path
 crit review     # review the current changes
 crit config     # see or change the settings
 ```
 
 Run the same line again to update. `critique-bot install --uninstall` removes it (your
-settings stay). Instead of the one-liner you can also download the zip yourself and
-double-click `critique-bot.exe` (Windows), or run `./critique-bot install` (Linux): it
-offers the same install.
+settings stay). Set `CRIT_CONFIG_FILE` (Linux) or `$env:CRIT_CONFIG_FILE` (Windows) before the
+one-liner to also store the config file's path, so the first run asks nothing.
 
-If the chat page stays blank, the chat probably needs its sign-in site (or a site for
-its files). crit names each site it blocked; allow the ones that belong to your chat with
+Instead of the one-liner you can download the zip yourself and run the program: the first
+time it runs (a double-click on `critique-bot.exe`, or `./critique-bot` on Linux) it installs
+itself for your user without a question ("Installed crit <version> in <path> and added it to
+your PATH."), then does what you asked. `CRIT_NO_AUTO_INSTALL=1` turns that off; the .deb's
+copy in /opt/critique-bot never installs itself.
+
+If the page stays blank, it probably needs its sign-in site (or a site for
+its files). crit names each site it blocked; allow the ones that belong to the service with
 `crit config --allow-host <site>`, or with the **Allow** buttons on the `crit setup` page.
 
 ## Release files
@@ -125,31 +130,43 @@ first time they are needed:
 
 The file and its folder are readable by you only. `crit config --path` prints where it is.
 
-**Answer the questions.** Run `crit` (or `crit review`, `crit chat`, `crit ask`, `crit setup`)
-in a terminal. With no settings yet it asks:
+**The config file.** Your team gives you one file with the url, the page elements, and the
+rules ([config-file.md](config-file.md)). Run `crit` in a terminal in a project folder:
 
-1. Cloud chat or a model on this or another PC.
-2. Cloud: your company's chat address (for example `https://chat.company.com/`; crit names
-   the host and contacts no other site). Local: the server's address and which of its models to use.
-3. Company, customer, or project names to hide from the chat (Enter for none).
+- If the file is already in place (`CRITIQUE_CONFIG_FILE`, `/etc/critique-bot/crit.json`, or
+  `%ProgramData%\critique-bot\crit.json`), crit says `Using <path>` and carries on. No question.
+- Otherwise it asks once: `Config file path (Enter if none): `. Paste the path (`C:\...`,
+  `\\server\share\crit.json`, or `/srv/...`; quotes are fine). A bad file is explained in one
+  line and the question comes again.
 
-It then says that personal data (emails, phone numbers, card numbers, ...) is hidden too, and
-carries on with what you asked for. For a company chat it first opens the chat so you can
-point at the message box, the send button, and the replies (`crit setup`), then asks you to
-run the command again. The first chat run opens a browser window to sign in; after that it
-runs headless.
+Then the browser window opens once to sign in. Every other project folder asks nothing: the
+role for a project is picked from its files (one line says which; `crit --role NAME` changes
+it), and the terminal style is asked once per user (`crit config --theme ID` changes it).
+
+**Without a config file** (Enter at the question): `No config file: crit needs the url and the
+page elements.` Then:
+
+1. A web page (cloud) or a model on this or another PC.
+2. Cloud: the url (for example `https://ai.company.com/`; crit names the host and contacts no
+   other site). Local: the server's address and which of its models to use.
+3. Company, customer, or project names to hide (Enter for none).
+
+It then says that personal data (emails, phone numbers, card numbers, ...) is hidden too. For
+a web page it opens it so you can point at the message box, the send button, and the replies
+(`crit setup`), then asks you to run the command again.
 
 **Or set it up in one line** (scripts, CI images, IT rollout):
 
 ```bash
-crit config --url https://chat.company.com/ --redact "Acme, Globex"   # then: crit setup
+crit config --config-file /srv/team/crit.json                        # the config file
+crit config --url https://ai.company.com/ --redact "Acme, Globex"     # or by hand; then: crit setup
 crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
 crit config                                                      # review the settings
 ```
 
-Later, crit asks only when something is needed: if the chat page tries to reach another site
+Later, crit asks only when something is needed: if the page tries to reach another site
 (its CDN or sign-in host), crit blocks it and, after the current step, asks once whether to
-allow it from the next start on (default No; only say yes if it belongs to the chat service).
+allow it from the next start on (default No; only say yes if it belongs to the service).
 A command that needs your GitLab address asks for it once. Without a terminal (CI, the worker,
 an IDE) crit never asks; it says which `crit config` command to run instead.
 
@@ -162,10 +179,10 @@ else your user file. See [config.json.md](config.json.md) for every setting and 
 
 `crit config` shows these; the first run sets most of them:
 
-- `"url"`: the chat. With `"egress": "strict"` (the default) it is the only host crit and its
-  browser may reach, plus the hosts you list in `"allowed_hosts"`. A chat page that needs more
+- `"url"`: the address of the AI service. With `"egress": "strict"` (the default) it is the only host crit and its
+  browser may reach, plus the hosts you list in `"allowed_hosts"`. A page that needs more
   hosts (its own CDN or sign-in) shows a plain message naming the host; add it only if it
-  belongs to the chat service (crit asks, or `crit config --allow-host HOST`).
+  belongs to the service (crit asks, or `crit config --allow-host HOST`).
 - `"cdp_url"` must be empty: strict mode does not attach to a browser crit did not start.
 - `"redact_terms"`: company, customer, and project names replaced with `[REDACTED:name]`
   before anything is sent. `"redact_pii": true` (the default) also removes emails, phone
@@ -177,7 +194,7 @@ Messages in the terminal are plain sentences; add `--logs` to any command for di
 ## Worker service (GitLab review runner, Linux)
 
 ```bash
-sudoedit /etc/critique-bot/config.json        # chat URL, selectors, gitlab.base_url, queue_dir
+sudoedit /etc/critique-bot/config.json        # url, selectors, gitlab.base_url, queue_dir
 sudo systemctl enable --now critique-bot-worker
 journalctl -u critique-bot-worker -f
 ```

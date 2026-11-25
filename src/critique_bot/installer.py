@@ -51,15 +51,76 @@ def bin_dir() -> Path:
     return Path.home() / ".local" / "bin"
 
 
+#: Where the .deb puts the program; apt manages it, so it counts as installed.
+DEB_ROOT = Path("/opt/critique-bot")
+#: Set to 1 to keep a downloaded program from installing itself when it runs.
+ENV_NO_AUTO_INSTALL = "CRIT_NO_AUTO_INSTALL"
+
+
 def is_installed_copy(bundle: Path | None = None) -> bool:
-    """True when the running program is the installed one."""
+    """True when the running program is the installed one (or the .deb's, in /opt/critique-bot)."""
     bundle = bundle or frozen_bundle_dir()
     if bundle is None:
         return False
+    if os.name != "nt":
+        try:
+            bundle.resolve().relative_to(DEB_ROOT)
+            return True
+        except ValueError:
+            pass
     try:
         bundle.resolve().relative_to(install_root().resolve())
     except ValueError:
         return False
+    return True
+
+
+def _version_key(text: str) -> tuple[int, ...]:
+    parts = []
+    for piece in text.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def installed_versions() -> list[str]:
+    """The versions in the install folder (``app-<version>`` with the program in it)."""
+    found = []
+    root = install_root()
+    if not root.is_dir():
+        return found
+    for app in root.glob("app-*"):
+        if (app / _exe_name()).is_file():
+            found.append(app.name[len("app-"):])
+    return sorted(found, key=_version_key)
+
+
+def should_auto_install(argv: list[str], bundle: Path | None = None) -> bool:
+    """True when the downloaded program should install itself before doing what was asked."""
+    bundle = bundle or frozen_bundle_dir()
+    if bundle is None or is_installed_copy(bundle):
+        return False
+    if os.environ.get(ENV_NO_AUTO_INSTALL, "").strip() not in ("", "0"):
+        return False
+    if argv[:1] in (["install"], ["--help"], ["-h"]):
+        return False
+    mine = _version_key(__version__)
+    return not any(_version_key(version) >= mine for version in installed_versions())
+
+
+def _say_stderr(text: str) -> None:
+    print(text, file=sys.stderr)  # stdout may be a protocol (crit --acp)
+
+
+def auto_install(*, say=_say_stderr) -> bool:
+    """Install the running program without a question; one line says where. True when it worked."""
+    lines: list[str] = []
+    code = install(say=lines.append)
+    if code != 0:
+        for line in lines:
+            log.notice(line)
+        return False
+    say(f"Installed crit {__version__} in {install_root() / f'app-{__version__}'} and added it to your PATH.")
     return True
 
 
@@ -183,8 +244,16 @@ def install(bundle: Path | None = None, *, say=print) -> int:
             say(f"Added {folder} to PATH in {', '.join(str(p) for p in changed)}. Open a new terminal, then type: crit")
         else:
             say("In any project folder, type: crit")
-    say("crit asks for your company's chat address the first time it needs it (or set it with: crit config --url ...).")
+    say("crit asks for the config file the first time it runs (or set it with: crit config --config-file PATH).")
     return 0
+
+
+def set_config_file(path: str, *, say=print) -> int:
+    """``install --config-file PATH``: store the config file in the user config (checked first)."""
+    from critique_bot.config import user_config_path
+    from critique_bot.config_cmd import main as config_main
+
+    return config_main(["--config", str(user_config_path()), "--config-file", path])
 
 
 def uninstall(*, say=print) -> int:
@@ -207,7 +276,11 @@ def main(argv: list[str]) -> int:
         description="Install crit for this user so every terminal finds it (no administrator rights needed).",
     )
     parser.add_argument("--uninstall", action="store_true", help="remove the installed program and launchers")
+    parser.add_argument("--config-file", metavar="PATH", help="after installing, use this config file (url, page elements, ...)")
     args = parser.parse_args(argv)
     if args.uninstall:
         return uninstall()
-    return install()
+    code = install()
+    if code == 0 and args.config_file:
+        code = set_config_file(args.config_file)
+    return code

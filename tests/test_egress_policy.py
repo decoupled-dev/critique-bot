@@ -43,10 +43,20 @@ class ConfigTest(_PolicyReset):
     def test_strict_is_the_default(self) -> None:
         config = load_config(_write_config(self.folder))
         self.assertEqual(config.egress, "strict")
-        self.assertTrue(config.filter_chat_page)
+        self.assertEqual(config.page_network, "open")
+        self.assertFalse(config.filter_chat_page)  # the page works as for a person
         policy = egress.policy()
         self.assertTrue(policy.strict and policy.configured)
+        self.assertFalse(policy.page_restricted)
         self.assertEqual(policy.hosts(), ("chat.corp.example",))
+
+    def test_page_network_strict_filters_the_page(self) -> None:
+        config = load_config(_write_config(self.folder, page_network="strict"))
+        self.assertEqual(config.page_network, "strict")
+        self.assertTrue(config.filter_chat_page)
+        self.assertTrue(egress.policy().page_restricted)
+        with self.assertRaises(ConfigError):
+            load_config(_write_config(self.folder, page_network="sometimes"))
 
     def test_open_is_an_explicit_choice(self) -> None:
         config = load_config(_write_config(self.folder, egress="open"))
@@ -66,7 +76,7 @@ class ConfigTest(_PolicyReset):
 
 class PolicyTest(_PolicyReset):
     def test_only_the_chat_host_and_allowed_hosts(self) -> None:
-        policy = egress.configure("strict", "https://chat.corp.example/c", ("api.corp.example",))
+        policy = egress.configure("strict", "https://chat.corp.example/c", ("api.corp.example",), page_network="strict")
         self.assertTrue(policy.permits("chat.corp.example"))
         self.assertTrue(policy.permits("api.corp.example"))
         self.assertTrue(policy.permits("v1.api.corp.example"))
@@ -75,7 +85,7 @@ class PolicyTest(_PolicyReset):
             self.assertFalse(policy.permits(host), host)
 
     def test_require_explains_what_to_do(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         with self.assertRaises(PermissionError) as caught:
             egress.require("gitlab.corp.example", "posting to GitLab")
         self.assertIn('"gitlab.corp.example" to allowed_hosts', str(caught.exception))
@@ -83,7 +93,7 @@ class PolicyTest(_PolicyReset):
 
 class BrowserTest(_PolicyReset):
     def test_resolver_allows_only_the_policy_hosts(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c", ("cdn.corp.example",))
+        egress.configure("strict", "https://chat.corp.example/c", ("cdn.corp.example",), page_network="strict")
         with patch.object(browser, "system_proxy", return_value=("", "")):
             args = browser.browser_quiet_args("https://chat.corp.example/c")
         rules = next(a for a in args if a.startswith("--host-resolver-rules="))
@@ -94,7 +104,7 @@ class BrowserTest(_PolicyReset):
         self.assertIn("--no-proxy-server", args)
 
     def test_page_filter_uses_the_exact_chat_host(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         url = "https://chat.corp.example/c"
         self.assertTrue(browser.request_is_allowed("https://chat.corp.example/api", url))
         self.assertFalse(browser.request_is_allowed("https://static.corp.example/app.js", url))
@@ -102,9 +112,55 @@ class BrowserTest(_PolicyReset):
         self.assertTrue(browser.request_is_allowed("https://static.corp.example/app.js", url))
 
 
+class OpenChatPageTest(_PolicyReset):
+    """Strict egress with "page_network": "open" (the default): the page works as for a person."""
+
+    def test_no_catch_all_and_the_system_proxy(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c", ("cdn.corp.example",))
+        self.assertTrue(egress.strict())
+        self.assertFalse(egress.page_restricted())
+        with patch.object(browser, "system_proxy", return_value=("", "")):
+            args = browser.merge_resolver_rules(browser.browser_quiet_args("https://chat.corp.example/c"))
+        self.assertNotIn("--no-proxy-server", args)
+        self.assertFalse(any(a.startswith(("--proxy-server", "--proxy-pac-url")) for a in args))
+        rules = next(a for a in args if a.startswith("--host-resolver-rules="))
+        self.assertNotIn("MAP * ~NOTFOUND", rules)
+
+    def test_browser_services_stay_off(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        args = browser.merge_resolver_rules(browser.browser_quiet_args("https://chat.corp.example/c"))
+        for quiet in browser.BROWSER_QUIET_ARGS:
+            self.assertIn(quiet, args)
+        rules = next(a for a in args if a.startswith("--host-resolver-rules="))
+        for host in ("update.googleapis.com", "safebrowsing.googleapis.com", "*.events.data.microsoft.com", "edge.microsoft.com"):
+            self.assertIn(f"MAP {host} ~NOTFOUND", rules)
+
+    def test_profile_prefs_are_written(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        browser.apply_private_prefs(self.folder)
+        local_state = json.loads((self.folder / "Local State").read_text(encoding="utf-8"))
+        prefs = json.loads((self.folder / "Default" / "Preferences").read_text(encoding="utf-8"))
+        self.assertEqual(local_state["dns_over_https"]["mode"], "off")
+        self.assertFalse(prefs["safebrowsing"]["enabled"])
+        self.assertFalse(prefs["signin"]["allowed"])
+
+    def test_page_is_not_filtered_but_crit_stays_strict(self) -> None:
+        egress.configure("strict", "https://chat.corp.example/c")
+        url = "https://chat.corp.example/c"
+        self.assertTrue(browser.request_is_allowed("https://static.corp.example/app.js", url))
+        self.assertFalse(egress.policy().permits("evil.example"))
+        from critique_bot.agent import effective_settings
+
+        self.assertEqual(effective_settings({"web_fetch": True})["web_fetch"], False)
+
+    def test_cdp_url_still_refused(self) -> None:
+        with self.assertRaises(ConfigError):
+            load_config(_write_config(self.folder, cdp_url="http://127.0.0.1:9222"))
+
+
 class ProxyTest(_PolicyReset):
     def test_company_proxy_is_used_and_still_resolvable(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         with patch.object(browser, "system_proxy", return_value=("http=proxy.corp.example:8080;https=proxy.corp.example:8443", "")):
             args = browser.browser_quiet_args("https://chat.corp.example/c")
         self.assertIn("--proxy-server=http=proxy.corp.example:8080;https=proxy.corp.example:8443", args)
@@ -113,7 +169,7 @@ class ProxyTest(_PolicyReset):
         self.assertIn("EXCLUDE proxy.corp.example", rules)
 
     def test_pac_file(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         with patch.object(browser, "system_proxy", return_value=("", "http://wpad.corp.example/proxy.pac")):
             args = browser.browser_quiet_args("https://chat.corp.example/c")
         self.assertIn("--proxy-pac-url=http://wpad.corp.example/proxy.pac", args)
@@ -126,7 +182,7 @@ class ProxyTest(_PolicyReset):
 
 class ResolverBlockNoticeTest(_PolicyReset):
     def test_a_blocked_sign_in_page_is_explained_once(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         browser._resolver_reported.discard("login.idp.example")
         err = io.StringIO()
         with redirect_stderr(err):
@@ -141,14 +197,14 @@ class GitLabTest(_PolicyReset):
     def test_gitlab_host_must_be_allowed(self) -> None:
         from critique_bot import gitlab
 
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         with self.assertRaises(gitlab.GitLabError) as caught:
             gitlab._require_safe_url("https://gitlab.corp.example/api/v4/projects/1")
         self.assertIn("allowed_hosts", str(caught.exception))
-        egress.configure("strict", "https://chat.corp.example/c", ("gitlab.corp.example",))
+        egress.configure("strict", "https://chat.corp.example/c", ("gitlab.corp.example",), page_network="strict")
         gitlab._require_safe_url("https://gitlab.corp.example/api/v4/projects/1")
         # gitlab.base_url's host is reachable by the GitLab client, not by the browser.
-        egress.configure("strict", "https://chat.corp.example/c", gitlab_url="https://gitlab.corp.example")
+        egress.configure("strict", "https://chat.corp.example/c", gitlab_url="https://gitlab.corp.example", page_network="strict")
         gitlab._require_safe_url("https://gitlab.corp.example/api/v4/projects/1")
         self.assertNotIn("gitlab.corp.example", egress.policy().hosts())
 
@@ -157,7 +213,7 @@ class AgentSettingsTest(_PolicyReset):
     def test_strict_forces_offline_and_no_fetch(self) -> None:
         from critique_bot.agent import effective_settings
 
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         settings = effective_settings({"offline": False, "web_fetch": True, "network_commands": "ask", "theme": "x"})
         self.assertEqual(settings, {"offline": True, "web_fetch": False, "network_commands": "block", "theme": "x"})
         egress.configure("open", "https://chat.corp.example/c")
@@ -190,7 +246,7 @@ if __name__ == "__main__":
 
 class FriendlyNavigationErrorTest(_PolicyReset):
     def test_messages(self) -> None:
-        egress.configure("strict", "https://chat.corp.example/c")
+        egress.configure("strict", "https://chat.corp.example/c", page_network="strict")
         url = "https://chat.corp.example/c"
         cases = {
             "net::ERR_NAME_NOT_RESOLVED at x\nCall log:\n  - navigating": "does not resolve",

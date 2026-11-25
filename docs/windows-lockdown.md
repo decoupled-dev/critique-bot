@@ -1,6 +1,6 @@
 # Locking down a Windows PC for crit
 
-Goal: **the only data that leaves this PC is the conversation with the chat URL.** crit's checks
+Goal: **the only data that leaves this PC is the conversation with the url.** crit's checks
 ([security.md](security.md)) catch the common ways data could leave, but they run inside the app.
 A build, a test, or a Gradle plugin runs the repository's own code, which can connect anywhere.
 Only Windows itself can enforce the rule, so the guarantee comes from step 5 (the firewall).
@@ -29,8 +29,8 @@ Check: `crit --help` runs.
 
 Open the `config.json` that crit uses (by default next to the repo, or the one `.bot\settings.json` names).
 
-- `url`: your company chat address, starting with `https://`.
-- The chat page runs as it does in a normal browser; crit does not filter its requests unless you set `"filter_chat_page": true`. If you do set it, list in `allowed_hosts` only hosts that belong to the chat service; crit prints any host it blocks.
+- `url`: the address of your company's AI service, starting with `https://`.
+- The page runs as it does in a normal browser; crit does not filter its requests unless you set `"filter_chat_page": true`. If you do set it, list in `allowed_hosts` only hosts that belong to the service; crit prints any host it blocks.
 - `cdp_url`: empty, or `http://127.0.0.1:<port>`. Never another machine.
 - `user_data_dir`: a folder **outside** every project, for example `%LOCALAPPDATA%\critique-bot\edge-profile`. That folder holds the signed-in session cookies.
 
@@ -81,18 +81,18 @@ Block all outbound traffic, then allow only what crit needs. Run **PowerShell as
 1. Find the addresses to allow:
 
    ```powershell
-   Resolve-DnsName chat.yourcompany.example      # the host in config.json "url"
+   Resolve-DnsName ai.yourcompany.example      # the host in config.json "url"
    Resolve-DnsName gitlab.yourcompany.example    # only if this PC posts reviews to GitLab
    Resolve-DnsName nexus.yourcompany.example     # package mirror, only if builds run online
    Get-DnsClientServerAddress -AddressFamily IPv4 # your DNS servers
    ```
 
-   If the chat is behind a CDN whose addresses keep changing, use Case B instead.
+   If the url's host is behind a CDN whose addresses keep changing, use Case B instead.
 
 2. Add the allow rules. Replace the example addresses with yours:
 
    ```powershell
-   New-NetFirewallRule -DisplayName "crit allow chat"   -Direction Outbound -Action Allow -Protocol TCP -RemotePort 443 -RemoteAddress 10.20.30.40
+   New-NetFirewallRule -DisplayName "crit allow url"    -Direction Outbound -Action Allow -Protocol TCP -RemotePort 443 -RemoteAddress 10.20.30.40
    New-NetFirewallRule -DisplayName "crit allow gitlab" -Direction Outbound -Action Allow -Protocol TCP -RemotePort 443 -RemoteAddress 10.20.30.50
    New-NetFirewallRule -DisplayName "crit allow dns"    -Direction Outbound -Action Allow -Protocol UDP -RemotePort 53  -RemoteAddress 10.0.0.53
    New-NetFirewallRule -DisplayName "crit allow dns tcp" -Direction Outbound -Action Allow -Protocol TCP -RemotePort 53 -RemoteAddress 10.0.0.53
@@ -119,12 +119,12 @@ Block all outbound traffic, then allow only what crit needs. Run **PowerShell as
 
 **DNS is still a channel.** A lookup of `<data>.attacker.example` reaches the attacker's DNS server through your company's DNS server. crit blocks the lookup commands it can see, but a build could still do it. To close it fully, ask IT to make the DNS server this PC uses answer only internal names, or route the PC through a proxy (Case B).
 
-### Case B: your everyday PC, or a chat behind a CDN
+### Case B: your everyday PC, or a service behind a CDN
 
 Blocking all outbound traffic would break normal work, and a host-name allowlist needs a proxy. Ask your IT or security team for an **outbound allowlist for this PC (or for your account)** on the company proxy or firewall. Send them this:
 
 > Please allow outbound HTTPS from \<PC name / account\> only to:
-> - the chat service: \<host from config.json "url"\> and \<each host in "allowed_hosts"\>
+> - the AI service: \<host from config.json "url"\> and \<each host in "allowed_hosts"\>
 > - GitLab: \<gitlab host\> (only if this PC posts review comments)
 > - the package mirror: \<Nexus / Artifactory host\> (only if builds run online)
 >
@@ -170,7 +170,7 @@ In GitLab:
 
 Open a test project and start crit.
 
-1. Ask: *"run curl https://example.com"*. crit refuses: "nothing may leave this machine except the chat".
+1. Ask: *"run curl https://example.com"*. crit refuses: "nothing may leave this machine except what crit sends to the model".
 2. Ask: *"show me the .env file"* (create a dummy `.env` first). crit asks before reading it.
 3. While a task runs, list the open connections:
 
@@ -180,7 +180,7 @@ Open a test project and start crit.
      Select-Object RemoteAddress, RemotePort, @{n='Process';e={(Get-Process -Id $_.OwningProcess).Name}}
    ```
 
-   Only the chat server's address (from `msedge`) should appear. On Case A, anything else is blocked.
+   Only the url's address (from `msedge`) should appear. On Case A, anything else is blocked.
 4. Case A only: after a build, look for blocked attempts:
 
    ```powershell
@@ -193,5 +193,5 @@ Open a test project and start crit.
 
 Step 5 covers these, which is why it is the guarantee:
 
-- The chat page runs unfiltered by default, so its own scripts decide which hosts they call. `"filter_chat_page": true` limits it, at page level.
+- The page runs unfiltered by default, so its own scripts decide which hosts they call. `"filter_chat_page": true` limits it, at page level.
 - The sign-in window runs unfiltered by design, so that sign-in works.

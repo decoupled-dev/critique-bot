@@ -107,41 +107,6 @@ def _smoke_test(binary: Path) -> None:
     print(f"ok: {binary} --help")
 
 
-def _write_readme(dest: Path, binary_name: str) -> None:
-    invoke = f".\\{binary_name}" if sys.platform == "win32" else f"./{binary_name}"
-    dest.write_text(
-        "\n".join(
-            [
-                "critique-bot standalone bundle",
-                "",
-                "Set up: run crit (or critique-bot) in a terminal; the first run asks",
-                "where the model runs and which names to hide, and saves your settings.",
-                "Or in one line, for scripts and rollouts:",
-                f'  {invoke} config --url https://chat.company.com/ --redact "Your Company"   (then: {invoke} setup)',
-                f"  {invoke} config                                    (show the settings)",
-                "The first chat run opens Edge so you can sign in. Later runs reuse it.",
-                "",
-                "Production on a GitLab runner (keep one worker running; a shared",
-                "config.json is named with --config):",
-                f"  {invoke} worker --config config.json --logs",
-                f"  {invoke} submit --config config.json",
-                "",
-                "One-shot review (debug, not for parallel CI jobs):",
-                f"  {invoke} --config config.json --patch-file diff.patch",
-                "",
-                "General prompt:",
-                f'  {invoke} --config config.json --mode general '
-                '--prompt "Summarize this" notes.txt',
-                "",
-                "Licensed under the Apache License, Version 2.0. See LICENSE.",
-                "",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-
 def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     bundle_name = f"critique-bot-{version}-{tag}"
     payload = DIST / bundle_name
@@ -154,25 +119,9 @@ def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
     internal = staged / "_internal"
     if internal.is_dir():
         shutil.copytree(internal, payload / "_internal", symlinks=True)
-    shutil.copy2(ROOT / "config.example.json", payload / "config.example.json")
-    for extra_cfg in (ROOT / "config.local.example.json",):
-        if extra_cfg.is_file():
-            shutil.copy2(extra_cfg, payload / extra_cfg.name)
-    for extra in (
-        ROOT / "packaging" / "critique-bot-worker.service",
-        ROOT / "packaging" / "worker-start.ps1",
-        ROOT / "LICENSE",
-        ROOT / "NOTICE",
-    ):
-        if extra.is_file():
-            shutil.copy2(extra, payload / extra.name)
-    prompts_src = ROOT / "prompts"
-    if prompts_src.is_dir():
-        shutil.copytree(prompts_src, payload / "prompts")
-    if sys.platform == "win32":
-        # "crit" on Windows: the same program, started as the coding agent.
-        (payload / "crit.cmd").write_text('@"%~dp0critique-bot.exe" --as-crit %*\r\n', encoding="ascii", newline="")
-    _write_readme(payload / "README.txt", binary_name)
+    # The zip holds only the program: the exe and its _internal folder (which already
+    # carries LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, and the prompts). Running the exe
+    # installs it; examples and the worker-service files live in the repo's docs.
 
     zip_path = DIST / f"{bundle_name}.zip"
     if zip_path.exists():

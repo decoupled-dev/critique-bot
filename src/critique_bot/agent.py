@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, log, roles
+from critique_bot.config import effective_theme
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
 from critique_bot.tool_api import (
@@ -1596,16 +1597,13 @@ def _setting_list(settings: dict[str, Any], key: str) -> list[str]:
 
 
 def _agent_prompt_path(name: str = "agent.txt") -> Path:
+    # Only crit's own copy: a prompts/ folder in the project (or next to some Python) must
+    # never replace crit's instructions, since the project is untrusted input.
     package_dir = Path(__file__).resolve().parent
-    candidates = [
-        package_dir / "prompts" / name,
-        Path(sys.executable).resolve().parent / "prompts" / name,
-    ]
-    try:
-        candidates.append(package_dir.parents[2] / "prompts" / name)
-    except IndexError:
-        pass
-    candidates.append(Path.cwd() / "prompts" / name)
+    candidates = [package_dir / "prompts" / name]
+    frozen = getattr(sys, "_MEIPASS", None)
+    if frozen:
+        candidates += [Path(frozen) / "critique_bot" / "prompts" / name, Path(frozen) / "prompts" / name]
     for path in candidates:
         if path.is_file():
             return path
@@ -1889,7 +1887,7 @@ class _Chat:
         if started is False:
             self.can_restart = False
             return False
-        self._note("note", f"Starting a new chat: {reason}.")
+        self._note("note", f"Starting a new conversation: {reason}.")
         self.chars = 0
         self.violations = 0
         self.health.clear()
@@ -3369,7 +3367,7 @@ def run_agent(
         model=_model_label(config),
         shell=shell,
         approve_mode=approve_mode,
-        theme=settings.get("theme") or "dark",
+        theme=effective_theme(settings),
         history_path=home.bot_dir / "history",
         cache_dir=home.cache_dir,
         session_shell=session_shell,
@@ -3539,7 +3537,7 @@ def run_read_only_task(
         model=_model_label(config),
         shell=shell,
         approve_mode="plan",
-        theme=settings.get("theme") or "dark",
+        theme=effective_theme(settings),
         cache_dir=home.cache_dir,
         tools=sorted(READ_ONLY_TOOLS),
         role=role,

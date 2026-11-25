@@ -3,9 +3,13 @@
 ``crit config`` with no flags prints the settings in plain words. With flags it changes
 them, for scripts, CI, and IT rollout as much as for people:
 
-    crit config --url https://chat.company.com/ --redact "Acme, Globex"
-    crit config --url https://chat.company.com/ --allow-host static.company-cdn.net
+    crit config --config-file /path/to/crit.json
+    crit config --url https://ai.company.com/ --redact "Acme, Globex"
     crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
+
+With a config file (``config_file``, ``CRITIQUE_CONFIG_FILE``, or the system location), the
+keys it sets are layered under the user's own (see ``config.merge_company``); the locked ones
+cannot be changed here.
 
 Every change is checked before anything is written, and the file is replaced in one step
 (owner-only, 0600 on POSIX). Which file: see :func:`resolve_config_path`.
@@ -25,6 +29,8 @@ from typing import Callable, Iterator
 
 from critique_bot import egress, redaction
 from critique_bot.config import (
+    COMPANY_CONFIG_KEY,
+    USER_PREF_KEYS,
     BACKEND_BROWSER,
     BACKEND_LOCAL,
     DEFAULT_LOCAL_URL,
@@ -38,7 +44,13 @@ from critique_bot.config import (
     backend_kind,
     clean_gitlab_url,
     clean_https_url,
+    check_company_file,
+    company_summary,
+    find_company_settings,
+    has_settings,
     load_config,
+    merge_company,
+    set_user_preferences,
     read_config_dict,
     user_config_path,
     write_config_file,
@@ -48,10 +60,13 @@ CONFIG_FILE_NAME = "config.json"
 
 #: Told when a command needs settings and cannot ask (no terminal).
 NOT_SET_UP = (
-    "crit is not set up yet. Run crit in a terminal to answer a few questions, or set it up "
-    'in one line: crit config --url https://chat.company.com/ (or crit config --backend local), '
-    'adding --redact "Your Company" for names to hide. See the settings with: crit config'
+    "crit is not set up yet. Run crit in a terminal, or set it up in one line: "
+    "crit config --config-file /path/to/crit.json (or crit config --url https://ai.company.com/). "
+    "See the settings with: crit config"
 )
+
+#: Said when a change touches a key the config file sets.
+LOCKED = "This is set in the config file {path}; change it there."
 
 
 # --------------------------------------------------------------------------- which file
@@ -68,7 +83,15 @@ class ConfigLocation:
 
     @property
     def exists(self) -> bool:
-        return self.path.is_file()
+        """The file is there and sets crit up (a user config holding only preferences does not)."""
+        if not self.path.is_file():
+            return False
+        if self.source != "user":
+            return True
+        try:
+            return has_settings(read_config_dict(self.path))
+        except ConfigError:
+            return True  # load_config reports what is wrong with it
 
 
 _SOURCE_WORDS = {
@@ -116,49 +139,82 @@ def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path
 
 
 def describe(location: ConfigLocation) -> list[str]:
-    """The settings in ``location`` as plain sentences. Tokens are never in them."""
+    """The settings in ``location`` as plain sentences. Tokens are never in them.
+
+    With a config file, it is named first; values it sets are marked "(config file)", and
+    the ones that cannot be changed here "(config file, locked)".
+    """
     path = location.path
     lines = [f"Settings file: {path} ({_SOURCE_WORDS.get(location.source, location.source)})"]
-    if not location.exists:
-        lines.append("Nothing is set up yet. Run crit to answer a few questions, or: crit config --url https://chat.company.com/")
+    own = read_config_dict(path) if path.is_file() else {}
+    try:
+        company = find_company_settings(own)
+    except ConfigError as exc:
+        lines.append(f"Config file: problem: {exc}")
+        company = None
+    if company is None and not location.exists:
+        lines.append("Nothing is set up yet. Run crit, or: crit config --config-file /path/to/crit.json")
         return lines
-    data = read_config_dict(path)
+    locked: frozenset[str] = frozenset()
+    data = own
+    if company is not None:
+        data, locked = merge_company(company.data, own)
+        saved = f" (saved copy from {company.cached_at})" if company.cached_at else ""
+        lines.append(f"Config file: {company.path}{saved}")
+
+    def mark(key: str) -> str:
+        if company is None:
+            return ""
+        top = key.split(".", 1)[0]
+        if key in locked or top in locked:
+            return " (config file, locked)"
+        if top in company.data and top not in own:
+            return " (config file)"
+        return ""
+
     try:
         backend = backend_kind(data.get("backend"))
     except ConfigError:
         backend = str(data.get("backend"))
     url = str(data.get("url") or "")
     if backend == BACKEND_LOCAL:
-        lines.append("Model runs in: a model server (backend local)")
-        lines.append(f"Server address: {url or DEFAULT_LOCAL_URL}")
+        lines.append("Model runs in: a model server (backend local)" + mark("backend"))
+        lines.append(f"Server address: {url or DEFAULT_LOCAL_URL}" + mark("url"))
     else:
-        lines.append("Model runs in: a chat page in the browser (backend browser)")
-        lines.append(f"Chat address: {url or 'not set (crit config --url https://chat.company.com/)'}")
+        lines.append("Model runs in: a web page in the browser (backend browser)" + mark("backend"))
+        lines.append(f"url: {url or 'not set (crit config --url https://ai.company.com/)'}" + mark("url"))
         selectors = data.get("selectors") if isinstance(data.get("selectors"), dict) else {}
         if not selectors.get("prompt_input"):
             lines.append("Page elements: not set (run crit setup to point at the message box)")
         elif selectors == STARTER_SELECTORS:
             lines.append("Page elements: starter guesses (run crit setup to point at the real ones)")
         else:
-            lines.append("Page elements: set")
+            lines.append("Page elements: set" + mark("selectors.prompt_input"))
     model = str(data.get("model") or "")
-    lines.append(f"Model: {model or ('the first one the server lists' if backend == BACKEND_LOCAL else 'the chat default')}")
+    lines.append(f"Model: {model or ('the first one the server lists' if backend == BACKEND_LOCAL else 'the default')}" + mark("model"))
     mode = str(data.get("egress") or egress.STRICT).lower()
+    page = str(data.get("page_network") or egress.OPEN).lower()
     if mode == egress.OPEN:
-        lines.append("Network: open (the chat page and builds reach what they need)")
+        lines.append("Network: open (the page and builds reach what they need)" + mark("egress"))
     else:
-        lines.append("Network: strict (crit contacts only the chat site and the allowed sites)")
+        lines.append("Network: strict (crit contacts only the url's site and the allowed sites)" + mark("egress"))
+        if page == egress.STRICT:
+            lines.append("Page network: strict (the page reaches only the url's site and the allowed sites)" + mark("page_network"))
+        else:
+            lines.append("Page network: open (the page loads its own sites); crit's own traffic: strict" + mark("page_network"))
     hosts = data.get("allowed_hosts") if isinstance(data.get("allowed_hosts"), list) else []
-    lines.append(f"Allowed sites: {', '.join(str(h) for h in hosts) if hosts else 'none'}")
+    lines.append(f"Allowed sites: {', '.join(str(h) for h in hosts) if hosts else 'none'}" + mark("allowed_hosts"))
     terms = data.get("redact_terms") if isinstance(data.get("redact_terms"), list) else []
     if terms:
-        lines.append(f"Names hidden: {len(terms)} ({', '.join(str(t) for t in terms)})")
+        from_file = len(company.data.get("redact_terms") or []) if company is not None else 0
+        extra = f"; {from_file} from the config file, which cannot be removed" if from_file else ""
+        lines.append(f"Names hidden: {len(terms)} ({', '.join(str(t) for t in terms)}{extra})")
     else:
         lines.append("Names hidden: none (add with crit config --redact \"Your Company\")")
     pii = data.get("redact_pii", True) is not False
-    lines.append(f"Personal data hidden: {'on' if pii else 'off'}")
+    lines.append(f"Personal data hidden: {'on' if pii else 'off'}" + mark("redact_pii"))
     gitlab = data.get("gitlab") if isinstance(data.get("gitlab"), dict) else {}
-    lines.append(f"GitLab: {gitlab.get('base_url') or 'not set'}")
+    lines.append(f"GitLab: {gitlab.get('base_url') or 'not set'}" + mark("gitlab.base_url"))
     return lines
 
 
@@ -175,7 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            "  crit config --url https://chat.company.com/ --redact \"Acme, Globex\"\n"
+            "  crit config --config-file /path/to/crit.json\n"
+            "  crit config --url https://ai.company.com/ --redact \"Acme, Globex\"\n"
             "  crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b\n"
             "  crit config --allow-host static.company-cdn.net\n"
             "  crit config --gitlab-url https://gitlab.company.com"
@@ -185,16 +242,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="change this file instead of the one crit would use")
     parser.add_argument("--repo-dir", default=".", help=argparse.SUPPRESS)
     parser.add_argument("--path", action="store_true", help="print the settings file's path and stop")
-    parser.add_argument("--url", help="the chat's https address (a cloud chat in the browser)")
-    parser.add_argument("--backend", choices=(BACKEND_BROWSER, BACKEND_LOCAL), help="browser: a chat page; local: a model server")
+    parser.add_argument("--config-file", metavar="PATH", help="use this config file (url, page elements, ...); none: stop using one")
+    parser.add_argument("--url", help="the https address of the page crit uses in the browser")
+    parser.add_argument("--backend", choices=(BACKEND_BROWSER, BACKEND_LOCAL), help="browser: a web page; local: a model server")
     parser.add_argument("--local-url", help=f"the model server's address (default {DEFAULT_LOCAL_URL})")
     parser.add_argument("--model", help="the model's name (empty: the default)")
-    parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the chat page may reach (repeatable)")
+    parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the page may reach (repeatable)")
     parser.add_argument("--remove-host", action="append", default=[], metavar="HOST", help="stop allowing a site (repeatable)")
     parser.add_argument("--redact", action="append", default=[], metavar="NAME", help="names to hide, comma-separated or repeated")
     parser.add_argument("--unredact", action="append", default=[], metavar="NAME", help="stop hiding a name (repeatable)")
     parser.add_argument("--pii", choices=("on", "off"), help="hide personal data (emails, phone numbers, ...): on (default) or off")
-    parser.add_argument("--egress", choices=egress.MODES, help="strict (default): only the chat and allowed sites; open: no limit")
+    parser.add_argument("--egress", choices=egress.MODES, help="strict (default): only the url's site and allowed sites; open: no limit")
+    parser.add_argument(
+        "--page-network", choices=egress.MODES,
+        help="open (default): the page loads its own sites, as for a person; strict: the page too reaches only the allowed sites",
+    )
+    parser.add_argument("--theme", metavar="ID", help="the terminal style (for you, in every project)")
     parser.add_argument("--gitlab-url", metavar="URL", help="your GitLab's https address (empty to remove)")
     parser.add_argument("--selector", action="append", default=[], metavar="KEY=CSS", help=f"a page element ({', '.join(SELECTOR_KEYS)})")
     parser.add_argument("--reset", action="store_true", help="remove the settings file (asks first; --yes without a terminal)")
@@ -208,6 +271,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
         for value in (
             args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
+            args.config_file, args.page_network, args.theme,
         )
     )
 
@@ -220,6 +284,21 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
     """Apply the flags to ``data`` in place; what changed, as short phrases. ConfigError on a bad value."""
     done: list[str] = []
     hints: list[str] = []
+    if args.config_file is not None:
+        if args.config_file.strip().lower() in ("", "none"):
+            data.pop(COMPANY_CONFIG_KEY, None)
+            done.append("no config file is used")
+        else:
+            settings = check_company_file(args.config_file)
+            data[COMPANY_CONFIG_KEY] = settings.path
+            done.append(f"config file set to {settings.path}")
+    if args.page_network:
+        data["page_network"] = args.page_network
+        done.append(
+            "page network set to open (the page loads its own sites)"
+            if args.page_network == egress.OPEN
+            else "page network set to strict (the page reaches only the url's site and allowed sites)"
+        )
     if args.backend:
         before = data.get("backend")
         data["backend"] = args.backend
@@ -231,14 +310,14 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
                 current = ""
             data["url"] = current or DEFAULT_LOCAL_URL
         if before != args.backend:
-            done.append("the model now runs " + ("in a model server" if args.backend == BACKEND_LOCAL else "in a chat page in the browser"))
+            done.append("the model now runs " + ("in a model server" if args.backend == BACKEND_LOCAL else "in a web page in the browser"))
     if args.url is not None:
         if args.backend == BACKEND_LOCAL:
-            raise ConfigError("--url is the chat page's address; for a model server use --local-url")
-        url = clean_https_url(args.url, "chat address")
+            raise ConfigError("--url is the page's address; for a model server use --local-url")
+        url = clean_https_url(args.url, "url")
         data["url"] = url
         data["backend"] = BACKEND_BROWSER
-        done.append(f"chat address set to {url} (the only site crit sends prompts to)")
+        done.append(f"url set to {url} (the only site crit sends prompts to)")
     hosts = list(_host_list(data.get("allowed_hosts")))
     if args.allow_host:
         new = [host for host in _host_list(args.allow_host) if host not in hosts]
@@ -283,13 +362,13 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
         done.append(f"no longer hiding {', '.join(removed)}" if removed else "those names were not hidden")
     if args.pii:
         data["redact_pii"] = args.pii == "on"
-        done.append("personal data is hidden" if args.pii == "on" else "personal data is NO LONGER hidden from the chat")
+        done.append("personal data is hidden" if args.pii == "on" else "personal data is NO LONGER hidden from what crit sends")
     if args.egress:
         data["egress"] = args.egress
         done.append(
-            "network set to strict (only the chat and allowed sites)"
+            "network set to strict (only the url's site and allowed sites)"
             if args.egress == egress.STRICT
-            else "network set to open (no limit on the sites the chat page and builds reach)"
+            else "network set to open (no limit on the sites the page and builds reach)"
         )
     if args.gitlab_url is not None:
         gitlab = data.get("gitlab") if isinstance(data.get("gitlab"), dict) else {}
@@ -316,13 +395,45 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
             selectors[key] = css
         data["selectors"] = selectors
         done.append(f"{len(args.selector)} page element(s) set")
-    if backend_kind(data.get("backend")) == BACKEND_BROWSER and data.get("url"):
+    if backend_kind(data.get("backend")) == BACKEND_BROWSER and data.get("url") and not data.get(COMPANY_CONFIG_KEY):
         selectors = data.get("selectors") if isinstance(data.get("selectors"), dict) else {}
         if not selectors.get("prompt_input"):
             data["selectors"] = {**STARTER_SELECTORS, **{k: v for k, v in selectors.items() if v}}
         if data.get("selectors") == STARTER_SELECTORS:
-            hints.append("Next: run crit setup to point crit at the chat's message box and replies.")
+            hints.append("Next: run crit setup to point crit at the page's message box and replies.")
     return done + hints
+
+
+def locked_change(data: dict, args: argparse.Namespace) -> str | None:
+    """The refusal when a flag would change what the config file sets (None when nothing is locked)."""
+    if args.config_file is not None:
+        return None  # choosing (or dropping) the file itself is always the person's
+    try:
+        company = find_company_settings(data)
+    except ConfigError:
+        return None
+    if company is None:
+        return None
+    _merged, locked = merge_company(company.data, data)
+    cfg = company.data
+    flags: list[tuple[str, bool]] = [
+        ("--url", args.url is not None and "url" in locked),
+        ("--local-url", args.local_url is not None and "url" in locked),
+        ("--backend", bool(args.backend) and "backend" in locked),
+        ("--allow-host", bool(args.allow_host) and "allowed_hosts" in locked),
+        ("--remove-host", bool(args.remove_host) and "allowed_hosts" in locked),
+        ("--pii", bool(args.pii) and "redact_pii" in locked),
+        ("--egress", args.egress == egress.OPEN and str(cfg.get("egress") or "").lower() == egress.STRICT),
+        ("--page-network", args.page_network == egress.OPEN and str(cfg.get("page_network") or "").lower() == egress.STRICT),
+        ("--gitlab-url", args.gitlab_url is not None and "gitlab.base_url" in locked),
+        ("--selector", any(f"selectors.{item.partition('=')[0].strip()}" in locked for item in args.selector)),
+    ]
+    company_terms = {str(t).casefold() for t in (cfg.get("redact_terms") or [])}
+    flags.append(("--unredact", any(name.casefold() in company_terms for name in _split_names(args.unredact))))
+    for flag, hit in flags:
+        if hit:
+            return f"{flag}: " + LOCKED.format(path=company.path)
+    return None
 
 
 @contextlib.contextmanager
@@ -392,7 +503,7 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
                 print("Kept the settings.")
                 return 0
         path.unlink()
-        print(f"Removed {path}. crit asks the setup questions on the next run (or use crit config --url https://chat.company.com/).")
+        print(f"Removed {path}. crit asks the setup questions on the next run (or use crit config --config-file /path/to/crit.json).")
         return 0
     if not _changes_requested(args):
         try:
@@ -402,8 +513,24 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
             print(f"Problem: {exc}", file=sys.stderr)
             return 1
         return 0
+    if args.theme is not None:
+        from critique_bot.welcome import THEMES
+
+        ids = [theme.id for theme in THEMES]
+        if args.theme not in ids:
+            print(f"Not saved: --theme takes one of {', '.join(ids)}", file=sys.stderr)
+            return 2
+        set_user_preferences(theme=args.theme)
+        print(f"Saved {user_config_path()}: style set to {args.theme} (in every project that did not pick its own).")
+        args.theme = None
+        if not _changes_requested(args):
+            return 0
     try:
         data = read_config_dict(path)
+        refusal = locked_change(data, args)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
         before = load_problem(data) if location.exists else "not set up"
         done = apply_changes(data, args)
     except ConfigError as exc:
@@ -421,6 +548,14 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
     changes = [item for item in done if not item.startswith("Next:")]
     hints = [item for item in done if item.startswith("Next:")]
     print(f"Saved {path}: {'; '.join(changes)}.")
+    if args.config_file is not None and data.get(COMPANY_CONFIG_KEY):
+        try:
+            with _quiet_globals():
+                found = find_company_settings(data)
+            if found is not None:
+                print(company_summary(found))
+        except ConfigError:
+            pass
     if after is not None:
         print(f"Not ready yet: {after}.")
     for hint in hints:

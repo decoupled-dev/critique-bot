@@ -94,7 +94,7 @@ _KINDS = {
 
 #: Slash commands offered in the IDE's prompt box.
 COMMANDS = [
-    {"name": "new", "description": "Start a fresh chat with the model"},
+    {"name": "new", "description": "Start a fresh conversation with the model"},
     {"name": "undo", "description": "Restore the files the last task changed"},
     {"name": "mode", "description": "Switch mode: ask, edits, auto, or plan", "input": {"hint": "ask | edits | auto | plan"}},
     {"name": "role", "description": "Switch the role crit plays in this project", "input": {"hint": "role id"}},
@@ -910,7 +910,7 @@ def waiting(active: bool, label: str = "Thinking") -> None:
 
 def set_active(name: str, count: int) -> None:
     if count:
-        _think(f"{count} helper chat{'s' if count != 1 else ''} working")
+        _think(f"{count} helper{'s' if count != 1 else ''} working")
 
 
 def show_diff(diff: str) -> bool:
@@ -1133,7 +1133,7 @@ def ask_question(question: str, options: list[str] | None = None, **_ignored: An
         text, choices = _split_numbered(text)
     if choices:
         picks = [(str(index), label[:200], "allow_once") for index, label in enumerate(choices, start=1)]
-        picks.append(("chat", "Something else (answer in chat)", "reject_once"))
+        picks.append(("chat", "Something else (answer in the conversation)", "reject_once"))
         chosen = _choose(text or "crit has a question", picks, kind="other")
         if chosen is None:
             return None

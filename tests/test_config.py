@@ -327,7 +327,7 @@ class LoadConfigErrorTests(EnvIsolated):
         )
         with self.assertRaises(ConfigError) as ctx:
             load_config(path)
-        self.assertIn("no chat address is set", str(ctx.exception))
+        self.assertIn("no url is set", str(ctx.exception))
 
     def test_invalid_timeout(self) -> None:
         path = self._write(self._browser({"timeout_ms": "fast"}))

@@ -11,7 +11,7 @@ from pathlib import Path
 from critique_bot.config import load_config
 from critique_bot.model_api import ChatError
 from critique_bot.redaction import redact_outgoing, set_custom_terms
-from critique_bot.setup_wizard import _clean_host, run_wizard
+from critique_bot.setup_wizard import CONFIG_FILE_PROMPT, _clean_host, run_wizard
 
 
 class _Script:
@@ -24,6 +24,10 @@ class _Script:
 
     def ask(self, prompt: str) -> str:
         self.asked.append(prompt)
+        if prompt == CONFIG_FILE_PROMPT and (not self.answers or not self.answers[0].startswith("file:")):
+            return ""  # no config file: the do-it-yourself questions
+        if prompt == CONFIG_FILE_PROMPT:
+            return self.answers.pop(0)[len("file:"):]
         if not self.answers:
             raise AssertionError(f"unexpected question: {prompt}")
         answer = self.answers.pop(0)
@@ -39,6 +43,16 @@ class WizardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "conf" / "config.json"
+        from unittest.mock import patch
+
+        from critique_bot import config as _config
+
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name, "APPDATA": self.tmp.name, "CRITIQUE_CONFIG_FILE": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        system = patch.object(_config, "system_company_config_path", lambda: Path(self.tmp.name) / "no-system" / "crit.json")
+        system.start()
+        self.addCleanup(system.stop)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

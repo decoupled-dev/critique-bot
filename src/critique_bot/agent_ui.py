@@ -165,7 +165,7 @@ _SHELL_TITLES = {
 
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show commands and shortcuts",
-    "/new": "Start a fresh chat",
+    "/new": "Start a fresh conversation",
     "/clear": "Clear the screen",
     "/undo": "Restore the files the last task changed",
     "/mode": "Show or switch the mode: ask, edits, auto, plan (Shift+Tab cycles)",
@@ -760,7 +760,7 @@ _ACTIVITY = {
     "git_diff": ("Running", "git command", "git commands"),
     "git_log": ("Running", "git command", "git commands"),
     "git_show": ("Running", "git command", "git commands"),
-    "delegate": ("Running", "helper chat", "helper chats"),
+    "delegate": ("Running", "helper", "helpers"),
 }
 
 
@@ -1942,7 +1942,7 @@ def _role_command(rest: str) -> None:
         _state.role_changed = chosen
     saved = _save_setting(role=chosen)
     where = "kept in .bot/settings.json" if saved else "for this session"
-    note("note", f"Role: {roles.role_label(chosen)}, {where}. The next task starts a new chat with its instructions.")
+    note("note", f"Role: {roles.role_label(chosen)}, {where}. The next task starts a new conversation with its instructions.")
 
 
 def _save_setting(**values: Any) -> bool:
@@ -2043,8 +2043,9 @@ def _reload_theme() -> None:
         home = find_bot_home(_state.workspace)
     except Exception:
         return
-    if home is not None:
-        configure(theme=home.settings.get("theme"))
+    from critique_bot.config import effective_theme
+
+    configure(theme=effective_theme(home.settings if home is not None else None))
 
 
 def print_status_table() -> None:

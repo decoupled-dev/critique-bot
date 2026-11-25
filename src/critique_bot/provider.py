@@ -91,7 +91,7 @@ def _open_new_chat(page: Any, config: BotConfig) -> bool:
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=config.timeout_ms)
     except Exception as exc:
-        log.warn(f"could not open a new chat at {url}: {exc}")
+        log.warn(f"could not open a new conversation at {url}: {exc}")
         return False
     return True
 

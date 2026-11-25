@@ -1,0 +1,14 @@
+{
+  "url": "https://ai.example.com/",
+  "allowed_hosts": ["login.example.com"],
+  "selectors": {
+    "prompt_input": "REPLACE_WITH_MESSAGE_BOX_SELECTOR",
+    "send_button": "REPLACE_WITH_SEND_BUTTON_SELECTOR",
+    "stop_button": "REPLACE_WITH_STOP_BUTTON_SELECTOR",
+    "assistant_messages": "REPLACE_WITH_REPLY_SELECTOR"
+  },
+  "redact_terms": ["Example Corp", "Project Falcon"],
+  "redact_pii": true,
+  "egress": "strict",
+  "page_network": "open"
+}

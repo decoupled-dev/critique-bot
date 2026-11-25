@@ -113,7 +113,9 @@ class UnfilteredByDefaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
             path.write_text(json.dumps(strict), encoding="utf-8")
-            self.assertTrue(load_config(path).filter_chat_page)  # strict egress (the default) always filters
+            self.assertFalse(load_config(path).filter_chat_page)  # strict egress, page_network open (the default)
+            path.write_text(json.dumps({**strict, "page_network": "strict"}), encoding="utf-8")
+            self.assertTrue(load_config(path).filter_chat_page)  # strict egress with page_network strict always filters
             path.write_text(json.dumps(base), encoding="utf-8")
             self.assertFalse(load_config(path).filter_chat_page)
             path.write_text(json.dumps({**base, "filter_chat_page": True}), encoding="utf-8")
@@ -217,6 +219,10 @@ class ChatNetworkGuardTests(unittest.TestCase):
         self.assertFalse(request_is_allowed("https://other.github.io/", "https://me.github.io/"))
 
     def test_allowed_hosts_include_chat_host(self) -> None:
+        from critique_bot import egress
+
+        self.addCleanup(setattr, egress, "_policy", egress.policy())
+        egress.configure("strict", self.CHAT, page_network="strict")
         hosts = allowed_chat_hosts(self.CHAT)
         self.assertEqual(hosts, frozenset({"chat.company.example"}))
 

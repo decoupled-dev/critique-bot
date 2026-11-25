@@ -136,7 +136,7 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual((self.root / "a.xml").read_text(encoding="utf-8"), "<a>\n    <x/>\n    <y/>\n</a>\n")
         self.assertEqual((self.root / "b.kt").read_text(encoding="utf-8"), "fun b() {\n    println(2)\n}\n")
         result = coordinator.sent[1]
-        self.assertIn("2 helper chats finished", result)
+        self.assertIn("2 helpers finished", result)
         self.assertIn("Added <y/> after <x/>", result)
         self.assertIn("Changed println(1) to println(2)", result)
         self.assertIn("Files changed by helpers: a.xml, b.kt", result)
@@ -254,12 +254,12 @@ class DelegateTests(unittest.TestCase):
         coordinator = _Coordinator([delegate, "COMPLETED"])
         self._loop(coordinator, "run the tests and tell me what fails")
         tab = _HelperTab.instances[0]
-        self.assertIn("not run in a helper chat", tab.sent[1])  # risky
+        self.assertIn("not run in a helper", tab.sent[1])  # risky
         self.assertIn("read-only commands", tab.sent[2])  # a build or other command
         self.assertFalse((self.root / "tested.flag").exists())
-        self.assertIn("not done in a helper chat", tab.sent[4])  # network
-        self.assertIn("not done in a helper chat", tab.sent[5])  # secret file
-        self.assertIn("not done in a helper chat", tab.sent[7])  # outside the workspace
+        self.assertIn("not done in a helper", tab.sent[4])  # network
+        self.assertIn("not done in a helper", tab.sent[5])  # secret file
+        self.assertIn("not done in a helper", tab.sent[7])  # outside the workspace
         self.assertIn("Do not run builds or tests", tab.sent[0])
 
     def test_helpers_that_run_alongside_others_stay_read_only(self) -> None:
@@ -309,7 +309,7 @@ class DelegateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("--- kotlin: FAILED", result["output"])
         self.assertIn("error: tab closed", result["output"])
-        self.assertEqual(result["ui"]["summary"], "2 helper chats · 14s · changed 1 file")
+        self.assertEqual(result["ui"]["summary"], "2 helpers · 14s · changed 1 file")
 
 
 if __name__ == "__main__":

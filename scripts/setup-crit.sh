@@ -31,7 +31,7 @@ Options:
   --no-path             Do not add the bin folder to PATH in your shell rc file
   --skip-browser-check  Do not look for Microsoft Edge / Google Chrome
   --install-deps        Linux: run `playwright install-deps` (may need sudo)
-  --redact-terms LIST   Company, customer, or project names to hide from the chat,
+  --redact-terms LIST   Company, customer, or project names to hide from the service,
                         comma-separated (added to redact_terms in config.json).
                         Without it, a new config asks for them when run in a terminal.
   -h, --help            Show this help
@@ -324,10 +324,10 @@ else
     cp -- "$repo/config.example.json" "$config"
     config_created=1
     info "created $config from config.example.json"
-    info "set the chat next (crit config, below)"
+    info "set the url next (crit config, below)"
 fi
 if [ "$redact_terms_given" = 0 ] && [ "$config_created" = 1 ] && [ -t 0 ]; then
-    printf 'Company, customer, or project names to hide from the chat (comma-separated, Enter for none): '
+    printf 'Company, customer, or project names to hide from the service (comma-separated, Enter for none): '
     IFS= read -r redact_terms || redact_terms=""
 fi
 CRIT_SETUP_REDACT_TERMS=$redact_terms "$venv_python" - "$config" <<'PY'
@@ -378,7 +378,7 @@ if new_terms:
     if cleaned != existing:
         data["redact_terms"] = cleaned
         changed = True
-    print(f"    redact_terms: {', '.join(cleaned)} (sent to the chat as [REDACTED:name])")
+    print(f"    redact_terms: {', '.join(cleaned)} (sent to the service as [REDACTED:name])")
 
 if changed:
     tmp = path + ".tmp"
@@ -474,8 +474,8 @@ if [ "$on_path" = 0 ] && [ -n "$rc_file" ]; then
 elif [ "$on_path" = 0 ]; then
     info "0. Put $bin_dir on PATH"
 fi
-info "1. Pick the chat, and any company names to keep out of it (crit uses $q_cfg_show):"
-info "     crit config --url https://chat.company.com/ --redact \"Your Company\" ; crit setup   (or: crit config --backend local)"
+info "1. Set the url, and any company names to keep out of the conversation (crit uses $q_cfg_show):"
+info "     crit config --url https://ai.company.com/ --redact \"Your Company\" ; crit setup   (or: crit config --backend local)"
 info "2. Check a one-word reply:"
 info "     crit ask --prompt \"Reply with exactly one word: PONG.\""
 info "3. Use crit in any project:"

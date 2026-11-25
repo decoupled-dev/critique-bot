@@ -11,6 +11,13 @@ exact host) plus the hosts listed in ``allowed_hosts``. Concretely:
 * GitLab is reached only at the host of ``gitlab.base_url`` (or one in ``allowed_hosts``);
 * a browser crit did not start (``cdp_url``) is refused, since its traffic is not crit's to limit.
 
+``"page_network"`` splits the browser's handling of the chat page from crit's own traffic.
+``"open"`` (the default): under strict egress the page still loads what it needs, as for a
+person (no resolver catch-all, the system proxy, no page filter, service workers allowed);
+the browser's own background services stay off. Everything crit does itself stays strict.
+``"strict"``: the page, too, reaches only the chat host and ``allowed_hosts`` (the bullets
+above). See :func:`page_restricted`.
+
 ``"open"``: the earlier behavior. The chat page runs as it does for a person (its CDNs
 and sign-in hosts work), builds may download dependencies, and the optional settings
 (``filter_chat_page``, ``offline``, ``web_fetch``) apply as configured.
@@ -37,12 +44,20 @@ class Policy:
     allowed_hosts: tuple[str, ...] = ()
     #: gitlab.base_url's host: reachable by the GitLab client only, never by the browser.
     gitlab_host: str = ""
+    #: config.json "page_network": "open" (the page works as for a person) or "strict". Strict
+    #: until a config was loaded; configure() defaults to open, as config.json does.
+    page_network: str = STRICT
     #: False until a config.json was loaded (``gitlab-post`` in CI may run without one).
     configured: bool = False
 
     @property
     def strict(self) -> bool:
         return self.mode == STRICT
+
+    @property
+    def page_restricted(self) -> bool:
+        """True when the chat page itself is limited to the chat host and allowed_hosts."""
+        return self.mode == STRICT and self.page_network == STRICT
 
     def hosts(self) -> tuple[str, ...]:
         """Every host crit may reach under this policy (the chat host first)."""
@@ -66,11 +81,15 @@ _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 _policy = Policy()
 
 
-def configure(mode: str, chat_url: str = "", allowed_hosts: tuple[str, ...] = (), gitlab_url: str = "") -> Policy:
+def configure(
+    mode: str, chat_url: str = "", allowed_hosts: tuple[str, ...] = (), gitlab_url: str = "", *, page_network: str = OPEN
+) -> Policy:
     """Set the process-wide policy (called by config.load_config); return it."""
     global _policy
     if mode not in MODES:
         raise ValueError(f"egress must be one of {', '.join(MODES)}, not {mode!r}")
+    if page_network not in MODES:
+        raise ValueError(f"page_network must be one of {', '.join(MODES)}, not {page_network!r}")
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".") if chat_url else ""
     gitlab_host = (urlsplit(gitlab_url).hostname or "").lower().rstrip(".") if gitlab_url else ""
     _policy = Policy(
@@ -78,6 +97,7 @@ def configure(mode: str, chat_url: str = "", allowed_hosts: tuple[str, ...] = ()
         chat_host=host,
         allowed_hosts=tuple(h.lower().rstrip(".") for h in allowed_hosts),
         gitlab_host=gitlab_host,
+        page_network=page_network,
         configured=True,
     )
     return _policy
@@ -88,14 +108,20 @@ def policy() -> Policy:
 
 
 def strict() -> bool:
+    """crit's own traffic is limited (agent commands offline, web_fetch off, GitLab, cdp_url)."""
     return _policy.strict
+
+
+def page_restricted() -> bool:
+    """The chat page is limited too (resolver catch-all, page filter): strict egress and page_network strict."""
+    return _policy.page_restricted
 
 
 def require(host: str, what: str) -> None:
     """Raise PermissionError when the loaded config's policy does not allow contacting ``host`` for ``what``."""
     if _policy.configured and not _policy.permits(host):
         raise PermissionError(
-            f'egress is "strict": {what} would contact {host}, which is not the chat host or in allowed_hosts. '
+            f'egress is "strict": {what} would contact {host}, which is not the url host or in allowed_hosts. '
             f'To allow it, run crit config --allow-host {host} (adds "{host}" to allowed_hosts), '
             "or crit config --egress open."
         )

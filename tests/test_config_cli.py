@@ -145,7 +145,7 @@ class ConfigCommandTests(_Isolated):
         code, out, _ = self.config()
         self.assertEqual(code, 0)
         self.assertIn(f"Settings file: {self.user} (your user settings)", out)
-        self.assertIn("Chat address: https://chat.corp.example/", out)
+        self.assertIn("url: https://chat.corp.example/", out)
         self.assertIn("Network: strict", out)
         self.assertIn("Names hidden: 1 (Acme Corp)", out)
         self.assertIn("Personal data hidden: on", out)
@@ -290,7 +290,7 @@ class FirstRunTests(_Isolated):
         return code, (run, setup), out + err
 
     def test_company_chat_opens_the_element_picker_then_stops(self) -> None:
-        code, (run, setup), text = self._agent(["1", "https://chat.corp.example/", "Acme Corp"])
+        code, (run, setup), text = self._agent(["", "1", "https://chat.corp.example/", "Acme Corp"])
         self.assertEqual(code, 0, text)
         self.assertIn("only chat.corp.example", text)
         self.assertIn("point at the message box", text)
@@ -300,7 +300,7 @@ class FirstRunTests(_Isolated):
 
     def test_local_model(self) -> None:
         with patch("critique_bot.model_api.list_models", return_value=["qwen"]):
-            code, (run, _), text = self._agent(["2", "y", "", "1", ""])
+            code, (run, _), text = self._agent(["", "2", "y", "", "1", ""])
         self.assertEqual(code, 0, text)
         self.assertTrue(load_config(self.user).is_local)
         run.assert_called_once()
@@ -309,7 +309,7 @@ class FirstRunTests(_Isolated):
         with patch("critique_bot.welcome.stdio_is_tty", return_value=False):
             code, out, err = _capture(crit_main, ["ask", "--prompt", "hi", "--repo-dir", str(self.project)])
         self.assertEqual(code, 1)
-        self.assertIn("crit config --url https://chat.company.com/", err)
+        self.assertIn("crit config --config-file /path/to/crit.json", err)
         self.assertNotIn("Traceback", err)
         self.assertFalse(self.user.exists())
 
@@ -374,7 +374,7 @@ class BlockedHostTests(_Isolated):
             browser._note_blocked_host("cdn.corp-static.example")
             self.assertEqual(config_prompts.offer_blocked_hosts(), [])
         self.assertEqual(len(asked), 1)
-        self.assertIn("The chat page tried to reach cdn.corp-static.example. Allow it from now on?", asked[0])
+        self.assertIn("The page tried to reach cdn.corp-static.example. Allow it from now on?", asked[0])
         self.assertIn("next time crit starts", err.getvalue())
         self.assertIn("cdn.corp-static.example", load_config(self.user).allowed_hosts)
 

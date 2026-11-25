@@ -1470,7 +1470,7 @@ def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
     for protected in _protected_paths(ctx):
         if path == protected or inside(protected, path):
             return (
-                f"refusing to change {raw}: it holds crit's own settings (permissions, chat address, allowed hosts). "
+                f"refusing to change {raw}: it holds crit's own settings (permissions, url, allowed hosts). "
                 "Ask the user to change it"
             )
     return ""
@@ -1579,7 +1579,7 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             continue
         if REDACTED in contents and REDACTED not in before:
             errors.append(
-                f"{name} not written: the contents hold a {REDACTED}...] marker, which stands for a secret the chat "
+                f"{name} not written: the contents hold a {REDACTED}...] marker, which stands for a secret the model "
                 "never sees. Edit the other lines with edit_file instead of rewriting the file"
             )
             continue
@@ -1705,7 +1705,7 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         return err(
             "edit_file",
             f"edit not applied: it would write a {REDACTED}...] marker into {name}. That marker stands for a secret "
-            "the chat never sees; leave the lines that hold it unchanged",
+            "the model never sees; leave the lines that hold it unchanged",
         )
     before_check = agent_edit.syntax_check(name, loaded.text)
     after_check = agent_edit.syntax_check(name, text)
@@ -1980,7 +1980,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if reach and str(ctx.network_commands or "block").lower() != "ask":
         return err(
             "run_command",
-            f"not run: this command {reach}, and nothing may leave this machine except the chat. "
+            f"not run: this command {reach}, and nothing may leave this machine except what crit sends to the model. "
             "Read documentation with web_fetch; builds may still download their dependencies",
         )
     if ctx.session is None:
@@ -2388,7 +2388,7 @@ def _command_input(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if reach and str(ctx.network_commands or "block").lower() != "ask":
         return err(
             "command_input",
-            f"not sent: this input {reach}, and nothing may leave this machine except the chat",
+            f"not sent: this input {reach}, and nothing may leave this machine except what crit sends to the model",
         )
     enter = args.get("enter")
     close = args.get("close") is True or args.get("eof") is True
@@ -2852,7 +2852,7 @@ def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[s
             return [], "each task must be an object with brief (and files)"
         text = item.get("brief") or item.get("prompt") or item.get("description") or item.get("task") or ""
         if not isinstance(text, str) or len(text.strip()) < 15:
-            return [], f"task {index} needs a self-contained brief (the helper cannot see this chat)"
+            return [], f"task {index} needs a self-contained brief (the helper cannot see this conversation)"
         name = str(item.get("name") or f"helper {index}").strip()[:40] or f"helper {index}"
         files = item.get("files") or item.get("paths") or []
         if isinstance(files, str):
@@ -2915,7 +2915,7 @@ def outbound_problem(url: str, hosts: tuple[str, ...]) -> str:
     """Why fetching ``url`` could send data out, or "" when it is a plain read of an allowed site."""
     if not hosts:
         return (
-            "web_fetch is off: nothing leaves this machine but the chat. "
+            "web_fetch is off: nothing leaves this machine but what crit sends to the model. "
             'It reads documentation sites only when .bot/settings.json has "web_fetch": true'
         )
     try:
@@ -3360,7 +3360,7 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
         if problem or not briefs:
             return Permission("read", "Delegate", "")
         owned = [name for brief in briefs for name in brief["files"]]
-        label = f"Hand to {len(briefs)} helper chat{'s' if len(briefs) != 1 else ''}"
+        label = f"Hand to {len(briefs)} helper{'s' if len(briefs) != 1 else ''}"
         detail = "\n\n".join(
             f"{brief['name']}: {_one_line(brief['brief'], 200)}" + (f"\n  may change: {', '.join(brief['files'])}" if brief["files"] else "")
             for brief in briefs
@@ -3380,8 +3380,8 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
     return Permission("read", _tool_label(tool, args), tool)
 
 
-SECRET_RISK = "reads a file that usually holds secrets (its contents go to the chat, with known secret formats redacted)"
-OUTSIDE_READ_RISK = "reads outside the workspace (the contents go to the chat)"
+SECRET_RISK = "reads a file that usually holds secrets (its contents go to the model, with known secret formats redacted)"
+OUTSIDE_READ_RISK = "reads outside the workspace (the contents go to the model)"
 SECRET_EDIT_RISK = "changes a file that usually holds secrets"
 
 
@@ -4294,7 +4294,7 @@ def _tool_label(tool: str, args: dict[str, Any]) -> str:
 
     if tool == "delegate":
         count = len(args.get("tasks") or []) if isinstance(args.get("tasks"), list) else 1
-        return f"Hand to {count} helper chat{'s' if count != 1 else ''}"
+        return f"Hand to {count} helper{'s' if count != 1 else ''}"
     if tool == "edit_file":
         return f"Edit {path_of(args.get('path'))}"
     if tool == "write_files":

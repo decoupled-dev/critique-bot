@@ -13,7 +13,27 @@ from critique_bot.cli import _resolve_mode
 import argparse
 
 
+def _own_user_folder(test: unittest.TestCase) -> Path:
+    """A fresh user config folder for one test (preferences are per user)."""
+    import os
+
+    tmp = tempfile.TemporaryDirectory()
+    test.addCleanup(tmp.cleanup)
+    env = patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp.name, "APPDATA": tmp.name, "CRITIQUE_CONFIG_FILE": ""})
+    env.start()
+    test.addCleanup(env.stop)
+    from critique_bot.config import user_config_path
+
+    return user_config_path()
+
+
 class AgentCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.user_config = _own_user_folder(self)
+
+    def _prefs(self) -> dict:
+        return json.loads(self.user_config.read_text(encoding="utf-8")) if self.user_config.is_file() else {}
+
     def _config(self, root: Path) -> Path:
         config = root / "config.json"
         config.write_text(
@@ -122,10 +142,12 @@ class AgentCliTests(unittest.TestCase):
                                         code = agent_main(["--repo-dir", str(root), "--config", str(config)])
             self.assertEqual(code, 0)
             settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
-            self.assertEqual(settings["theme"], "dark")
-            self.assertTrue(settings["syntax_preview"])
-            self.assertTrue(settings["welcomed"])
-            self.assertEqual(settings["role"], "aosp-expert")
+            prefs = self._prefs()  # the style and the welcome are per user
+            self.assertEqual(prefs["theme"], "dark")
+            self.assertTrue(prefs["syntax_preview"])
+            self.assertTrue(prefs["welcomed"])
+            self.assertNotIn("theme", settings)
+            self.assertEqual(settings["role"], "generic")  # picked from the (empty) project, not asked
             login.assert_called_once()
             run.assert_called_once()
             self.assertEqual(run.call_args.args[2], "")
@@ -149,36 +171,82 @@ class AgentCliTests(unittest.TestCase):
                                     code = agent_main(["--repo-dir", str(root)])
             self.assertEqual(code, 0)
             settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
-            self.assertEqual(settings["theme"], "light")
-            self.assertNotIn("welcomed", settings)
-            self.assertNotIn("role", settings)  # Esc on the role screen: asked again next time
+            prefs = self._prefs()
+            self.assertEqual(prefs["theme"], "light")
+            self.assertNotIn("welcomed", prefs)
+            self.assertEqual(settings["role"], "generic")
             self.assertEqual(settings["config"], "config.json")
             login.assert_not_called()
             run.assert_not_called()
             self.assertTrue(config.is_file())
 
-    def test_role_is_asked_once_and_then_kept(self) -> None:
+    def test_role_is_picked_from_the_files_once(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = self._config(root)
-            (root / ".bot").mkdir()
-            (root / ".bot" / "settings.json").write_text(
-                json.dumps({"welcomed": True, "theme": "dark", "config": "config.json"}), encoding="utf-8"
-            )
+            (root / "app" / "src" / "main").mkdir(parents=True)
+            (root / "app" / "src" / "main" / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+            err = io.StringIO()
+            with patch("critique_bot.bot_home.rebuild_index"), patch(
+                "critique_bot.welcome.stdio_is_tty", return_value=False
+            ), patch("critique_bot.welcome.pick_role", side_effect=AssertionError("asked")), patch(
+                "critique_bot.agent.run_agent", return_value=0
+            ) as run, redirect_stderr(err):
+                self.assertEqual(agent_main(["--repo-dir", str(root), "add tests"]), 0)
+                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+                self.assertEqual(settings["role"], "android-app-engineer")
+                self.assertIsNone(run.call_args.kwargs["role"])
+                self.assertIn("Role for this project: Android App Engineer (change with: crit --role <name>)", err.getvalue())
+                # The second run in the same folder says nothing about the role.
+                err.truncate(0)
+                err.seek(0)
+                self.assertEqual(agent_main(["--repo-dir", str(root), "add more tests"]), 0)
+                self.assertNotIn("Role for this project", err.getvalue())
+            self.assertTrue(config.is_file())
+
+    def test_second_folder_asks_nothing(self) -> None:
+        """Set up once per user: a new folder asks no question and opens no screen."""
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            team = Path(first) / "crit.json"
+            team.write_text(json.dumps({"url": "https://ai.corp.example/", "selectors": {"prompt_input": "textarea", "assistant_messages": ".m"}}), encoding="utf-8")
+            self.user_config.parent.mkdir(parents=True, exist_ok=True)
+            self.user_config.write_text(json.dumps({"config_file": str(team), "theme": "dark", "welcomed": True}), encoding="utf-8")
             with patch("critique_bot.bot_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=True
-            ), patch("critique_bot.welcome.pick_role", return_value="test-engineer") as pick, patch(
+            ), patch("critique_bot.cli._may_ask", return_value=True), patch(
+                "builtins.input", side_effect=AssertionError("asked a question")
+            ), patch("critique_bot.welcome.pick_theme", side_effect=AssertionError("theme screen")), patch(
+                "critique_bot.welcome.pick_role", side_effect=AssertionError("role screen")
+            ), patch("critique_bot.welcome.ask_login", side_effect=AssertionError("login question")), patch(
                 "critique_bot.agent.run_agent", return_value=0
             ) as run:
-                self.assertEqual(agent_main(["--repo-dir", str(root), "add tests"]), 0)
-                pick.assert_called_once()
-                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
-                self.assertEqual(settings["role"], "test-engineer")
-                self.assertIsNone(run.call_args.kwargs["role"])
-                # The second run in the same folder does not ask again.
-                self.assertEqual(agent_main(["--repo-dir", str(root), "add more tests"]), 0)
-                pick.assert_called_once()
-            self.assertTrue(config.is_file())
+                self.assertEqual(agent_main(["--repo-dir", second, "fix it"]), 0)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0].url, "https://ai.corp.example/")
+
+    def test_theme_is_asked_once_per_user(self) -> None:
+        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
+            for root in (Path(one), Path(two)):
+                self._config(root)
+            with patch("critique_bot.bot_home.rebuild_index"), patch(
+                "critique_bot.welcome.stdio_is_tty", return_value=True
+            ), patch("critique_bot.welcome.pick_theme", return_value=("light", True)) as pick, patch(
+                "critique_bot.welcome.ask_login", return_value=True
+            ), patch("critique_bot.browser.needs_visible_login", return_value=False), patch(
+                "critique_bot.agent.run_agent", return_value=0
+            ):
+                self.assertEqual(agent_main(["--repo-dir", one, "fix it"]), 0)
+                self.assertEqual(agent_main(["--repo-dir", two, "fix it"]), 0)
+            pick.assert_called_once()
+            self.assertEqual(self._prefs()["theme"], "light")
+            self.assertTrue(self._prefs()["welcomed"])
+            from critique_bot.config import effective_theme
+
+            self.assertEqual(effective_theme({}), "light")
+            self.assertEqual(effective_theme({"theme": "dark"}), "dark")  # a project's own choice stays
 
     def test_role_flag_is_normalized_stored_once_and_passed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,7 +290,7 @@ class AgentCliTests(unittest.TestCase):
                 self.assertEqual(agent_main(["--repo-dir", str(root), "fix it"]), 0)
                 pick.assert_not_called()
                 settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
-                self.assertNotIn("role", settings)
+                self.assertEqual(settings["role"], "generic")
 
     def test_submit_rejects_agent(self) -> None:
         code = main(["submit", "--config", "config.json", "--mode", "agent"])
