@@ -98,7 +98,7 @@ class ProjectFolderTests(_Home):
             home = project_home.find_bot_home(project)
         assert home is not None
         self.assertEqual(err.getvalue(), "")
-        self.assertEqual(home.bot_dir, project / ".crit")
+        self.assertEqual(home.bot_dir.resolve(), (project / ".crit").resolve())  # RUNNER~1 vs the long name
         self.assertFalse((project / ".bot").exists())
         self.assertEqual(home.settings["role"], "android")
         self.assertIn("renamed", self.log_text())

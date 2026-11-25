@@ -263,9 +263,7 @@ else
         fi
     fi
 fi
-for exe in crit; do
-    [ -x "$venv/bin/$exe" ] || die "$venv/bin/$exe is missing; the pip install did not finish"
-done
+[ -x "$venv/bin/crit" ] || die "$venv/bin/crit is missing; the pip install did not finish"
 
 # --- c. Browser ------------------------------------------------------------------
 if [ "$skip_browser" = 1 ]; then

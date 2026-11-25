@@ -72,7 +72,8 @@ class LayoutTests(_Home):
     def test_windows_uses_userprofile(self) -> None:
         with patch.object(cfg, "os", _fake_os("nt")), patch.dict(os.environ, {"USERPROFILE": str(self.root / "Users" / "me")}):
             self.assertEqual(cfg.crit_home(), self.root / "Users" / "me" / ".crit")
-            self.assertEqual(Path(cfg._resolve_user_data_dir("")), self.root / "Users" / "me" / ".crit" / "browser-profile")
+            # Resolved on both sides: Windows may give the temp folder as a short name (RUNNER~1).
+        self.assertEqual(Path(cfg._resolve_user_data_dir("")).resolve(), (self.root / "Users" / "me" / ".crit" / "browser-profile").resolve())
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions")
     def test_private_permissions(self) -> None:
@@ -121,7 +122,8 @@ class ProfileTests(_Home):
 
 class MigrationTests(_Home):
     def _old(self) -> Path:
-        old = self.home / ".config" / "critique-bot"
+        # The old folder this OS really used: ~/.config/critique-bot, or %APPDATA%\critique-bot.
+        old = cfg.legacy_config_dir()
         (old / ".edge-profile" / "Default").mkdir(parents=True)
         (old / ".edge-profile" / "Default" / "Cookies").write_text("c")
         (old / "config.json").write_text(json.dumps(_CHAT))
@@ -134,8 +136,8 @@ class MigrationTests(_Home):
 
     def test_config_cache_and_profile_move_once(self) -> None:
         old = self._old()
-        dedicated = old / "msedge-user-data"
-        dedicated.mkdir()
+        dedicated = cfg._legacy_dedicated_dir()
+        dedicated.mkdir(parents=True, exist_ok=True)
         moved, said = self._migrate()
         self.assertTrue(moved)
         self.assertEqual(said, [f"Moved crit's files to {self.crit}."])
