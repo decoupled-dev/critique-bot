@@ -117,6 +117,7 @@ class DiscoveryTests(_Isolated):
         finally:
             self._system.start()
 
+    @unittest.skipIf(os.name == "nt", "the Linux location; Windows uses %ProgramData% (tested separately)")
     def test_linux_system_location(self) -> None:
         self._system.stop()
         try:
@@ -125,8 +126,9 @@ class DiscoveryTests(_Isolated):
             self._system.start()
 
     def test_pasted_paths(self) -> None:
-        self.assertEqual(config.company_path_value('"/srv/team/crit.json"'), "/srv/team/crit.json")
-        self.assertEqual(config.company_path_value("'/srv/team/crit.json'"), "/srv/team/crit.json")
+        if os.name != "nt":  # on Windows a rooted path gets the current drive, as it should
+            self.assertEqual(config.company_path_value('"/srv/team/crit.json"'), "/srv/team/crit.json")
+            self.assertEqual(config.company_path_value("'/srv/team/crit.json'"), "/srv/team/crit.json")
         self.assertEqual(config.company_path_value(r'"\\server\share\crit.json"'), r"\\server\share\crit.json")
         self.assertEqual(config.company_path_value("//server/share/crit.json"), "//server/share/crit.json")
         with patch.object(config.os, "name", "nt"):
