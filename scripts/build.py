@@ -81,6 +81,12 @@ def _run_pyinstaller() -> Path:
     binary = staged / _binary_name()
     if not binary.is_file():
         raise SystemExit(f"PyInstaller did not produce {binary}")
+    # crit reads prompts and skills only from its own bundle: every one must be there.
+    for pattern, sub in (("prompts/*.txt", "prompts"), ("skills/*/SKILL.md", "skills")):
+        for source in sorted((ROOT / "src" / "critique_bot").glob(pattern)):
+            shipped = staged / "_internal" / "critique_bot" / source.relative_to(ROOT / "src" / "critique_bot")
+            if not shipped.is_file():
+                raise SystemExit(f"{source.name} ({sub}) is missing from the bundle: {shipped}")
     driver_name = "node.exe" if sys.platform == "win32" else "node"
     driver = staged / "_internal" / "playwright" / "driver" / driver_name
     if not driver.is_file():

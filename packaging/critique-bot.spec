@@ -46,13 +46,10 @@ try:
 except ImportError:
     pass
 
-for prompt_name in ("review.txt", "agent.txt"):
-    prompts = ROOT / "prompts" / prompt_name
-    if prompts.is_file():
-        datas.append((str(prompts), "prompts"))
-    packaged_prompt = ROOT / "src" / "critique_bot" / "prompts" / prompt_name
-    if packaged_prompt.is_file():
-        datas.append((str(packaged_prompt), "critique_bot/prompts"))
+# Every prompt crit can load (agent.txt, agent_openai.txt, review.txt, ...): crit reads
+# prompts only from its own bundle, so a missing one is a broken release.
+for packaged_prompt in sorted((ROOT / "src" / "critique_bot" / "prompts").glob("*.txt")):
+    datas.append((str(packaged_prompt), "critique_bot/prompts"))
 
 # This product's license and the notices of the third-party code it bundles.
 for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
