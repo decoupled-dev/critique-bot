@@ -2,16 +2,17 @@
 
 Reference for **modes**, **CLI flags**, and **in-session chat commands**. Examples are given for **Linux (bash)** and **Windows PowerShell**.
 
-Full command list for **Linux (bash)** and **Windows PowerShell**: [`COMMANDS.md`](COMMANDS.md). `--config` is required on every run, except `crit` (any mode) once a folder has stored it (see [Agent](#agent-crit)). Copy [`config.example.json`](config.example.json) to `config.json` first.
+`--config PATH` names a config file. Without it, crit uses the one the project has stored, or your own settings in `~/.crit/config.json` (the first run asks the questions that create them); which file a command uses is in [`docs/config.json.md`](docs/config.json.md).
 
-How you invoke the bot:
+How you run crit:
 
 | How | Linux (bash) | Windows PowerShell |
 | --- | --- | --- |
-| From a checkout | `python -m critique_bot ...` or `critique-bot ...` | `python -m critique_bot ...` or `critique-bot ...` |
-| Standalone zip | `./critique-bot ...` | `.\critique-bot.exe ...` |
+| Installed (`.deb`, `crit install`, setup script, or `pip install -e .`) | `crit ...` | `crit ...` |
+| From a checkout without installing | `crit ...` | `crit ...` |
+| Standalone zip, not installed yet | `./crit ...` | `.\crit.exe ...` |
 
-Replace `python -m critique_bot` with `critique-bot` / `./critique-bot` / `.\critique-bot.exe` as needed. The flags are the same.
+The examples below use `crit`; the flags are the same with the other forms.
 
 Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 
@@ -21,8 +22,8 @@ Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 
 | Command | Meaning |
 | --- | --- |
-| `critique-bot setup --config PATH` | Local setup page on `127.0.0.1`; click elements in the chat UI to fill `selectors` |
-| `critique-bot queue-status --config PATH` | Worker liveness, waiting/processing jobs, recent results |
+| `crit setup --config PATH` | Local setup page on `127.0.0.1`; click elements in the chat UI to fill `selectors` |
+| `crit queue-status --config PATH` | Worker liveness, waiting/processing jobs, recent results |
 
 **setup** serves a page with the standard library (no extra dependencies) and drives a real Edge window next to it. Click the prompt box, send button, a reply, and the stop button; it ranks candidate CSS selectors, writes them to your config, and can run a test prompt before you leave.
 
@@ -36,9 +37,9 @@ Flags: `--config` (required; the file must already exist, copy an example first)
 
 | Command | Where | Meaning |
 | --- | --- | --- |
-| `critique-bot worker --config PATH` | Runner PC, always on | One worker process; pulls jobs from `queue_dir` (one signed-in Edge) |
-| `critique-bot submit --config PATH` | GitLab job | Build diff + file context from the checkout, enqueue, wait, write `{output-dir}/review.md` |
-| `critique-bot gitlab-post --review-file out/review.md --patch-file diff.patch` | GitLab job | Post inline comments + summary on the MR |
+| `crit worker --config PATH` | Runner PC, always on | One worker process; pulls jobs from `queue_dir` (one signed-in Edge) |
+| `crit submit --config PATH` | GitLab job | Build diff + file context from the checkout, enqueue, wait, write `{output-dir}/review.md` |
+| `crit gitlab-post --review-file out/review.md --patch-file diff.patch` | GitLab job | Post inline comments + summary on the MR |
 
 Worker flags: `--config` (required), `--headed`, `--cdp-url`, `--model`, `--logs` (default **on**).
 
@@ -46,13 +47,13 @@ Submit uses the same prompt/file flags as a one-shot review (`--patch-file`, `--
 
 Each submit creates its own job id and **only waits for that id**. The worker does not match by MR: it claims the oldest inbox file (FIFO, one at a time). GitLab env (`CI_MERGE_REQUEST_IID`, `CI_PROJECT_PATH`, …) is stored on the job as `meta` and in the filename, e.g. `1735689600123-group-app-mr42-a1b2c3d4.json`.
 
-If the worker is not running, submit exits immediately with an error. Config: `queue_dir`, `max_parallel_tabs` (default 1), `min_interval_seconds` (default 30), `interval_jitter_seconds` (default 5). Env: `CRITIQUE_QUEUE_DIR`, `CRITIQUE_MAX_PARALLEL_TABS`.
+If the worker is not running, submit exits immediately with an error. Config: `queue_dir`, `max_parallel_tabs` (default 1), `min_interval_seconds` (default 30), `interval_jitter_seconds` (default 5). Env: `CRIT_QUEUE_DIR`, `CRIT_MAX_PARALLEL_TABS`.
 
 A job that fails is retried until it has been attempted `max_attempts` times (default 3), then marked failed so a broken browser session cannot spin the queue. Each job also gets a wall-clock limit (`job_timeout_seconds`, default derived from the reply timeouts); the worker fails it rather than hanging. Old result folders are pruned to the newest `result_retention` (default 200). Jobs still in flight when the worker stops are requeued so the next worker picks them up.
 
 **gitlab-post** takes the review that submit wrote and posts it. It strips the machine-readable JSON block from the summary, and with `--patch-file` it turns the review's file/line findings into inline comments on the diff. Flags: `--review-file` (required), `--patch-file`, `--api-url`, `--project-id`, `--mr-iid`, `--logs` (default **on**). Everything else is read from GitLab CI env. It exits non-zero if the summary could not be posted, so a silent token failure does not pass as a green job.
 
-Tokens: GitLab needs `CRITIQUE_GITLAB_TOKEN` (project access token, scope `api`) since `CI_JOB_TOKEN` cannot create notes.
+Tokens: GitLab needs `CRIT_GITLAB_TOKEN` (project access token, scope `api`) since `CI_JOB_TOKEN` cannot create notes.
 
 ---
 
@@ -72,18 +73,16 @@ crit setup | worker | submit | queue-status | gitlab-post
 
 `review`, `ask`, and `chat` use the `config.json` that `crit` stored for the project when `--config` is not given. A task that starts with a mode word must be quoted (`crit "review the auth code"`); unquoted, `review` is read as the mode.
 
-`crit review` is the agent review: the Code Reviewer reads the changed files, callers, and tests with read-only tools (up to `--max-rounds`, default 20) and then sends the review in the usual format. Edits, commands, fetches, and helper chats are refused. `--quick` is the one-shot review. `critique-bot` and `submit` use the one-shot review; `critique-bot review --deep` runs the agent review, and `submit --deep` is refused (the worker runs one-shot reviews only).
+`crit review` is the agent review: the Code Reviewer reads the changed files, callers, and tests with read-only tools (up to `--max-rounds`, default 20) and then sends the review in the usual format. Edits, commands, fetches, and helper chats are refused. `--quick` is the one-shot review. `submit` uses the one-shot review, and `submit --deep` is refused (the worker runs one-shot reviews only).
 
-`critique-bot` takes the same mode words and subcommands (`critique-bot chat`, `critique-bot agent "..."`). Without a mode word it keeps its old default, **review**, so existing CI scripts work unchanged. `--mode MODE` still works on both and means the same as the mode word; using both at once is an error.
-
-With `critique-bot` and no mode word, **review** is used unless you pass `--prompt` / `--prompt-file` (those select **general**).
+`--mode MODE` still works and means the same as the mode word; using both at once is an error.
 
 | Mode | When to use | Prompt | Files | Output |
 | --- | --- | --- | --- | --- |
-| `review` (default) | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). HEAD files + patch are inlined when they fit (instructions, then files, then patch). Otherwise: instructions, then one file per chat turn, then the patch | `{output-dir}/review.md` + `review.json` |
+| `review` | Specialized code review | Review template ([`prompts/review.txt`](prompts/review.txt) or `--prompt-template`) | Patch required (`--patch-file`, `FILE`, or stdin). HEAD files + patch are inlined when they fit (instructions, then files, then patch). Otherwise: instructions, then one file per chat turn, then the patch | `{output-dir}/review.md` + `review.json` |
 | `general` | One-shot question | `--prompt` or `--prompt-file` (required) | Optional | `{output-dir}/reply.md` + `reply.json` |
 | `chat` | Interactive conversation | Optional first message via `--prompt` / `--prompt-file` | Optional on the first turn; more via `/file` | `{output-dir}/chat.md` + `chat.json` |
-| `agent` | Local coding harness. `crit` is the command (`bot-agent` is the same) | Positional task, or `--prompt` | The model reads files itself with tools | `.bot/sessions/<stamp>/agent.md` + `agent.json` |
+| `agent` (default) | Local coding harness: `crit` with no mode word | Positional task, or `--prompt` | The model reads files itself with tools | `.crit/sessions/<stamp>/agent.md` + `agent.json` |
 
 `--mode review` cannot be combined with `--prompt` / `--prompt-file`. `--prompt-template` is review-only. `--prompt` and `--prompt-file` cannot be used together.
 
@@ -101,8 +100,8 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 
 | Flag | Modes | Meaning |
 | --- | --- | --- |
-| `--config PATH` | all | JSON config (required, except `crit` after `.bot/settings.json` has stored it). See [`config.example.json`](config.example.json), or [`config.local.example.json`](config.local.example.json) for a model served on this PC (`backend: local`). |
-| `--mode {review,general,chat,agent}` | all | Mode. Default: `review`, or `general` if `--prompt` / `--prompt-file` is set. `crit` is `--mode agent`. |
+| `--config PATH` | all | JSON config (optional for `crit`, `review`, `ask`, and `chat`; see [Agent](#agent-crit)). See [`config.example.json`](config.example.json), or [`config.local.example.json`](config.local.example.json) for a model served on this PC (`backend: local`). |
+| `--mode {review,general,chat,agent}` | all | Mode, the same as the mode word. Default: `agent`. |
 | `--prompt TEXT` | general, chat, agent | Prompt text. First message in chat; the task in agent. |
 | `--prompt-file PATH` | general, chat, agent | Read prompt text from a file. |
 | `--file PATH` | all | Attach a UTF-8 file (repeatable). Patch, source, or any text file. |
@@ -116,11 +115,11 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 | `--headed` | all | Show the Edge window. A missing profile does this on its own. Does nothing with `backend: local`. |
 | `--cdp-url URL` | all | Attach to a running Edge, e.g. `http://127.0.0.1:9222`. |
 | `--model NAME` | all | Override the config/env model (visible dropdown label, or the local model's name such as `qwen2.5-coder:14b`). |
-| `--logs` / `--no-logs` | all | Diagnostic logs on stderr. Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
-| `--yes` / `--auto` (`crit -y`) | agent | Auto mode: run edits, commands, and web fetches without asking; risky commands still ask. Same as `"permissions": "auto"` in `.bot/settings.json`. |
+| `--logs` / `--no-logs` | all | Also print the log lines on stderr (they always go to `~/.crit/logs/crit.log`). Default: off (on for `worker`). A spinner shows while waiting for the assistant. |
+| `--yes` / `--auto` (`crit -y`) | agent | Auto mode: run edits, commands, and web fetches without asking; risky commands still ask. Same as `"permissions": "auto"` in `.crit/settings.json`. |
 | `--plan` | agent | Plan mode: read the code and send a plan; you approve it before anything changes. |
 | `--permission-mode MODE` | agent | Start in `ask`, `edits` (accept file edits), `auto`, or `plan`. |
-| `--role NAME` | agent | The role crit plays: `code-reviewer`, `aosp-expert`, `expert-developer`, `ai-expert`, `test-engineer`, `android-app-engineer`, or `generic` (any spelling, e.g. `AOSPExpert`). Stored in `.bot/settings.json` when the project has none yet; otherwise for this run only. The first interactive `crit` in a folder asks. |
+| `--role NAME` | agent | The role crit plays: `code-reviewer`, `aosp-expert`, `expert-developer`, `ai-expert`, `test-engineer`, `android-app-engineer`, or `generic` (any spelling, e.g. `AOSPExpert`). Stored in `.crit/settings.json` when the project has none yet; otherwise for this run only. Otherwise the first `crit` in a folder picks one from the project's files. |
 | `--max-rounds N` | agent | Optional cap on tool rounds per task. Omit to run until the model stops. |
 | `--wait-timeout SEC` | submit | Seconds to wait for the worker (default 1800). |
 | `--label NAME` | submit | Override the job slug in the queue filename. Default: GitLab MR IID, CI job id, or `local`. |
@@ -130,7 +129,7 @@ In **general** and **chat**, if the prompt contains `{files}` or `{patch}`, thos
 
 ## Chat session commands
 
-Used only after `--mode chat` is running (`You>` prompt).
+Used only after `crit chat` is running (`You>` prompt).
 
 | Command | Meaning |
 | --- | --- |
@@ -146,9 +145,9 @@ Used only after `--mode chat` is running (`You>` prompt).
 
 ## Agent (`crit`)
 
-`crit` is `critique-bot --mode agent`. `bot-agent` is the same command. Full guide: [`docs/bot-agent.md`](docs/bot-agent.md).
+`crit` with no mode word is the agent (`--mode agent`). Full guide: [`docs/agent.md`](docs/agent.md).
 
-Install it and put `crit` on `PATH` with the setup script (options: [`docs/bot-agent.md`](docs/bot-agent.md#quick-setup-with-the-script)):
+Install it and put `crit` on `PATH` with the setup script (options: [`docs/agent.md`](docs/agent.md#quick-setup-with-the-script)):
 
 ```bash
 scripts/setup-crit.sh
@@ -164,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -WithIndex
 .\scripts\setup-crit.ps1 -ProxyHost proxy.corp.example -ProxyPort 3128 -CaFile C:\certs\corp-root.pem
 ```
 
-The script's `crit` and `bot-agent` always pass `--config`. Without the script, pass `--config` on the first `crit` in a folder and it is stored in `.bot/settings.json`. A `config.json` already in the folder when `.bot` is created is recorded the same way.
+The script's `crit` always passes `--config`. Without the script, pass `--config` on the first `crit` in a folder and it is stored in `.crit/settings.json`. A `config.json` already in the folder when `.crit` is created is recorded the same way.
 
 | Command | Meaning |
 | --- | --- |
@@ -174,7 +173,7 @@ The script's `crit` and `bot-agent` always pass `--config`. Without the script, 
 | `crit --plan "TASK"` | Plan first; approve the plan, then crit carries it out |
 | `crit --headed "TASK"` | Show the browser window |
 | `crit undo` | Restore the files the last task changed. Run again to step back further |
-| `crit init` | Create `.bot/`, or rebuild the index without replacing settings |
+| `crit init` | Create `.crit/`, or rebuild the index without replacing settings |
 
 The same commands in both shells:
 
@@ -196,7 +195,7 @@ crit undo
 crit init
 ```
 
-The first `crit` in a folder creates `.bot/` (or under `--repo-dir`), shows the text-style screen, and asks you to sign in. It opens the browser only when the profile is not signed in yet. A task run from a subdirectory finds `.bot` by walking upward.
+The first `crit` in a folder creates `.crit/` (or under `--repo-dir`), shows the text-style screen, and asks you to sign in. It opens the browser only when the profile is not signed in yet. A task run from a subdirectory finds `.crit` by walking upward. A project's old `.bot/` folder is renamed to `.crit/` on first use (when both exist, `.crit` is used). When the project is your home folder itself, its data lives in `~/.crit/projects/home/`.
 
 Inside a session (the `>` prompt):
 
@@ -212,7 +211,7 @@ Inside a session (the `>` prompt):
 | `/mode [name]` | List the modes or switch (`/permissions` is the same) |
 | `/plan`, `/auto` | Switch to plan mode or auto mode |
 | `/skills [name ...]` | List skills, or pin some for this session (`/skills off name` unpins) |
-| `/role [name]` | List the roles, or switch this project's role (kept in `.bot/settings.json`; the next task starts a new chat) |
+| `/role [name]` | List the roles, or switch this project's role (kept in `.crit/settings.json`; the next task starts a new chat) |
 | `/status` | Model, shell, folder, mode, role, pinned skills, background commands |
 | `/commands` | Shell commands run this session, with exit codes, times, and retries |
 | `/shell [name]` | List the shells, or switch the default for this session |
@@ -222,7 +221,7 @@ Inside a session (the `>` prompt):
 | Ctrl+C | Clear the input; during a task, stop it; twice on an empty line, leave |
 | Alt+Enter, Ctrl+J, trailing `\` | New line |
 
-The instructions from `prompts/agent.txt` go out with the first task in one message. Tool results go back until the model finishes. A question with no file change is answered in words and that task ends. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes. A real question that needs your decision is shown to you. A reply of COMPLETED or DONE, or a reply that no edit is needed, ends that task. `--max-rounds` is an optional cap for a loop that never answers. Each session is saved to `.bot/sessions/<stamp>/agent.md` and `agent.json`.
+The instructions from `prompts/agent.txt` go out with the first task in one message. Tool results go back until the model finishes. A question with no file change is answered in words and that task ends. A refusal, or a question that only hands the task back, is sent back until the model calls a tool or finishes. A real question that needs your decision is shown to you. A reply of COMPLETED or DONE, or a reply that no edit is needed, ends that task. `--max-rounds` is an optional cap for a loop that never answers. Each session is saved to `.crit/sessions/<stamp>/agent.md` and `agent.json`.
 
 ---
 
@@ -233,19 +232,19 @@ Activate a checkout venv: `source .venv/bin/activate`
 ### Review
 
 ```bash
-python -m critique_bot --config config.json --patch-file diff.patch --output-dir ./out
+crit review --quick --patch-file diff.patch --output-dir ./out
 ```
 
 ```bash
-python -m critique_bot --config config.json --headed --patch-file diff.patch
+crit review --quick --headed --patch-file diff.patch
 ```
 
 ```bash
-git diff | python -m critique_bot --config config.json
+git diff | crit review --quick
 ```
 
 ```bash
-python -m critique_bot --config config.json \
+crit review --quick \
   --prompt-template prompts/review.txt \
   --file src/cli.py \
   src/config.py
@@ -254,37 +253,34 @@ python -m critique_bot --config config.json \
 ### General
 
 ```bash
-python -m critique_bot --config config.json --mode general \
-  --prompt "Summarize this change and list risks" \
+crit ask --prompt "Summarize this change and list risks" \
   diff.patch
 ```
 
 ```bash
-python -m critique_bot --config config.json --mode general \
-  --prompt-file instructions.txt \
+crit ask --prompt-file instructions.txt \
   --file src/cli.py \
   src/config.py
 ```
 
-`--prompt` also selects general if `--mode` is omitted:
+A one-shot question about a file:
 
 ```bash
-python -m critique_bot --config config.json --prompt "What does this do?" src/cli.py
+crit ask --prompt "What does this do?" src/cli.py
 ```
 
 ### Chat
 
 ```bash
-python -m critique_bot --config config.json --mode chat
+crit chat
 ```
 
 ```bash
-python -m critique_bot --config config.json --mode chat --headed
+crit chat --headed
 ```
 
 ```bash
-python -m critique_bot --config config.json --mode chat \
-  --prompt "Let's go through this file" \
+crit chat --prompt "Let's go through this file" \
   src/cli.py
 ```
 
@@ -301,52 +297,52 @@ You> exit
 ### Worker / submit (runner)
 
 ```bash
-python -m critique_bot worker --config /opt/critique-bot/config.json --logs
+crit worker --config /opt/crit/config.json --logs
 ```
 
 ```bash
-python -m critique_bot submit --config /opt/critique-bot/config.json \
+crit submit --config /opt/crit/config.json \
   --output-dir ./out
 ```
 
 ```bash
-python -m critique_bot queue-status --config /opt/critique-bot/config.json
+crit queue-status --config /opt/crit/config.json
 ```
 
 ```bash
-python -m critique_bot gitlab-post --review-file ./out/review.md --patch-file diff.patch
+crit gitlab-post --review-file ./out/review.md --patch-file diff.patch
 ```
 
 ### Setup
 
 ```bash
-python -m critique_bot setup --config config.json
+crit setup --config config.json
 ```
 
 ### Other
 
 ```bash
-python -m critique_bot --help
+crit --help
 ```
 
 ```bash
-python -m critique_bot --config config.json --model "GPT-5.1" --patch-file diff.patch
+crit review --quick --model "GPT-5.1" --patch-file diff.patch
 ```
 
 ```bash
-python -m critique_bot --config config.json --cdp-url http://127.0.0.1:9222 --patch-file diff.patch
+crit review --quick --cdp-url http://127.0.0.1:9222 --patch-file diff.patch
 ```
 
 ```bash
-export CRITIQUE_MODEL="GPT-5.1"
-export CRITIQUE_CHAT_URL="https://YOUR_CHAT_UI/"
-python -m critique_bot --config config.json --mode chat
+export CRIT_MODEL="GPT-5.1"
+export CRIT_URL="https://YOUR_CHAT_UI/"
+crit chat
 ```
 
-Standalone zip (after unzip):
+Standalone zip (after unzip, before it is installed):
 
 ```bash
-./critique-bot --config config.json --mode chat
+./crit chat --config config.json
 ```
 
 ---
@@ -360,23 +356,23 @@ If script execution is blocked: `Set-ExecutionPolicy -Scope CurrentUser RemoteSi
 ### Review
 
 ```powershell
-python -m critique_bot --config config.json --patch-file diff.patch --output-dir .\out
+crit review --quick --patch-file diff.patch --output-dir .\out
 ```
 
 ```powershell
-python -m critique_bot --config config.json --headed --patch-file diff.patch
+crit review --quick --headed --patch-file diff.patch
 ```
 
 ```powershell
-git diff | python -m critique_bot --config config.json
+git diff | crit review --quick
 ```
 
 ```powershell
-Get-Content -Raw diff.patch | python -m critique_bot --config config.json
+Get-Content -Raw diff.patch | crit review --quick
 ```
 
 ```powershell
-python -m critique_bot --config config.json `
+crit review --quick `
   --prompt-template prompts\review.txt `
   --file src\cli.py `
   src\config.py
@@ -385,37 +381,34 @@ python -m critique_bot --config config.json `
 ### General
 
 ```powershell
-python -m critique_bot --config config.json --mode general `
-  --prompt "Summarize this change and list risks" `
+crit ask --prompt "Summarize this change and list risks" `
   diff.patch
 ```
 
 ```powershell
-python -m critique_bot --config config.json --mode general `
-  --prompt-file instructions.txt `
+crit ask --prompt-file instructions.txt `
   --file src\cli.py `
   src\config.py
 ```
 
-`--prompt` also selects general if `--mode` is omitted:
+A one-shot question about a file:
 
 ```powershell
-python -m critique_bot --config config.json --prompt "What does this do?" src\cli.py
+crit ask --prompt "What does this do?" src\cli.py
 ```
 
 ### Chat
 
 ```powershell
-python -m critique_bot --config config.json --mode chat
+crit chat
 ```
 
 ```powershell
-python -m critique_bot --config config.json --mode chat --headed
+crit chat --headed
 ```
 
 ```powershell
-python -m critique_bot --config config.json --mode chat `
-  --prompt "Let's go through this file" `
+crit chat --prompt "Let's go through this file" `
   src\cli.py
 ```
 
@@ -434,38 +427,38 @@ To end with EOF instead of `exit`: press **Ctrl-Z**, then **Enter**.
 ### Worker / submit (runner)
 
 ```powershell
-python -m critique_bot worker --config C:\critique-bot\config.json --logs
+crit worker --config C:\crit\config.json --logs
 ```
 
 ```powershell
-python -m critique_bot submit --config C:\critique-bot\config.json `
+crit submit --config C:\crit\config.json `
   --output-dir .\out
 ```
 
 ### Other
 
 ```powershell
-python -m critique_bot --help
+crit --help
 ```
 
 ```powershell
-python -m critique_bot --config config.json --model "GPT-5.1" --patch-file diff.patch
+crit review --quick --model "GPT-5.1" --patch-file diff.patch
 ```
 
 ```powershell
-python -m critique_bot --config config.json --cdp-url http://127.0.0.1:9222 --patch-file diff.patch
+crit review --quick --cdp-url http://127.0.0.1:9222 --patch-file diff.patch
 ```
 
 ```powershell
-$env:CRITIQUE_MODEL = "GPT-5.1"
-$env:CRITIQUE_CHAT_URL = "https://YOUR_CHAT_UI/"
-python -m critique_bot --config config.json --mode chat
+$env:CRIT_MODEL = "GPT-5.1"
+$env:CRIT_URL = "https://YOUR_CHAT_UI/"
+crit chat
 ```
 
-Standalone zip (after unzip):
+Standalone zip (after unzip, before it is installed):
 
 ```powershell
-.\critique-bot.exe --config config.json --mode chat
+.\crit.exe chat --config config.json
 ```
 
 ---
@@ -476,17 +469,18 @@ These override matching fields in `config.json`.
 
 | Variable | Overrides |
 | --- | --- |
-| `CRITIQUE_CHAT_URL` | `url` |
-| `CRITIQUE_MODEL` | `model` |
-| `CRITIQUE_STORAGE_STATE` | `storage_state` |
-| `CRITIQUE_USER_DATA_DIR` | `user_data_dir` |
-| `CRITIQUE_CDP_URL` | `cdp_url` |
-| `CRITIQUE_QUEUE_DIR` | `queue_dir` |
-| `CRITIQUE_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
+| `CRIT_URL` | `url` |
+| `CRIT_MODEL` | `model` |
+| `CRIT_STORAGE_STATE` | `storage_state` |
+| `CRIT_USER_DATA_DIR` | `user_data_dir` |
+| `CRIT_CDP_URL` | `cdp_url` |
+| `CRIT_QUEUE_DIR` | `queue_dir` |
+| `CRIT_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
+| `CRIT_API_KEY` | `local.api_key` (the local server's API key) |
 
 Linux: `export NAME=value`. PowerShell: `$env:NAME = "value"`.
 
-Posting tokens are read from the environment only: `CRITIQUE_GITLAB_TOKEN` for `gitlab-post`.
+Posting tokens are read from the environment only: `CRIT_GITLAB_TOKEN` for `gitlab-post`.
 
 The worker limits (`max_attempts`, `result_retention`, `job_timeout_seconds`) are config-only. See [`docs/config.json.md`](docs/config.json.md).
 
@@ -503,4 +497,4 @@ Default `--output-dir` is `out`.
 | chat | `chat.md`, `chat.json` (skipped if you quit with no turns) | same |
 | submit | same as the mode, in `--output-dir` (copied from the worker queue), plus `status.json` and `job.json` (MR label and CI meta) | same, plus `status.json` and `job.json` |
 
-Diagnostic logs are **off** by default; pass `--logs` to write them to **stderr**. While waiting for the assistant, a spinner is shown on stderr (hidden when `--logs` is on, since log lines already show progress). The assistant reply (or chat transcript) is printed to **stdout**.
+Diagnostic logs always go to `~/.crit/logs/crit.log` (owner-only, rotated at about 2 MB, 3 files kept, redacted like outgoing messages); pass `--logs` to also write them to **stderr**. On screen, a normal run shows only questions, the agent's screen, install/uninstall results, and one `Problem: ...` or `crit stopped: ... Details: ~/.crit/logs/crit.log` line when it cannot continue. While waiting for the assistant, a spinner is shown on stderr (hidden when `--logs` is on, since log lines already show progress). The assistant reply (or chat transcript) is printed to **stdout**.

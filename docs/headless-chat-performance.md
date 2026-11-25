@@ -1,8 +1,8 @@
 # Headless bare minimum
 
-In headless mode only, drop images, fonts, media, motion, and browser background work so Edge does the minimum needed to send a prompt and read the reply. The reply is already read from the DOM; the renderer stays, because the page and the bot both need layout. A visible window is unchanged.
+In headless mode only, drop images, fonts, media, motion, and browser background work so Edge does the minimum needed to send a prompt and read the reply. The reply is already read from the DOM; the renderer stays, because the page and crit both need layout. A visible window is unchanged.
 
-Only when the bot launches headless (`headed` is false). `--headed`, the first-login window, and the Cloudflare retry in `src/critique_bot/agent.py` stay a normal browser, because those runs need images and a real compositor.
+Only when crit launches headless (`headed` is false). `--headed`, the first-login window, and the Cloudflare retry in `src/critique_bot/agent.py` stay a normal browser, because those runs need images and a real compositor.
 
 Token generation time does not change. This cuts what Edge downloads and paints while it waits.
 
@@ -13,7 +13,7 @@ The reply is already taken from the DOM. `_wait_for_reply` in `src/critique_bot/
 Chromium still has to run the page. The page is a script that creates the reply nodes as tokens arrive. There is no mode that returns that live DOM without the renderer process. Three different steps get conflated:
 
 - **DOM and scripts.** Required. Without them there is no reply node to parse.
-- **Style and layout.** Required. The bot's visibility checks, the stop-button probe, and Playwright's click hit-testing all use box size and computed style. `innerText` also forces layout. The page itself reads layout (virtualized message list, composer). A document with no layout comes back as 0×0, and both the site and the bot treat the reply as missing.
+- **Style and layout.** Required. crit's visibility checks, the stop-button probe, and Playwright's click hit-testing all use box size and computed style. `innerText` also forces layout. The page itself reads layout (virtualized message list, composer). A document with no layout comes back as 0×0, and both the site and crit treat the reply as missing.
 - **Paint (pixels).** Headless already does not put a window on screen. Paint still fills an offscreen buffer. Skipping that buffer is not a supported switch, and `--disable-software-rasterizer` on top of `--disable-gpu` is how headless runs go blank and break challenges. Not part of this change.
 
 `DOM.getDocument` over CDP is the same renderer Playwright already uses. It does not avoid running the page.
@@ -22,13 +22,13 @@ Chromium still has to run the page. The page is a script that creates the reply 
 
 The send button is a click, not a fixed request. The signed-in page then builds a streaming POST itself. The path is not enough to replay:
 
-- The URL and JSON body change with the site. This bot is also aimed at whatever url is in `config.json`, not one vendor.
+- The URL and JSON body change with the site. crit is also aimed at whatever url is in `config.json`, not one vendor.
 - Immediately before that POST, the page script mints short-lived tokens and attaches them as headers. A copied path, without those tokens, is rejected. The tokens are produced by obfuscated page code and rotate. Reimplementing that is out of scope.
 - The call also needs the browser's session cookies. Lifting those out and replaying them from Python is the same session, with none of the token logic, and it breaks the next time the site changes.
 
 Watching the request from Playwright (method, path, status) can confirm what the click triggered. It does not yield a client we can call instead of the button.
 
-The supported way to skip the page is the vendor's official API, with an API key. That is a different backend, a different auth model, and a different product from the signed-in web UI this bot drives. Not part of this change. The send path stays `_fill_prompt` plus `_send` in `src/critique_bot/chat_client.py`.
+The supported way to skip the page is the vendor's official API, with an API key. That is a different backend, a different auth model, and a different product from the signed-in web UI crit drives. Not part of this change. The send path stays `_fill_prompt` plus `_send` in `src/critique_bot/chat_client.py`.
 
 ## Keep
 
@@ -47,7 +47,7 @@ In `src/critique_bot/browser.py`:
 
 **Motion.** `quiet_context(context)` when `headed` is false, on the persistent context, desktop Edge, and an attached `cdp_url`:
 
-- `context.add_init_script` injects `#critique-bot-quiet` with `animation-duration` / `transition-duration` of `0.01ms`, one iteration, and `scroll-behavior: auto`
+- `context.add_init_script` injects `#crit-quiet` with `animation-duration` / `transition-duration` of `0.01ms`, one iteration, and `scroll-behavior: auto`
 - `page.emulate_media(reduced_motion="reduce")` on open tabs
 - the same sheet into the current document, because an init script does not run on a tab that is already open
 
@@ -128,5 +128,5 @@ The reply loop, the headless request cuts, and the no-throttle flags are in. The
 
 Left out:
 
-- **The rest of the flag list.** Most are already there through Playwright. The others (`--mute-audio`, `--hide-scrollbars`, `--disable-remote-fonts`, `--blink-settings=imagesEnabled=false`, `--metrics-recording-only`) are the usual headless-automation fingerprint, and this bot already works to look less automated (`AutomationControlled`, no `--enable-automation`); one more challenge costs far more than they save. A second `--disable-features=` would also replace Playwright's list instead of adding to it.
+- **The rest of the flag list.** Most are already there through Playwright. The others (`--mute-audio`, `--hide-scrollbars`, `--disable-remote-fonts`, `--blink-settings=imagesEnabled=false`, `--metrics-recording-only`) are the usual headless-automation fingerprint, and crit already works to look less automated (`AutomationControlled`, no `--enable-automation`); one more challenge costs far more than they save. A second `--disable-features=` would also replace Playwright's list instead of adding to it.
 - **Reduced motion.** Small gain; can be added later behind the same headless check.

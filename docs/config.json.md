@@ -16,13 +16,13 @@ The file is JSON. Unknown keys are ignored. Env vars override matching fields wh
 Every command uses the first of these that applies:
 
 1. `--config FILE` on the command line;
-2. the `CRITIQUE_CONFIG` environment variable;
-3. the config recorded for the project in `.bot/settings.json` (`"config"`), if the file exists;
+2. the `CRIT_CONFIG` environment variable;
+3. the config recorded for the project in `.crit/settings.json` (`"config"`), if the file exists;
 4. a `config.json` in the project root, if it exists and git does not track it;
 5. your user config: `config.json` in crit's folder, `~/.crit/config.json`
-   (`%USERPROFILE%\.crit\config.json` on Windows; `CRIT_HOME` moves the folder). Before 1.1
+   (`%USERPROFILE%\.crit\config.json` on Windows; `CRIT_HOME` moves the folder). In 1.0.x
    it was `~/.config/critique-bot/config.json` (`%APPDATA%\critique-bot\config.json`); crit
-   moves it once.
+   moves it once (the log file notes the move).
 
 crit writes the user config owner-only (0600 in the 0700 `.crit` folder on Linux and macOS;
 an owner-only ACL on Windows), replacing it in one step so it is never half-written.
@@ -43,26 +43,30 @@ A team can hand out one shared file with `url`, `selectors`, and the rest; see
 { "config_file": "\\\\server\\share\\crit.json" }
 ```
 
-crit finds it from `config_file`, else `CRITIQUE_CONFIG_FILE`, else `/etc/critique-bot/crit.json`
-(`%ProgramData%\critique-bot\crit.json` on Windows). Its keys sit between crit's defaults and
+crit finds it from `config_file`, else `CRIT_CONFIG_FILE`, else `/etc/crit/crit.json`
+(`%ProgramData%\crit\crit.json` on Windows); the old `/etc/critique-bot/crit.json` and
+`%ProgramData%\critique-bot\crit.json` are still read when the new ones are missing. Which
+file is used is noted in the log file `~/.crit/logs/crit.log`, not on screen. Its keys sit between crit's defaults and
 your own settings: `url`, `backend`, `local`, `cdp_url`, `allowed_hosts`, `redact_pii`,
 `gitlab.base_url`, and each selector it sets are locked; `egress` and `page_network` can only
 be tightened; `redact_terms` add up; every other key is a default you may override. It must
 set `url` (and, for `backend: browser`, `selectors.prompt_input` and
 `selectors.assistant_messages`). A copy of the last good read is kept in
-`cache/config-file.cache.json` in crit's folder and used when the file cannot be read. A
-`user_data_dir` in it is ignored (the browser profile is personal).
+`cache/config-file.cache.json` in crit's folder and used when the file cannot be read (the
+log file says when that copy is used). A `user_data_dir` or `local.api_key` in it is ignored
+(the browser profile and the API key are personal).
 
 The user config also keeps per-user preferences: `theme`, `syntax_preview`, and `welcomed`
 (the first-run welcome was shown). They apply in every project; a project keeps its own
-`theme` in `.bot/settings.json` only if one was set there.
+`theme` in `.crit/settings.json` only if one was set there.
 
 ## `crit config`
 
-`crit config` (also `critique-bot config`) with no flags prints the settings in plain words:
+`crit config` with no flags prints the settings in plain words:
 the file and why it was chosen, backend, url, network mode, allowed sites, hidden
-names, personal-data redaction, GitLab address, model. Tokens are never printed (they are
-not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
+names, personal-data redaction, GitLab address, model, and for a local model `API key: set`
+or `API key: not set`. Tokens and keys are never printed (`CRIT_GITLAB_TOKEN` is an
+environment variable, and the API key is shown only as set or not set).
 
 | Flag | Sets |
 | --- | --- |
@@ -71,6 +75,7 @@ not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
 | `--backend browser\|local` | `backend` (local defaults `url` to `http://127.0.0.1:8080`) |
 | `--local-url ADDR` | the model server's `url` (`ip:port` or `http(s)://host:port`), `backend: local`; a server on another PC is added to `allowed_hosts` |
 | `--model NAME` | `model` (`""` for the default) |
+| `--api-key` | `local.api_key` in your own config: asks for it without echo; `--api-key -` reads it from stdin, `--api-key none` removes it |
 | `--allow-host H` / `--remove-host H` | `allowed_hosts` (repeatable; a URL is reduced to its host) |
 | `--redact NAMES` / `--unredact NAME` | `redact_terms` (repeatable or comma-separated; at least 3 letters or digits) |
 | `--pii on\|off` | `redact_pii` |
@@ -99,9 +104,10 @@ crit config --pii on --egress strict --gitlab-url https://gitlab.company.com
 In an interactive terminal session (never in CI, the worker, `--acp`, or piped runs; `--yes`
 does not answer these):
 
-- The page tried to reach a site that is not allowed: it is blocked, and after the
-  current step crit asks once per site "Allow it from now on? [y/N]". Yes adds it to
-  `allowed_hosts`, effective from the next start.
+- With `"page_network": "strict"`, the page tried to reach a site that is not allowed: it is
+  blocked, and after the current step crit asks once per site "Allow it from now on? [y/N]".
+  Yes adds it to `allowed_hosts`, effective from the next start. With `"open"` (the default)
+  a blocked site is only noted in the log file.
 - A command needs `gitlab.base_url` and none is set: crit asks for the https address and saves it.
 
 GitLab runner layout and the worker/submit split: [`gitlab-ci.md`](gitlab-ci.md).
@@ -136,17 +142,22 @@ llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 -
 }
 ```
 
+`num_ctx` may be left out: crit then reads the context window from the server.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `url` | `http://127.0.0.1:8080` | Base URL of the server (`llama-server`'s default port; LM Studio uses `1234`). A path such as `/v1` may be included. |
-| `model` | first model the server lists | The model name as the server lists it at `/v1/models` (llama-server: the file name, or `--alias`). `--model` and `CRITIQUE_MODEL` override it, as for the browser. |
+| `model` | first model the server lists | The model name as the server lists it at `/v1/models` (llama-server: the file name, or `--alias`). `--model` and `CRIT_MODEL` override it, as for the browser. |
 | `local.api` | `openai` | The only API crit speaks: `/v1/chat/completions` and `/v1/models`. |
-| `local.num_ctx` | 32768 | The context window the server was started with (`llama-server -c`). crit sizes its conversations to it; it is not sent to the server. |
+| `local.num_ctx` | 0 (read from the server) | The context window the server was started with (`llama-server -c`). crit sizes its conversations to it; it is not sent to the server. When it is 0 or not set, crit reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `data[].max_model_len`) and otherwise assumes 32768. crit never asks for it. |
+| `local.api_key` | none | The server's API key, sent as `Authorization: Bearer <key>` only to this server. Read only from your own `~/.crit/config.json` or `CRIT_API_KEY`; a shared config file cannot supply it (it is ignored there). Never logged, and redacted from transcripts and the log file. Set it with `crit config --api-key`. |
 | `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
 
 Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
 
-The agent's conversation-size defaults are scaled to the context window: a new conversation starts at about `num_ctx × 2` characters instead of 120,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
+On the first run, after `Checking http://IP:PORT ...`, a server that answers 401 or 403 makes crit say `the server needs an API key` and ask `API key: ` (no echo). A refused key is asked once more, then `Try another key? [Y/n]`.
+
+The agent's conversation-size defaults are scaled to the context window: a new conversation starts at about `num_ctx × 2` characters instead of 120,000, and tool results are capped at `num_ctx / 2` characters. `compact_after_chars` and `max_result_chars` in `.crit/settings.json` still win when set. Reasoning models (`qwen3`, `deepseek-r1`) work; their `<think>` blocks are removed from the reply before it is read.
 
 ### Model on another PC
 
@@ -191,10 +202,10 @@ Everything else has a default. For CI, set `queue_dir` and `user_data_dir` to **
 
 Selectors are CSS (Playwright locators) for **this** site; they break when the site redesigns.
 
-The easy way is to let the bot write them:
+The easy way is to let crit write them:
 
 ```bash
-critique-bot setup --config config.json
+crit setup --config config.json
 ```
 
 That opens a local page, launches Edge on the url, and lets you **click** the prompt box, the send button, a reply, and the stop button. It ranks the candidate selectors (preferring stable `data-*` and `aria-label` attributes over generated class hashes), writes them to `config.json`, and runs a live test.
@@ -206,7 +217,7 @@ By hand instead:
 3. Copy stable attributes (`data-testid`, `id`, `role`) rather than generated class hashes.
 4. Verify with a one-shot prompt before starting the worker:
 
-   `critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG."`
+   `crit ask --config config.json --prompt "Reply with exactly one word: PONG."`
 
 Comma-separated lists are OR: the first matching node is used.
 
@@ -217,16 +228,16 @@ Comma-separated lists are OR: the first matching node is used.
 | | |
 | --- | --- |
 | Type | string |
-| Env | `CRITIQUE_CHAT_URL` |
+| Env | `CRIT_URL` |
 | Default | none |
 
-Full URL of the page the bot should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://ai.company.com/`.
+Full URL of the page crit should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://ai.company.com/`.
 
 The page runs as it does in a normal browser: crit does not filter its requests, so a page that calls other hosts behind the scenes keeps working. crit controls what leaves on its own side, by what it types into the page (see [security.md](security.md)).
 
 `"filter_chat_page": true` turns on a page filter: Edge may then reach only the url's own site (for `ai.corp.example`, `corp.example` and all its subdomains; on shared hosting such as `*.azurewebsites.net`, the exact host) plus the hosts in `allowed_hosts`. Every other request, page loads in any frame included, is aborted, and crit prints the blocked host names. No site has hosts built in: list the site's CDN and sign-in hosts in `allowed_hosts`. Default `false`.
 
-The worker navigates here at session start. Login/SSO pages are detected and logged; the bot cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
+The worker navigates here at session start. Login/SSO pages are detected and logged; crit cannot complete a login by itself. A missing profile opens a visible window on that first run. After you sign in, that window closes and the same run continues headless. Pass `worker --headed` to show the window again later.
 
 ---
 
@@ -244,7 +255,7 @@ The browser may reach only the url's host and its subdomains. Everything else is
 "allowed_hosts": ["api.company.net", "static.company.net", "login.microsoftonline.com"]
 ```
 
-When crit blocks a host, it prints the host and this setting. Add only hosts the page needs. See [security.md](security.md).
+When crit blocks a host, the log file `~/.crit/logs/crit.log` names the host and this setting. Add only hosts the page needs. See [security.md](security.md).
 
 ## `page_network`
 
@@ -264,7 +275,7 @@ only at `gitlab.base_url`.
   the service-host denylist).
 - `"strict"`: the page too reaches only the url's host and `allowed_hosts` (resolver rules
   that make every other name unresolvable, no proxy unless the PC has one, the page filter, no
-  service workers). A blocked host is named, and crit offers to allow it.
+  service workers). A blocked host is named in the log file, and crit asks whether to allow it.
 
 `crit config --page-network strict` sets it. A config file's `"strict"` cannot be loosened.
 
@@ -275,7 +286,7 @@ only at `gitlab.base_url`.
 | Type | list of names / true or false |
 | Default | `[]` / `true` |
 
-`redact_terms` lists company, customer, or project names that must not reach the service. Each is sent as `[REDACTED:name]`, in any case, with spaces, hyphens, underscores, and dots between its words interchangeable or left out (`"Acme Corp"` also hides `acme-corp`, `ACME_CORP`, `AcmeCorp`, `acme.corp`), and inside identifiers at a camelCase, `_`, `.`, or `-` step (`AcmeClient`, `com.acme.app`, `ACME_API_URL`), but not inside a longer word (`Acmeville`). Each name needs at least 3 letters or digits and at most 200 characters; duplicates are dropped. `CRIT_REDACT_TERMS` (comma-separated) adds more, for CI. The setup scripts (`--redact-terms` / `-RedactTerms`), the first-run questions, and `critique-bot setup` fill this list.
+`redact_terms` lists company, customer, or project names that must not reach the service. Each is sent as `[REDACTED:name]`, in any case, with spaces, hyphens, underscores, and dots between its words interchangeable or left out (`"Acme Corp"` also hides `acme-corp`, `ACME_CORP`, `AcmeCorp`, `acme.corp`), and inside identifiers at a camelCase, `_`, `.`, or `-` step (`AcmeClient`, `com.acme.app`, `ACME_API_URL`), but not inside a longer word (`Acmeville`). Each name needs at least 3 letters or digits and at most 200 characters; duplicates are dropped. `CRIT_REDACT_TERMS` (comma-separated) adds more, for CI. The setup scripts (`--redact-terms` / `-RedactTerms`), the first-run questions, and `crit setup` fill this list.
 
 ```json
 "redact_terms": ["Acme Corp", "Globex"],
@@ -304,9 +315,9 @@ real page (and lets you click the right element instead). The details:
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `prompt_input` | **yes** | Composer: `<textarea>`, contenteditable, or equivalent |
-| `assistant_messages` | **yes** | Nodes whose **visible text** is the assistant reply. The bot reads the last match as it grows |
+| `assistant_messages` | **yes** | Nodes whose **visible text** is the assistant reply. crit reads the last match as it grows |
 | `send_button` | no | Send control. Empty → press Enter in the prompt |
-| `stop_button` | no | The "stop generating" control. **Strongly recommended:** it is how the bot knows a reply actually finished, and how `crit` stops a reply |
+| `stop_button` | no | The "stop generating" control. **Strongly recommended:** it is how crit knows a reply actually finished, and how `crit` stops a reply |
 | `continue_button` | no | A "Continue generating" control. Clicked once when it shows after a reply ends |
 | `model_dropdown_identifier` | no | Pin the model **opener** (see below). Also accepted at the **top level** of the JSON |
 | `model_dropdown` | no | CSS for the same opener, or a native `<select>` |
@@ -324,7 +335,7 @@ textarea, [contenteditable='true'][role='textbox']
 
 ### `send_button`
 
-If set, the bot clicks it; on failure it falls back to Enter. If omitted, Enter only.
+If set, crit clicks it; on failure it falls back to Enter. If omitted, Enter only.
 
 Example:
 
@@ -334,7 +345,7 @@ button[type='submit'], button[aria-label='Send' i]
 
 ### `assistant_messages`
 
-Must match **each** assistant bubble (or the markdown inside it), not the whole transcript. Counting these nodes is how the bot knows a new reply started.
+Must match **each** assistant bubble (or the markdown inside it), not the whole transcript. Counting these nodes is how crit knows a new reply started.
 
 Example:
 
@@ -342,11 +353,11 @@ Example:
 [data-message-author-role='assistant'], .assistant-message
 ```
 
-If this selector is too broad, the bot may think the reply finished too soon or grab the wrong text. If it is too narrow, it waits until `timeout_ms` and then fails.
+If this selector is too broad, crit may think the reply finished too soon or grab the wrong text. If it is too narrow, it waits until `timeout_ms` and then fails.
 
 ### `stop_button`
 
-Optional but the most important selector for review quality. While this control is visible the assistant is still writing, so the bot keeps waiting no matter how long the model pauses. When it disappears, the reply is finished and the bot returns it after a short settle.
+Optional but the most important selector for review quality. While this control is visible the assistant is still writing, so crit keeps waiting no matter how long the model pauses. When it disappears, the reply is finished and crit returns it after a short settle.
 
 Example:
 
@@ -354,15 +365,15 @@ Example:
 button[aria-label*='Stop' i]
 ```
 
-Leave it empty and the bot falls back to `idle_ms`: it assumes a reply that stopped changing for that long is done. A model that pauses longer than `idle_ms` mid-answer — extended thinking, a tool call, rate limiting — then yields a **silently truncated** review. When that happens the run logs a warning and `review.json` records `completion.complete: false`, so you can tell truncated output apart from finished output.
+Leave it empty and crit falls back to `idle_ms`: it assumes a reply that stopped changing for that long is done. A model that pauses longer than `idle_ms` mid-answer — extended thinking, a tool call, rate limiting — then yields a **silently truncated** review. When that happens the run logs a warning and `review.json` records `completion.complete: false`, so you can tell truncated output apart from finished output.
 
-Even with `stop_button` empty, the bot also treats a visible `aria-busy="true"` on a reply bubble as "still generating", and tries a few common stop-button selectors.
+Even with `stop_button` empty, crit also treats a visible `aria-busy="true"` on a reply bubble as "still generating", and tries a few common stop-button selectors.
 
 The `crit` agent uses the same signal two more ways. Before each send it checks whether the page is still writing an earlier reply; it waits up to about 20 seconds for that reply to finish, then clicks stop, so two replies never mix. Ctrl+C on a task, and a retry after a timed-out reply, click stop too. A wrong `stop_button` makes both slower and less reliable.
 
 ### `continue_button`
 
-Optional. Some pages cut a long reply and show a "Continue generating" button. When this selector is set and the button is visible after a reply ends, the bot clicks it once, waits for the rest, and merges it into the same reply. When the page does not start writing again, the cut reply is kept. Empty (the default) never clicks. `critique-bot setup` does not pick this one; write it by hand.
+Optional. Some pages cut a long reply and show a "Continue generating" button. When this selector is set and the button is visible after a reply ends, crit clicks it once, waits for the rest, and merges it into the same reply. When the page does not start writing again, the cut reply is kept. Empty (the default) never clicks. `crit setup` does not pick this one; write it by hand.
 
 ### Model picker (`model` + dropdown fields)
 
@@ -370,15 +381,15 @@ Used only when `model` is non-empty. The value of `model` must be the **visible 
 
 **Opener** (click to open the panel):
 
-1. `model_dropdown_identifier` — preferred. Unique text, `aria-label`, `title`, `id`, `data-testid`, `data-id`, or class substring on the opener. If the string looks like a CSS/Playwright locator (starts with `.` `#` `[` `/`, or `xpath=` / `text=`), it is used as a locator first; otherwise the bot searches accessible name, label, then the DOM (including open shadow roots).
-2. `model_dropdown` — CSS for that opener. If the node is a `<select>`, the bot uses `select_option` and does not need a panel.
-3. If both identifier and dropdown are empty, the bot **guesses** (risky: it may click the wrong control).
+1. `model_dropdown_identifier` — preferred. Unique text, `aria-label`, `title`, `id`, `data-testid`, `data-id`, or class substring on the opener. If the string looks like a CSS/Playwright locator (starts with `.` `#` `[` `/`, or `xpath=` / `text=`), it is used as a locator first; otherwise crit searches accessible name, label, then the DOM (including open shadow roots).
+2. `model_dropdown` — CSS for that opener. If the node is a `<select>`, crit uses `select_option` and does not need a panel.
+3. If both identifier and dropdown are empty, crit **guesses** (risky: it may click the wrong control).
 
-If `model_dropdown_identifier` is set and does **not** match, the bot **will not** click other buttons. That is intentional so a bad identifier cannot smash a random toolbar item.
+If `model_dropdown_identifier` is set and does **not** match, crit **will not** click other buttons. That is intentional so a bad identifier cannot smash a random toolbar item.
 
 **Option inside the open panel:**
 
-- `model_option` — optional CSS such as `[role='menuitemradio'], [role='menuitem'], [role='option']`. If empty, the bot searches the panel for the `model` label (including shadow DOM).
+- `model_option` — optional CSS such as `[role='menuitemradio'], [role='menuitem'], [role='option']`. If empty, crit searches the panel for the `model` label (including shadow DOM).
 
 Leave `model` as `""` to skip picking (uses whatever the signed-in session already has selected).
 
@@ -391,7 +402,7 @@ Placeholder `YOUR_MODEL_NAME` in `model` is rejected.
 | | |
 | --- | --- |
 | Type | string |
-| Env | `CRITIQUE_MODEL` |
+| Env | `CRIT_MODEL` |
 | CLI | `--model` (wins over env and file) |
 | Default | `""` (browser: skip picker; local: the first model the server lists) |
 
@@ -414,7 +425,7 @@ Budget for page load, finding the prompt, selecting the model, and sending. Wait
 
 ### Waiting for a reply
 
-A reply is waited for as long as it shows signs of life, not for a fixed time. Each case that ends the wait raises an error, and the agent retries it: first in the same conversation, then in a new conversation that carries a summary of the task (`reply_retries` in `.bot/settings.json`).
+A reply is waited for as long as it shows signs of life, not for a fixed time. Each case that ends the wait raises an error, and the agent retries it: first in the same conversation, then in a new conversation that carries a summary of the task (`reply_retries` in `.crit/settings.json`).
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -480,12 +491,12 @@ Pause after an ACK before the next paste in the same job. `0` (default) sends th
 | | |
 | --- | --- |
 | Type | string |
-| Env | `CRITIQUE_USER_DATA_DIR` |
+| Env | `CRIT_USER_DATA_DIR` |
 | Default | `browser-profile` in crit's folder (`~/.crit/browser-profile`, `%USERPROFILE%\.crit\browser-profile`) |
 
 Persistent Edge profile so cookies survive restarts. It is never asked: it is personal and
-automatic. It comes only from your own config, `CRITIQUE_USER_DATA_DIR`, or the default; a
-`user_data_dir` in a shared config file (`config_file`, `CRITIQUE_CONFIG_FILE`, the system
+automatic. It comes only from your own config, `CRIT_USER_DATA_DIR`, or the default; a
+`user_data_dir` in a shared config file (`config_file`, `CRIT_CONFIG_FILE`, the system
 location) is ignored with a log line, and never resolved next to that file.
 
 | Value | Result |
@@ -502,18 +513,18 @@ Do not share this directory with a human’s everyday Edge. Do not copy it betwe
 | | |
 | --- | --- |
 | Type | string |
-| Env | `CRITIQUE_CDP_URL` |
+| Env | `CRIT_CDP_URL` |
 | CLI | `--cdp-url` |
 | Default | `""` (launch Edge) |
 
-If set (e.g. `http://127.0.0.1:9222`), the bot **attaches** to an Edge you started with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`. Empty string is ignored. Leave empty for the normal worker.
+If set (e.g. `http://127.0.0.1:9222`), crit **attaches** to an Edge you started with `--remote-debugging-port=9222` **and** a non-default `--user-data-dir`. Empty string is ignored. Leave empty for the normal worker.
 
 ### `storage_state`
 
 | | |
 | --- | --- |
 | Type | string (path) |
-| Env | `CRITIQUE_STORAGE_STATE` |
+| Env | `CRIT_STORAGE_STATE` |
 | Default | `""` |
 
 Optional Playwright `storage_state` JSON (cookies) seeded on first launch of the **Playwright** persistent profile. File must exist if this is set. Ignored when using the dedicated desktop (`system`) profile. A missing profile opens a visible Edge window for sign-in unless this file is set. Prefer that window over shipping cookie files.
@@ -529,14 +540,14 @@ Relative `queue_dir` is resolved **next to `config.json`**, unlike `user_data_di
 | | |
 | --- | --- |
 | Type | string |
-| Env | `CRITIQUE_QUEUE_DIR` |
+| Env | `CRIT_QUEUE_DIR` |
 | Default | `.critique-queue` beside the config file |
 
 Worker and every GitLab job **must** share this directory. Layout: `inbox/`, `processing/`, `results/<job-id>/`, `worker.lock`, `worker.heartbeat`.
 
 Inbox files are named `{timestamp-ms}-{label}-{serial}.json`. `label` is `group-app-mr42` (GitLab), a CI job id, or `local`. The worker claims the **oldest** inbox files first. Up to `max_parallel_tabs` reviews run at once (default **1**). Each `submit` waits only for the job id it just created; it does not look up reviews by MR.
 
-CI recommendation: `"queue_dir": "/opt/critique-bot/.critique-queue"` (Windows: `C:\\critique-bot\\.critique-queue`).
+CI recommendation: `"queue_dir": "/opt/crit/.critique-queue"` (Windows: `C:\\crit\\.critique-queue`).
 
 ### `min_interval_seconds`
 
@@ -561,7 +572,7 @@ Extra random delay in `[0, jitter]` added to the interval, so traffic is less me
 | | |
 | --- | --- |
 | Type | integer 1–8 |
-| Env | `CRITIQUE_MAX_PARALLEL_TABS` |
+| Env | `CRIT_MAX_PARALLEL_TABS` |
 | Default | `1` |
 
 How many reviews the worker may run at once. Edge tabs in the same signed-in instance (`1` is safest for the service's rate limits). `3` means up to three MRs in flight; new sends still wait `min_interval_seconds`. Values above 8 are clamped to 8.
@@ -594,11 +605,11 @@ How many finished job folders to keep under `results/`. The oldest are removed a
 
 ## `gitlab` (object, optional)
 
-Used when reviewing a merge request: the bot loads title, ticket IDs, description, commit messages, and changed file/line ranges into the SYSTEM prompt, and `gitlab-post` uses the same instance URL.
+Used when reviewing a merge request: crit loads title, ticket IDs, description, commit messages, and changed file/line ranges into the SYSTEM prompt, and `gitlab-post` uses the same instance URL.
 
 | Key | Meaning |
 | --- | --- |
-| `base_url` | GitLab origin only, e.g. `https://gitlab.example.com`. API root is `{base_url}/api/v4`. Env: `CRITIQUE_GITLAB_URL`. In CI, `CI_SERVER_URL` / `CI_API_V4_URL` also work |
+| `base_url` | GitLab origin only, e.g. `https://gitlab.example.com`. API root is `{base_url}/api/v4`. Env: `CRIT_GITLAB_URL`. In CI, `CI_SERVER_URL` / `CI_API_V4_URL` also work |
 
 Do **not** put `project_id`, `mr_iid`, or `mr_url` here. Those change per pipeline and are read from GitLab CI (`CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID`, `CI_MERGE_REQUEST_URL`) or from `gitlab-post --project-id` / `--mr-iid` / `--mr-url`.
 
@@ -606,7 +617,7 @@ The merge-request endpoint is:
 
 `{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}`
 
-Posting still needs `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
+Posting still needs `CRIT_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
 
 ---
 
@@ -614,17 +625,20 @@ Posting still needs `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`
 
 | Env | Config key |
 | --- | --- |
-| `CRITIQUE_CHAT_URL` | `url` |
-| `CRITIQUE_MODEL` | `model` |
-| `CRITIQUE_STORAGE_STATE` | `storage_state` |
-| `CRITIQUE_USER_DATA_DIR` | `user_data_dir` |
-| `CRITIQUE_CDP_URL` | `cdp_url` |
-| `CRITIQUE_QUEUE_DIR` | `queue_dir` |
-| `CRITIQUE_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
-| `CRITIQUE_GITLAB_URL` | `gitlab.base_url` |
+| `CRIT_URL` | `url` |
+| `CRIT_MODEL` | `model` |
+| `CRIT_STORAGE_STATE` | `storage_state` |
+| `CRIT_USER_DATA_DIR` | `user_data_dir` |
+| `CRIT_CDP_URL` | `cdp_url` |
+| `CRIT_QUEUE_DIR` | `queue_dir` |
+| `CRIT_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
+| `CRIT_GITLAB_URL` | `gitlab.base_url` |
 | `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
+| `CRIT_API_KEY` | `local.api_key` |
 
-`--model` and `--cdp-url` override env and file. GitLab comment posting uses `CRITIQUE_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
+The older `CRITIQUE_*` names (for example `CRITIQUE_CHAT_URL` for `CRIT_URL`) still work.
+
+`--model` and `--cdp-url` override env and file. GitLab comment posting uses `CRIT_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
 
 ---
 
@@ -654,10 +668,10 @@ Adjust `url` / `selectors` to your page. Keep paths absolute.
   "max_file_chars": 32000,
   "max_files": 80,
   "max_read_bytes": 16000000,
-  "user_data_dir": "/opt/critique-bot/.edge-profile",
+  "user_data_dir": "/opt/crit/.edge-profile",
   "cdp_url": "",
   "storage_state": "",
-  "queue_dir": "/opt/critique-bot/.critique-queue",
+  "queue_dir": "/opt/crit/.critique-queue",
   "min_interval_seconds": 30,
   "interval_jitter_seconds": 5,
   "turn_pause_seconds": 0,
@@ -675,9 +689,9 @@ Do not commit this file if it contains a private url or a `storage_state` path.
 - File exists and is a JSON object.
 - If `backend` is set, it must be `browser` (or `web` / `playwright` / `ui` / `chat`) or `local` (or `llama.cpp` / `llama-server` / `lmstudio` / `vllm` / `openai-compatible`).
 - `browser`: `selectors.prompt_input` and `selectors.assistant_messages` are non-empty; `url` is non-empty and not a placeholder.
-- `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `openai` when set; `local.num_ctx` is > 0 when set.
+- `local`: `url` is an http(s) address on this PC (or a host listed in `allowed_hosts`), without a user name or password; `local.api` is `openai` when set; `local.num_ctx` is > 0 when set (leave it out to read it from the server).
 - If `storage_state` is set, that path is a file.
 - `redact_terms` is a list of strings, each with at least 3 letters or digits and at most 200 characters; `redact_pii` is `true` or `false`.
 - Integer/float fields: `timeout_ms`, `idle_ms`, `result_retention`, and the `max_*` keys must be > 0; interval fields, `turn_pause_seconds`, and `job_timeout_seconds` must be ≥ 0.
 
-A one-shot `--mode general` prompt (or **Send test prompt** in `critique-bot setup`) is the check the loader cannot do: Edge is installed, the profile holds a session, the selectors match the live page, and a real reply comes back.
+A one-shot `crit ask` prompt (or **Send test prompt** in `crit setup`) is the check the loader cannot do: Edge is installed, the profile holds a session, the selectors match the live page, and a real reply comes back.

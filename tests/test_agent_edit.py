@@ -96,7 +96,7 @@ class WriteTests(unittest.TestCase):
 class CheckpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp())
-        self.cache = self.root / ".bot" / "cache"
+        self.cache = self.root / ".crit" / "cache"
 
     def test_task_folders_sort_in_creation_order(self) -> None:
         checkpoints = Checkpoints(self.cache, self.root)

@@ -354,7 +354,7 @@ def reopen_theme(workspace: Path) -> None:
             file=sys.stderr,
         )
         return
-    from critique_bot.bot_home import find_bot_home, update_settings
+    from critique_bot.project_home import find_bot_home, update_settings
     from critique_bot.config import effective_theme, set_user_preferences, user_preferences
 
     home = find_bot_home(workspace)

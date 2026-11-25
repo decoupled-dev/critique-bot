@@ -4,11 +4,11 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-from critique_bot import egress, log
+from critique_bot import egress, env_names, log
 from critique_bot import redaction
 from critique_bot.patch import (
     ABSOLUTE_MAX_FILE_CHARS,
@@ -25,14 +25,14 @@ from critique_bot.patch import (
 PLACEHOLDER_URL = "YOUR_CHAT_UI"
 PLACEHOLDER_MODEL = "YOUR_MODEL_NAME"
 
-ENV_CHAT_URL = "CRITIQUE_CHAT_URL"
-ENV_MODEL = "CRITIQUE_MODEL"
-ENV_STORAGE_STATE = "CRITIQUE_STORAGE_STATE"
-ENV_USER_DATA_DIR = "CRITIQUE_USER_DATA_DIR"
-ENV_CDP_URL = "CRITIQUE_CDP_URL"
-ENV_QUEUE_DIR = "CRITIQUE_QUEUE_DIR"
-ENV_MAX_PARALLEL_TABS = "CRITIQUE_MAX_PARALLEL_TABS"
-ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
+ENV_CHAT_URL = "CRIT_URL"
+ENV_MODEL = "CRIT_MODEL"
+ENV_STORAGE_STATE = "CRIT_STORAGE_STATE"
+ENV_USER_DATA_DIR = "CRIT_USER_DATA_DIR"
+ENV_CDP_URL = "CRIT_CDP_URL"
+ENV_QUEUE_DIR = "CRIT_QUEUE_DIR"
+ENV_MAX_PARALLEL_TABS = "CRIT_MAX_PARALLEL_TABS"
+ENV_GITLAB_URL = "CRIT_GITLAB_URL"
 
 BACKEND_BROWSER = "browser"
 #: A model served over the OpenAI-compatible API (llama.cpp, LM Studio, vLLM, ...).
@@ -69,7 +69,7 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})  # nos
 
 
 class ConfigError(ValueError):
-    """Invalid or incomplete bot configuration."""
+    """Invalid or incomplete crit configuration."""
 
 
 _NO_OLLAMA = (
@@ -85,7 +85,7 @@ class GitLabConfig:
 
     ``base_url`` is the origin (``https://gitlab.example.com``). Project ID,
     MR IID, and MR URL are never stored here; they come from CI or CLI for
-    the current merge request. The bot builds
+    the current merge request. crit builds
     ``{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}``.
     """
 
@@ -117,6 +117,9 @@ class LocalConfig:
     num_ctx: int = 0
     #: Sampling temperature sent with every request. None leaves the server's default.
     temperature: float | None = None
+    #: The server's API key (``llama-server --api-key``, vLLM, a gateway): only from the user's own
+    #: config or ``CRIT_API_KEY``, never from a shared config file. Sent only to this server.
+    api_key: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -320,25 +323,25 @@ def load_config(
         continue_button=_clean(selectors_raw.get("continue_button")),
     )
 
-    env_url = os.environ.get(ENV_CHAT_URL) if "url" not in locked else ""
+    env_url = env_names.get(ENV_CHAT_URL) if "url" not in locked else ""
     url = env_url or _clean(raw.get("url"))
     if env_url:
         log.debug(f"url overridden by {ENV_CHAT_URL}")
     model = (
         _clean(model_override)
-        or os.environ.get(ENV_MODEL)
+        or env_names.get(ENV_MODEL)
         or _clean(raw.get("model"))
     )
     if _clean(model_override):
         log.debug("model overridden by --model")
-    elif os.environ.get(ENV_MODEL):
+    elif env_names.get(ENV_MODEL):
         log.debug(f"model overridden by {ENV_MODEL}")
     storage_state = (
-        os.environ.get(ENV_STORAGE_STATE)
+        env_names.get(ENV_STORAGE_STATE)
         or _clean(raw.get("storage_state"))
         or None
     )
-    if os.environ.get(ENV_STORAGE_STATE):
+    if env_names.get(ENV_STORAGE_STATE):
         log.debug(f"storage_state overridden by {ENV_STORAGE_STATE}")
     if storage_state:
         state_path = Path(storage_state)
@@ -347,20 +350,20 @@ def load_config(
         storage_state = str(state_path)
 
     if "cdp_url" in locked:
-        if _clean(cdp_url_override) or os.environ.get(ENV_CDP_URL):
-            log.info("cdp_url is set in the config file; --cdp-url / CRITIQUE_CDP_URL ignored")
+        if _clean(cdp_url_override) or env_names.get(ENV_CDP_URL):
+            log.info("cdp_url is set in the config file; --cdp-url / CRIT_CDP_URL ignored")
         cdp_url_override = None
     cdp_url = (
         _clean(cdp_url_override)
-        or (os.environ.get(ENV_CDP_URL) if "cdp_url" not in locked else "")
+        or (env_names.get(ENV_CDP_URL) if "cdp_url" not in locked else "")
         or _clean(raw.get("cdp_url"))
         or None
     )
     if _clean(cdp_url_override):
         log.debug("cdp_url overridden by --cdp-url")
-    elif os.environ.get(ENV_CDP_URL):
+    elif env_names.get(ENV_CDP_URL):
         log.debug(f"cdp_url overridden by {ENV_CDP_URL}")
-    # The browser profile is personal: only the user's own config, CRITIQUE_USER_DATA_DIR, or
+    # The browser profile is personal: only the user's own config, CRIT_USER_DATA_DIR, or
     # the default; never a config file shared with others (nor relative to one).
     own_user_data = "" if shared_file else _clean(own_raw.get("user_data_dir"))
     if (company is not None and _clean(company.data.get("user_data_dir"))) or (
@@ -368,29 +371,32 @@ def load_config(
     ):
         log.info("user_data_dir in the config file is ignored: the browser profile is personal "
                  f"(set it in your own settings or {ENV_USER_DATA_DIR})")
-    raw_user_data = os.environ.get(ENV_USER_DATA_DIR) or own_user_data
-    if os.environ.get(ENV_USER_DATA_DIR):
+    raw_user_data = env_names.get(ENV_USER_DATA_DIR) or own_user_data
+    if env_names.get(ENV_USER_DATA_DIR):
         log.debug(f"user_data_dir overridden by {ENV_USER_DATA_DIR}")
     user_data_dir = _resolve_user_data_dir(raw_user_data, None if shared_file else config_path)
     queue_dir = _resolve_queue_dir(
-        os.environ.get(ENV_QUEUE_DIR) or _clean(raw.get("queue_dir")),
+        env_names.get(ENV_QUEUE_DIR) or _clean(raw.get("queue_dir")),
         config_path,
     )
-    if os.environ.get(ENV_QUEUE_DIR):
+    if env_names.get(ENV_QUEUE_DIR):
         log.debug(f"queue_dir overridden by {ENV_QUEUE_DIR}")
-    raw_parallel = os.environ.get(ENV_MAX_PARALLEL_TABS)
+    raw_parallel = env_names.get(ENV_MAX_PARALLEL_TABS)
     if raw_parallel:
         log.debug(f"max_parallel_tabs overridden by {ENV_MAX_PARALLEL_TABS}")
 
     if model and PLACEHOLDER_MODEL in model:
         raise ConfigError(
             "model is still a placeholder. Set it with crit config --model NAME "
-            "or pass --model / CRITIQUE_MODEL."
+            "or pass --model / CRIT_MODEL."
         )
     local = LocalConfig()
     if backend == BACKEND_LOCAL:
         url = _local_url(url or DEFAULT_LOCAL_URL, _host_list(raw.get("allowed_hosts")))
         local = _load_local(raw.get("local"), url)
+        api_key = _local_api_key(own_raw, company, shared_file=shared_file)
+        if api_key:
+            local = replace(local, api_key=api_key)
     else:
         if not selectors.prompt_input:
             raise ConfigError(
@@ -405,7 +411,7 @@ def load_config(
         if not url:
             raise ConfigError(
                 "no url is set. Run crit config --config-file /path/to/crit.json or crit config --url https://ai.company.com/ "
-                "(or set CRITIQUE_CHAT_URL)"
+                "(or set CRIT_URL)"
             )
         if PLACEHOLDER_URL in url:
             raise ConfigError(
@@ -415,7 +421,7 @@ def load_config(
 
     egress_mode = _egress_mode(raw.get("egress"))
     if company is not None and "egress" in locked and _clean(company.data.get("egress")).lower() == egress.STRICT:
-        egress_mode = egress.STRICT  # CRITIQUE_EGRESS=open never loosens the config file's strict
+        egress_mode = egress.STRICT  # CRIT_EGRESS=open never loosens the config file's strict
     page_network = _page_network_mode(raw.get("page_network"))
     allowed_hosts = _host_list(raw.get("allowed_hosts"))
     if egress_mode == egress.STRICT and cdp_url:
@@ -519,7 +525,7 @@ def load_config(
 # --------------------------------------------------------------------------- where the config lives
 
 #: The config file to use when ``--config`` is not given.
-ENV_CONFIG = "CRITIQUE_CONFIG"
+ENV_CONFIG = "CRIT_CONFIG"
 CONFIG_FILE_NAME = "config.json"
 
 
@@ -588,7 +594,7 @@ def migrate_legacy_files(say: Callable[[str], None] | None = None) -> bool:
     if _MIGRATED:
         return False
     _MIGRATED = True
-    say = say or (lambda text: print(text, file=sys.stderr))
+    say = say or log.info  # moving files is bookkeeping: the log file, not the screen
     new_config = user_config_path()
     old_dir = legacy_config_dir()
     old_config = old_dir / CONFIG_FILE_NAME
@@ -735,7 +741,7 @@ def write_config_file(path: str | Path, data: dict) -> Path:
 #: User config key naming the config file (an absolute path, UNC kept as given).
 COMPANY_CONFIG_KEY = "config_file"
 #: Names the config file when the user config does not.
-ENV_COMPANY_CONFIG = "CRITIQUE_CONFIG_FILE"
+ENV_COMPANY_CONFIG = "CRIT_CONFIG_FILE"
 COMPANY_FILE_NAME = "crit.json"
 #: A copy of the last config file that loaded, next to the user config.
 COMPANY_CACHE_NAME = "config-file.cache.json"
@@ -765,19 +771,33 @@ class CompanySettings:
     #: The file's path as configured (UNC paths as given).
     path: str
     data: dict
-    #: "settings" (company_config in the user's config), "env" (CRITIQUE_COMPANY_CONFIG), or "system".
+    #: "settings" (company_config in the user's config), "env" (CRIT_CONFIG_FILE), or "system".
     source: str
     #: When the saved copy was made, if the file itself could not be read ("" otherwise).
     cached_at: str = ""
 
 
 def system_company_config_path() -> Path:
-    """Where IT may place the config file for everyone on the PC: ``/etc/critique-bot/crit.json``
-    on Linux and macOS, ``%ProgramData%\\critique-bot\\crit.json`` on Windows."""
+    """Where IT may place the config file for everyone on the PC: ``/etc/crit/crit.json``
+    on Linux and macOS, ``%ProgramData%\\crit\\crit.json`` on Windows."""
+    if os.name == "nt":
+        base = os.environ.get("ProgramData") or os.environ.get("PROGRAMDATA") or "C:\\ProgramData"
+        return Path(base) / "crit" / COMPANY_FILE_NAME
+    return Path("/etc/crit") / COMPANY_FILE_NAME
+
+
+def legacy_system_company_config_path() -> Path:
+    """Where versions up to 1.0.4 looked for it (``/etc/critique-bot``, ``%ProgramData%\\critique-bot``):
+    still read when the new location has no file."""
     if os.name == "nt":
         base = os.environ.get("ProgramData") or os.environ.get("PROGRAMDATA") or "C:\\ProgramData"
         return Path(base) / "critique-bot" / COMPANY_FILE_NAME
     return Path("/etc/critique-bot") / COMPANY_FILE_NAME
+
+
+def system_company_config_paths() -> list[Path]:
+    """The system locations, new first."""
+    return [system_company_config_path(), legacy_system_company_config_path()]
 
 
 def company_cache_path() -> Path:
@@ -802,7 +822,7 @@ def company_config_location(raw: dict | None = None) -> tuple[str, str] | None:
     """Which company file applies, and why: ``(path, source)``; None when there is none.
 
     ``company_config`` in the loaded config (``raw``), then in the user config, then
-    ``CRITIQUE_COMPANY_CONFIG``, then the system default when that file exists.
+    ``CRIT_CONFIG_FILE``, then the system default when that file exists.
     """
     candidates = [raw or {}]
     try:
@@ -813,16 +833,18 @@ def company_config_location(raw: dict | None = None) -> tuple[str, str] | None:
         value = _clean(data.get(COMPANY_CONFIG_KEY))
         if value and value.lower() != "none":
             return value, "settings"
-    from_env = _clean(os.environ.get(ENV_COMPANY_CONFIG))
+    from_env = _clean(env_names.get(ENV_COMPANY_CONFIG))
     if from_env and from_env.lower() != "none":
         return from_env, "env"
-    system = system_company_config_path()
-    try:
-        present = system.is_file()
-    except OSError:
-        present = False
-    if present:
-        return str(system), "system"
+    for system in system_company_config_paths():
+        try:
+            present = system.is_file()
+        except OSError:
+            present = False
+        if present:
+            if system != system_company_config_path():
+                log.info(f"using the config file at its old location {system}")
+            return str(system), "system"
     return None
 
 
@@ -941,7 +963,7 @@ def load_company_settings(path: str, source: str) -> CompanySettings:
             ) from exc
         data, saved_at = cached
         when = _plain_time(saved_at)
-        log.notice(f"{path} cannot be read; using its copy from {when}.")
+        log.info(f"{path} cannot be read; using its copy from {when}.")
         return CompanySettings(path, data, source, cached_at=when)
     _save_company_cache(path, data)
     return CompanySettings(path, data, source)
@@ -1082,8 +1104,8 @@ def backend_kind(value: object) -> str:
 
 
 def _egress_mode(value: object) -> str:
-    """config.json "egress": "strict" (the default) or "open"; CRITIQUE_EGRESS overrides it."""
-    raw = os.environ.get("CRITIQUE_EGRESS") or value
+    """config.json "egress": "strict" (the default) or "open"; CRIT_EGRESS overrides it."""
+    raw = env_names.get("CRIT_EGRESS") or value
     if raw is None or raw == "":
         return egress.STRICT
     mode = str(raw).strip().lower()
@@ -1165,8 +1187,44 @@ def _load_local(raw: object, url: str) -> LocalConfig:
     )
 
 
+#: The local server's API key from the environment (wins over the user config).
+ENV_LOCAL_KEY = "CRIT_API_KEY"
+
+
+def user_api_key() -> str:
+    """``local.api_key`` in the user's own config (``~/.crit/config.json``), or ""."""
+    try:
+        return _api_key_in(read_config_dict(user_config_path()))
+    except (ConfigError, OSError):
+        return ""
+
+
+def _api_key_in(data: object) -> str:
+    local = data.get("local") if isinstance(data, dict) else None
+    return _clean(local.get("api_key")) if isinstance(local, dict) else ""
+
+
+def _local_api_key(own: dict, company: "CompanySettings | None", *, shared_file: bool) -> str:
+    """``CRIT_API_KEY``, else ``local.api_key`` in the user's own config. A shared config file never
+    supplies it (it would hand everyone's requests one key, and the file is readable by others).
+    The key is registered with redaction so it never reaches a transcript or the log file."""
+    if company is not None and _api_key_in(company.data):
+        log.info(f"local.api_key in the config file {company.path} is ignored; set it with crit config --api-key")
+    key = _clean(os.environ.get(ENV_LOCAL_KEY))
+    if not key:
+        if shared_file and _api_key_in(own):
+            log.info("local.api_key in a shared config file is ignored; set it with crit config --api-key")
+        elif not shared_file:
+            key = _api_key_in(own)
+    if not key:
+        key = user_api_key()
+    if key:
+        redaction.add_secret_value(key)
+    return key
+
+
 def dedicated_edge_user_data_dir() -> Path:
-    """Bot-owned Edge profile for ``user_data_dir: "system"``: ``msedge-user-data`` in crit's folder,
+    """crit's own Edge profile for ``user_data_dir: "system"``: ``msedge-user-data`` in crit's folder,
     outside Chromium's default User Data directory.
 
     A sibling named ``User Data-critique-bot`` still string-prefix-matches
@@ -1216,9 +1274,9 @@ def _resolve_queue_dir(value: str, config_path: Path) -> str:
 
 def _is_shared_config_file(config_path: Path) -> bool:
     """True when ``config_path`` is itself the config file shared with others (the system
-    location or ``CRITIQUE_CONFIG_FILE``), used directly as the config."""
-    shared = [system_company_config_path()]
-    env = os.environ.get(ENV_COMPANY_CONFIG, "").strip()
+    location or ``CRIT_CONFIG_FILE``), used directly as the config."""
+    shared = list(system_company_config_paths())
+    env = (env_names.get(ENV_COMPANY_CONFIG) or "").strip()
     if env:
         shared.append(Path(env).expanduser())
     try:
@@ -1241,7 +1299,9 @@ def _resolve_user_data_dir(value: str, config_path: Path | None = None) -> str:
         log.debug(f"user_data_dir {raw!r} -> system profile {resolved}")
         return resolved
     if raw == DEFAULT_USER_DATA_DIR:
-        resolved = str(default_browser_profile())
+        # Resolved like every other profile path (on Windows a short 8.3 home such as
+        # RUNNER~1 becomes the long name, so the same profile is always the same string).
+        resolved = str(default_browser_profile().resolve())
         log.debug(f"user_data_dir {raw!r} -> {resolved}")
         return resolved
     path = Path(raw).expanduser()
@@ -1256,11 +1316,11 @@ def _resolve_user_data_dir(value: str, config_path: Path | None = None) -> str:
 def _load_gitlab(raw: dict, *, env: bool = True) -> GitLabConfig:
     nested = raw.get("gitlab") if isinstance(raw.get("gitlab"), dict) else {}
     base_url = (
-        (os.environ.get(ENV_GITLAB_URL) if env else "")
+        (env_names.get(ENV_GITLAB_URL) if env else "")
         or _clean(nested.get("base_url"))
         or _clean(raw.get("gitlab_base_url"))
     )
-    if env and os.environ.get(ENV_GITLAB_URL):
+    if env and env_names.get(ENV_GITLAB_URL):
         log.debug(f"gitlab.base_url overridden by {ENV_GITLAB_URL}")
     return GitLabConfig(
         base_url=base_url,

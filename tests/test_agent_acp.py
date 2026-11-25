@@ -190,7 +190,7 @@ class HandshakeTests(_Base):
 
 class ClientRecordTests(_Base):
     def test_what_the_client_offers_is_saved_without_secrets(self) -> None:
-        (self.root / ".bot").mkdir()
+        (self.root / ".crit").mkdir()
         self.client.request(
             "initialize", protocolVersion=1, clientInfo={"name": "Android Studio"},
             clientCapabilities={"fs": {"readTextFile": True}, "terminal": True},
@@ -208,7 +208,7 @@ class ClientRecordTests(_Base):
         agent_acp.wait_for_session()
         self.run_in_thread(agent_acp.read_message)
         self.client.result(new)
-        saved = (self.root / ".bot" / "acp-client.json").read_text(encoding="utf-8")
+        saved = (self.root / ".crit" / "acp-client.json").read_text(encoding="utf-8")
         self.assertNotIn("s3cret", saved)
         self.assertNotIn('"abc"', saved)
         data = json.loads(saved)
@@ -315,7 +315,7 @@ class TurnTests(_Base):
         self.assertEqual(refused["error"]["code"], agent_acp.INVALID_PARAMS)
 
     def test_session_new_for_the_asked_folder_matches_a_parent_workspace(self) -> None:
-        # A .bot found by walking upward makes the workspace a parent of the folder the IDE opened.
+        # A .crit found by walking upward makes the workspace a parent of the folder the IDE opened.
         self.open_session()
         agent_acp.configure(workspace=self.root.parent)
         reply = self.client.result(self.client.request("session/new", cwd=str(self.root), mcpServers=[]))

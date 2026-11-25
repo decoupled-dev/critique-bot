@@ -21,40 +21,40 @@ git pull
 powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
 ```
 
-If this PC runs the zip build (`critique-bot.exe` under `C:\critique-bot`), replace it with a zip built from this branch.
+If this PC runs the zip build (`crit.exe` under `C:\crit`), replace it with a zip built from this branch.
 
 Check: `crit --help` runs.
 
 ## 2. Check config.json
 
-Open the `config.json` that crit uses (by default next to the repo, or the one `.bot\settings.json` names).
+Open the `config.json` that crit uses (by default next to the repo, or the one `.crit\settings.json` names).
 
 - `url`: the address of your company's AI service, starting with `https://`.
-- The page runs as it does in a normal browser; crit does not filter its requests unless you set `"filter_chat_page": true`. If you do set it, list in `allowed_hosts` only hosts that belong to the service; crit prints any host it blocks.
+- The page runs as it does in a normal browser; crit does not filter its requests unless you set `"filter_chat_page": true`. If you do set it, list in `allowed_hosts` only hosts that belong to the service; the log file `~/.crit/logs/crit.log` names any host crit blocks.
 - `cdp_url`: empty, or `http://127.0.0.1:<port>`. Never another machine.
-- `user_data_dir`: a folder **outside** every project, for example `%LOCALAPPDATA%\critique-bot\edge-profile`. That folder holds the signed-in session cookies.
+- `user_data_dir`: a folder **outside** every project, for example `%USERPROFILE%\.crit\browser-profile`. That folder holds the signed-in session cookies.
 
 ## 3. Make sure no config or settings file is committed
 
-crit now refuses a `config.json` that git tracks in the project. It also ignores permission settings from a committed `.bot\settings.json`, because a cloned repository could otherwise choose where your code is sent.
+crit now refuses a `config.json` that git tracks in the project. It also ignores permission settings from a committed `.crit\settings.json`, because a cloned repository could otherwise choose where your code is sent.
 
 In each project you use crit in:
 
 ```powershell
-git ls-files config.json .bot/settings.json
+git ls-files config.json .crit/settings.json
 ```
 
 If either file is listed, untrack it and ignore it:
 
 ```powershell
-git rm --cached config.json .bot/settings.json
-Add-Content .gitignore "config.json`n.bot/settings.json"
+git rm --cached config.json .crit/settings.json
+Add-Content .gitignore "config.json`n.crit/settings.json"
 git commit -m "Stop tracking local crit settings"
 ```
 
-## 4. Set safe defaults in .bot\settings.json
+## 4. Set safe defaults in .crit\settings.json
 
-Edit `.bot\settings.json` in each project (it is your own file now, not committed):
+Edit `.crit\settings.json` in each project (it is your own file now, not committed):
 
 ```json
 {
@@ -153,10 +153,10 @@ Check: open `edge://policy` in Edge and confirm the values. If your company mana
 
 ## 7. Lock the worker folder (GitLab runner PCs only)
 
-A folder created directly under `C:\` is writable by every signed-in user. The queue holds full prompts with source code, and the worker runs `critique-bot.exe` from that folder.
+A folder created directly under `C:\` is writable by every signed-in user. The queue holds full prompts with source code, and the worker runs `crit.exe` from that folder.
 
 ```powershell
-icacls C:\critique-bot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
+icacls C:\crit /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
 ```
 
 If gitlab-runner runs as a different account, add `"<that account>:(OI)(CI)M"` to the same command.

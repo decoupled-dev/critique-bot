@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "packaging" / "critique-bot.spec"
+SPEC = ROOT / "packaging" / "crit.spec"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 
@@ -54,14 +54,14 @@ def _platform_tag() -> str:
 
 
 def _binary_name() -> str:
-    name = "critique-bot.exe" if sys.platform == "win32" else "critique-bot"
+    name = "crit.exe" if sys.platform == "win32" else "crit"
     return name
 
 
 def _run_pyinstaller() -> Path:
     if BUILD.exists():
         shutil.rmtree(BUILD)
-    staged = DIST / "critique-bot"
+    staged = DIST / "crit"
     if staged.exists():
         shutil.rmtree(staged)
     cmd = [
@@ -106,7 +106,7 @@ def _smoke_test(binary: Path) -> None:
         encoding="utf-8",
         errors="replace",
     )
-    if result.returncode != 0 or "critique-bot" not in (result.stdout + result.stderr):
+    if result.returncode != 0 or "crit" not in (result.stdout + result.stderr):
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
         raise SystemExit(f"{binary} --help failed with exit {result.returncode}")
@@ -114,7 +114,7 @@ def _smoke_test(binary: Path) -> None:
 
 
 def _assemble_zip(staged: Path, version: str, tag: str) -> Path:
-    bundle_name = f"critique-bot-{version}-{tag}"
+    bundle_name = f"crit-{version}-{tag}"
     payload = DIST / bundle_name
     if payload.exists():
         shutil.rmtree(payload)
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
 
     version = _version()
     tag = _platform_tag()
-    print(f"building critique-bot {version} for {tag}")
+    print(f"building crit {version} for {tag}")
     staged = _run_pyinstaller()
     binary = staged / _binary_name()
     if not args.skip_smoke:

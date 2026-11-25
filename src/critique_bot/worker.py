@@ -48,7 +48,7 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
     beater = threading.Thread(
         target=_heartbeat_loop,
         args=(queue, stop),
-        name="critique-bot-heartbeat",
+        name="crit-heartbeat",
         daemon=True,
     )
     beater.start()
@@ -66,7 +66,7 @@ def run_worker(config: BotConfig, *, headed: bool) -> int:
         )
     )
     print(
-        f"critique-bot worker ready (queue {queue.root}, "
+        f"crit worker ready (queue {queue.root}, "
         f"{config.max_parallel_tabs} job(s)). Ctrl-C to stop.",
         flush=True,
     )

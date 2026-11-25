@@ -7,7 +7,7 @@ them, for scripts, CI, and IT rollout as much as for people:
     crit config --url https://ai.company.com/ --redact "Acme, Globex"
     crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
 
-With a config file (``config_file``, ``CRITIQUE_CONFIG_FILE``, or the system location), the
+With a config file (``config_file``, ``CRIT_CONFIG_FILE``, or the system location), the
 keys it sets are layered under the user's own (see ``config.merge_company``); the locked ones
 cannot be changed here.
 
@@ -28,18 +28,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from critique_bot import egress, redaction
+from critique_bot import egress, env_names, redaction
 from critique_bot.config import (
     COMPANY_CONFIG_KEY,
     USER_PREF_KEYS,
     BACKEND_BROWSER,
     BACKEND_LOCAL,
     DEFAULT_LOCAL_URL,
+    ENV_LOCAL_KEY,
     ENV_CONFIG,
     PLACEHOLDER_MODEL,
     SELECTOR_KEYS,
     STARTER_SELECTORS,
     ConfigError,
+    _api_key_in,
     _host_list,
     _local_url,
     backend_kind,
@@ -53,6 +55,7 @@ from critique_bot.config import (
     merge_company,
     set_user_preferences,
     read_config_dict,
+    user_api_key,
     user_config_path,
     write_config_file,
 )
@@ -79,7 +82,7 @@ class ConfigLocation:
     """The config file a command uses, and why that one."""
 
     path: Path
-    #: "flag" (--config), "env" (CRITIQUE_CONFIG), "project" (.bot/settings.json),
+    #: "flag" (--config), "env" (CRIT_CONFIG), "project" (.crit/settings.json),
     #: "project-root" (config.json next to the code), or "user" (config.user_config_path()).
     source: str
 
@@ -99,7 +102,7 @@ class ConfigLocation:
 _SOURCE_WORDS = {
     "flag": "named with --config",
     "env": f"named by {ENV_CONFIG}",
-    "project": "stored for this project in .bot/settings.json",
+    "project": "stored for this project in .crit/settings.json",
     "project-root": "config.json in this project",
     "user": "your user settings",
 }
@@ -108,18 +111,18 @@ _SOURCE_WORDS = {
 def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path | None = None) -> ConfigLocation:
     """Which config file a command uses.
 
-    ``--config`` > ``CRITIQUE_CONFIG`` > the config stored for the project in
-    ``.bot/settings.json`` > an untracked ``config.json`` in the project root > the user
+    ``--config`` > ``CRIT_CONFIG`` > the config stored for the project in
+    ``.crit/settings.json`` > an untracked ``config.json`` in the project root > the user
     config (``config.user_config_path()``). The first two count even when the file is
     missing (the caller reports it or writes it); the project's only when the file exists;
     the user config may not exist yet (first run).
     """
     if explicit:
         return ConfigLocation(Path(explicit).expanduser(), "flag")
-    from_env = os.environ.get(ENV_CONFIG, "").strip()
+    from_env = (env_names.get(ENV_CONFIG) or "").strip()
     if from_env:
         return ConfigLocation(Path(from_env).expanduser(), "env")
-    from critique_bot.bot_home import BotHomeError, find_bot_home, git_tracks
+    from critique_bot.project_home import BotHomeError, find_bot_home, git_tracks
 
     start = Path(repo_dir or ".").resolve()
     home = find_bot_home(start)
@@ -182,6 +185,8 @@ def describe(location: ConfigLocation) -> list[str]:
     if backend == BACKEND_LOCAL:
         lines.append("Model runs in: a model server (backend local)" + mark("backend"))
         lines.append(f"Server address: {url or DEFAULT_LOCAL_URL}" + mark("url"))
+        has_key = bool(os.environ.get(ENV_LOCAL_KEY, "").strip() or user_api_key() or _api_key_in(own))
+        lines.append(f"API key: {'set' if has_key else 'not set'}")
     else:
         lines.append("Model runs in: a web page in the browser (backend browser)" + mark("backend"))
         lines.append(f"url: {url or 'not set (crit config --url https://ai.company.com/)'}" + mark("url"))
@@ -223,12 +228,66 @@ def describe(location: ConfigLocation) -> list[str]:
 # --------------------------------------------------------------------------- changing
 
 
+#: ``--api-key`` given without a value: ask for it without echo.
+_ASK_KEY = "\0ask"
+
+
+def _read_api_key(value: str) -> str | None:
+    """The key ``--api-key`` names: asked (getpass), read from stdin (``-``), or given. None: removed."""
+    if value == _ASK_KEY:
+        import getpass
+
+        return getpass.getpass("API key: ").strip()
+    if value == "-":
+        return sys.stdin.readline().strip()
+    if value.strip().lower() == "none":
+        return None
+    return value.strip()
+
+
+def set_api_key(value: str) -> int:
+    """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it."""
+    try:
+        key = _read_api_key(value)
+    except (EOFError, KeyboardInterrupt):
+        print("Not saved.", file=sys.stderr)
+        return 1
+    path = user_config_path()
+    try:
+        data = read_config_dict(path) if path.is_file() else {}
+    except ConfigError as exc:
+        print(f"Not saved: {exc}", file=sys.stderr)
+        return 2
+    local = data.get("local") if isinstance(data.get("local"), dict) else {}
+    if key is None:
+        local.pop("api_key", None)
+        what = "API key removed"
+    elif not key:
+        print("Not saved: the API key is empty (none removes it).", file=sys.stderr)
+        return 2
+    else:
+        local["api_key"] = key
+        redaction.add_secret_value(key)
+        what = "API key set"
+    if local:
+        data["local"] = local
+    else:
+        data.pop("local", None)
+    try:
+        write_config_file(path, data)
+    except OSError as exc:
+        print(f"Not saved: could not write {path}: {exc}", file=sys.stderr)
+        return 1
+    print(f"Saved {path}: {what}.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crit config",
         description=(
             "See crit's settings (no flags), or change them. Each change is checked before it is "
-            "saved. Without --config the file is the one crit uses here: CRITIQUE_CONFIG, the "
+            "saved. Without --config the file is the one crit uses here: CRIT_CONFIG, the "
             f"project's own, or your user settings ({user_config_path()})."
         ),
         epilog=(
@@ -237,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit config --url https://ai.company.com/ --redact \"Acme, Globex\"\n"
             "  crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b\n"
             "  crit config --selector prompt_input=textarea --selector send_button=\n"
+            "  crit config --api-key            (asks for the model server's key)\n"
             "  crit config --check\n"
             "  crit config --allow-host static.company-cdn.net\n"
             "  crit config --gitlab-url https://gitlab.company.com"
@@ -251,6 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend", choices=(BACKEND_BROWSER, BACKEND_LOCAL), help="browser: a web page; local: a model server")
     parser.add_argument("--local-url", help=f"the model server's address, ip:port or http://host:port (default {DEFAULT_LOCAL_URL})")
     parser.add_argument("--model", help="the model's name (empty: the default)")
+    parser.add_argument(
+        "--api-key", nargs="?", const=_ASK_KEY, metavar="KEY",
+        help="the model server's API key, kept in your user settings: no value asks for it (nothing is shown), "
+        "- reads it from stdin, none removes it. CRIT_API_KEY overrides it",
+    )
     parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the page may reach (repeatable)")
     parser.add_argument("--remove-host", action="append", default=[], metavar="HOST", help="stop allowing a site (repeatable)")
     parser.add_argument("--redact", action="append", default=[], metavar="NAME", help="names to hide, comma-separated or repeated")
@@ -276,7 +341,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
         for value in (
             args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
-            args.config_file, args.page_network, args.theme,
+            args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
         )
     )
 
@@ -498,7 +563,8 @@ def check(location: ConfigLocation, *, probe_server: Callable | None = None, pro
         return 1
     probe = (probe_server or local_model.probe_server) if config.is_local else (probe_site or local_model.probe_site)
     print(f"Checking {config.url} ...")
-    result = probe(config.url)
+    key = config.local.api_key if config.is_local else ""
+    result = probe(config.url, key) if key else probe(config.url)
     print(result.line)
     return 0 if result.reachable else 1
 
@@ -556,6 +622,11 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
             print(f"Problem: {exc}", file=sys.stderr)
             return 1
         return 0
+    if args.api_key is not None:
+        code = set_api_key(args.api_key)
+        args.api_key = None
+        if code or not _changes_requested(args):
+            return code
     if args.theme is not None:
         from critique_bot.welcome import THEMES
 

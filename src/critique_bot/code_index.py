@@ -1,4 +1,4 @@
-"""Code catalog under ``.bot/cache/index.sqlite``.
+"""Code catalog under ``.crit/cache/index.sqlite``.
 
 Stdlib only by default. ``tree_sitter`` plus a language wheel is used when it
 is importable, otherwise a regex pass per language. The catalog holds:
@@ -31,6 +31,7 @@ SCHEMA_VERSION = "2"
 SKIP_DIR_NAMES = frozenset(
     {
         ".git",
+        ".crit",
         ".bot",
         "node_modules",
         "venv",

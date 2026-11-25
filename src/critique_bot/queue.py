@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import log
+from critique_bot import env_names, log
 from critique_bot.output import private_dir, isoformat
 
 HEARTBEAT_NAME = "worker.heartbeat"
@@ -33,10 +33,10 @@ DEFAULT_RESULT_RETENTION = 200
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
-#: Set to 1 on the worker (see packaging/critique-bot-worker.service) when the worker
+#: Set to 1 on the worker (see packaging/crit-worker.service) when the worker
 #: runs as its own user and CI jobs reach the queue through a shared group. A queue
 #: folder created with the setgid bit is treated the same way.
-ENV_QUEUE_SHARED = "CRITIQUE_QUEUE_SHARED"
+ENV_QUEUE_SHARED = "CRIT_QUEUE_SHARED"
 #: Shared-group modes (POSIX). CI may write job files into inbox/ and read results/;
 #: processing/ and failure snapshots stay with the worker user only.
 SHARED_DIR_MODES = {
@@ -52,7 +52,7 @@ SHARED_FILE_MODE = 0o640
 def _shared_requested(root: Path) -> bool:
     if os.name == "nt":
         return False
-    if os.environ.get(ENV_QUEUE_SHARED, "").strip().lower() in {"1", "true", "yes", "on"}:
+    if (env_names.get(ENV_QUEUE_SHARED) or "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
     try:
         return bool(root.stat().st_mode & stat.S_ISGID)
@@ -164,7 +164,7 @@ class WorkerLock:
             self._fh.close()
             self._fh = None
             raise QueueError(
-                "another critique-bot worker is already running for this queue"
+                "another crit worker is already running for this queue"
             ) from exc
 
     def close(self) -> None:
@@ -600,9 +600,9 @@ class FileQueue:
                 if status is not None:
                     return status
                 raise QueueError(
-                    "critique-bot worker is not running "
+                    "crit worker is not running "
                     f"({self.worker_hint()}). On the runner start: "
-                    "critique-bot worker --config CONFIG --logs"
+                    "crit worker --config CONFIG --logs"
                 )
             time.sleep(poll_sec)
         raise QueueError(

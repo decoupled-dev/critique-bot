@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "critique-bot"
-version = "1.0.4"
-description = "Patch review bot that drives a web chat UI in Microsoft Edge."
+version = "1.0.5"
+description = "crit: coding agent and code reviewer that drives a web chat UI in Microsoft Edge or a local model."
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
@@ -18,8 +18,9 @@ classifiers = [
 ]
 
 [project.scripts]
-critique-bot = "critique_bot.cli:main"
 crit = "critique_bot.agent_cli:main"
+# Hidden compatibility names for pip installs of 1.0.4 and earlier (not documented).
+critique-bot = "critique_bot.cli:main"
 bot-agent = "critique_bot.agent_cli:main"
 
 [project.optional-dependencies]

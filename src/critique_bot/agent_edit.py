@@ -167,7 +167,7 @@ def atomic_write_bytes(target: Path, payload: bytes) -> None:
         target = Path(os.path.realpath(target))
     target.parent.mkdir(parents=True, exist_ok=True)
     existed = target.exists()
-    handle, temp_name = tempfile.mkstemp(prefix=".bot-", suffix=".tmp", dir=str(target.parent))
+    handle, temp_name = tempfile.mkstemp(prefix=".crit-", suffix=".tmp", dir=str(target.parent))
     try:
         with os.fdopen(handle, "wb") as temp:
             temp.write(payload)
@@ -622,7 +622,7 @@ def _task_stamp(root: Path) -> str:
 
 
 class Checkpoints:
-    """Pre-edit copies under ``.bot/cache/undo/<task>/``, newest task last.
+    """Pre-edit copies under ``.crit/cache/undo/<task>/``, newest task last.
 
     Each step folder holds ``path.txt`` (workspace-relative, or absolute for a
     file outside the workspace that the user approved), ``before`` (absent

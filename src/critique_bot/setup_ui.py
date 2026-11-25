@@ -1,7 +1,7 @@
 """Local setup UI: pick selectors by clicking, then test a live round trip.
 
 Serves a small page on 127.0.0.1 using only the standard library. The hard part
-of setting this bot up is discovering the CSS selectors for someone else's chat
+of setting crit up is discovering the CSS selectors for someone else's chat
 UI, so the page drives a real Edge window and lets you click the prompt box,
 the send button, and a reply instead of hand-writing selectors.
 """
@@ -140,7 +140,7 @@ _PICKER_JS = r"""
     'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #2f81f7;' +
     'background:rgba(47,129,247,.14);border-radius:4px;';
   const banner = document.createElement('div');
-  banner.textContent = 'critique-bot: click the ' + payload.label + '   (Esc to cancel)';
+  banner.textContent = 'crit: click the ' + payload.label + '   (Esc to cancel)';
   banner.style.cssText =
     'position:fixed;z-index:2147483647;pointer-events:none;left:50%;top:16px;' +
     'transform:translateX(-50%);background:#1f6feb;color:#fff;padding:10px 16px;' +
@@ -456,7 +456,7 @@ def make_handler(state: SetupState, token: str) -> type[BaseHTTPRequestHandler]:
         raise ValueError("the setup UI needs a token")
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "critique-bot-setup"
+        server_version = "crit-setup"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             log.debug("setup ui " + (fmt % args))
@@ -746,7 +746,7 @@ def run_setup(
         log.notice(f"Problem: the setup page could not open on {BIND_HOST}:{port} ({exc}). Close the program using that port, or try again.")
         return 1
     url = f"http://{BIND_HOST}:{server.server_port}/?t={token}"
-    print(f"critique-bot setup UI: {url}   (Ctrl-C to stop)", flush=True)
+    print(f"crit setup UI: {url}   (Ctrl-C to stop)", flush=True)
     if open_page:
         try:
             webbrowser.open(url)
@@ -768,7 +768,7 @@ PAGE_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>critique-bot setup</title>
+<title>crit setup</title>
 <style>
   :root {
     color-scheme: dark;
@@ -842,7 +842,7 @@ PAGE_HTML = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>critique-bot setup</h1>
+  <h1>crit setup</h1>
   <code id="configPath"></code>
   <span class="pill" id="browserPill">browser closed</span>
 </header>

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from critique_bot.bot_home import (
+from critique_bot.project_home import (
     check_command_from_notes,
     find_bot_home,
     init_bot_home,
@@ -20,16 +20,16 @@ class BotHomeTests(unittest.TestCase):
             (root / "config.json").write_text("{}", encoding="utf-8")
             (root / ".gitignore").write_text("venv/\n", encoding="utf-8")
             home = init_bot_home(root)
-            self.assertTrue((root / ".bot" / "settings.json").is_file())
-            self.assertTrue((root / ".bot" / "cache").is_dir())
-            self.assertTrue((root / ".bot" / "sessions").is_dir())
-            self.assertIn("cache/", (root / ".bot" / ".gitignore").read_text(encoding="utf-8"))
+            self.assertTrue((root / ".crit" / "settings.json").is_file())
+            self.assertTrue((root / ".crit" / "cache").is_dir())
+            self.assertTrue((root / ".crit" / "sessions").is_dir())
+            self.assertIn("cache/", (root / ".crit" / ".gitignore").read_text(encoding="utf-8"))
             settings = json.loads(home.settings_path.read_text(encoding="utf-8"))
             self.assertEqual(settings["config"], "config.json")
             self.assertNotIn("max_rounds", settings)
             ignore = (root / ".gitignore").read_text(encoding="utf-8")
-            self.assertIn(".bot/cache/", ignore)
-            self.assertIn(".bot/sessions/", ignore)
+            self.assertIn(".crit/cache/", ignore)
+            self.assertIn(".crit/sessions/", ignore)
             self.assertTrue(home.index_path.is_file())
             self.assertTrue(home.notes_path.is_file())
             self.assertEqual(home.project_notes(), "")
@@ -45,7 +45,7 @@ class BotHomeTests(unittest.TestCase):
             root = Path(tmp)
             (root / ".gitignore").write_text("venv/\n", encoding="utf-8")
             init_bot_home(root)
-            settings_path = root / ".bot" / "settings.json"
+            settings_path = root / ".crit" / "settings.json"
             settings_path.write_text(
                 json.dumps({"max_rounds": 7}) + "\n",
                 encoding="utf-8",
@@ -54,7 +54,7 @@ class BotHomeTests(unittest.TestCase):
             kept = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(kept["max_rounds"], 7)
             ignore = (root / ".gitignore").read_text(encoding="utf-8")
-            self.assertEqual(ignore.count(".bot/cache/"), 1)
+            self.assertEqual(ignore.count(".crit/cache/"), 1)
 
     def test_find_walks_upward(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,7 +84,7 @@ class BotHomeHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             init_bot_home(root)
-            ignore = root / ".bot" / ".gitignore"
+            ignore = root / ".crit" / ".gitignore"
             ignore.write_text("cache/\nsessions/\nmine/\n", encoding="utf-8")
             init_bot_home(root)
             self.assertIn("mine/", ignore.read_text(encoding="utf-8"))
@@ -97,7 +97,7 @@ class BotHomeHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             init_bot_home(root)
-            for rel in (".bot/sessions", ".bot/cache", ".bot/cache/undo"):
+            for rel in (".crit/sessions", ".crit/cache", ".crit/cache/undo"):
                 mode = stat.S_IMODE(os.stat(root / rel).st_mode)
                 self.assertEqual(mode, 0o700, rel)
 
@@ -109,11 +109,11 @@ class BotHomeHardeningTests(unittest.TestCase):
             init_bot_home(root)
             data = (root / ".gitignore").read_bytes()
             self.assertTrue(data.startswith(original))
-            self.assertIn(b".bot/cache/\r\n", data)
+            self.assertIn(b".crit/cache/\r\n", data)
             self.assertNotIn(b"\n.bot", data.replace(b"\r\n", b""))
 
     def test_update_settings_is_atomic_and_merges(self) -> None:
-        from critique_bot.bot_home import update_settings
+        from critique_bot.project_home import update_settings
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -149,7 +149,7 @@ class GitTracksTests(unittest.TestCase):
         return repo
 
     def test_subfolder_of_a_repository_is_checked(self) -> None:
-        from critique_bot.bot_home import git_tracks
+        from critique_bot.project_home import git_tracks
 
         repo = self._repo()
         workspace = repo / "sub"
@@ -159,7 +159,7 @@ class GitTracksTests(unittest.TestCase):
     def test_outside_any_repository_is_untracked(self) -> None:
         from unittest.mock import patch
 
-        from critique_bot.bot_home import git_tracks
+        from critique_bot.project_home import git_tracks
 
         if self.git is None:
             self.skipTest("git is not installed")
@@ -170,20 +170,20 @@ class GitTracksTests(unittest.TestCase):
     def test_fails_closed_without_git_or_on_timeout(self) -> None:
         from unittest.mock import patch
 
-        from critique_bot import bot_home
+        from critique_bot import project_home
 
         target = self.root / "c.json"
-        with patch.object(bot_home.shutil, "which", return_value=None):
-            self.assertTrue(bot_home.git_tracks(self.root, target))
-        with patch.object(bot_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
-            bot_home.subprocess, "run", side_effect=self.subprocess.TimeoutExpired("git", 10)
+        with patch.object(project_home.shutil, "which", return_value=None):
+            self.assertTrue(project_home.git_tracks(self.root, target))
+        with patch.object(project_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
+            project_home.subprocess, "run", side_effect=self.subprocess.TimeoutExpired("git", 10)
         ):
-            self.assertTrue(bot_home.git_tracks(self.root, target))
+            self.assertTrue(project_home.git_tracks(self.root, target))
         failed = self.subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership")
-        with patch.object(bot_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
-            bot_home.subprocess, "run", return_value=failed
+        with patch.object(project_home.shutil, "which", return_value="/usr/bin/git"), patch.object(
+            project_home.subprocess, "run", return_value=failed
         ):
-            self.assertTrue(bot_home.git_tracks(self.root, target))
+            self.assertTrue(project_home.git_tracks(self.root, target))
 
 
 class PrivateBotDirTests(unittest.TestCase):
@@ -191,11 +191,11 @@ class PrivateBotDirTests(unittest.TestCase):
     def test_existing_folders_are_narrowed_when_found(self) -> None:
         import os
 
-        from critique_bot.bot_home import ensure_private_dir
+        from critique_bot.project_home import ensure_private_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bot = root / ".bot"
+            bot = root / ".crit"
             for folder in (bot, bot / "sessions", bot / "cache"):
                 folder.mkdir(parents=True, exist_ok=True)
                 os.chmod(folder, 0o755)

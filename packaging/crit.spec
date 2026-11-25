@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for critique-bot (Windows and Linux).
+"""PyInstaller spec for crit (Windows and Linux).
 
 Build from the repo root:
 
-    python -m PyInstaller packaging/critique-bot.spec --noconfirm --clean
+    python -m PyInstaller packaging/crit.spec --noconfirm --clean
 """
 
 import sys
@@ -87,7 +87,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="critique-bot",
+    name="crit",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -107,5 +107,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="critique-bot",
+    name="crit",
 )

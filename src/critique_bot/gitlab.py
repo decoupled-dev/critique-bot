@@ -11,15 +11,15 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from critique_bot import egress, log
+from critique_bot import egress, env_names, log
 from critique_bot.review_comments import parse_diff_lines
 
-TOKEN_ENV = ("CRITIQUE_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN")
-ENV_GITLAB_URL = "CRITIQUE_GITLAB_URL"
+TOKEN_ENV = ("CRIT_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN")
+ENV_GITLAB_URL = "CRIT_GITLAB_URL"
 #: GitLab calls ignore http(s)_proxy by default, so a proxy set for other
 #: traffic never sees the PRIVATE-TOKEN. Set this to a proxy URL to send GitLab
 #: calls through it, or to ``env`` to use the usual proxy variables.
-ENV_GITLAB_PROXY = "CRITIQUE_GITLAB_PROXY"
+ENV_GITLAB_PROXY = "CRIT_GITLAB_PROXY"
 REQUEST_TIMEOUT_SECONDS = 60
 
 _MR_URL_RE = re.compile(
@@ -101,12 +101,12 @@ def parse_mr_url(url: str) -> tuple[str, str, str] | None:
 
 def resolve_token() -> str:
     for name in TOKEN_ENV:
-        value = os.environ.get(name, "").strip()
+        value = (env_names.get(name) or "").strip()
         if value:
             if name == "CI_JOB_TOKEN":
                 log.warn(
                     "CI_JOB_TOKEN cannot create MR notes; "
-                    "set CRITIQUE_GITLAB_TOKEN to a project access token (scope api)"
+                    "set CRIT_GITLAB_TOKEN to a project access token (scope api)"
                 )
             return value
     return ""
@@ -123,7 +123,7 @@ def resolve_target(
 ) -> GitLabTarget:
     """Resolve API URL, project, and MR IID from CLI, CI, or an MR URL.
 
-    ``gitlab.base_url`` in config (or ``CRITIQUE_GITLAB_URL``) is the instance.
+    ``gitlab.base_url`` in config (or ``CRIT_GITLAB_URL``) is the instance.
     Project ID and MR IID are always taken from the current job: CLI flags,
     ``CI_PROJECT_ID`` / ``CI_MERGE_REQUEST_IID``, or ``--mr-url`` /
     ``CI_MERGE_REQUEST_URL``.
@@ -145,7 +145,7 @@ def resolve_target(
         _s(api_url)
         or _s(os.environ.get("CI_API_V4_URL"))
         or api_v4_url(
-            _s(os.environ.get(ENV_GITLAB_URL))
+            _s(env_names.get(ENV_GITLAB_URL))
             or cfg_base
             or _s(os.environ.get("CI_SERVER_URL"))
         )
@@ -154,7 +154,7 @@ def resolve_target(
         if not resolved_api:
             raise GitLabError(
                 f"refusing to trust the host of the merge-request URL ({_host(parsed_base)}): "
-                "set gitlab.base_url in config.json (or CRITIQUE_GITLAB_URL / --api-url) "
+                "set gitlab.base_url in config.json (or CRIT_GITLAB_URL / --api-url) "
                 "to your GitLab instance first"
             )
         if _host(parsed_base) != _host(resolved_api):
@@ -267,8 +267,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _proxy_handler() -> urllib.request.ProxyHandler:
-    """No proxy unless CRITIQUE_GITLAB_PROXY opts in (a URL, or ``env``)."""
-    choice = os.environ.get(ENV_GITLAB_PROXY, "").strip()
+    """No proxy unless CRIT_GITLAB_PROXY opts in (a URL, or ``env``)."""
+    choice = (env_names.get(ENV_GITLAB_PROXY) or "").strip()
     if not choice:
         return urllib.request.ProxyHandler({})
     if choice.lower() == "env":
@@ -547,7 +547,7 @@ def fetch_mr_context(
     if not target.token:
         raise GitLabError(
             "no GitLab token. Create a project access token with scope `api` "
-            "and set CI/CD variable CRITIQUE_GITLAB_TOKEN (unprotected, masked)"
+            "and set CI/CD variable CRIT_GITLAB_TOKEN (unprotected, masked)"
         )
     root = target.mr_api_url
     data = do_request("GET", root, target.token)

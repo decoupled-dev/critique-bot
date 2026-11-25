@@ -661,7 +661,7 @@ class ToolTests(unittest.TestCase):
     def test_skill_lists_and_loads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            skill = root / ".bot" / "skills" / "release" / "SKILL.md"
+            skill = root / ".crit" / "skills" / "release" / "SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text("---\ndescription: Cut a release\n---\nTag the commit.\n", encoding="utf-8")
             listed = execute_tool("skill", {}, workspace=root)
@@ -922,7 +922,7 @@ class LoopTests(unittest.TestCase):
 
     def test_identical_write_is_not_a_change_on_disk(self) -> None:
         root = Path(tempfile.mkdtemp())
-        cache = root / ".bot" / "cache"
+        cache = root / ".crit" / "cache"
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         session = _Scripted(
             [
@@ -941,7 +941,7 @@ class LoopTests(unittest.TestCase):
         from critique_bot.agent_edit import Checkpoints
 
         root = Path(tempfile.mkdtemp())
-        cache = root / ".bot" / "cache"
+        cache = root / ".crit" / "cache"
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED"])
         _loop(session, root, "change note.txt", cache_dir=cache)
@@ -974,7 +974,7 @@ class LoopTests(unittest.TestCase):
         from critique_bot.agent_edit import undo_last
 
         root = Path(tempfile.mkdtemp())
-        cache = root / ".bot" / "cache"
+        cache = root / ".crit" / "cache"
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         session = _Scripted([_edit("note.txt", "one", "two"), _call("write_files", path="new.txt", contents="n\n"), "COMPLETED"])
         _loop(session, root, "change note.txt", cache_dir=cache)
@@ -986,7 +986,7 @@ class LoopTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
-    """Shapes taken from real chat sessions in .bot/sessions."""
+    """Shapes taken from real chat sessions in .crit/sessions."""
 
     def test_backtick_markdown_edit_lands_first_time(self) -> None:
         root = Path(tempfile.mkdtemp())

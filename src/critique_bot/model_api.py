@@ -167,11 +167,11 @@ def list_models(config: BotConfig) -> list[str]:
     return LocalModelClient(config).list_models()
 
 
-def probe_server(url: str) -> Any:
+def probe_server(url: str, api_key: str | None = None) -> Any:
     """Whether a model server answers at ``url`` and which models it lists (see local_model.Probe)."""
     from critique_bot.local_model import probe_server as probe
 
-    return probe(url)
+    return probe(url, api_key)
 
 
 def probe_site(url: str) -> Any:
@@ -194,6 +194,8 @@ def context_tokens(config: BotConfig) -> int | None:
     """The context window in tokens when the backend has a known one (a local model), else None."""
     if not config.is_local:
         return None
-    from critique_bot.local_model import DEFAULT_NUM_CTX
+    from critique_bot.local_model import DEFAULT_NUM_CTX, server_context_window
 
-    return config.local.num_ctx or DEFAULT_NUM_CTX
+    if config.local.num_ctx:
+        return config.local.num_ctx
+    return server_context_window(config.url, config.model, config.local.api_key) or DEFAULT_NUM_CTX

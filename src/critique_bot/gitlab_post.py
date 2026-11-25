@@ -61,7 +61,7 @@ def post_review(
     if not resolved_token:
         raise GitLabPostError(
             "no GitLab token. Create a project access token with scope `api` "
-            "and set CI/CD variable CRITIQUE_GITLAB_TOKEN (protected, masked)"
+            "and set CI/CD variable CRIT_GITLAB_TOKEN (protected, masked)"
         )
     project_id = target.project_id
     mr_iid = target.mr_iid

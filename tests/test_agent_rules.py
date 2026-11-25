@@ -1,4 +1,4 @@
-"""Saved permission rules: "allow" and "deny" in .bot/settings.json."""
+"""Saved permission rules: "allow" and "deny" in .crit/settings.json."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot import agent, agent_tools, bot_home
+from critique_bot import agent, agent_tools, project_home
 from critique_bot.agent_rules import (
     Rules,
     allowed_by,
@@ -112,8 +112,8 @@ class ApprovalTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        (self.root / ".bot").mkdir()
-        (self.root / ".bot" / "settings.json").write_text("{}", encoding="utf-8")
+        (self.root / ".crit").mkdir()
+        (self.root / ".crit" / "settings.json").write_text("{}", encoding="utf-8")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -178,15 +178,15 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(perm.rule, "./gradlew lint*")
         (ok, _), _ = self._decide(run, perm, answer=("always", ""))
         self.assertTrue(ok)
-        saved = json.loads((self.root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+        saved = json.loads((self.root / ".crit" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["allow"], ["./gradlew lint*"])
         # This session already knows it, and the next one loads it.
         (ok, _), asked = self._decide(run, self._perm(run, "run_command", command="./gradlew lint"))
         self.assertTrue(ok)
         self.assertEqual(asked, [])
-        home = bot_home.find_bot_home(self.root)
-        bot_home.add_allow_rule(home, "./gradlew lint*")
-        saved = json.loads((self.root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+        home = project_home.find_bot_home(self.root)
+        project_home.add_allow_rule(home, "./gradlew lint*")
+        saved = json.loads((self.root / ".crit" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["allow"], ["./gradlew lint*"])
 
 

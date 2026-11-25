@@ -104,25 +104,29 @@ jobs:
               python scripts/build_deb.py
             '
           sudo chown -R "$(id -u):$(id -g)" dist build
-          dpkg-deb --info dist/critique-bot_*.deb
-          dpkg-deb --contents dist/critique-bot_*.deb | head -20
+          dpkg-deb --info dist/crit_*.deb
+          dpkg-deb --contents dist/crit_*.deb | head -20
 
       - name: Test the .deb installs and runs
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y ./dist/critique-bot_*.deb
-          critique-bot --help > /dev/null
+          sudo apt-get install -y ./dist/crit_*.deb
           crit --help > /dev/null
-          systemctl cat critique-bot-worker.service | grep -q /etc/critique-bot/config.json
-          getent passwd critique-bot
+          crit review --help > /dev/null
+          test ! -e /usr/bin/critique-bot
+          systemctl cat crit-worker.service | grep -q /etc/crit/config.json
+          getent passwd crit
+          dpkg -s crit | grep -q "Status: install ok installed"
+          # crit uninstall removes the user's files without a question and names the apt command.
+          crit uninstall </dev/null | grep -qx "Run: sudo apt purge crit"
 
       - name: Test the .deb on Ubuntu 20.04 (oldest supported)
         if: runner.os == 'Linux'
         run: |
           docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:20.04 bash -euc '
             export DEBIAN_FRONTEND=noninteractive
-            apt-get install -y --no-install-recommends /dist/critique-bot_*.deb
-            dpkg -s critique-bot | grep -q "Status: install ok installed"
+            apt-get install -y --no-install-recommends /dist/crit_*.deb
+            dpkg -s crit | grep -q "Status: install ok installed"
             useradd -m dev && su dev -c "crit --help >/dev/null && crit config >/dev/null"
           '
 
@@ -132,19 +136,19 @@ jobs:
         run: |
           docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:22.04 bash -euc '
             export DEBIAN_FRONTEND=noninteractive
-            apt-get install -y --no-install-recommends /dist/critique-bot_*.deb
-            dpkg -s critique-bot | grep -q "Status: install ok installed"
-            test -f /etc/critique-bot/config.json
+            apt-get install -y --no-install-recommends /dist/crit_*.deb
+            dpkg -s crit | grep -q "Status: install ok installed"
+            test -f /etc/crit/config.json
             useradd -m dev && su dev -c "crit --help >/dev/null && crit config >/dev/null"
           '
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: critique-bot-${{ matrix.tag }}
+          name: crit-${{ matrix.tag }}
           path: |
-            dist/critique-bot-*.zip
-            dist/critique-bot_*.deb
+            dist/crit-*.zip
+            dist/crit_*.deb
           if-no-files-found: error
 
   wheel:
@@ -167,7 +171,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: critique-bot-python
+          name: crit-python
           path: dist/*
           if-no-files-found: error
 
@@ -199,12 +203,12 @@ jobs:
           cat SHA256SUMS.txt
       - name: Build provenance
         # Lets anyone check a download came from this workflow:
-        #   gh attestation verify critique-bot-<version>-linux-x64.zip --repo <owner>/critique-bot
+        #   gh attestation verify crit-<version>-linux-x64.zip --repo decoupled-dev/critique-bot
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
-            artifacts/**/*.zip
-            artifacts/**/*.deb
+            artifacts/**/crit-*.zip
+            artifacts/**/crit_*.deb
             artifacts/**/install.ps1
             artifacts/**/install.sh
             artifacts/**/*.whl

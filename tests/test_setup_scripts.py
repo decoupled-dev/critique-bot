@@ -158,9 +158,7 @@ class SetupCritShTests(unittest.TestCase):
         self.assertIn("PONG", proc.stdout)
 
         expected = {
-            "crit": f"CRITIQUE_CONFIG='{self.config}'; export CRITIQUE_CONFIG; exec '{VENV}/bin/crit' \"$@\"",
-            "bot-agent": f"CRITIQUE_CONFIG='{self.config}'; export CRITIQUE_CONFIG; exec '{VENV}/bin/bot-agent' \"$@\"",
-            "critique-bot": f"exec '{VENV}/bin/critique-bot' \"$@\"",
+            "crit": f"CRIT_CONFIG='{self.config}'; export CRIT_CONFIG; exec '{VENV}/bin/crit' \"$@\"",
         }
         for name, line in expected.items():
             wrapper = self.bin_dir / name
@@ -383,7 +381,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         script = str(PS_SCRIPT).replace("'", "''")
         proc = self._pwsh(f"$h = Get-Help '{script}' -Full; $h.Synopsis; $h.parameters.parameter.name")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("critique-bot", proc.stdout)
+        self.assertIn("Install crit", proc.stdout)
         for name in (
             "Venv", "Config", "BinDir", "Proxy", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPassword",
             "CaFile", "WithIndex", "NoPath", "SkipBrowserCheck",
@@ -413,7 +411,7 @@ class SetupCritPs1Tests(unittest.TestCase):
         self.assertEqual(
             lines["WRAP"],
             '@echo off|rem critique-bot: written by scripts\\setup-crit.ps1|'
-            'setlocal|set "CRITIQUE_CONFIG=C:\\a b\\config.json"|"C:\\a b\\.venv\\Scripts\\crit.exe" %*|',
+            'setlocal|set "CRIT_CONFIG=C:\\a b\\config.json"|"C:\\a b\\.venv\\Scripts\\crit.exe" %*|',
         )
         self.assertEqual(
             lines["PLAIN"],

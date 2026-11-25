@@ -32,7 +32,7 @@ class BrowserError(BackendError):
     """Edge could not be launched or the page could not be created."""
 
 
-# Used only for the isolated bot profile (not the desktop system profile).
+# Used only for crit's isolated profile (not the desktop system profile).
 # No sandbox flags here: Edge and Chrome show "You are using an unsupported
 # command-line flag" for them, and Windows and macOS never need them. See
 # sandbox_disabled() for the Linux cases that do.
@@ -341,7 +341,7 @@ def sandbox_disabled() -> bool:
     if is_root:
         raise BrowserError(
             "refusing to run the browser as root: Chromium would need --no-sandbox. "
-            "Run crit as a normal user (the worker service has User=critique-bot), "
+            "Run crit as a normal user (the worker service has User=crit), "
             "or set CRIT_NO_SANDBOX=1 to accept an unsandboxed browser."
         )
     in_container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
@@ -450,7 +450,7 @@ def _helpful_edge_error(exc: BaseException) -> BrowserError:
         return BrowserError(
             "Microsoft Edge profile is already in use by another Edge window. "
             "Close that Edge, or start Edge with --remote-debugging-port=9222 "
-            "and set cdp_url (or CRITIQUE_CDP_URL) so the bot attaches to the "
+            "and set cdp_url (or CRIT_CDP_URL) so crit attaches to the "
             "signed-in instance instead of launching a new one. Original error: "
             f"{exc}"
         )
@@ -1064,15 +1064,15 @@ def _wait_for_cdp(
             f"Edge refused remote debugging at {cdp_url} (HTTP 403). "
             "Chromium 136+ blocks CDP on the daily desktop profile "
             r"(Windows: %LOCALAPPDATA%\Microsoft\Edge\User Data). "
-            "The bot must use a non-default --user-data-dir; close everyday "
+            "crit must use a non-default --user-data-dir; close everyday "
             "Edge if it reused that window, then retry with --headed and log "
-            f"in on the bot profile.{profile} Last error: {last_error}.{exited}"
+            f"in on crit's profile.{profile} Last error: {last_error}.{exited}"
             + extra
         )
     raise BrowserError(
         f"Edge did not open remote debugging at {cdp_url}. "
         "Chromium 136+ ignores --remote-debugging-port on the daily desktop "
-        "profile; the bot must use a non-default --user-data-dir. "
+        "profile; crit must use a non-default --user-data-dir. "
         f"Last error: {last_error}.{exited}{profile}"
         + extra
     )
@@ -1143,7 +1143,7 @@ def _start_desktop_edge(
     )
     log.debug(f"Edge command: {cmd}")
     stderr_file = tempfile.NamedTemporaryFile(
-        prefix="critique-bot-edge-",
+        prefix="crit-edge-",
         suffix=".stderr",
         delete=False,
     )
@@ -1428,13 +1428,13 @@ def _report_resolver_block(host: str, *, navigation: bool) -> None:
         return
     log.info(f"strict egress: {host} is not resolvable for the browser")
     if navigation:
-        log.notice(
+        log.info(
             f"Blocked: the page sent the browser to {host} (often its sign-in page), which is not the url's site, "
             f"so the page cannot load. If {host} belongs to the service or its sign-in, allow it with: "
             f"crit config --allow-host {host}"
         )
     else:
-        log.notice(
+        log.info(
             f"Blocked: the page tried to contact {host}, which is not the url's site. Nothing was sent there. "
             f"If the page does not work and {host} belongs to it, allow it with: crit config --allow-host {host}"
         )
@@ -1494,7 +1494,7 @@ def _filter_chat_route(route, chat_url: str, *, lean: bool = False) -> None:
                 f"If the page stops working and {host} belongs to its service, allow it with: "
                 f"crit config --allow-host {host}"
             )
-        log.notice(
+        log.info(
             f"Blocked: the page tried to contact {host}, which is not the url's site. Nothing was sent there. "
             + follow_up
         )

@@ -1,6 +1,6 @@
 """Build an MR diff from the local Git checkout and load changed file bodies.
 
-``critique-bot submit`` runs inside the GitLab job, so the app repo is already
+``crit submit`` runs inside the GitLab job, so the app repo is already
 checked out at HEAD. This module uses local ``git`` (not the GitLab Files API).
 """
 

@@ -140,7 +140,7 @@ class EndpointTests(unittest.TestCase):
     def test_index_serves_the_page(self) -> None:
         status, body = self.server.get("/")
         self.assertEqual(status, 200)
-        self.assertIn(b"critique-bot setup", body)
+        self.assertIn(b"crit setup", body)
 
     def test_state_reports_config_and_browser(self) -> None:
         status, body = self.server.get("/api/state")

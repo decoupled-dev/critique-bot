@@ -189,14 +189,15 @@ class MigrationTests(_Home):
         self.assertEqual(self._migrate(), (False, []))
         self.assertEqual(json.loads(cfg.user_config_path().read_text()), {"backend": "local"})
 
-    def test_the_command_line_moves_them_with_one_line(self) -> None:
+    def test_the_command_line_moves_them_without_a_word(self) -> None:
         self._old()
         from critique_bot.cli import _migrate_legacy_files
 
         err = io.StringIO()
         with redirect_stderr(err):
             _migrate_legacy_files()
-        self.assertEqual(err.getvalue(), f"Moved crit's files to {self.crit}.\n")
+        self.assertEqual(err.getvalue(), "")
+        self.assertIn(f"Moved crit's files to {self.crit}.", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

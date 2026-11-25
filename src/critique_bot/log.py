@@ -8,6 +8,7 @@ import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, TextIO
 
 # Magenta, unused by status lines (yellow / cyan / green / red).
@@ -16,6 +17,17 @@ MODEL_COLOR = "35"
 _enabled = False
 _spinner_lock = threading.Lock()
 _active_spinner: _Spinner | None = None
+
+#: The log file, always written (``--logs`` only adds stderr): ``logs/crit.log`` in crit's folder.
+LOG_DIR_NAME = "logs"
+LOG_FILE_NAME = "crit.log"
+#: Rotate at about this size; keep this many files (crit.log, crit.log.1, crit.log.2).
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_KEEP_FILES = 3
+
+_file_lock = threading.RLock()
+_file_failed = ""
+_in_file_write = threading.local()
 
 
 def configure_stdio() -> None:
@@ -92,7 +104,109 @@ def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def log_file_path() -> Path:
+    """``~/.crit/logs/crit.log`` (in ``CRIT_HOME`` when that is set)."""
+    from critique_bot.config import crit_home
+
+    return crit_home() / LOG_DIR_NAME / LOG_FILE_NAME
+
+
+def log_file_hint() -> str:
+    """The log file for a message: ``~/.crit/logs/crit.log`` when it is under the home folder."""
+    path = log_file_path()
+    try:
+        home = Path(os.path.expanduser("~"))
+        rel = path.relative_to(home)
+        sep = "\\" if os.name == "nt" else "/"
+        return "~" + sep + str(rel).replace("/", sep)
+    except (ValueError, OSError):
+        return str(path)
+
+
+def details_hint() -> str:
+    """What a "crit stopped" line ends with: where the details are."""
+    return f"Details: {log_file_hint()}"
+
+
+def _redact(text: str) -> str:
+    try:
+        from critique_bot import redaction
+
+        return redaction.redact_outgoing(text, report=False)
+    except Exception:
+        return text
+
+
+def _rotate(path: Path) -> None:
+    """crit.log -> crit.log.1 -> crit.log.2 ...; the oldest beyond LOG_KEEP_FILES goes."""
+    for index in range(LOG_KEEP_FILES - 1, 0, -1):
+        older = path.with_name(f"{path.name}.{index}")
+        newer = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+        try:
+            if newer.exists():
+                os.replace(newer, older)
+        except OSError:
+            pass
+
+
+def _append(path: Path, line: str) -> None:
+    """Append one line; the file is opened and closed each time (other crit processes, Windows locks)."""
+    folder = path.parent
+    if not folder.is_dir():
+        folder.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            for each in (folder.parent, folder):
+                try:
+                    os.chmod(each, 0o700)
+                except OSError:
+                    pass
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    if size and size + len(line) > LOG_MAX_BYTES:
+        _rotate(path)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8", errors="replace") as handle:
+        handle.write(line)
+    if os.name != "nt" and not size:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def close_file() -> None:
+    """Stop writing the log file for the rest of this process (crit uninstall removes its folder)."""
+    global _file_failed
+    _file_failed = "*"
+
+
+def write_file(level: str, message: str) -> None:
+    """One line in the log file, redacted; never raises, never prints."""
+    global _file_failed
+    if getattr(_in_file_write, "active", False):
+        return  # a log line from inside redaction itself
+    _in_file_write.active = True
+    try:
+        path = log_file_path()
+        if _file_failed in ("*", str(path)):
+            return  # could not be written; not tried again on every line
+        text = _redact(str(message))
+        line = f"{_ts()} [{level:<5}] {text}\n"
+        with _file_lock:
+            try:
+                _append(path, line)
+            except OSError:
+                _file_failed = str(path)
+    except Exception:
+        pass
+    finally:
+        _in_file_write.active = False
+
+
 def _write(level: str, message: str) -> None:
+    write_file(level, message)
     if not _enabled:
         return
     line = f"{_ts()} [{level:<5}] {message}"
@@ -106,11 +220,13 @@ def _write(level: str, message: str) -> None:
 
 
 def notice(message: str) -> None:
-    """A plain-language message for the person at the terminal; always shown, never a log line.
+    """A plain line for the person at the terminal: always shown (and kept in the log file).
 
-    Use for anything crit blocked or refused, phrased as what happened and what to do
-    about it. Detailed diagnostics stay in debug/info/warn (shown only with --logs).
+    Only for what the person must see: a question's context, or the one line that says crit
+    cannot go on ("Problem: ...", "crit stopped: ..."). Everything else is :func:`info` /
+    :func:`warn`, which go to the log file (and to stderr with --logs).
     """
+    write_file("NOTE", message)
     with _spinner_lock:
         spinner = _active_spinner
         if spinner is not None:
@@ -138,6 +254,7 @@ def error(message: str) -> None:
 
 def exception(message: str) -> None:
     error(message)
+    write_file("ERROR", traceback.format_exc().rstrip())
     if not _enabled:
         return
     with _spinner_lock:

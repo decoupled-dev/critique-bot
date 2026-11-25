@@ -647,7 +647,7 @@ def _find_composer(page: Page, selectors: Selectors, timeout_ms: int) -> None:
                 _COMPOSER_FOUND[configured] = candidate
                 log.warn(
                     f"selectors.prompt_input ({configured}) found nothing; the composer matched {candidate!r}. "
-                    "Set that as prompt_input in config.json (or run critique-bot setup) to skip this wait."
+                    "Set that as prompt_input in config.json (or run crit setup) to skip this wait."
                 )
                 return
         except Exception:  # noqa: BLE001 - a candidate that errors is just not the one
@@ -2223,7 +2223,6 @@ def _warn_if_signed_out(page: Page) -> None:
                     "folder in user_data_dir so crit opens the sign-in window."
                 )
                 log.warn(message)
-                log.print_safe(f"warning: {message}", file=sys.stderr, flush=True)
                 return
         except Exception:
             continue

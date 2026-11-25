@@ -90,7 +90,7 @@ QUIET_ENV = {
     **TELEMETRY_OFF_ENV,
 }
 
-# "offline": true in .bot/settings.json. Commands crit runs then reach nothing at all:
+# "offline": true in .crit/settings.json. Commands crit runs then reach nothing at all:
 # web proxies point at a closed local port (curl, pip, npm, git, and most tools honor
 # them), package managers run in their offline modes, git may use local repositories
 # only, and the Gradle wrapper gets --offline. Builds then need their dependencies in
@@ -690,7 +690,7 @@ _SECRET_NAME_RE = re.compile(
     r"TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|(^|_)PAT$|SESSION_KEY|CLIENT_KEY",
     re.IGNORECASE,
 )
-_SECRET_PREFIXES = ("CRITIQUE_", "OPENAI_", "ANTHROPIC_", "AWS_SECRET", "AZURE_OPENAI_", "GEMINI_", "GOOGLE_API")
+_SECRET_PREFIXES = ("CRIT_", "CRITIQUE_", "OPENAI_", "ANTHROPIC_", "AWS_SECRET", "AZURE_OPENAI_", "GEMINI_", "GOOGLE_API")
 _SECRET_NAMES = frozenset({"CI_JOB_TOKEN", "GITLAB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "AWS_SESSION_TOKEN"})
 
 
@@ -703,7 +703,7 @@ def scrubbed_environment(extra: dict[str, str | None] | None = None, *, base: di
     """``os.environ`` (or ``base``) without secrets, then ``extra``.
 
     Names containing TOKEN, SECRET, PASSWORD, PASSWD, API_KEY, ACCESS_KEY,
-    PRIVATE_KEY or CREDENTIAL, and ``CRITIQUE_*``, ``OPENAI_*``,
+    PRIVATE_KEY or CREDENTIAL, and ``CRIT_*`` (also the old ``CRITIQUE_*``), ``OPENAI_*``,
     ``ANTHROPIC_*``, ``AWS_SECRET*`` are removed. ``extra`` is applied after
     scrubbing, so settings can pass a variable back on purpose; a ``None``
     value removes a variable.

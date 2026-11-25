@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import config_prompts, log, privacy
+from critique_bot import config_prompts, env_names, log, privacy
 from critique_bot.config import (
     BotConfig,
     ConfigError,
@@ -415,7 +415,7 @@ def _load_gitlab_mr_context(config, *, need_patch: bool):
     gitlab_cfg = getattr(config, "gitlab", None) if config is not None else None
     configured = (
         getattr(gitlab_cfg, "base_url", "")
-        or os.environ.get("CRITIQUE_GITLAB_URL")
+        or env_names.get("CRIT_GITLAB_URL")
         or os.environ.get("CI_API_V4_URL")
         or os.environ.get("CI_SERVER_URL")
     )
@@ -434,7 +434,7 @@ def _load_gitlab_mr_context(config, *, need_patch: bool):
     if not target.api_url or not target.project_id or not target.mr_iid:
         return None
     if not target.token:
-        log.warn("skipping GitLab MR context; no CRITIQUE_GITLAB_TOKEN")
+        log.warn("skipping GitLab MR context; no CRIT_GITLAB_TOKEN")
         return None
     try:
         ctx = fetch_mr_context(target, include_patch=True)
@@ -573,10 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="crit",
         usage="crit [MODE] [options] [TASK or FILE ...]",
         description=(
-            "One command for everything critique-bot does. The first word picks the mode; "
+            "One command for everything crit does. The first word picks the mode; "
             "with no mode word crit runs the local coding agent. The model is a web page "
-            "in Edge or a model on this PC (see crit config). critique-bot is the "
-            "same command, except that with no mode word it reviews a patch."
+            "in Edge or a model on this PC (see crit config)."
         ),
         epilog=(
             "modes:\n"
@@ -594,13 +593,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit gitlab-post        post review.md on a GitLab merge request\n"
             "\n"
             "agent extras:\n"
-            "  crit init               rebuild the .bot index\n"
+            "  crit init               rebuild the .crit index\n"
             "  crit undo               restore the files the last task changed\n"
             "  crit --yes TASK         auto mode: no approval prompts\n"
             "  crit --plan TASK        plan first, approve, then build\n"
             "  crit --acp              Agent Client Protocol agent for JetBrains IDEs and Zed\n"
             "\n"
-            "Settings come from --config, CRITIQUE_CONFIG, the project's own config, or your\n"
+            "Settings come from --config, CRIT_CONFIG, the project's own config, or your\n"
             "user settings (crit config --path); the first run asks for them.\n"
             "Quote a task that starts with a mode word:\n"
             "  crit \"review the auth code\"\n"
@@ -619,7 +618,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(MODE_REVIEW, MODE_GENERAL, MODE_CHAT, MODE_AGENT),
         help=(
             "same as naming the mode as the first word (crit review). "
-            f"{MODE_REVIEW} (critique-bot's default): code-review template + patch. "
+            f"{MODE_REVIEW}: code-review template + patch. "
             f"{MODE_GENERAL}: send --prompt and optional files as-is. "
             f"{MODE_CHAT}: interactive conversation in this terminal "
             f"(--prompt is optional as the first message). "
@@ -709,7 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
         const=REVIEW_QUICK,
         help=(
             "review mode: one message with the patch and the changed files, no tools "
-            "(critique-bot's default, and what the CI worker runs)"
+            "(what the CI worker runs)"
         ),
     )
     engine.add_argument(
@@ -736,7 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "agent mode: run edits, commands, and fetches without asking "
-            '(same as "permissions": "auto" in .bot/settings.json)'
+            '(same as "permissions": "auto" in .crit/settings.json)'
         ),
     )
     parser.add_argument(
@@ -758,7 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "agent mode: the role crit plays in this project, which shapes the instructions: "
             "code-reviewer, aosp-expert, expert-developer, ai-expert, test-engineer, android-app-engineer, or generic "
-            '(stored as "role" in .bot/settings.json the first time; the first interactive run asks)'
+            '(stored as "role" in .crit/settings.json the first time; the first interactive run asks)'
         ),
     )
     parser.add_argument(
@@ -767,7 +766,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "agent and review: how the model calls tools. openai (default): OpenAI Responses API items "
-            '(function_call / function_call_output); tags: the older <tool_call> blocks ("tool_format" in .bot/settings.json)'
+            '(function_call / function_call_output); tags: the older <tool_call> blocks ("tool_format" in .crit/settings.json)'
         ),
     )
     parser.add_argument(
@@ -776,7 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "agent mode: minimal gives the model the shell plus read_files, edit_file, and write_files; "
-            'it searches, lists, and runs git through the shell ("tool_set" in .bot/settings.json)'
+            'it searches, lists, and runs git through the shell ("tool_set" in .crit/settings.json)'
         ),
     )
     parser.add_argument(
@@ -878,11 +877,11 @@ def _config_error(exc: BaseException) -> int:
 
 def build_worker_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="critique-bot worker",
+        prog="crit worker",
         description=(
             "Keep one worker process open and process review jobs from the "
             "on-disk queue. One signed-in Edge instance. GitLab jobs "
-            "should call `critique-bot submit`, not this command."
+            "should call `crit submit`, not this command."
         ),
     )
     parser.add_argument("--config", help="settings file (default: the one crit config shows)")
@@ -925,7 +924,7 @@ SUBCOMMANDS = {
 }
 
 
-# A mode named as the first word, as in ``crit review`` or ``critique-bot chat``, is the
+# A mode named as the first word, as in ``crit review`` or ``crit chat``, is the
 # same as ``--mode``. ``ask`` is a shorter name for general.
 MODE_WORDS = {
     MODE_REVIEW: MODE_REVIEW,
@@ -937,7 +936,7 @@ MODE_WORDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run crit. Any failure ends in a plain sentence, never a traceback (those need --logs)."""
+    """Run crit. Any failure ends in a plain sentence, never a traceback (that goes to the log file)."""
     try:
         _migrate_legacy_files()
         return _main(argv)
@@ -948,11 +947,11 @@ def main(argv: list[str] | None = None) -> int:
         log.exception(f"refused: {exc}")
         log.notice(f"Blocked: {exc}")
         return 1
-    except Exception as exc:  # the last line of defense: a readable message, details only with --logs
+    except Exception as exc:  # the last line of defense: a readable message, details in the log file
         log.exception(f"unexpected error: {exc}")
         lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
         detail = (lines[0] if lines else type(exc).__name__)[:300].rstrip(".")
-        log.notice(f"crit stopped: {detail}. Run the command again with --logs for details.")
+        log.notice(f"crit stopped: {detail}. {log.details_hint()}")
         return 1
     finally:
         config_prompts.disable()
@@ -1015,12 +1014,12 @@ def _find_config(explicit: str | None, repo_dir: str | Path = ".", *, ask: bool 
 
 
 def _use_found_config_file(target: Path) -> Path | int | None:
-    """A config file found without asking (CRITIQUE_CONFIG_FILE, the system location): set up
+    """A config file found without asking (CRIT_CONFIG_FILE, the system location): set up
     ``target`` with it and say so. None when there is none; an exit code when it is unusable."""
     from critique_bot.setup_wizard import use_found_config_file
 
     try:
-        result = use_found_config_file(target, say=lambda text: print(text, file=sys.stderr))
+        result = use_found_config_file(target, say=log.info)
     except ConfigError as exc:
         return _config_error(exc)
     return None if result is None else result.path
@@ -1127,7 +1126,7 @@ def _main_submit(argv: list[str]) -> int:
     from critique_bot.queue import FileQueue, QueueError
 
     parser = build_parser()
-    parser.prog = "critique-bot submit"
+    parser.prog = "crit submit"
     parser.description = (
         "Enqueue a review on the runner worker and wait for review.md. "
         "The worker owns the signed-in Edge; this command does not launch a browser."
@@ -1159,7 +1158,7 @@ def _main_submit(argv: list[str]) -> int:
     args.config = str(found)
     stem = OUTPUT_STEM[mode]
     log.info(
-        "critique-bot submit "
+        "crit submit "
         + log.kv(
             config=args.config,
             mode=mode,
@@ -1188,9 +1187,9 @@ def _main_submit(argv: list[str]) -> int:
     queue = FileQueue(Path(config.queue_dir))
     if not queue.worker_alive():
         message = (
-            "critique-bot worker is not running "
+            "crit worker is not running "
             f"({queue.worker_hint()}). On the runner start: "
-            f"critique-bot worker --config {args.config} --logs"
+            f"crit worker --config {args.config} --logs"
         )
         log.error(message)
         log.notice(f"Problem: {message}")
@@ -1236,7 +1235,7 @@ def _main_setup(argv: list[str]) -> int:
     from critique_bot.setup_ui import DEFAULT_PORT, run_setup
 
     parser = argparse.ArgumentParser(
-        prog="critique-bot setup",
+        prog="crit setup",
         description=(
             "Open a small web UI on 127.0.0.1 to pick the page's selectors "
             "by clicking them in a real browser window, and run a live test. "
@@ -1278,7 +1277,7 @@ def _main_queue_status(argv: list[str]) -> int:
     from critique_bot.queue import FileQueue
 
     parser = argparse.ArgumentParser(
-        prog="critique-bot queue-status",
+        prog="crit queue-status",
         description=(
             "Show whether the worker is alive, what is waiting in the queue, "
             "and how recent jobs ended."
@@ -1342,7 +1341,7 @@ def _main_queue_status(argv: list[str]) -> int:
             print(f"  {mark} {item['id']}{timing}{note}", flush=True)
     if not snapshot["worker_alive"]:
         print(
-            f"\nStart the worker: critique-bot worker --config {args.config} --logs",
+            f"\nStart the worker: crit worker --config {args.config} --logs",
             flush=True,
         )
         return 1
@@ -1353,12 +1352,12 @@ def _main_gitlab_post(argv: list[str]) -> int:
     from critique_bot.gitlab_post import GitLabPostError, post_review
 
     parser = argparse.ArgumentParser(
-        prog="critique-bot gitlab-post",
+        prog="crit gitlab-post",
         description=(
             "Post the review as GitLab MR discussion threads: a short risk "
             "summary plus inline diff threads. Findings that cannot be pinned "
             "to the diff stay on the summary. Needs "
-            "CRITIQUE_GITLAB_TOKEN (project access token, scope api). "
+            "CRIT_GITLAB_TOKEN (project access token, scope api). "
             "CI_JOB_TOKEN cannot create discussions."
         ),
     )
@@ -1411,7 +1410,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
         configured = (
             args.api_url
             or os.environ.get("CI_API_V4_URL")
-            or os.environ.get("CRITIQUE_GITLAB_URL")
+            or env_names.get("CRIT_GITLAB_URL")
             or os.environ.get("CI_SERVER_URL")
             or gitlab_cfg.base_url
         )
@@ -1441,7 +1440,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
 def _main_agent(args: argparse.Namespace) -> int:
     """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
     from critique_bot.agent import run_agent
-    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home, update_settings
+    from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home, update_settings
     from critique_bot.roles import ROLE_IDS, normalize_role
     from critique_bot.welcome import pick_theme, stdio_is_tty
 
@@ -1532,7 +1531,7 @@ def _main_agent(args: argparse.Namespace) -> int:
 
             detected = detect_role(home.root)
             update_settings(home, role=detected)
-            print(f"Role for this project: {role_label(detected)} (change with: crit --role <name>)", file=sys.stderr)
+            log.info(f"Role for this project: {role_label(detected)} (change with: crit --role <name>)")
 
     # The style and the sign-in welcome are once per user, not per project.
     from critique_bot.config import set_user_preferences, user_preferences
@@ -1649,7 +1648,7 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         code = 130
     except Exception as exc:
-        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
+        log.notice(f"crit stopped: {exc}. {log.details_hint()}")
         raise
     finally:
         # Told to a client still waiting on session/new (no config.json, sign-in needed, ...).
@@ -1660,7 +1659,7 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
 
 
 def _agent_mode(args: argparse.Namespace) -> str | None:
-    """--permission-mode, --plan, or --yes; None reads "permissions" from .bot/settings.json."""
+    """--permission-mode, --plan, or --yes; None reads "permissions" from .crit/settings.json."""
     if getattr(args, "agent_mode", None):
         return str(args.agent_mode)
     if getattr(args, "plan_mode", False):
@@ -1694,7 +1693,7 @@ def _welcome_login(config: BotConfig) -> bool:
 
 
 def _apply_tool_flags(args: argparse.Namespace, home) -> None:
-    """--tool-format / --tool-set win over .bot/settings.json for this run (not saved)."""
+    """--tool-format / --tool-set win over .crit/settings.json for this run (not saved)."""
     if not isinstance(home.settings, dict):
         return
     if getattr(args, "tool_format", None):
@@ -1712,7 +1711,7 @@ def _use_terminal_ui() -> None:
 
 
 def _review_engine(args: argparse.Namespace) -> str:
-    """--quick or --deep when given; otherwise the agent review under crit and the one-shot under critique-bot."""
+    """--quick or --deep when given; otherwise the agent review under crit and the one-shot otherwise."""
     if getattr(args, "review_engine", None):
         return args.review_engine
     return REVIEW_AGENT if getattr(args, "crit_defaults", False) else REVIEW_QUICK
@@ -1723,7 +1722,7 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     from critique_bot import review_agent
     from critique_bot.agent import run_read_only_task
     from critique_bot.roles import CODE_REVIEWER
-    from critique_bot.bot_home import BotHomeError, find_bot_home, init_bot_home
+    from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home
 
     started = datetime.now(timezone.utc)
     workspace = Path(args.repo_dir).resolve()
@@ -1765,7 +1764,7 @@ def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     config_prompts.offer_blocked_hosts()
     review = review_agent.review_text(turns)
     if not review:
-        message = "the agent review ended without a review; the transcript is in .bot/sessions"
+        message = "the agent review ended without a review; the transcript is in .crit/sessions"
         if code == 0:
             code = 1
         log.error(message)
@@ -1815,7 +1814,7 @@ def _main_run(argv: list[str]) -> int:
     stem = OUTPUT_STEM[mode]
     headed = args.headed
     log.info(
-        "critique-bot starting "
+        "crit starting "
         + log.kv(
             config=args.config,
             mode=mode,
@@ -1891,7 +1890,7 @@ def _main_run(argv: list[str]) -> int:
         return 1
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
-        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
+        log.notice(f"crit stopped: {exc}. {log.details_hint()}")
         return 1
 
     finished = datetime.now(timezone.utc)
@@ -1933,5 +1932,5 @@ def _main_run(argv: list[str]) -> int:
                 "signal; it may be truncated"
             )
     write_output(output_dir, response, payload, stem=stem)
-    log.info("critique-bot finished successfully")
+    log.info("crit finished successfully")
     return 0

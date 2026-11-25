@@ -1,8 +1,10 @@
-"""Entry point of ``python -m critique_bot`` and of the standalone bundle.
+"""Entry point of ``python -m critique_bot`` and of the standalone bundle (``crit``, ``crit.exe``).
 
-The bundle ships one program, ``critique-bot``. ``crit`` is the same program started
-with ``--as-crit`` first (the .deb's /usr/bin/crit and the Windows zip's crit.cmd do
-that), or under a name that starts with ``crit``/``bot-agent`` other than critique-bot.
+The program is crit: with no mode word it runs the coding agent; ``crit review`` reviews a
+patch. ``--as-crit`` (written by launchers of crit up to 1.0.4) is still accepted and ignored.
+
+``crit uninstall`` is handled first, before anything else: no setup, no questions, no
+self-install.
 
 A downloaded program (Windows exe or the Linux zip) installs itself the first time it
 runs, without a question (see installer.should_auto_install), then does what was asked.
@@ -17,12 +19,9 @@ import os
 import sys
 
 
-def _wants_crit(argv: list[str]) -> bool:
-    if argv[1:2] == ["--as-crit"]:
-        del argv[1]
-        return True
-    name = os.path.splitext((argv[0] if argv else "").replace("\\", "/").rsplit("/", 1)[-1])[0].lower()
-    return name in {"crit", "bot-agent"}
+def _args() -> list[str]:
+    """The arguments without the old launchers' ``--as-crit``."""
+    return [a for a in sys.argv[1:] if a != "--as-crit"]
 
 
 def launched_from_explorer() -> bool:
@@ -62,7 +61,7 @@ def _double_click_main() -> int:
             print("  2. Click the address bar, type powershell, and press Enter.")
             print("  3. Type crit and press Enter (or crit review to review your changes).")
             if not installer.is_installed_copy() and installer.frozen_bundle_dir() is not None:
-                print("  (crit is not installed yet: run critique-bot.exe install, or double-click it again and answer Y.)")
+                print("  (crit is not installed yet: run crit.exe install.)")
             print("")
             print("See or change the settings any time with: crit config")
     except KeyboardInterrupt:
@@ -87,16 +86,25 @@ def _maybe_auto_install() -> None:
     try:
         from critique_bot import installer
 
-        if installer.should_auto_install([a for a in sys.argv[1:] if a != "--as-crit"]):
+        if installer.should_auto_install(_args()):
             installer.auto_install()
     except Exception as exc:  # installing is a convenience; the command still runs
-        print(f"crit could not install itself: {exc}", file=sys.stderr)
+        from critique_bot import log
+
+        log.info(f"crit could not install itself: {exc}")
 
 
 def main() -> int:
+    if _args()[:1] == ["uninstall"]:
+        explorer = launched_from_explorer()  # Settings > Apps > Uninstall opens a console of its own
+        try:
+            return _run()
+        finally:
+            if explorer:
+                _wait_for_enter()
     _maybe_auto_install()
     if launched_from_explorer():
-        args = [a for a in sys.argv[1:] if a != "--as-crit"]
+        args = _args()
         if not args:
             code = _double_click_main()
             _wait_for_enter()
@@ -109,18 +117,18 @@ def main() -> int:
 
 
 def _run() -> int:
-    rest = [a for a in sys.argv[1:] if a != "--as-crit"]
+    rest = _args()
+    if rest[:1] == ["uninstall"]:
+        from critique_bot import installer
+
+        return installer.main_uninstall(rest[1:])
     if rest[:1] == ["install"]:
         from critique_bot import installer
 
         return installer.main(rest[1:])
-    if _wants_crit(sys.argv):
-        from critique_bot.agent_cli import main as crit_main
+    from critique_bot.agent_cli import main as crit_main
 
-        return crit_main(sys.argv[1:])
-    from critique_bot.cli import main as cli_main
-
-    return cli_main()
+    return crit_main(rest)
 
 
 if __name__ == "__main__":

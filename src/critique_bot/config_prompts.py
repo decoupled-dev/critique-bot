@@ -5,8 +5,8 @@ interactive ``crit``, ``crit chat``, ``crit ask``, or ``crit review``); never in
 CI, ``--acp``, or with input piped in. ``--yes`` does not answer these: each one widens
 what crit may reach, so the default answer is No.
 
-* A site the chat page tried to reach and the page filter blocked: after the current step,
-  crit asks once per site whether to add it to ``allowed_hosts`` (from the next start on).
+* A site the chat page tried to reach and the page filter blocked (only with
+  ``"page_network": "strict"``): after the current step, crit asks once per site whether to add it to ``allowed_hosts`` (from the next start on).
 * ``gitlab.base_url`` when a command needs GitLab and none is set.
 
 Answers are saved in the config file in use. The browser collects blocked sites (see
@@ -109,6 +109,11 @@ def offer_blocked_hosts() -> list[str]:
         return []
     path, confirm = _path, _confirm
     if path is None or confirm is None:
+        return []
+    if not egress.page_restricted():
+        # page_network "open": the page reaches what it needs; a blocked site is only logged.
+        for host in hosts:
+            log.info(f"the page was kept from {host}; allow it with: crit config --allow-host {host}")
         return []
     added: list[str] = []
     for host in hosts:

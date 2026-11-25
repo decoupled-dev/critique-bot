@@ -111,11 +111,11 @@ class ResolutionTests(_Isolated):
         root_cfg = self.project / "config.json"
         root_cfg.write_text("{}", encoding="utf-8")
         self.assertEqual(resolve_config_path(None, self.project).source, "project-root")
-        # the config stored in .bot/settings.json wins over that
+        # the config stored in .crit/settings.json wins over that
         stored = self.root / "stored.json"
         stored.write_text("{}", encoding="utf-8")
-        (self.project / ".bot").mkdir()
-        (self.project / ".bot" / "settings.json").write_text(json.dumps({"config": str(stored)}), encoding="utf-8")
+        (self.project / ".crit").mkdir()
+        (self.project / ".crit" / "settings.json").write_text(json.dumps({"config": str(stored)}), encoding="utf-8")
         loc = resolve_config_path(None, self.project)
         self.assertEqual((loc.path, loc.source), (stored, "project"))
         # CRITIQUE_CONFIG wins over the project; --config over everything
@@ -124,8 +124,8 @@ class ResolutionTests(_Isolated):
             self.assertEqual(resolve_config_path(self.root / "flag.json", self.project).source, "flag")
 
     def test_stored_config_that_is_missing_falls_through(self) -> None:
-        (self.project / ".bot").mkdir()
-        (self.project / ".bot" / "settings.json").write_text(json.dumps({"config": "gone.json"}), encoding="utf-8")
+        (self.project / ".crit").mkdir()
+        (self.project / ".crit" / "settings.json").write_text(json.dumps({"config": "gone.json"}), encoding="utf-8")
         self.assertEqual(resolve_config_path(None, self.project).source, "user")
 
 
@@ -141,7 +141,7 @@ class ConfigCommandTests(_Isolated):
         if os.name != "nt":
             self.assertEqual(self.user.stat().st_mode & 0o777, 0o600)
             self.assertEqual(self.user.parent.stat().st_mode & 0o777, 0o700)
-        self.assertEqual([p.name for p in self.user.parent.iterdir()], ["config.json"])  # no temp file left
+        self.assertEqual(sorted(p.name for p in self.user.parent.iterdir() if p.name != "logs"), ["config.json"])  # no temp file left
 
     def test_show_prints_plain_settings_without_tokens(self) -> None:
         self.config("--url", "https://chat.corp.example/", "--redact", "Acme Corp", "--gitlab-url", "https://gitlab.corp.example/")
@@ -327,7 +327,7 @@ class ConfigCommandTests(_Isolated):
 
 class FirstRunTests(_Isolated):
     def _agent(self, answers: list[str], *, tty: bool = True) -> tuple[int, object, str]:
-        with patch("critique_bot.bot_home.rebuild_index"), patch(
+        with patch("critique_bot.project_home.rebuild_index"), patch(
             "critique_bot.welcome.stdio_is_tty", return_value=tty
         ), patch("critique_bot.welcome.pick_theme", return_value=("dark", True)), patch(
             "critique_bot.welcome.pick_role", return_value="generic"
@@ -392,6 +392,10 @@ class BlockedHostTests(_Isolated):
         super().setUp()
         self.assertEqual(self.config("--url", "https://chat.corp.example/")[0], 0)
         browser.drain_blocked_hosts()
+        # The Allow question is asked only when the page itself is restricted (page_network strict).
+        restricted = patch.object(config_prompts.egress, "page_restricted", return_value=True)
+        restricted.start()
+        self.addCleanup(restricted.stop)
 
     def test_the_page_filter_records_a_blocked_host_once(self) -> None:
         class Route:
@@ -412,8 +416,10 @@ class BlockedHostTests(_Isolated):
                 route = Route("https://cdn-once.blocked.example/a.js")
                 browser._filter_chat_route(route, "https://chat.corp.example/")
                 self.assertTrue(route.aborted)
-        self.assertEqual(err.getvalue().count("Blocked:"), 1)
-        self.assertIn("crit config --allow-host cdn-once.blocked.example", err.getvalue())
+        self.assertNotIn("Blocked:", err.getvalue())  # the log file only, once
+        logged = __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8")
+        self.assertEqual(logged.count("Blocked: the page tried to contact cdn-once.blocked.example"), 1)
+        self.assertIn("crit config --allow-host cdn-once.blocked.example", logged)
         self.assertEqual(browser.drain_blocked_hosts(), ["cdn-once.blocked.example"])
         self.assertEqual(browser.drain_blocked_hosts(), [])
 
@@ -437,6 +443,12 @@ class BlockedHostTests(_Isolated):
         with redirect_stderr(io.StringIO()):
             self.assertEqual(config_prompts.offer_blocked_hosts(), [])
         self.assertNotIn("allowed_hosts", self.data())
+
+    def test_page_network_open_never_asks(self) -> None:
+        with patch.object(config_prompts.egress, "page_restricted", return_value=False):
+            config_prompts.enable(self.user, confirm=lambda q: self.fail("asked"), drain=browser.drain_blocked_hosts)
+            browser._note_blocked_host("tracker.example")
+            self.assertEqual(config_prompts.offer_blocked_hosts(), [])
 
     def test_not_enabled_never_asks(self) -> None:
         browser._note_blocked_host("tracker.example")

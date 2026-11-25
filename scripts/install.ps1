@@ -3,9 +3,9 @@
 #   irm https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.ps1 | iex
 #
 # Downloads the latest release for Windows x64, checks it against the release's
-# SHA256SUMS.txt, and runs "critique-bot.exe install", which puts crit in
+# SHA256SUMS.txt, and runs "crit.exe install", which puts crit in
 # %USERPROFILE%\.crit (app\<version> and bin; $env:CRIT_HOME moves it) and adds its bin
-# folder to your PATH. Settings are asked the first time crit needs them. Set $env:CRIT_VERSION = "1.0.1" for a given version.
+# folder to your PATH. Settings are asked the first time crit needs them. Set $env:CRIT_VERSION = "1.0.5" for a given version (1.0.5 or later).
 # Set $env:CRIT_CONFIG_FILE = "\\server\share\crit.json" to also set the config file
 # (url, page elements, ...), so crit asks nothing on first run.
 
@@ -21,7 +21,7 @@ if ($env:CRIT_VERSION) {
     $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "crit-installer" }).tag_name
 }
 $version = $tag.TrimStart("v")
-$zipName = "critique-bot-$version-windows-x64.zip"
+$zipName = "crit-$version-windows-x64.zip"
 $base = "https://github.com/$repo/releases/download/$tag"
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("crit-install-" + [Guid]::NewGuid().ToString("N"))
@@ -38,8 +38,8 @@ try {
     if ($actual -ne $expected) { throw "Checksum mismatch for $zipName (expected $expected, got $actual). Nothing was installed." }
 
     Expand-Archive (Join-Path $work $zipName) -DestinationPath $work -Force
-    $exe = Get-ChildItem $work -Recurse -Filter "critique-bot.exe" | Select-Object -First 1
-    if (-not $exe) { throw "critique-bot.exe not found in $zipName" }
+    $exe = Get-ChildItem $work -Recurse -Filter "crit.exe" | Select-Object -First 1
+    if (-not $exe) { throw "crit.exe not found in $zipName" }
     if ($env:CRIT_CONFIG_FILE) {
         & $exe.FullName install --config-file $env:CRIT_CONFIG_FILE
     } else {

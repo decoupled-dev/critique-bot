@@ -284,7 +284,7 @@ class SearchTests(unittest.TestCase):
 class MoveTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp()).resolve()
-        self.cache = self.root / ".bot" / "cache"
+        self.cache = self.root / ".crit" / "cache"
         self.checkpoints = agent_edit.Checkpoints(self.cache, self.root)
         self.checkpoints.start_task()
         self.ctx = _ctx(self.root, checkpoints=self.checkpoints)
@@ -339,7 +339,7 @@ class MutationGuardTests(unittest.TestCase):
         self.assertIn("symbolic link", refused["error"])
 
     def test_approved_outside_write_is_undoable(self) -> None:
-        cache = self.root / ".bot" / "cache"
+        cache = self.root / ".crit" / "cache"
         checkpoints = agent_edit.Checkpoints(cache, self.root)
         checkpoints.start_task()
         outside = Path(tempfile.mkdtemp()).resolve() / "o.txt"
@@ -476,7 +476,7 @@ class PatchTests(unittest.TestCase):
     def test_deleted_file_is_checkpointed(self) -> None:
         root = Path(tempfile.mkdtemp()).resolve()
         (root / "gone.txt").write_text("bye\n", encoding="utf-8")
-        cache = root / ".bot" / "cache"
+        cache = root / ".crit" / "cache"
         checkpoints = agent_edit.Checkpoints(cache, root)
         checkpoints.start_task()
         patch = "--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n"

@@ -45,9 +45,9 @@ class BuildScriptTests(unittest.TestCase):
 
     def test_binary_name(self) -> None:
         with patch.object(self.build.sys, "platform", "win32"):
-            self.assertEqual(self.build._binary_name(), "critique-bot.exe")
+            self.assertEqual(self.build._binary_name(), "crit.exe")
         with patch.object(self.build.sys, "platform", "linux"):
-            self.assertEqual(self.build._binary_name(), "critique-bot")
+            self.assertEqual(self.build._binary_name(), "crit")
 
     def test_main_missing_spec(self) -> None:
         with patch.object(self.build, "SPEC", Path("/no/such.spec")):
@@ -78,13 +78,13 @@ class BuildScriptTests(unittest.TestCase):
 
         with patch.object(self.build.subprocess, "run", return_value=Result()):
             with self.assertRaises(SystemExit) as ctx:
-                self.build._smoke_test(Path("critique-bot"))
+                self.build._smoke_test(Path("crit"))
         self.assertIn("--help failed", str(ctx.exception))
 
     def test_package_version_dunder(self) -> None:
         from critique_bot import __version__
 
-        self.assertEqual(__version__, "1.0.4")
+        self.assertEqual(__version__, "1.0.5")
 
 
 if __name__ == "__main__":

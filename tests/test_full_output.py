@@ -14,7 +14,7 @@ class FullOutputTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.ws = Path(self._tmp.name)
-        self.cache = self.ws / ".bot" / "cache"
+        self.cache = self.ws / ".crit" / "cache"
         self.cache.mkdir(parents=True)
         self.ctx = agent_tools.ToolContext(workspace=self.ws, cache_dir=self.cache, max_chars=4000)
 
@@ -29,7 +29,7 @@ class FullOutputTests(unittest.TestCase):
         result = self._run(3000)
         self.assertIn("FULL OUTPUT", result["output"])
         name = result["output"].split("saved to ")[1].split(":")[0]
-        self.assertTrue(name.startswith(".bot/cache/output/"))
+        self.assertTrue(name.startswith(".crit/cache/output/"))
         self.assertIn("line 1777", (self.ws / name).read_text(encoding="utf-8"))
         middle = agent_tools.execute("read_files", {"path": name, "offset": 1500, "limit": 3}, self.ctx)
         self.assertIn("line 1498", middle["output"])

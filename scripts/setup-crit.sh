@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install critique-bot into a virtual environment and put `crit`,
-# `bot-agent`, and `critique-bot` on PATH (Linux and macOS).
+# Install crit from this checkout into a virtual environment and put `crit`
+# on PATH (Linux and macOS).
 #
 # Usage: scripts/setup-crit.sh [--venv DIR] [--config FILE] [--bin-dir DIR]
 #                              [--proxy URL] [--with-index] [--no-path]
@@ -17,13 +17,12 @@ usage() {
     cat <<'EOF'
 Usage: scripts/setup-crit.sh [options]
 
-Installs critique-bot into a virtual environment, prepares config.json, and
-writes `crit`, `bot-agent`, and `critique-bot` commands into a bin folder on
-PATH. Safe to re-run.
+Installs crit from this checkout into a virtual environment, prepares config.json,
+and writes the `crit` command into a bin folder on PATH. Safe to re-run.
 
 Options:
   --venv DIR            Virtual environment to create/use (default: <repo>/.venv)
-  --config FILE         Config file crit uses, via CRITIQUE_CONFIG (default: <repo>/config.json)
+  --config FILE         Config file crit uses, via CRIT_CONFIG (default: <repo>/config.json)
   --bin-dir DIR         Where the commands are written (default: ~/.local/bin)
   --proxy URL           Proxy for every pip install (passed as PIP_PROXY), for example
                         http://username:password@10.1.2.3:8080
@@ -135,7 +134,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -f "$repo/pyproject.toml" ] || die "$repo does not look like the critique-bot checkout (no pyproject.toml)"
+[ -f "$repo/pyproject.toml" ] || die "$repo does not look like the crit checkout (no pyproject.toml)"
 
 if [ -n "$proxy" ]; then
     case $proxy in
@@ -154,7 +153,7 @@ config=$(abs_path "$config")
 bin_dir=$(abs_path "$bin_dir")
 os=$(uname -s)
 
-say "critique-bot checkout: $repo"
+say "crit checkout: $repo"
 info "venv:    $venv"
 info "config:  $config"
 info "bin dir: $bin_dir"
@@ -232,10 +231,10 @@ else
     fi
     if [ "$with_index" = 1 ]; then
         target="${repo}[index]"
-        say "Installing critique-bot with the [index] extra (pip install -e)"
+        say "Installing crit with the [index] extra (pip install -e)"
     else
         target=$repo
-        say "Installing critique-bot (pip install -e)"
+        say "Installing crit (pip install -e)"
     fi
     # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
     pins=""
@@ -264,7 +263,7 @@ else
         fi
     fi
 fi
-for exe in crit bot-agent critique-bot; do
+for exe in crit; do
     [ -x "$venv/bin/$exe" ] || die "$venv/bin/$exe is missing; the pip install did not finish"
 done
 
@@ -420,10 +419,8 @@ write_wrapper() {
     info "wrote $target"
 }
 q_config=$(sh_quote "$config")
-# CRITIQUE_CONFIG (not --config) so subcommands still come first: crit config, crit setup, crit review.
-write_wrapper crit "CRITIQUE_CONFIG=$q_config; export CRITIQUE_CONFIG; exec $(sh_quote "$venv/bin/crit") \"\$@\""
-write_wrapper bot-agent "CRITIQUE_CONFIG=$q_config; export CRITIQUE_CONFIG; exec $(sh_quote "$venv/bin/bot-agent") \"\$@\""
-write_wrapper critique-bot "exec $(sh_quote "$venv/bin/critique-bot") \"\$@\""
+# CRIT_CONFIG (not --config) so subcommands still come first: crit config, crit setup, crit review.
+write_wrapper crit "CRIT_CONFIG=$q_config; export CRIT_CONFIG; exec $(sh_quote "$venv/bin/crit") \"\$@\""
 
 # --- f. PATH ------------------------------------------------------------------------
 on_path=0

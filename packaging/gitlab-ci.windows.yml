@@ -1,5 +1,5 @@
 # Copy this file into the GitLab project as .gitlab-ci.yml when the
-# critique-bot runner is Windows (shell executor → PowerShell).
+# crit runner is Windows (shell executor → PowerShell).
 # Linux bash template: .gitlab-ci.yml at the repo root.
 # Full setup: docs/gitlab-ci.md
 #
@@ -23,13 +23,13 @@
 # or prime + each staged file + review). File-by-file reviews take
 # longer; this job waits 30 minutes (--wait-timeout 1800) and times out at 1h.
 #
-# PowerShell (do not convert $CRITIQUE_BIN to $env:CRITIQUE_BIN):
+# PowerShell (do not convert $CRIT_BIN to $env:CRIT_BIN):
 #   - GitLab expands $VAR before PowerShell runs. $env:FOO is read as
-#     CI variable "env", so `$env:CRITIQUE_BIN submit` becomes
-#     `:CRITIQUE_BIN submit` and PowerShell tries to run `submit`.
+#     CI variable "env", so `$env:CRIT_BIN submit` becomes
+#     `:CRIT_BIN submit` and PowerShell tries to run `submit`.
 #   - Invoke a path stored in a variable with &:
-#       & "$CRITIQUE_BIN" submit ...
-#     GitLab expands $CRITIQUE_BIN first; PowerShell then runs that exe.
+#       & "$CRIT_BIN" submit ...
+#     GitLab expands $CRIT_BIN first; PowerShell then runs that exe.
 #   - A literal PowerShell $ must be written $$ (GitLab turns $$ into $).
 #
 # Pipelines:
@@ -38,16 +38,16 @@
 # Pushing to main alone does not auto-run review.
 #
 # Runner PC requirements:
-#   - A project or group runner tagged `critique-bot` (shell executor, not Docker)
+#   - A project or group runner tagged `crit` (shell executor, not Docker)
 #     so the job sees the same queue directory as the long-running worker.
-#   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
+#   - Microsoft Edge or Google Chrome, signed in once (`crit worker --headed`
 #     or one-shot `--headed`).
 #   - Worker already running: packaging/worker-start.ps1 at logon or a scheduled task.
-#   - CRITIQUE_BIN set to the full path of critique-bot.exe (or on the system
+#   - CRIT_BIN set to the full path of crit.exe (or on the system
 #     PATH, admin-writable only), and config.json on a shared path. Edit the two `variables:` lines
-#     in this file — do not set CRITIQUE_BIN / CRITIQUE_CONFIG in GitLab
+#     in this file — do not set CRIT_BIN / CRIT_CONFIG in GitLab
 #     Settings → CI/CD → Variables. If PATH is not an option, set
-#     CRITIQUE_BIN to the full path of critique-bot.exe here.
+#     CRIT_BIN to the full path of crit.exe here.
 #
 # Security: the worker runs as its OWN OS user (not the runner user). This job
 # runs whatever a branch's .gitlab-ci.yml says, as the runner user; it must not
@@ -59,7 +59,7 @@
 #   1. Settings → Access Tokens → project access token
 #      Role: Reporter (lowest that can read the diff and post discussions).
 #      Scope: api. Set an expiry.
-#   2. Settings → CI/CD → Variables → CRITIQUE_GITLAB_TOKEN
+#   2. Settings → CI/CD → Variables → CRIT_GITLAB_TOKEN
 #      Masked: yes. Protected: yes if reviewed MRs come from protected branches.
 #      Unprotected (needed for feature-branch MRs) means anyone who can push a
 #      branch can read it, so keep it Reporter-only and rotate it.
@@ -81,9 +81,9 @@ stages:
 variables:
   # Job YAML only (not GitLab CI/CD variables). BIN is looked up on PATH;
   # CONFIG must be the same file the worker uses. Edit if your install is
-  # not C:\critique-bot (pip/venv: ...\critique-bot\config.json).
-  CRITIQUE_BIN: critique-bot
-  CRITIQUE_CONFIG: 'C:\critique-bot\config.json'
+  # not C:\crit (pip/venv: ...\crit\config.json).
+  CRIT_BIN: crit.exe
+  CRIT_CONFIG: 'C:\crit\config.json'
   # Belt and suspenders: the CLI also forces UTF-8 on stdout/stderr.
   # Without this, a Windows charmap codec can crash print() on U+2011.
   PYTHONUTF8: "1"
@@ -93,7 +93,7 @@ review:
   stage: review
   interruptible: true
   tags:
-    - critique-bot
+    - crit
   timeout: 1h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -110,11 +110,11 @@ review:
       - out/status.json
   script:
     - |
-      & "$CRITIQUE_BIN" submit --config "$CRITIQUE_CONFIG" --output-dir out --wait-timeout 1800
+      & "$CRIT_BIN" submit --config "$CRIT_CONFIG" --output-dir out --wait-timeout 1800
       if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }
       if ("$CI_MERGE_REQUEST_IID" -and (Test-Path out\review.md)) {
-        & "$CRITIQUE_BIN" gitlab-post --review-file out\review.md --patch-file diff.patch
+        & "$CRIT_BIN" gitlab-post --review-file out\review.md --patch-file diff.patch
         if ($$LASTEXITCODE -ne 0) {
-          Write-Host "review artifact saved; could not post GitLab comments (set CRITIQUE_GITLAB_TOKEN)"
+          Write-Host "review artifact saved; could not post GitLab comments (set CRIT_GITLAB_TOKEN)"
         }
       }

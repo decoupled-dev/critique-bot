@@ -42,7 +42,7 @@ from critique_bot.tool_api import (
     normalize_args,
 )
 from critique_bot.tool_api import execute as _execute
-from critique_bot.bot_home import BotHome, resolve_check_command
+from critique_bot.project_home import BotHome, resolve_check_command
 from critique_bot import model_api
 from critique_bot.model_api import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
 from critique_bot.config import BotConfig
@@ -1540,7 +1540,7 @@ def seed_message(
         text += tools.strip() + "\n\n"
     text += "\n".join(lines) + "\n"
     if notes.strip():
-        text += "\nPROJECT NOTES (from .bot/AGENT.md; follow them)\n" + notes.strip() + "\n"
+        text += "\nPROJECT NOTES (from .crit/AGENT.md; follow them)\n" + notes.strip() + "\n"
     if READY_LINE not in text:
         text += "\n" + READY_LINE + "\n"
     return text
@@ -2633,7 +2633,7 @@ class _TaskRun:
         """The project check. It always runs again after a change, with its own long timeout.
 
         It goes through the same approval as any command: the check command can come from
-        a file in the repository (``.bot/AGENT.md``), so it is not trusted on its own.
+        a file in the repository (``.crit/AGENT.md``), so it is not trusted on its own.
         """
         self.hooks.ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
         call = ToolCall(
@@ -2787,7 +2787,7 @@ class _TaskRun:
 
 
 def effective_settings(settings: object) -> dict[str, Any]:
-    """``.bot/settings.json`` as the agent applies it: under strict egress nothing but the chat is reached.
+    """``.crit/settings.json`` as the agent applies it: under strict egress nothing but the chat is reached.
 
     With ``"egress": "strict"`` in config.json (the default), commands run offline, web_fetch is
     off, and commands that can send data are blocked, whatever the settings file says.
@@ -3331,7 +3331,7 @@ def run_agent(
     """Open the Edge session, run the tool loop, and write the transcript.
 
     ``approve_mode`` is ``"ask"``, ``"edits"``, ``"auto"`` (``--yes``), or ``"plan"``
-    (``--plan``); ``None`` reads ``"permissions"`` from ``.bot/settings.json``. ``role`` is the
+    (``--plan``); ``None`` reads ``"permissions"`` from ``.crit/settings.json``. ``role`` is the
     persona for this run (``--role``); ``None`` reads ``"role"`` from the settings, and Generic
     is the default. The transcript is saved even when Ctrl+C or an error ends the session.
     """
@@ -3516,7 +3516,7 @@ def run_read_only_task(
     helper chats, and paths outside the project are refused without asking, so no
     prompt waits for a person and the input cannot make crit act. The task ends on a
     reply that ``answer`` accepts. The turns are saved as a transcript in
-    ``.bot/sessions`` as an agent run is.
+    ``.crit/sessions`` as an agent run is.
     """
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
@@ -3604,7 +3604,7 @@ def _load_rules(options: dict[str, Any]) -> Any:
 
     rules, problems = agent_rules.load_rules(options)
     for problem in problems:
-        log.warn(f".bot/settings.json: {problem}")
+        log.warn(f".crit/settings.json: {problem}")
     return rules or None
 
 
@@ -3744,7 +3744,7 @@ def _run_session(
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
         agent_ui.shutdown()
-        log.notice(f"crit stopped: {exc}. Run the command again with --logs for details.")
+        log.notice(f"crit stopped: {exc}. {log.details_hint()}")
         return 1
     return 0
 
@@ -3783,8 +3783,7 @@ def _save_transcript(
         if output_dir is not None:
             write_output(output_dir, body, payload, stem="agent", print_body=False)
     except OSError as exc:
-        log.error(f"could not save the transcript: {exc}")
-        log.notice(f"Problem: could not save the transcript: {exc}")
+        log.warn(f"could not save the transcript: {exc}")
 
 
 def _result_budget(config: BotConfig, settings: dict[str, Any]) -> int:
@@ -3984,7 +3983,7 @@ def _rule_denied(ctx: Any, perm: Any) -> str:
         paths=tuple(getattr(perm, "paths", ()) or ()),
         workspace=ctx.workspace,
     )
-    return f"blocked by the deny rule {rule} in .bot/settings.json" if rule is not None else ""
+    return f"blocked by the deny rule {rule} in .crit/settings.json" if rule is not None else ""
 
 
 #: Risks a saved allow rule may answer: a read or write outside the workspace that the user
@@ -4021,14 +4020,14 @@ def _rule_allows(ctx: Any, perm: Any, risky: str) -> bool:
 
 
 def _save_allow_rule(ctx: Any, rule: str) -> None:
-    """Remember ``rule`` for this session and in .bot/settings.json, so it holds after a restart."""
-    from critique_bot import agent_rules, bot_home
+    """Remember ``rule`` for this session and in .crit/settings.json, so it holds after a restart."""
+    from critique_bot import agent_rules, project_home
 
     ctx.rules = agent_rules.with_allow(getattr(ctx, "rules", None) or agent_rules.Rules(), rule)
     try:
-        home = bot_home.find_bot_home(ctx.workspace)
+        home = project_home.find_bot_home(ctx.workspace)
         if home is not None:
-            bot_home.add_allow_rule(home, rule)
+            project_home.add_allow_rule(home, rule)
     except Exception as exc:  # the session still remembers it
         log.warn(f"could not save the rule {rule!r}: {exc}")
 

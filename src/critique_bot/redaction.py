@@ -137,6 +137,17 @@ def _value_is_secret(text: str, match: re.Match[str]) -> bool:
     return config_line and (len(value) >= 8 or has_digit)
 
 
+#: Exact secret values crit knows at runtime (the local server's API key): always hidden.
+_secret_values: set[str] = set()
+
+
+def add_secret_value(value: str) -> None:
+    """Hide ``value`` wherever it appears from now on (messages, transcripts, the log file)."""
+    value = (value or "").strip()
+    if len(value) >= 4:
+        _secret_values.add(value)
+
+
 def redact_secrets(text: str) -> tuple[str, int]:
     """``text`` with credentials replaced by ``[REDACTED:kind]``, and how many were replaced.
 
@@ -148,6 +159,10 @@ def redact_secrets(text: str) -> tuple[str, int]:
     if not text:
         return text, 0
     count = 0
+    for value in sorted(_secret_values, key=len, reverse=True):
+        if value in text:
+            count += text.count(value)
+            text = text.replace(value, f"{REDACTED}api_key]")
     for kind, pattern in _SECRET_PATTERNS:
         marker = f"{REDACTED}{kind}]"
         if "keep" in pattern.groupindex:
@@ -496,13 +511,16 @@ def redact_pii(text: str) -> tuple[str, int]:
     return text, count
 
 
-def redact_outgoing(prompt: str) -> str:
+def redact_outgoing(prompt: str, *, report: bool = True) -> str:
     """``prompt`` with secrets, personal data, and custom names replaced by ``[REDACTED:kind]``.
 
     Every backend sends through this. Order: secrets, then personal data (so an email at a
-    company domain goes as a whole), then the ``redact_terms`` names.
+    company domain goes as a whole), then the ``redact_terms`` names. ``report=False`` (the
+    log file's own lines) leaves out the "redacted N ..." log lines.
     """
     text, hidden = redact_secrets(prompt)
+    if not report:
+        return redact_terms(redact_pii(text)[0])[0]
     if hidden:
         log.info(f"redacted {hidden} secret(s) before sending")
     text, personal = redact_pii(text)

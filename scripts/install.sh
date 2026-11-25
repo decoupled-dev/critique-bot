@@ -4,9 +4,9 @@
 #   curl -fsSL https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.sh | sh
 #
 # Downloads the latest release for this machine (x64 or arm64), checks it against the
-# release's SHA256SUMS.txt, and runs "critique-bot install", which puts crit in
+# release's SHA256SUMS.txt, and runs "crit install", which puts crit in
 # ~/.crit (app/<version> and bin, added to PATH if needed; CRIT_HOME moves it). Settings
-# are asked the first time crit needs them. CRIT_VERSION=1.0.1 picks a version.
+# are asked the first time crit needs them. CRIT_VERSION=1.0.5 picks a version (1.0.5 or later).
 # CRIT_CONFIG_FILE=/path/to/crit.json also sets the config file (url, page elements, ...),
 # so crit asks nothing on first run.
 set -eu
@@ -34,7 +34,7 @@ else
     [ -n "$tag" ] || { echo "Could not find the latest release." >&2; exit 1; }
 fi
 version="${tag#v}"
-zip="critique-bot-$version-linux-$arch.zip"
+zip="crit-$version-linux-$arch.zip"
 base="https://github.com/$repo/releases/download/$tag"
 
 work=$(mktemp -d)
@@ -49,8 +49,8 @@ curl -fsSL -o "$work/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
     sha256sum -c expected.txt >/dev/null || { echo "Checksum mismatch for $zip. Nothing was installed." >&2; exit 1; }
 )
 unzip -q "$work/$zip" -d "$work"
-exe=$(find "$work" -type f -name critique-bot | head -n 1)
-[ -n "$exe" ] || { echo "critique-bot not found in $zip" >&2; exit 1; }
+exe=$(find "$work" -type f -name crit | head -n 1)
+[ -n "$exe" ] || { echo "crit not found in $zip" >&2; exit 1; }
 chmod +x "$exe"
 if [ -n "${CRIT_CONFIG_FILE:-}" ]; then
     "$exe" install --config-file "$CRIT_CONFIG_FILE"

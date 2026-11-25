@@ -226,13 +226,13 @@ class ToolContext:
     web_hosts: tuple[str, ...] = ()
     #: Runs briefs in helper chat tabs at the same time (see agent_helpers). None when there are none.
     delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
-    #: Saved "allow" and "deny" rules from .bot/settings.json (agent_rules.Rules); None when there are none.
+    #: Saved "allow" and "deny" rules from .crit/settings.json (agent_rules.Rules); None when there are none.
     rules: Any = None
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
         # Resolved like the workspace (no 8.3 short names on Windows), so a saved output
-        # under .bot/cache is reported workspace-relative, not as an outside path.
+        # under .crit/cache is reported workspace-relative, not as an outside path.
         if self.cache_dir is not None:
             self.cache_dir = Path(self.cache_dir).resolve()
 
@@ -1478,15 +1478,21 @@ def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
 
 def _protected_paths(ctx: ToolContext) -> list[Path]:
     """crit's settings, skills, and the config file named in them: the model may not rewrite its own rules."""
-    bot = ctx.workspace / ".bot"
-    out = [bot / "settings.json", bot / "skills"]
-    try:
-        raw = json.loads((bot / "settings.json").read_text(encoding="utf-8")).get("config")
-    except (OSError, ValueError, AttributeError):
-        raw = None
-    if isinstance(raw, str) and raw.strip():
-        config = Path(raw)
-        out.append((config if config.is_absolute() else ctx.workspace / config).resolve())
+    from critique_bot.project_home import legacy_project_dir, project_dir
+
+    own = project_dir(ctx.workspace, migrate=False)
+    out = [own / "settings.json", own / "skills"]
+    # A leftover .bot folder from 1.0.x is protected the same way.
+    legacy = legacy_project_dir(ctx.workspace)
+    out += [legacy / "settings.json", legacy / "skills"]
+    for folder in (own, legacy):
+        try:
+            raw = json.loads((folder / "settings.json").read_text(encoding="utf-8")).get("config")
+        except (OSError, ValueError, AttributeError):
+            raw = None
+        if isinstance(raw, str) and raw.strip():
+            config = Path(raw)
+            out.append((config if config.is_absolute() else ctx.workspace / config).resolve())
     return out
 
 
@@ -1814,7 +1820,7 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     patch = patch.replace("\r\n", "\n")
     if not patch.endswith("\n"):
         patch += "\n"
-    folder = ctx.cache_dir or Path(tempfile.mkdtemp(prefix="bot-patch-"))
+    folder = ctx.cache_dir or Path(tempfile.mkdtemp(prefix="crit-patch-"))
     folder.mkdir(parents=True, exist_ok=True)
     patch_path = folder / "apply.patch"
     patch_path.write_text(patch, encoding="utf-8")
@@ -1911,14 +1917,14 @@ def patched_paths(patch: str) -> list[str]:
 # --------------------------------------------------------------------------- commands and git
 
 
-#: Full outputs kept in .bot/cache/output; older ones are removed.
+#: Full outputs kept in .crit/cache/output; older ones are removed.
 KEEP_OUTPUTS = 40
 _OUTPUT_LOCK = threading.Lock()
 
 
 def _clip_output(body: str, ctx: ToolContext) -> str:
     """``body`` cut to fit one tool result. When something was cut, the whole text is saved
-    under ``.bot/cache/output`` and the result says where, so the middle is not lost."""
+    under ``.crit/cache/output`` and the result says where, so the middle is not lost."""
     clipped = agent_shell.head_tail(body, max_chars=ctx.max_chars)
     if clipped == body or ctx.cache_dir is None:
         return clipped
@@ -2539,7 +2545,7 @@ def is_git_repo(workspace: Path) -> bool:
 
 _REV_RE = re.compile(r"^[A-Za-z0-9_./~^@{}:-]+$")
 _TODO_STATUS = {"pending", "in_progress", "completed", "cancelled"}
-_SKILL_ROOTS = (".bot/skills", ".agents/skills", ".opencode/skills")
+_SKILL_ROOTS = (".crit/skills", ".bot/skills", ".agents/skills", ".opencode/skills")
 
 
 def _git_log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -2626,7 +2632,7 @@ def _skill(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     name = args.get("name")
     if not isinstance(name, str) or not name.strip():
         if not found:
-            return ok("skill", "no skills. Add SKILL.md under .bot/skills/<name>/.", ctx)
+            return ok("skill", "no skills. Add SKILL.md under .crit/skills/<name>/.", ctx)
         return ok(
             "skill",
             "\n".join(f"{item['name']} ({item['source']}): {item['description']}" for item in found),
@@ -2654,7 +2660,7 @@ def builtin_skills_dir() -> Path | None:
 
 
 def discover_skills(workspace: Path) -> list[dict[str, Any]]:
-    """Project skills (.bot/skills, .agents/skills, .opencode/skills), then the built-in ones.
+    """Project skills (.crit/skills, .agents/skills, .opencode/skills), then the built-in ones.
 
     A project skill with the same name as a built-in one replaces it.
     """
@@ -2916,7 +2922,7 @@ def outbound_problem(url: str, hosts: tuple[str, ...]) -> str:
     if not hosts:
         return (
             "web_fetch is off: nothing leaves this machine but what crit sends to the model. "
-            'It reads documentation sites only when .bot/settings.json has "web_fetch": true'
+            'It reads documentation sites only when .crit/settings.json has "web_fetch": true'
         )
     try:
         parts = urllib.parse.urlsplit(url)
@@ -2930,7 +2936,7 @@ def outbound_problem(url: str, hosts: tuple[str, ...]) -> str:
         return (
             f"{host or url} is not one of the documentation sites web_fetch may read ({', '.join(hosts[:8])}"
             + (", ..." if len(hosts) > 8 else "")
-            + "); add it to web_fetch_hosts in .bot/settings.json if it is needed"
+            + "); add it to web_fetch_hosts in .crit/settings.json if it is needed"
         )
     if parts.username or parts.password:
         return "a URL with a user name or password is not fetched"

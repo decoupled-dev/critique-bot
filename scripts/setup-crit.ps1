@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-Install critique-bot into a virtual environment and put crit, bot-agent, and
-critique-bot on the user PATH (Windows).
+Install crit from this checkout into a virtual environment and put crit on
+the user PATH (Windows).
 
 .DESCRIPTION
-Automates the manual steps in docs/bot-agent.md:
+Automates the manual steps in docs/agent.md:
   1. finds Python 3.10 or newer (py -3, then python / python3; the Microsoft
      Store python.exe stub is skipped),
   2. creates the virtual environment and runs pip install -e,
@@ -12,7 +12,7 @@ Automates the manual steps in docs/bot-agent.md:
   4. creates config.json from config.example.json if missing, rewrites a
      relative user_data_dir to a full path next to the config file, and adds
      names to hide (-RedactTerms, or asked for on a new config),
-  5. writes crit.cmd, bot-agent.cmd, and critique-bot.cmd into BinDir,
+  5. writes crit.cmd into BinDir,
   6. puts BinDir first on the user PATH (and in this session),
   7. runs crit --help through the new command,
 Behind a proxy, pass -ProxyHost and -ProxyPort (and -ProxyUser; the password
@@ -31,8 +31,8 @@ Virtual environment to create/use. Default: <repo>\.venv
 Config file the commands use. Default: <repo>\config.json
 
 .PARAMETER BinDir
-Folder for crit.cmd, bot-agent.cmd, critique-bot.cmd.
-Default: %LOCALAPPDATA%\critique-bot\bin
+Folder for crit.cmd.
+Default: %LOCALAPPDATA%\crit\bin
 
 .PARAMETER Proxy
 Proxy as one URL, for example http://username:password@10.1.2.3:8080.
@@ -299,8 +299,8 @@ function Get-PipPin([string]$ConstraintsPath) {
 function Get-WrapperText([string]$Exe, [string]$ConfigPath) {
     $exeQ = '"' + $Exe.Replace("%", "%%") + '"'
     if ($ConfigPath) {
-        # CRITIQUE_CONFIG (not --config) so subcommands still come first: crit config, crit setup.
-        $line = "setlocal`r`n" + 'set "CRITIQUE_CONFIG=' + $ConfigPath.Replace("%", "%%") + '"' + "`r`n" + $exeQ + ' %*'
+        # CRIT_CONFIG (not --config) so subcommands still come first: crit config, crit setup.
+        $line = "setlocal`r`n" + 'set "CRIT_CONFIG=' + $ConfigPath.Replace("%", "%%") + '"' + "`r`n" + $exeQ + ' %*'
     } else {
         $line = $exeQ + " %*"
     }
@@ -420,21 +420,21 @@ function Invoke-Setup {
 
     $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
     if (-not (Test-Path -LiteralPath (Join-Path $repo "pyproject.toml"))) {
-        Stop-Setup "$repo does not look like the critique-bot checkout (no pyproject.toml)"
+        Stop-Setup "$repo does not look like the crit checkout (no pyproject.toml)"
     }
     $venvDir = $Venv
     if (-not $venvDir) { $venvDir = Join-Path $repo ".venv" }
     $configPath = $Config
     if (-not $configPath) { $configPath = Join-Path $repo "config.json" }
     $binPath = $BinDir
-    if (-not $binPath) { $binPath = Join-Path $env:LOCALAPPDATA "critique-bot\bin" }
+    if (-not $binPath) { $binPath = Join-Path $env:LOCALAPPDATA "crit\bin" }
     $venvDir = Get-FullPath $venvDir
     $configPath = Get-FullPath $configPath
     $binPath = (Get-FullPath $binPath).TrimEnd([char]92)
     $scripts = Join-Path $venvDir "Scripts"
     $venvPython = Join-Path $scripts "python.exe"
 
-    Write-Step "critique-bot checkout: $repo"
+    Write-Step "crit checkout: $repo"
     Write-Info "venv:    $venvDir"
     Write-Info "config:  $configPath"
     Write-Info "bin dir: $binPath"
@@ -525,9 +525,9 @@ function Invoke-Setup {
         $target = $repo
         if ($WithIndex) {
             $target = "$repo[index]"
-            Write-Step "Installing critique-bot with the [index] extra (pip install -e)"
+            Write-Step "Installing crit with the [index] extra (pip install -e)"
         } else {
-            Write-Step "Installing critique-bot (pip install -e)"
+            Write-Step "Installing crit (pip install -e)"
         }
         # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
         $pins = @()
@@ -555,7 +555,7 @@ function Invoke-Setup {
         }
         if ($rc -ne 0) { Stop-Setup "pip install -e $target failed" }
     }
-    foreach ($exe in @("crit", "bot-agent", "critique-bot")) {
+    foreach ($exe in @("crit")) {
         if (-not (Test-Path -LiteralPath (Join-Path $scripts "$exe.exe"))) {
             Stop-Setup "$scripts\$exe.exe is missing; the pip install did not finish"
         }
@@ -635,8 +635,6 @@ function Invoke-Setup {
     Write-Step "Writing commands into $binPath"
     New-Item -ItemType Directory -Force -Path $binPath | Out-Null
     Write-Wrapper (Join-Path $binPath "crit.cmd") (Get-WrapperText (Join-Path $scripts "crit.exe") $configPath)
-    Write-Wrapper (Join-Path $binPath "bot-agent.cmd") (Get-WrapperText (Join-Path $scripts "bot-agent.exe") $configPath)
-    Write-Wrapper (Join-Path $binPath "critique-bot.cmd") (Get-WrapperText (Join-Path $scripts "critique-bot.exe") "")
 
     # 6. PATH
     $pathChanged = $false

@@ -2,15 +2,15 @@
 
 This is the option for rolling out one file to many people. People who use crit should not
 have to configure anything: you write one **config file** with the url, the page elements, and
-the rules, and put it where crit finds it (`CRITIQUE_CONFIG_FILE`, or the system location
-below). crit then asks no first-run questions: it says `Using <path>` and carries on. A person
+the rules, and put it where crit finds it (`CRIT_CONFIG_FILE`, or the system location
+below). crit then asks no first-run questions and carries on (the log file `~/.crit/logs/crit.log` notes `Using <path>`). A person
 can also point at it themselves with `crit config --config-file PATH` (the first-run question
-names that command; at install time, `install --config-file PATH` or the installers'
+names that command; at install time, `crit install --config-file PATH` or the installers'
 `CRIT_CONFIG_FILE`). Every other folder the person opens crit in asks
 nothing (the role for a project is picked from its files; the person signs in once).
 
 A starter: [`config-file.example.json`](../config-file.example.json). The .deb also installs
-it at `/usr/share/critique-bot/examples/`. Copy it, set the `url`, check the selectors once
+it at `/usr/share/crit/examples/`. Copy it, set the `url`, check the selectors once
 (see [Finding the selectors once](#finding-the-selectors-once)), and share that one file:
 
 ```json
@@ -73,7 +73,7 @@ Everything else is optional; a key you leave out keeps crit's default:
 
 JSON has no comments, so the table above is the reference for each key.
 
-Keys this crit version does not know are ignored (noted with `--logs`), so a newer file
+Keys this crit version does not know are ignored (noted in the log file), so a newer file
 works with an older crit.
 
 ## Locked and adjustable keys
@@ -85,11 +85,11 @@ settings (`crit config`). The file decides these, and `crit config` refuses to c
 - `url`, `backend`, `local`, `cdp_url`, `allowed_hosts`, `redact_pii`, `gitlab.base_url`;
 - each selector the file sets (one it leaves out stays the person's);
 - `egress` and `page_network`: a person may tighten `"open"` to `"strict"`, never loosen;
-  `CRITIQUE_EGRESS=open` does not loosen the file's `"strict"` either.
+  `CRIT_EGRESS=open` does not loosen the file's `"strict"` either.
 - `redact_terms`: the person may add names, never remove the file's.
 
 Everything else (model, timeouts, limits) is a default: the file's value applies unless the
-person set their own. Environment overrides such as `CRITIQUE_CHAT_URL` do not change a
+person set their own. Environment overrides such as `CRIT_URL` do not change a
 locked key.
 
 `crit config` shows the file first and marks what comes from it:
@@ -105,35 +105,37 @@ url: https://ai.example.com/ (config file, locked)
 The first of these that is set:
 
 1. `config_file` in the person's user config (written by `crit config --config-file PATH` or
-   `install --config-file PATH`; `--config-file none` removes it);
-2. the `CRITIQUE_CONFIG_FILE` environment variable;
-3. the system location, if the file exists: `/etc/critique-bot/crit.json` on Linux and macOS,
-   `%ProgramData%\critique-bot\crit.json` on Windows.
+   `crit install --config-file PATH`; `--config-file none` removes it);
+2. the `CRIT_CONFIG_FILE` environment variable;
+3. the system location, if the file exists: `/etc/crit/crit.json` on Linux and macOS,
+   `%ProgramData%\crit\crit.json` on Windows. The 1.0.x locations, `/etc/critique-bot/crit.json`
+   and `%ProgramData%\critique-bot\crit.json`, are still read when the new file is missing.
 
-With 2 or 3 the first run asks nothing: it says `Using <path>` and goes on.
+With 2 or 3 the first run asks nothing and goes on (the log file notes `Using <path>`).
 
 Paths may be UNC (`\\server\share\crit.json`; kept as given) or `C:\...`; quotes from a
 pasted "Copy as path" are removed.
 
 Personal things never come from this file: a `user_data_dir` in it (the browser profile with
-the person's sign-in) is ignored with a log line. The profile is `~/.crit/browser-profile`
+the person's sign-in) is ignored with a log line, and so is a `local.api_key` (a local model
+server's API key comes only from the person's own `~/.crit/config.json` or `CRIT_API_KEY`). The profile is `~/.crit/browser-profile`
 unless the person sets their own.
 
 ## Deployment
 
 - **A file share.** Put `crit.json` on a share everyone can read, and tell people the path
   (or set it at install, below). Changes reach everyone on their next crit start.
-- **Windows (Intune, GPO, SCCM).** Copy the file to `%ProgramData%\critique-bot\crit.json`
+- **Windows (Intune, GPO, SCCM).** Copy the file to `%ProgramData%\crit\crit.json`
   (readable by Users). Nobody is asked anything.
-- **Linux (Ansible, Puppet, an image).** Copy it to `/etc/critique-bot/crit.json`, mode 0644.
-  The .deb creates `/etc/critique-bot` readable by everyone (its worker `config.json` in there
+- **Linux (Ansible, Puppet, an image).** Copy it to `/etc/crit/crit.json`, mode 0644.
+  The .deb creates `/etc/crit` readable by everyone (its worker `config.json` in there
   stays 0640), so if that file exists nothing else is needed.
 - **At install time.** `CRIT_CONFIG_FILE=/path/crit.json` with `install.sh`, or
   `$env:CRIT_CONFIG_FILE = "\\server\share\crit.json"` before `install.ps1`, or
-  `critique-bot install --config-file PATH`: crit stores the path for that user after installing.
+  `crit install --config-file PATH`: crit stores the path for that user after installing.
 
 The downloaded program installs itself the first time it runs (no question;
-`CRIT_NO_AUTO_INSTALL=1` turns that off), so a double-click on `critique-bot.exe` installs,
+`CRIT_NO_AUTO_INSTALL=1` turns that off), so a double-click on `crit.exe` installs,
 asks for the config file, and explains how to start crit in a project folder.
 
 ## Finding the selectors once
@@ -151,6 +153,6 @@ On one PC, without a config file:
 crit reads the file on every start, so an edit applies from the next start. After each good
 read it keeps a copy in crit's folder (`~/.crit/cache/config-file.cache.json`, owner-only, with the
 source path and time). When the file cannot be read (the share is offline), crit uses that copy
-and says once: `<path> cannot be read; using its copy from <date>.` With neither the file nor
+and notes it in the log file: `<path> cannot be read; using its copy from <date>.` With neither the file nor
 a copy, crit stops and says so. A file that is there but broken (bad JSON, missing keys) is
 never replaced by the copy: crit stops and names the problem.

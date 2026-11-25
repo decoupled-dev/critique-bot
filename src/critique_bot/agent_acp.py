@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Iterable
 
-from critique_bot import agent_ui, roles
+from critique_bot import agent_ui, log, roles
 
 #: ACP protocol version this agent speaks.
 PROTOCOL_VERSION = 1
@@ -237,7 +237,7 @@ def _read_loop(stream: IO[str], generation: int) -> None:
                 if "id" in message and "method" in message:
                     _fail(message.get("id"), INTERNAL_ERROR, str(exc))
                 else:
-                    print(f"acp: {message.get('method')}: {exc}", file=sys.stderr)
+                    log.info(f"acp: {message.get('method')}: {exc}")
     except (OSError, ValueError):
         pass
     finally:
@@ -323,7 +323,7 @@ def _new_session(request_id: Any, params: dict[str, Any]) -> None:
             _state.pending_new.append(request_id)
             _session_asked.set()
             return
-        # The workspace can be a parent of the folder the client asked for (a .bot found by
+        # The workspace can be a parent of the folder the client asked for (a .crit found by
         # walking upward), so a later chat for that same folder must still match.
         served = _same_folder(cwd, _state.requested_cwd) or (
             _state.ready and _same_folder(cwd, _state.workspace)
@@ -461,23 +461,24 @@ def redact_servers(servers: Any) -> list[Any]:
 
 
 def _record_client() -> None:
-    """Keep what the client offered in .bot/acp-client.json (and one log line), to see which IDE tools exist."""
+    """Keep what the client offered in .crit/acp-client.json (and one log line), to see which IDE tools exist."""
     with _lock:
         info = json.loads(json.dumps(_state.client, default=str))
     servers = info.get("mcpServers") or []
     names = ", ".join(str(s.get("name") or s.get("command") or s.get("url") or "?") for s in servers if isinstance(s, dict))
     caps = info.get("clientCapabilities") or {}
-    print(
+    log.info(
         f"acp: client {json.dumps(info.get('clientInfo'))}, capabilities {json.dumps(caps)}, "
-        f"{len(servers)} MCP server(s){': ' + names if names else ''}",
-        file=sys.stderr,
+        f"{len(servers)} MCP server(s){': ' + names if names else ''}"
     )
-    bot = _state.workspace / ".bot"
-    if bot.is_dir():
+    from critique_bot.project_home import project_dir
+
+    own = project_dir(_state.workspace, migrate=False)
+    if own.is_dir():
         try:
-            (bot / "acp-client.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+            (own / "acp-client.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
         except OSError as exc:
-            print(f"acp: could not write {bot / 'acp-client.json'}: {exc}", file=sys.stderr)
+            log.info(f"acp: could not write {own / 'acp-client.json'}: {exc}")
 
 
 def wait_for_session() -> Path | None:
@@ -764,13 +765,13 @@ def _set_role(word: str) -> None:
         _state.role = chosen
         _state.role_changed = chosen
     try:
-        from critique_bot.bot_home import find_bot_home, update_settings
+        from critique_bot.project_home import find_bot_home, update_settings
 
         home = find_bot_home(_state.workspace)
         if home is not None:
             update_settings(home, role=chosen)
     except Exception as exc:
-        print(f"acp: could not save the role: {exc}", file=sys.stderr)
+        log.info(f"acp: could not save the role: {exc}")
     note("good", f"Role: {roles.role_label(chosen)}")
 
 

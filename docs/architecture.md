@@ -12,7 +12,7 @@ wires the concrete pieces together.
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
-             agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, bot_home
+             agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home
 1  models    model_api (interface), provider + browser + chat_client (web page in Edge),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM), setup_ui
 0  core      config, log, patch (input limits), redaction, output, roles
@@ -27,7 +27,7 @@ its `LAYERS` table.
 | Layer | Interface | What goes through it |
 | --- | --- | --- |
 | models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens` |
-| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.bot` state). |
+| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
 | engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |
 

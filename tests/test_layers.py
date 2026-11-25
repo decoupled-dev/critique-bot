@@ -23,6 +23,7 @@ LAYERS: dict[str, int] = {
     # core: shared by everything, depends on nothing above it
     "__init__": CORE,
     "log": CORE,
+    "env_names": CORE,
     "config": CORE,
     "config_prompts": CORE,
     "patch": CORE,
@@ -47,7 +48,7 @@ LAYERS: dict[str, int] = {
     "agent_rules": TOOLS,
     "code_index": TOOLS,
     "workspace": TOOLS,
-    "bot_home": TOOLS,
+    "project_home": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
     "agent_helpers": ENGINE,
@@ -79,7 +80,7 @@ INTERFACES: dict[int, frozenset[str]] = {
     MODELS: frozenset({"model_api"}),
     # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
     # services the engine drives directly are part of the interface.
-    TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "bot_home"}),
+    TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when

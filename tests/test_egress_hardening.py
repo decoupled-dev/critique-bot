@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot import agent_tools, bot_home, workspace
+from critique_bot import agent_tools, project_home, workspace
 from critique_bot.agent_tools import TaskState, ToolContext, network_command, network_script, permission_for
 
 
@@ -150,10 +150,10 @@ class PermissionTests(unittest.TestCase):
         self.assertNotIn("NEEDLE=1", result["output"])
 
     def test_the_model_cannot_rewrite_crits_settings(self) -> None:
-        bot = self.root / ".bot"
+        bot = self.root / ".crit"
         bot.mkdir()
         (bot / "settings.json").write_text(json.dumps({"config": "my-config.json"}), encoding="utf-8")
-        for target in (".bot/settings.json", ".bot/skills/x/SKILL.md", "my-config.json"):
+        for target in (".crit/settings.json", ".crit/skills/x/SKILL.md", "my-config.json"):
             result = agent_tools.execute("write_files", {"files": [{"path": target, "content": "{}"}]}, self.ctx)
             self.assertFalse(result["ok"], target)
             self.assertIn("crit's own settings", result["error"])
@@ -191,7 +191,7 @@ class CommittedSettingsTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name).resolve()  # the config path comes back resolved (no 8.3 names on Windows)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        (self.root / ".bot").mkdir()
+        (self.root / ".crit").mkdir()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -200,24 +200,24 @@ class CommittedSettingsTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.root), "add", "-f", *names], check=True)
 
     def test_committed_config_is_refused(self) -> None:
-        (self.root / ".bot" / "settings.json").write_text(json.dumps({"config": "tools/config.json"}), encoding="utf-8")
+        (self.root / ".crit" / "settings.json").write_text(json.dumps({"config": "tools/config.json"}), encoding="utf-8")
         (self.root / "tools").mkdir()
         (self.root / "tools" / "config.json").write_text("{}", encoding="utf-8")
-        home = bot_home.find_bot_home(self.root)
+        home = project_home.find_bot_home(self.root)
         self.assertEqual(home.config_file(), self.root / "tools" / "config.json")  # untracked: the user's own
         self._commit("tools/config.json")
-        with self.assertRaises(bot_home.BotHomeError):
+        with self.assertRaises(project_home.BotHomeError):
             home.config_file()
 
     def test_committed_settings_lose_their_permission_keys(self) -> None:
         settings = {"permissions": "auto", "web_fetch": True, "web_fetch_hosts": ["evil.example"], "theme": "light"}
-        path = self.root / ".bot" / "settings.json"
+        path = self.root / ".crit" / "settings.json"
         path.write_text(json.dumps(settings), encoding="utf-8")
-        self.assertEqual(bot_home.find_bot_home(self.root).settings["permissions"], "auto")
-        self._commit(".bot/settings.json")
-        home = bot_home.find_bot_home(self.root)
+        self.assertEqual(project_home.find_bot_home(self.root).settings["permissions"], "auto")
+        self._commit(".crit/settings.json")
+        home = project_home.find_bot_home(self.root)
         self.assertEqual(home.settings, {"theme": "light"})
-        bot_home.update_settings(home, role="android")
+        project_home.update_settings(home, role="android")
         on_disk = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["permissions"], "auto")  # kept in the file, just not honored
         self.assertEqual(on_disk["role"], "android")

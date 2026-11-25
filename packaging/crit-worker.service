@@ -1,5 +1,5 @@
 [Unit]
-Description=critique-bot review worker
+Description=crit review worker
 After=network-online.target
 Wants=network-online.target
 
@@ -8,25 +8,25 @@ Wants=network-online.target
 # signed-in browser profile (SSO cookies), processing/ jobs, or the token.
 # One-time setup (see DEPLOY.md, "CI runner (GitLab)"):
 #
-#   sudo useradd --system --home-dir /var/lib/critique-bot --create-home \
-#        --shell /usr/sbin/nologin critique-bot
-#   sudo usermod -aG critique-bot gitlab-runner      # CI may use the queue group
-#   sudo install -d -o critique-bot -g critique-bot -m 2750 /var/lib/critique-bot/queue
-#   # config.json: "queue_dir": "/var/lib/critique-bot/queue",
-#   #              "user_data_dir": "/var/lib/critique-bot/.edge-profile"
-#   sudo chown -R root:critique-bot /opt/critique-bot && sudo chmod -R o-rwx /opt/critique-bot
+#   sudo useradd --system --home-dir /var/lib/crit --create-home \
+#        --shell /usr/sbin/nologin crit
+#   sudo usermod -aG crit gitlab-runner      # CI may use the queue group
+#   sudo install -d -o crit -g crit -m 2750 /var/lib/crit/queue
+#   # config.json: "queue_dir": "/var/lib/crit/queue",
+#   #              "user_data_dir": "/var/lib/crit/.edge-profile"
+#   sudo chown -R root:crit /opt/crit && sudo chmod -R o-rwx /opt/crit
 #
-# With CRITIQUE_QUEUE_SHARED=1 the worker keeps inbox/ at 2770 (CI writes jobs),
+# With CRIT_QUEUE_SHARED=1 the worker keeps inbox/ at 2770 (CI writes jobs),
 # results/ at 2750 with 0640 status/review files (CI reads them), and
 # processing/, failure snapshots, and the browser profile owner-only.
 
 [Service]
 Type=simple
-User=critique-bot
-Group=critique-bot
-WorkingDirectory=/opt/critique-bot
-ExecStart=/opt/critique-bot/critique-bot worker --config /opt/critique-bot/config.json --logs
-Environment=CRITIQUE_QUEUE_SHARED=1
+User=crit
+Group=crit
+WorkingDirectory=/opt/crit
+ExecStart=/opt/crit/crit worker --config /opt/crit/config.json --logs
+Environment=CRIT_QUEUE_SHARED=1
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
@@ -40,7 +40,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 # The only places the worker writes: its home (profile, queue). Add the folder
 # of config.json's queue_dir / user_data_dir here if you keep them elsewhere.
-ReadWritePaths=/var/lib/critique-bot
+ReadWritePaths=/var/lib/crit
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

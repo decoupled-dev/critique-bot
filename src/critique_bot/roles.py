@@ -1,7 +1,7 @@
 """The role crit plays in a repository: a persona the system prompt is shaped around.
 
 The first ``crit`` in a folder picks one from the project's files (:func:`detect_role`)
-and stores it as ``"role"`` in ``.bot/settings.json``; ``/role`` and ``--role`` change it. Each role's
+and stores it as ``"role"`` in ``.crit/settings.json``; ``/role`` and ``--role`` change it. Each role's
 model-facing text is a ``<<<ROLE_...>>>`` section of ``prompts/agent.txt``
 (see :func:`section_key`); this module only knows the names.
 """
@@ -136,7 +136,7 @@ def section_key(role_id: object) -> str:
 #: Files or folders whose presence says what a project is (checked at the root and one level down).
 _ANDROID_APP_MARKERS = ("AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "src/main/AndroidManifest.xml")
 _AI_PACKAGES = ("openai", "anthropic", "torch", "transformers", "langchain", "llama_index", "llama-index", "tensorflow", "onnxruntime", "vllm")
-_SKIP_DIRS = frozenset({".git", ".bot", "node_modules", "build", "out", ".gradle", ".venv", "venv", "__pycache__", "dist", "target"})
+_SKIP_DIRS = frozenset({".git", ".crit", ".bot", "node_modules", "build", "out", ".gradle", ".venv", "venv", "__pycache__", "dist", "target"})
 
 
 def detect_role(root: object) -> str:

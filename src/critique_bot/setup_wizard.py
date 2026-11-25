@@ -1,7 +1,7 @@
 """First-run questions: how crit reaches the model, and what it needs to do that.
 
-A config file found without a question (``CRITIQUE_CONFIG_FILE`` or the system location:
-``/etc/critique-bot/crit.json``, ``%ProgramData%\\critique-bot\\crit.json``) wins: it is used
+A config file found without a question (``CRIT_CONFIG_FILE`` or the system location:
+``/etc/crit/crit.json``, ``%ProgramData%\\crit\\crit.json``) wins: it is used
 and nothing is asked. Otherwise ``crit`` asks, one question at a time:
 
 - **Local model**: a model server (llama.cpp's llama-server, LM Studio, vLLM) on this PC or
@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from critique_bot import log, redaction
 from critique_bot.config import (
     STARTER_SELECTORS,
     CompanySettings,
@@ -43,6 +44,9 @@ from critique_bot.config import (
     user_config_path,
     write_config_file,
 )
+
+#: local_model.PROBE_NEEDS_KEY: the server answered 401 or 403.
+PROBE_NEEDS_KEY = "needs-key"
 
 Ask = Callable[[str], str]
 Say = Callable[[str], None]
@@ -90,10 +94,10 @@ _SKIPPABLE = ("model_dropdown", "model_dropdown_identifier", "model_option")
 
 
 def use_found_config_file(path: Path, *, say: Say | None = None) -> WizardResult | None:
-    """A config file found without asking (CRITIQUE_CONFIG_FILE or the system location): write
+    """A config file found without asking (CRIT_CONFIG_FILE or the system location): write
     ``path`` (an empty user config: the file keeps being found where it is) and say which.
     None when there is none; ConfigError when it is there but unusable."""
-    say = say or print
+    say = say or log.info  # found without a question: the log file says which, the screen nothing
     found = company_config_location({})
     if found is None:
         return None
@@ -117,11 +121,19 @@ def run_wizard(
     *,
     ask: Ask | None = None,
     say: Say | None = None,
-    probe: Callable[[str], Any] | None = None,
+    probe: Callable[..., Any] | None = None,
+    ask_secret: Ask | None = None,
 ) -> WizardResult | None:
-    """Ask how crit reaches the model and write ``path``. None when the person stops (Ctrl+C, EOF)."""
+    """Ask how crit reaches the model and write ``path``. None when the person stops (Ctrl+C, EOF).
+
+    ``ask_secret`` asks for the model server's API key without echo (getpass by default)."""
     raw_ask = ask or input
     say = say or print
+    if ask_secret is None:
+        import getpass
+
+        ask_secret = getpass.getpass
+    raw_secret = ask_secret
     if probe is None:
         from critique_bot.model_api import probe_server as probe
 
@@ -131,7 +143,13 @@ def run_wizard(
         except (KeyboardInterrupt, EOFError) as exc:
             raise _Stop from exc
 
-    found = use_found_config_file(path, say=say)
+    def asking_secret(prompt: str) -> str:
+        try:
+            return raw_secret(prompt)
+        except (KeyboardInterrupt, EOFError) as exc:
+            raise _Stop from exc
+
+    found = use_found_config_file(path)
     if found is not None:
         return found
     before = path.read_bytes() if path.is_file() else None
@@ -141,7 +159,7 @@ def run_wizard(
             say(line)
         choice = _choose(asking, say)
         if choice == "1":
-            data, after = _local(asking, say, probe)
+            data, after = _local(asking, say, probe, asking_secret)
         else:
             data, after = _web_ui(asking, say)
         _write(path, data)
@@ -221,8 +239,31 @@ def _is_remote(url: str) -> bool:
     return False
 
 
-def _local(ask: Ask, say: Say, probe: Callable[[str], Any]) -> tuple[dict, list[str]]:
+def _ask_api_key(ask: Ask, say: Say, probe: Callable[..., Any], url: str, ask_secret: Ask) -> tuple[str, Any]:
+    """The server answered 401/403: ask for its key (no echo) and check again. A refused key is
+    asked once more, then "Try another key?". The key and the last probe; "" when given up."""
+    tries = 0
+    while True:
+        key = ask_secret("API key: ").strip()
+        if not key:
+            say("  Type the key the server was started with (--api-key).")
+            continue
+        redaction.add_secret_value(key)
+        result = probe(url, key)
+        say(result.line)
+        if result.outcome != PROBE_NEEDS_KEY:
+            return key, result
+        tries += 1
+        if tries == 1:
+            continue
+        if not _yes_no(ask, "Try another key?", default=True):
+            say("Saving it without a key; set it later with: crit config --api-key")
+            return "", result
+
+
+def _local(ask: Ask, say: Say, probe: Callable[..., Any], ask_secret: Ask | None = None) -> tuple[dict, list[str]]:
     say("")
+    api_key = ""
     while True:
         raw = ask(SERVER_PROMPT).strip()
         url = parse_server(raw)
@@ -232,6 +273,8 @@ def _local(ask: Ask, say: Say, probe: Callable[[str], Any]) -> tuple[dict, list[
         say(f"Checking {url} ...")
         result = probe(url)
         say(result.line)
+        if getattr(result, "outcome", "") == PROBE_NEEDS_KEY and ask_secret is not None:
+            api_key, result = _ask_api_key(ask, say, probe, url, ask_secret)
         if result.reachable:
             break
         if not _yes_no(ask, "Try another address?", default=True):
@@ -239,6 +282,8 @@ def _local(ask: Ask, say: Say, probe: Callable[[str], Any]) -> tuple[dict, list[
             break
     model = _ask_model(ask, say, list(result.models) if result.reachable else [])
     data: dict[str, Any] = {"backend": "local", "url": url, "model": model}
+    if api_key:
+        data["local"] = {"api_key": api_key}
     after: list[str] = []
     if _is_remote(url):
         host = (urlsplit(url).hostname or "").lower()

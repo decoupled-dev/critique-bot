@@ -340,7 +340,7 @@ class SkillTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in agent_tools.select_skills("fix the login bug", self.root)], ["android"])
 
     def test_project_skill_replaces_builtin_and_pins_load(self) -> None:
-        skill = self.root / ".bot" / "skills" / "kotlin" / "SKILL.md"
+        skill = self.root / ".crit" / "skills" / "kotlin" / "SKILL.md"
         skill.parent.mkdir(parents=True)
         skill.write_text("---\nname: kotlin\ndescription: our kotlin rules\nkeywords: kotlin\n---\nUse our style.\n", encoding="utf-8")
         found = [item for item in agent_tools.discover_skills(self.root) if item["name"] == "kotlin"]
@@ -386,7 +386,7 @@ class _Restartable(_Scripted):
 class RoleTests(_Base):
     def setUp(self) -> None:
         super().setUp()
-        # /role saves to the UI's workspace; keep that in the temp folder, never the repo's .bot.
+        # /role saves to the UI's workspace; keep that in the temp folder, never the repo's .crit.
         agent_ui.configure(workspace=self.root)
 
     def test_role_skills_go_with_every_task(self) -> None:

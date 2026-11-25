@@ -1,4 +1,4 @@
-"""Saved permission rules: ``"allow"`` and ``"deny"`` in ``.bot/settings.json``.
+"""Saved permission rules: ``"allow"`` and ``"deny"`` in ``.crit/settings.json``.
 
 A rule is a command pattern (``"./gradlew test*"``, ``"git status*"``) or a tool with a
 path pattern (``"read(~/.gradle/**)"``, ``"edit(docs/**)"``), like Claude Code's

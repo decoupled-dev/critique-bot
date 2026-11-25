@@ -1,7 +1,7 @@
-# Start the critique-bot worker on a Windows GitLab runner.
+# Start the crit worker on a Windows GitLab runner.
 #
 # Install under Program Files (only administrators can write there), e.g.
-#   C:\Program Files\critique-bot\critique-bot.exe
+#   C:\Program Files\crit\crit.exe
 # and keep the browser profile and queue under the worker account's own
 # profile or a folder this script locks down. Do not install into a folder that
 # ordinary users (or CI jobs) can write to: anyone who can replace the exe or
@@ -10,11 +10,11 @@
 # Run it at logon or as a scheduled task under a dedicated worker account
 # (not the account the GitLab runner service uses):
 #
-#   schtasks /Create /TN critique-bot-worker /SC ONLOGON /RL LIMITED `
-#     /TR "powershell.exe -File ""C:\Program Files\critique-bot\worker-start.ps1"""
+#   schtasks /Create /TN crit-worker /SC ONLOGON /RL LIMITED `
+#     /TR "powershell.exe -File ""C:\Program Files\crit\worker-start.ps1"""
 #
 # This script does NOT change PATH. Put the full exe path in .gitlab-ci.yml
-# (CRITIQUE_BIN), or have an administrator add the Program Files folder to
+# (CRIT_BIN), or have an administrator add the Program Files folder to
 # the system PATH. A user-writable folder early in PATH lets anyone who can
 # write there shadow other programs.
 #
@@ -23,21 +23,21 @@
 # only. If the GitLab runner uses another account, name it in $RunnerAccount:
 # it gets read/execute on the install folder (to run `submit`) and modify on
 # the queue folder only. The browser profile is made private to the worker
-# account by critique-bot itself. Set $SkipAcl = $true if your administrators
+# account by crit itself. Set $SkipAcl = $true if your administrators
 # manage the ACLs themselves.
 
-$InstallDir = Join-Path $env:ProgramFiles "critique-bot"
+$InstallDir = Join-Path $env:ProgramFiles "crit"
 $QueueDir = Join-Path $InstallDir ".critique-queue"   # must match queue_dir in config.json
 $RunnerAccount = ""                                   # e.g. "CORP\svc-gitlab-runner"
 $SkipAcl = $false
 $Config = Join-Path $InstallDir "config.json"
 $Exe = @(
-    (Join-Path $InstallDir "critique-bot.exe"),
-    (Join-Path $InstallDir ".venv\Scripts\critique-bot.exe")
+    (Join-Path $InstallDir "crit.exe"),
+    (Join-Path $InstallDir ".venv\Scripts\crit.exe")
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $Exe) {
-    throw "critique-bot.exe not found under $InstallDir (zip exe or .venv\Scripts). Set `$InstallDir."
+    throw "crit.exe not found under $InstallDir (zip exe or .venv\Scripts). Set `$InstallDir."
 }
 if (-not (Test-Path $Config)) {
     throw "config.json not found at $Config"

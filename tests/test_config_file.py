@@ -43,6 +43,7 @@ class _Isolated(unittest.TestCase):
         clean.update(
             {
                 "HOME": str(self.root / "home"),
+                "USERPROFILE": str(self.root / "home"),
                 "XDG_CONFIG_HOME": str(self.xdg),
                 "APPDATA": str(self.xdg),
                 "ProgramData": str(self.root / "ProgramData"),
@@ -50,7 +51,7 @@ class _Isolated(unittest.TestCase):
         )
         self._env = patch.dict(os.environ, clean, clear=True)
         self._env.start()
-        self.system = self.root / "etc" / "critique-bot" / "crit.json"
+        self.system = self.root / "etc" / "crit" / "crit.json"
         self._system = patch.object(config, "system_company_config_path", lambda: self.system)
         self._system.start()
         self._policy = egress.policy()
@@ -107,7 +108,7 @@ class DiscoveryTests(_Isolated):
             # os.name is global: keep pathlib on this system's paths while crit thinks it is Windows.
             with patch.object(config.os, "name", "nt"), patch.object(config, "Path", PosixPath):
                 path = _real_system_path()
-            self.assertEqual(path, Path(os.environ["ProgramData"]) / "critique-bot" / "crit.json")
+            self.assertEqual(path, Path(os.environ["ProgramData"]) / "crit" / "crit.json")
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps(_TEAM), encoding="utf-8")
             with patch.object(config.os, "name", "nt"), patch.object(config, "Path", PosixPath), patch.object(
@@ -121,7 +122,7 @@ class DiscoveryTests(_Isolated):
     def test_linux_system_location(self) -> None:
         self._system.stop()
         try:
-            self.assertEqual(_real_system_path(), Path("/etc/critique-bot/crit.json"))
+            self.assertEqual(_real_system_path(), Path("/etc/crit/crit.json"))
         finally:
             self._system.start()
 
@@ -271,7 +272,9 @@ class CacheTests(_Isolated):
         with redirect_stderr(err):
             cfg = load_config(self.user)
         self.assertEqual(cfg.url, "https://ai.corp.example/")
-        self.assertIn(f"{path} cannot be read; using its copy from {time.strftime('%Y-%m-%d')}", err.getvalue())
+        notice = f"{path} cannot be read; using its copy from {time.strftime('%Y-%m-%d')}"
+        self.assertNotIn(notice, err.getvalue())  # the log file only
+        self.assertIn(notice, __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
 
     def test_no_file_and_no_copy(self) -> None:
         path = self.root / "share" / "gone.json"
@@ -310,7 +313,8 @@ class FirstRunTests(_Isolated):
         result = setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say)
         assert result is not None
         self.assertEqual(script.asked, [])
-        self.assertEqual(script.said, [f"Using {self.system}"])
+        self.assertEqual(script.said, [])  # found without a question: nothing on screen
+        self.assertIn(f"Using {self.system}", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
         self.assertEqual(load_config(self.user).url, "https://ai.corp.example/")
 
     def test_env_file_is_used_without_questions(self) -> None:
@@ -318,7 +322,8 @@ class FirstRunTests(_Isolated):
         with patch.dict(os.environ, {"CRITIQUE_CONFIG_FILE": str(path)}):
             script = _Script()
             self.assertIsNotNone(setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say))
-        self.assertEqual(script.said, [f"Using {path}"])
+        self.assertEqual(script.said, [])
+        self.assertIn(f"Using {path}", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
 
     def test_without_a_config_file_it_asks_how_crit_reaches_the_model(self) -> None:
         script = _Script("^C")
@@ -338,7 +343,8 @@ class FirstRunTests(_Isolated):
         with redirect_stderr(err), patch("critique_bot.cli._may_ask", return_value=False):
             found = _find_config(None, self.project)
         self.assertEqual(found, self.user)
-        self.assertIn(f"Using {self.system}", err.getvalue())
+        self.assertEqual(err.getvalue(), "")
+        self.assertIn(f"Using {self.system}", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
 
     def test_preferences_only_user_config_still_asks(self) -> None:
         self.user_config({"theme": "light"})
@@ -444,11 +450,11 @@ class InstallerTests(_Isolated):
     def test_example_is_a_valid_config_file(self) -> None:
         data = json.loads((ROOT / "config-file.example.json").read_text(encoding="utf-8"))
         config.validate_company_data(data, "config-file.example.json")
-        # Shipped with the .deb (/usr/share/critique-bot/examples); the zip holds only the program.
+        # Shipped with the .deb (/usr/share/crit/examples); the zip holds only the program.
         self.assertIn("config-file.example.json", (ROOT / "scripts" / "build_deb.py").read_text(encoding="utf-8"))
 
     def test_deb_makes_the_system_folder_readable(self) -> None:
-        self.assertIn("-m 0755 /etc/critique-bot", (ROOT / "scripts" / "build_deb.py").read_text(encoding="utf-8"))
+        self.assertIn("-m 0755 /etc/crit\n", (ROOT / "scripts" / "build_deb.py").read_text(encoding="utf-8"))
 
 
 class AutoInstallTests(_Isolated):
@@ -456,7 +462,7 @@ class AutoInstallTests(_Isolated):
         super().setUp()
         os.environ["LOCALAPPDATA"] = str(self.root / "local")
         os.environ["XDG_DATA_HOME"] = str(self.root / "data")
-        self.bundle = self.root / "download" / "critique-bot"
+        self.bundle = self.root / "download" / "crit"
         self.bundle.mkdir(parents=True)
         (self.bundle / installer._exe_name()).write_text("", encoding="utf-8")
 
@@ -501,8 +507,9 @@ class AutoInstallTests(_Isolated):
 
     @unittest.skipIf(os.name == "nt", "the .deb is Linux only")
     def test_deb_install_counts_as_installed(self) -> None:
-        self.assertTrue(installer.is_installed_copy(Path("/opt/critique-bot")))
-        self.assertFalse(installer.should_auto_install([], Path("/opt/critique-bot")))
+        for deb in (Path("/opt/crit"), Path("/opt/critique-bot")):  # the package, and the 1.0.4 one
+            self.assertTrue(installer.is_installed_copy(deb))
+            self.assertFalse(installer.should_auto_install([], deb))
 
     def test_main_installs_before_the_command(self) -> None:
         from critique_bot import __main__ as entry
@@ -511,7 +518,7 @@ class AutoInstallTests(_Isolated):
             installer, "auto_install", return_value=True
         ) as auto, patch.object(entry, "launched_from_explorer", return_value=False), patch.object(
             entry, "_run", return_value=0
-        ), patch.object(entry.sys, "argv", ["critique-bot", "--help"]):
+        ), patch.object(entry.sys, "argv", ["crit", "--help"]):
             self.assertEqual(entry.main(), 0)
         auto.assert_called_once()
 
@@ -530,7 +537,7 @@ class DoubleClickTests(_Isolated):
 
         out, err = io.StringIO(), io.StringIO()
         with patch.object(entry, "launched_from_explorer", return_value=True), patch.object(
-            entry.sys, "argv", ["critique-bot.exe"]
+            entry.sys, "argv", ["crit.exe"]
         ), patch.object(installer, "should_auto_install", return_value=True), patch.object(
             installer, "auto_install", return_value=True
         ) as auto, patch("builtins.input", side_effect=fake_input), redirect_stdout(out), redirect_stderr(err), patch.dict(
@@ -539,7 +546,8 @@ class DoubleClickTests(_Isolated):
             self.assertEqual(entry.main(), 0)
         auto.assert_called_once()
         self.assertEqual(asked, ["\nPress Enter to close this window."])
-        self.assertIn(f"Using {good}", err.getvalue())
+        self.assertNotIn(f"Using {good}", err.getvalue())
+        self.assertIn(f"Using {good}", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
         self.assertIn("crit runs in a terminal", out.getvalue())
         self.assertEqual(json.loads(self.user.read_text(encoding="utf-8")), {})  # the file keeps being found
 
@@ -557,7 +565,7 @@ class DoubleClickTests(_Isolated):
         probe = local_model.Probe("ok", "reachable, 1 model: qwen", ["qwen"])
         out = io.StringIO()
         with patch.object(entry, "launched_from_explorer", return_value=True), patch.object(
-            entry.sys, "argv", ["critique-bot.exe"]
+            entry.sys, "argv", ["crit.exe"]
         ), patch.object(installer, "should_auto_install", return_value=False), patch(
             "critique_bot.local_model.probe_server", return_value=probe
         ), patch("builtins.input", side_effect=fake_input), redirect_stdout(out), redirect_stderr(io.StringIO()):

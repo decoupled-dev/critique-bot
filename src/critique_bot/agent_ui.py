@@ -7,7 +7,7 @@ When stdout is not a terminal the same calls print plain text: no spinner, no
 ANSI, no prompts. ``NO_COLOR`` keeps the layout and drops the colors.
 
 The input box is a prompt_toolkit session: persistent history in
-``.bot/history``, Enter submits, Alt+Enter / Ctrl+J / a trailing backslash add a
+``.crit/history``, Enter submits, Alt+Enter / Ctrl+J / a trailing backslash add a
 line, ``/`` opens the command menu, ``@`` completes workspace paths.
 """
 
@@ -94,7 +94,7 @@ def theme_id_for(raw: Any) -> str:
 
 
 def rich_theme(theme_id: str) -> Theme:
-    """Map the welcome-screen style (``.bot/settings.json`` ``theme``) to rich styles."""
+    """Map the welcome-screen style (``.crit/settings.json`` ``theme``) to rich styles."""
     palette = _PALETTES[theme_id_for(theme_id)]
     return Theme({f"crit.{name}": style for name, style in palette.items()}, inherit=True)
 
@@ -195,7 +195,7 @@ SHORTCUTS = (
 
 _SKIP_DIRS = frozenset(
     {
-        ".git", ".hg", ".svn", ".bot", "node_modules", "build", "dist", "out", "target", "bin", "obj",
+        ".git", ".hg", ".svn", ".crit", ".bot", "node_modules", "build", "dist", "out", "target", "bin", "obj",
         "__pycache__", ".venv", "venv", "env", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
         ".gradle", ".idea", ".next", ".nuxt", ".cache", ".codegraph", "graphify-out", "coverage",
     }
@@ -1071,7 +1071,7 @@ def approval_options(permission: Any, *, risky: str = "") -> list[tuple[str, str
     rule = str(getattr(permission, "rule", "") or "")
     if not risky and key and getattr(permission, "kind", "") != "outside":
         if rule:
-            options.append(("always", f"Yes, and don't ask again for {rule} (saved in .bot/settings.json)"))
+            options.append(("always", f"Yes, and don't ask again for {rule} (saved in .crit/settings.json)"))
         else:
             options.append(("always", f"Yes, and don't ask again for {_always_label(permission)} this session"))
     options.append(("no", "No, and tell crit what to do differently (esc)"))
@@ -1928,7 +1928,7 @@ def _role_command(rest: str) -> None:
             line = Text(f" {mark} {role.id:<21}", style="bold" if current else _style("dim"))
             line.append(role.summary, style=_style("dim"))
             _print(line)
-        _print(Text("   /role <name> to switch; it is kept in .bot/settings.json", style=_style("dim")))
+        _print(Text("   /role <name> to switch; it is kept in .crit/settings.json", style=_style("dim")))
         return
     chosen = roles.normalize_role(word)
     if chosen is None:
@@ -1941,14 +1941,14 @@ def _role_command(rest: str) -> None:
         _state.role = chosen
         _state.role_changed = chosen
     saved = _save_setting(role=chosen)
-    where = "kept in .bot/settings.json" if saved else "for this session"
+    where = "kept in .crit/settings.json" if saved else "for this session"
     note("note", f"Role: {roles.role_label(chosen)}, {where}. The next task starts a new conversation with its instructions.")
 
 
 def _save_setting(**values: Any) -> bool:
-    """Write ``values`` to this project's ``.bot/settings.json``; False when there is none."""
+    """Write ``values`` to this project's ``.crit/settings.json``; False when there is none."""
     try:
-        from critique_bot.bot_home import find_bot_home, update_settings
+        from critique_bot.project_home import find_bot_home, update_settings
 
         home = find_bot_home(_state.workspace)
         if home is None:
@@ -2038,7 +2038,7 @@ def _undo() -> None:
 
 def _reload_theme() -> None:
     try:
-        from critique_bot.bot_home import find_bot_home
+        from critique_bot.project_home import find_bot_home
 
         home = find_bot_home(_state.workspace)
     except Exception:

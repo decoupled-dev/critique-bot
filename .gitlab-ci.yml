@@ -1,8 +1,8 @@
 # Copy this file (or the `review` job) into the GitLab project that should
-# post critique-bot comments on merge requests.
+# post crit review comments on merge requests.
 #
 # Linux bash (this file). Windows PowerShell: packaging/gitlab-ci.windows.yml
-# Do not rewrite $CRITIQUE_BIN as $env:CRITIQUE_BIN — see that file.
+# Do not rewrite $CRIT_BIN as $env:CRIT_BIN — see that file.
 #
 # Pipelines:
 #   - Merge requests: the review job runs automatically.
@@ -10,13 +10,13 @@
 # Pushing to main alone does not auto-run review.
 #
 # Runner PC requirements:
-#   - A project or group runner tagged `critique-bot` (shell executor, not Docker)
+#   - A project or group runner tagged `crit` (shell executor, not Docker)
 #     so the job sees the same queue directory as the long-running worker.
-#   - Microsoft Edge or Google Chrome, signed in once (`critique-bot worker --headed`
+#   - Microsoft Edge or Google Chrome, signed in once (`crit worker --headed`
 #     or one-shot `--headed`).
-#   - Worker already running as user critique-bot:
-#     packaging/critique-bot-worker.service / packaging/worker-start.ps1
-#   - critique-bot on PATH, config.json on a shared path.
+#   - Worker already running as user crit:
+#     packaging/crit-worker.service / packaging/worker-start.ps1
+#   - crit on PATH (/usr/bin/crit from the .deb), config.json on a shared path.
 #
 # Security: the worker runs as its OWN OS user (not the runner user). This job
 # runs whatever a branch's .gitlab-ci.yml says, as the runner user; it must not
@@ -28,7 +28,7 @@
 #   1. Settings → Access Tokens → project access token
 #      Role: Reporter (lowest that can read the diff and post discussions).
 #      Scope: api. Set an expiry.
-#   2. Settings → CI/CD → Variables → CRITIQUE_GITLAB_TOKEN
+#   2. Settings → CI/CD → Variables → CRIT_GITLAB_TOKEN
 #      Masked: yes. Protected: yes if reviewed MRs come from protected branches.
 #      Unprotected (needed for feature-branch MRs) means anyone who can push a
 #      branch can read it, so keep it Reporter-only and rotate it.
@@ -51,14 +51,14 @@ stages:
   - review
 
 variables:
-  CRITIQUE_CONFIG: /opt/critique-bot/config.json
-  CRITIQUE_BIN: critique-bot
+  CRIT_CONFIG: /opt/crit/config.json
+  CRIT_BIN: crit
 
 review:
   stage: review
   interruptible: true
   tags:
-    - critique-bot
+    - crit
   timeout: 1h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -74,11 +74,11 @@ review:
       - out/review.json
       - out/status.json
   script:
-    - $CRITIQUE_BIN submit --config "$CRITIQUE_CONFIG" --output-dir out --wait-timeout 1800
+    - $CRIT_BIN submit --config "$CRIT_CONFIG" --output-dir out --wait-timeout 1800
     - |
       if [ -n "${CI_MERGE_REQUEST_IID:-}" ] && [ -f out/review.md ]; then
-        $CRITIQUE_BIN gitlab-post \
+        $CRIT_BIN gitlab-post \
           --review-file out/review.md \
           --patch-file diff.patch \
-          || echo "review artifact saved; could not post GitLab comments (set CRITIQUE_GITLAB_TOKEN)"
+          || echo "review artifact saved; could not post GitLab comments (set CRIT_GITLAB_TOKEN)"
       fi

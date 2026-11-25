@@ -53,13 +53,13 @@ class AgentCliTests(unittest.TestCase):
     def test_init_from_mode_and_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch("critique_bot.bot_home.rebuild_index") as rebuild:
+            with patch("critique_bot.project_home.rebuild_index") as rebuild:
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
                 code = main(["--mode", "agent", "--repo-dir", str(root), "init"])
                 self.assertEqual(code, 0)
-                self.assertTrue((root / ".bot" / "settings.json").is_file())
+                self.assertTrue((root / ".crit" / "settings.json").is_file())
                 code = agent_main(["--repo-dir", str(root), "init"])
                 self.assertEqual(code, 0)
                 self.assertGreaterEqual(rebuild.call_count, 2)
@@ -82,7 +82,7 @@ class AgentCliTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("critique_bot.bot_home.rebuild_index") as rebuild:
+            with patch("critique_bot.project_home.rebuild_index") as rebuild:
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
@@ -121,13 +121,13 @@ class AgentCliTests(unittest.TestCase):
         ):
             code = main(["--mode", "agent", "--repo-dir", tmp, "fix it"])
             self.assertEqual(code, 1)
-            self.assertTrue((Path(tmp) / ".bot" / "settings.json").is_file())
+            self.assertTrue((Path(tmp) / ".crit" / "settings.json").is_file())
 
     def test_first_run_inits_then_asks_before_opening_edge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index") as rebuild:
+            with patch("critique_bot.project_home.rebuild_index") as rebuild:
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
@@ -141,7 +141,7 @@ class AgentCliTests(unittest.TestCase):
                                     with patch("critique_bot.agent.run_agent", return_value=0) as run:
                                         code = agent_main(["--repo-dir", str(root), "--config", str(config)])
             self.assertEqual(code, 0)
-            settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+            settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
             prefs = self._prefs()  # the style and the welcome are per user
             self.assertEqual(prefs["theme"], "dark")
             self.assertTrue(prefs["syntax_preview"])
@@ -157,7 +157,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index") as rebuild:
+            with patch("critique_bot.project_home.rebuild_index") as rebuild:
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
@@ -170,7 +170,7 @@ class AgentCliTests(unittest.TestCase):
                                 with patch("critique_bot.agent.run_agent", return_value=0) as run:
                                     code = agent_main(["--repo-dir", str(root)])
             self.assertEqual(code, 0)
-            settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+            settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
             prefs = self._prefs()
             self.assertEqual(prefs["theme"], "light")
             self.assertNotIn("welcomed", prefs)
@@ -190,16 +190,18 @@ class AgentCliTests(unittest.TestCase):
             (root / "app" / "src" / "main").mkdir(parents=True)
             (root / "app" / "src" / "main" / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
             err = io.StringIO()
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role", side_effect=AssertionError("asked")), patch(
                 "critique_bot.agent.run_agent", return_value=0
             ) as run, redirect_stderr(err):
                 self.assertEqual(agent_main(["--repo-dir", str(root), "add tests"]), 0)
-                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
                 self.assertEqual(settings["role"], "android-app-engineer")
                 self.assertIsNone(run.call_args.kwargs["role"])
-                self.assertIn("Role for this project: Android App Engineer (change with: crit --role <name>)", err.getvalue())
+                # Bookkeeping, not a question: the log file has it, the screen does not.
+                self.assertNotIn("Role for this project", err.getvalue())
+                self.assertIn("Role for this project: Android App Engineer (change with: crit --role <name>)", __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8"))
                 # The second run in the same folder says nothing about the role.
                 err.truncate(0)
                 err.seek(0)
@@ -214,7 +216,7 @@ class AgentCliTests(unittest.TestCase):
             team.write_text(json.dumps({"url": "https://ai.corp.example/", "selectors": {"prompt_input": "textarea", "assistant_messages": ".m"}}), encoding="utf-8")
             self.user_config.parent.mkdir(parents=True, exist_ok=True)
             self.user_config.write_text(json.dumps({"config_file": str(team), "theme": "dark", "welcomed": True}), encoding="utf-8")
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=True
             ), patch("critique_bot.cli._may_ask", return_value=True), patch(
                 "builtins.input", side_effect=AssertionError("asked a question")
@@ -231,7 +233,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
             for root in (Path(one), Path(two)):
                 self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=True
             ), patch("critique_bot.welcome.pick_theme", return_value=("light", True)) as pick, patch(
                 "critique_bot.welcome.ask_login", return_value=True
@@ -252,18 +254,18 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role") as pick, patch(
                 "critique_bot.agent.run_agent", return_value=0
             ) as run:
                 self.assertEqual(agent_main(["--repo-dir", str(root), "--role", "AOSPExpert", "fix the HAL"]), 0)
-                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
                 self.assertEqual(settings["role"], "aosp-expert")
                 self.assertEqual(run.call_args.kwargs["role"], "aosp-expert")
                 # A later --role applies to that run only; the stored role stays.
                 self.assertEqual(agent_main(["--repo-dir", str(root), "--role", "code-reviewer", "review it"]), 0)
-                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
                 self.assertEqual(settings["role"], "aosp-expert")
                 self.assertEqual(run.call_args.kwargs["role"], "code-reviewer")
                 pick.assert_not_called()
@@ -272,7 +274,7 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.agent.run_agent", return_value=0) as run:
                 self.assertEqual(agent_main(["--repo-dir", str(root), "--role", "wizard", "fix it"]), 1)
@@ -282,14 +284,14 @@ class AgentCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._config(root)
-            with patch("critique_bot.bot_home.rebuild_index"), patch(
+            with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role") as pick, patch(
                 "critique_bot.agent.run_agent", return_value=0
             ):
                 self.assertEqual(agent_main(["--repo-dir", str(root), "fix it"]), 0)
                 pick.assert_not_called()
-                settings = json.loads((root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+                settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
                 self.assertEqual(settings["role"], "generic")
 
     def test_submit_rejects_agent(self) -> None:
@@ -347,10 +349,10 @@ class OneCommandTests(unittest.TestCase):
     def test_review_uses_stored_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".bot").mkdir()
+            (root / ".crit").mkdir()
             config = root / "my-config.json"
             config.write_text("{}", encoding="utf-8")
-            (root / ".bot" / "settings.json").write_text(
+            (root / ".crit" / "settings.json").write_text(
                 json.dumps({"config": str(config)}), encoding="utf-8"
             )
             with patch("critique_bot.cli.load_config", side_effect=ConfigError("stop")) as load:

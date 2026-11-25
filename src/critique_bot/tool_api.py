@@ -15,7 +15,7 @@ Two parts:
 
 The workspace services the engine drives directly (shell sessions in ``agent_shell``,
 edit checkpoints in ``agent_edit``, permission rules in ``agent_rules``, the symbol index
-in ``code_index``, build defaults in ``agent_build``, and ``.bot`` state in ``bot_home``)
+in ``code_index``, build defaults in ``agent_build``, and ``.crit`` state in ``project_home``)
 are part of this layer's interface too; see ``tests/test_layers.py``.
 """
 

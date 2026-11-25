@@ -4,7 +4,7 @@
 
 ```
 crit --acp [--config FILE] [--permission-mode ask|edits|auto|plan] [--role ROLE]
-critique-bot --mode agent --acp ...      # the same, from the bundled binary
+crit.exe --acp ...                       # the same, from the unzipped Windows program
 ```
 
 The project folder comes from the client, as the `cwd` of its first `session/new`. You don't pass `--repo-dir`.
@@ -13,7 +13,7 @@ The project folder comes from the client, as the `cwd` of its first `session/new
 
 Run `crit` once in a terminal in the project, the usual way, so that:
 
-- the project has its `.bot/` folder and a config.json crit can find (or pass `--config` in the args below);
+- the project has its `.crit/` folder and a config.json crit can find (or pass `--config` in the args below);
 - for a model on a web page, the Edge profile is signed in. ACP has no sign-in screen for crit, so later runs reuse that profile headless. A local model (`backend: local`) needs nothing more.
 
 ## Android Studio
@@ -24,25 +24,25 @@ Open **Settings → Tools → AI → Agents** and add a custom agent. The JetBra
 {
   "agent_servers": {
     "crit": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\critique-bot\\bin\\crit.cmd",
+      "command": "C:\\Users\\<you>\\AppData\\Local\\crit\\bin\\crit.cmd",
       "args": ["--acp"]
     }
   }
 }
 ```
 
-`crit.cmd` is what `scripts\setup-crit.ps1` writes (default folder `%LOCALAPPDATA%\critique-bot\bin`, and the file needs the full path because JSON does not expand `%LOCALAPPDATA%`). It already carries `--config` and the proxy settings from setup. Without the script, point at the virtual environment's Python instead:
+`crit.cmd` is what `scripts\setup-crit.ps1` writes (default folder `%LOCALAPPDATA%\crit\bin`, and the file needs the full path because JSON does not expand `%LOCALAPPDATA%`). It already carries the config (through `CRIT_CONFIG`) and the proxy settings from setup. After `crit install` (or the one-line installer) the launcher is `C:\Users\<you>\.crit\bin\crit.cmd` instead. Without the script, point at the virtual environment's Python instead:
 
 ```json
 "command": "C:\\path\\to\\critique-bot\\.venv\\Scripts\\python.exe",
-"args": ["-m", "critique_bot", "--mode", "agent", "--acp", "--config", "C:\\path\\to\\critique-bot\\config.json"]
+"args": ["-m", "critique_bot", "--acp", "--config", "C:\\path\\to\\critique-bot\\config.json"]
 ```
 
 On Linux and macOS, use `"command": "/home/<you>/.local/bin/crit"` (or wherever `which crit` points) with the same `"args": ["--acp"]`.
 
-When a session opens, crit saves what the IDE offered (its name, its capabilities, and the MCP tool servers it passed, with env, header, and token values hidden) to `.bot/acp-client.json` in the project, and logs a one-line summary. That file shows which Android Studio tools could be wired in next.
+When a session opens, crit saves what the IDE offered (its name, its capabilities, and the MCP tool servers it passed, with env, header, and token values hidden) to `.crit/acp-client.json` in the project, and logs a one-line summary. That file shows which Android Studio tools could be wired in next.
 
-Restart the IDE if crit does not appear in the agent picker. The agent log (stderr) is where crit's own errors go; add `--logs` to the args for more.
+Restart the IDE if crit does not appear in the agent picker. crit's own errors go to the agent log (stderr) and to `~/.crit/logs/crit.log`; add `--logs` to the args to see every log line in the agent log too.
 
 ## What you see
 
@@ -64,7 +64,7 @@ Slash commands in the prompt box: `/new` (fresh conversation with the model), `/
 ## Limits
 
 - **One folder per process.** A `session/new` for a different folder is refused. The IDE starts one crit per project, which is the usual case.
-- **No session restore** (`loadSession` is false). Closing the session ends it, though crit's own transcript is still saved under `.bot/`.
+- **No session restore** (`loadSession` is false). Closing the session ends it, though crit's own transcript is still saved under `.crit/`.
 - **Text only.** Attached files come in as `@path`, or inline when the IDE sends their text. Images are left out with a note.
 - **crit's own tools run edits and commands.** crit does not route them through the IDE's `fs/*` or `terminal/*` methods, and does not connect to MCP servers the IDE passes in `session/new`.
 

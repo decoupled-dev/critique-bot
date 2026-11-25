@@ -188,8 +188,10 @@ class ResolverBlockNoticeTest(_PolicyReset):
         with redirect_stderr(err):
             browser._report_resolver_block("login.idp.example", navigation=True)
             browser._report_resolver_block("login.idp.example", navigation=True)
-        self.assertEqual(err.getvalue().count("Blocked:"), 1)
-        self.assertIn("crit config --allow-host login.idp.example", err.getvalue())
+        self.assertEqual(err.getvalue(), "")  # never on screen: the log file has it, once
+        logged = __import__("critique_bot.log", fromlist=["x"]).log_file_path().read_text(encoding="utf-8")
+        self.assertEqual(logged.count("Blocked: the page sent the browser to login.idp.example"), 1)
+        self.assertIn("crit config --allow-host login.idp.example", logged)
         self.assertIn("login.idp.example", browser.drain_blocked_hosts())
 
 

@@ -1,4 +1,12 @@
-"""``.bot`` folder for the agent: settings, notes, cache, sessions, and the code index."""
+"""A project's ``.crit`` folder: settings, notes, cache, sessions, and the code index.
+
+Versions up to 1.0.4 called it ``.bot``: a project with ``.bot`` and no ``.crit`` gets its folder
+renamed the first time crit looks at it (the log file says so). When both exist, ``.crit`` is
+used and ``.bot`` is left alone.
+
+The home folder as a project would put its folder at ``~/.crit``, which is crit's own folder;
+that project's data goes in ``~/.crit/projects/home`` instead.
+"""
 
 from __future__ import annotations
 
@@ -15,12 +23,17 @@ from critique_bot import log
 from critique_bot.code_index import IndexStats, rebuild_index
 from critique_bot.output import private_dir, restrict_dir
 
-BOT_DIR_NAME = ".bot"
+BOT_DIR_NAME = ".crit"
+#: The folder's name up to 1.0.4.
+LEGACY_DIR_NAME = ".bot"
+#: Inside crit's own folder: the data of a project whose folder is the home folder.
+PROJECTS_DIR_NAME = "projects"
+HOME_PROJECT_NAME = "home"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
 # Transcripts, the prompt history, and caches hold code and tasks: never committed.
 # settings.json is the user's own: a committed copy loses its permission keys (SECURITY_KEYS).
-_GITIGNORE_LINES = (".bot/cache/", ".bot/sessions/", ".bot/history", ".bot/settings.json")
+_GITIGNORE_LINES = (".crit/cache/", ".crit/sessions/", ".crit/history", ".crit/settings.json")
 _LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\nsettings.json\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
@@ -41,7 +54,7 @@ _CHECK_LINE = re.compile(
 
 
 # Settings that loosen what the agent may do or where the conversation goes. A cloned
-# repository could ship them in a committed ``.bot/settings.json``; they count only when
+# repository could ship them in a committed ``.crit/settings.json``; they count only when
 # the file is the user's own (not tracked by git).
 SECURITY_KEYS = frozenset(
     {
@@ -59,7 +72,7 @@ SECURITY_KEYS = frozenset(
 
 
 class BotHomeError(RuntimeError):
-    """The workspace ``.bot`` folder could not be created or read."""
+    """The workspace ``.crit`` folder could not be created or read."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +111,7 @@ class BotHome:
         return path
 
     def project_notes(self) -> str:
-        """Text after the marker in ``.bot/AGENT.md``, or the whole file without one."""
+        """Text after the marker in ``.crit/AGENT.md``, or the whole file without one."""
         try:
             text = self.notes_path.read_text(encoding="utf-8")
         except OSError:
@@ -121,7 +134,7 @@ def check_command_from_notes(notes: str) -> str:
 
 
 def resolve_check_command(settings: dict, notes: str) -> str | None:
-    """Settings win. Otherwise the test line in ``.bot/AGENT.md`` is the check."""
+    """Settings win. Otherwise the test line in ``.crit/AGENT.md`` is the check."""
     raw = settings.get("check_command") if isinstance(settings, dict) else None
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
@@ -129,20 +142,70 @@ def resolve_check_command(settings: dict, notes: str) -> str | None:
     return found or None
 
 
+def _is_home_folder(root: Path) -> bool:
+    """True when ``root`` is the user's home folder (or the folder that holds crit's own folder)."""
+    from critique_bot.config import crit_home
+
+    try:
+        here = Path(os.path.realpath(root))
+        if here == Path(os.path.realpath(os.path.expanduser("~"))):
+            return True
+        return Path(os.path.realpath(crit_home())) == here / BOT_DIR_NAME
+    except OSError:
+        return False
+
+
+def project_dir(root: Path, *, migrate: bool = True) -> Path:
+    """The ``.crit`` folder of the project at ``root`` (``~/.crit/projects/home`` for the home folder).
+
+    With ``migrate``, a leftover ``.bot`` folder (and no ``.crit``) is renamed to it first.
+    """
+    root = Path(root)
+    if _is_home_folder(root):
+        from critique_bot.config import crit_home
+
+        target = crit_home() / PROJECTS_DIR_NAME / HOME_PROJECT_NAME
+    else:
+        target = root / BOT_DIR_NAME
+    if migrate:
+        _migrate_legacy_dir(root, target)
+    return target
+
+
+def legacy_project_dir(root: Path) -> Path:
+    """Where versions up to 1.0.4 kept the project's folder (``.bot``)."""
+    return Path(root) / LEGACY_DIR_NAME
+
+
+def _migrate_legacy_dir(root: Path, target: Path) -> None:
+    old = legacy_project_dir(root)
+    try:
+        if target.exists() or target.is_symlink() or not old.is_dir() or old.is_symlink():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(old, target)
+    except OSError as exc:
+        log.info(f"could not rename {old} to {target}: {exc}")
+        return
+    log.info(f"renamed {old} to {target}")
+
+
 def find_bot_home(start: Path) -> BotHome | None:
-    """Walk upward from ``start`` until a ``.bot/settings.json`` exists."""
+    """Walk upward from ``start`` until a ``.crit/settings.json`` (or an old ``.bot`` one) exists."""
     current = Path(start).resolve()
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
-        settings_path = candidate / BOT_DIR_NAME / SETTINGS_NAME
+        settings_path = project_dir(candidate, migrate=False) / SETTINGS_NAME
+        if not settings_path.is_file() and (legacy_project_dir(candidate) / SETTINGS_NAME).is_file():
+            settings_path = project_dir(candidate) / SETTINGS_NAME
         if settings_path.is_file():
             return _load(candidate, settings_path)
     return None
 
 
 def init_bot_home(workspace: Path) -> BotHome:
-    """Create ``.bot`` in ``workspace``, then rebuild the code index.
+    """Create ``.crit`` in ``workspace``, then rebuild the code index.
 
     Existing ``settings.json`` and ``AGENT.md`` are left as they are. Missing
     directories are created. ``config.json`` in the workspace is recorded only
@@ -151,7 +214,12 @@ def init_bot_home(workspace: Path) -> BotHome:
     root = Path(workspace).resolve()
     if not root.is_dir():
         raise BotHomeError(f"workspace is not a directory: {root}")
-    bot_dir = root / BOT_DIR_NAME
+    bot_dir = project_dir(root)
+    if bot_dir.parent != root:
+        from critique_bot.config import ensure_crit_home
+
+        ensure_crit_home()
+        _private_dir(bot_dir.parent)
     cache_dir = bot_dir / "cache"
     sessions_dir = bot_dir / "sessions"
     settings_path = bot_dir / SETTINGS_NAME
@@ -173,7 +241,8 @@ def init_bot_home(workspace: Path) -> BotHome:
     if not notes_path.exists():
         notes_path.write_text(NOTES_TEMPLATE, encoding="utf-8")
         log.info(f"wrote {notes_path}")
-    _append_gitignore(root)
+    if bot_dir.parent == root:
+        _append_gitignore(root)
     home = _load(root, settings_path)
     stats = rebuild_index(root, home.index_path)
     _print_stats(root, stats)
@@ -268,7 +337,7 @@ def git_tracks(root: Path, path: Path) -> bool:
 
 
 def update_settings(home: BotHome, **values: object) -> None:
-    """Merge ``values`` into ``.bot/settings.json`` and keep ``home.settings`` in step.
+    """Merge ``values`` into ``.crit/settings.json`` and keep ``home.settings`` in step.
 
     The file is written to a temp file and moved into place, so a crash or
     Ctrl+C never leaves half a JSON file behind.
@@ -286,7 +355,7 @@ def update_settings(home: BotHome, **values: object) -> None:
 
 
 def add_allow_rule(home: BotHome, rule: str) -> None:
-    """Append ``rule`` to ``"allow"`` in ``.bot/settings.json`` (once), keeping the file's other keys."""
+    """Append ``rule`` to ``"allow"`` in ``.crit/settings.json`` (once), keeping the file's other keys."""
     try:
         on_disk = json.loads(home.settings_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -319,7 +388,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def ensure_private_dir(path: Path) -> Path:
     """Create ``path`` if needed and make it owner-only; return it.
 
-    Call this every time a folder under ``.bot`` that holds code or transcripts
+    Call this every time a folder under ``.crit`` that holds code or transcripts
     (sessions, cache, undo copies) is created or written to. POSIX: 0700.
     Windows: icacls, best effort (a warning is logged on failure).
     """
@@ -331,7 +400,7 @@ def _private_dir(path: Path) -> None:
 
 
 def _restrict_existing(bot_dir: Path) -> None:
-    """Narrow ``.bot``, ``.bot/sessions``, ``.bot/cache`` (and undo) when they already exist."""
+    """Narrow ``.crit``, ``.crit/sessions``, ``.crit/cache`` (and undo) when they already exist."""
     for folder in (bot_dir, bot_dir / "sessions", bot_dir / "cache", bot_dir / "cache" / "undo"):
         if folder.is_dir() and not folder.is_symlink():
             restrict_dir(folder)

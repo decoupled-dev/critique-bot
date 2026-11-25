@@ -1,6 +1,6 @@
 # Use crit from any folder (Windows, Linux, macOS)
 
-`crit` is the local coding agent. `bot-agent` is the same command. This page installs it once from a clone, then makes `crit` work in every folder with one `config.json` and one signed-in browser profile. You type the task. You do not pass `--config` again.
+`crit` is the local coding agent. This page installs it once from a clone, then makes `crit` work in every folder with one `config.json` and one signed-in browser profile. You type the task. You do not pass `--config` again.
 
 The commands are a shortcut into the clone and its virtual environment. Leave both where they are. Moving or deleting the repo removes the command.
 
@@ -34,7 +34,7 @@ The script:
 3. Checks that Edge or Chrome is installed. With `--install-deps` on Linux it also runs `playwright install-deps`.
 4. Copies `config.example.json` to the config file when that file is missing.
 5. Rewrites a relative `user_data_dir` in the config to an absolute path next to the config, so every folder uses the same signed-in profile.
-6. Writes `crit`, `bot-agent`, and `critique-bot` into the bin folder. `crit` and `bot-agent` always pass `--config` with that file.
+6. Writes `crit` into the bin folder. It always sets `CRIT_CONFIG` to that file, so mode words and subcommands still come first (`crit config`, `crit setup`, `crit review`).
 7. Adds the bin folder to `PATH` in the rc file of your login shell (`~/.zshrc` for zsh, `~/.bashrc` for bash, `~/.profile` otherwise), once, inside a marked block. `--no-path` skips this.
 8. Runs `crit --help` to check the install, then prints the next steps.
 
@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
 | --- | --- |
 | `-Venv DIR` | Virtual environment to create or reuse. Default `<repo>\.venv`. |
 | `-Config FILE` | Config file the commands use. Default `<repo>\config.json`. |
-| `-BinDir DIR` | Where the commands are written. Default `%LOCALAPPDATA%\critique-bot\bin`. |
+| `-BinDir DIR` | Where the commands are written. Default `%LOCALAPPDATA%\crit\bin`. |
 | `-Proxy URL` | The proxy as one URL, for example `http://username:password@10.1.2.3:8080`. Special characters in the user name or password must be percent-encoded. |
 | `-ProxyHost HOST` `-ProxyPort PORT` | The proxy as host and port, for example `-ProxyHost 10.1.2.3 -ProxyPort 8080`. An `https://` prefix on the host sets the scheme. |
 | `-ProxyUser USER` | User name for the proxy (`CORP\jdoe` works). The password is asked for without echoing, unless `-ProxyPassword` (a SecureString) or the `CRIT_PROXY_PASSWORD` variable gives it. Special characters are encoded for you. |
@@ -67,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1
 | `-NoPath` | Do not change the user `PATH`. |
 | `-SkipBrowserCheck` | Do not look for Edge or Chrome. |
 
-It does the same steps as the Linux script, writes `crit.cmd`, `bot-agent.cmd`, and `critique-bot.cmd`, and puts the bin folder first on your user `PATH`. Open a new PowerShell window afterwards.
+It does the same steps as the Linux script, writes `crit.cmd`, and puts the bin folder first on your user `PATH`. Open a new PowerShell window afterwards.
 
 The proxy is used by pip, uv, and npm, for this run only. It is not written to `pip.ini`, `.npmrc`, or the registry, so a password given to the script is not saved anywhere. Loopback addresses never go through it. pip and npm can log in to a proxy with a user name and password (Basic authentication). A proxy that accepts only Windows sign-in (NTLM or Kerberos) needs a local relay such as [px](https://github.com/genotrance/px), and `-ProxyHost 127.0.0.1 -ProxyPort 3128` pointed at it.
 
@@ -82,21 +82,21 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-crit.ps1 -ProxyHost 10.1.
 1. Pick the selectors and sign in. Use the config path the script printed:
 
    ```bash
-   critique-bot setup --config /path/to/critique-bot/config.json
+   crit setup --config /path/to/critique-bot/config.json
    ```
 
    ```powershell
-   critique-bot setup --config C:\path\to\critique-bot\config.json
+   crit setup --config C:\path\to\critique-bot\config.json
    ```
 
 2. Check one reply:
 
    ```bash
-   critique-bot --config /path/to/critique-bot/config.json --mode general --prompt "Reply with exactly one word: PONG."
+   crit ask --config /path/to/critique-bot/config.json --prompt "Reply with exactly one word: PONG."
    ```
 
    ```powershell
-   critique-bot --config C:\path\to\critique-bot\config.json --mode general --prompt "Reply with exactly one word: PONG."
+   crit ask --config C:\path\to\critique-bot\config.json --prompt "Reply with exactly one word: PONG."
    ```
 
 3. Go to a project and start:
@@ -118,11 +118,11 @@ Then read [The crit screen](#the-crit-screen) and [Approvals](#approvals) below.
 Start here after the checkout already works: the repo is cloned, the virtual environment exists, `pip install -r requirements.txt` and `pip install -e .` have been run, and a one-word reply succeeded. From the repo, with the venv activated:
 
 ```bash
-critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG."
+crit ask --config config.json --prompt "Reply with exactly one word: PONG."
 ```
 
 ```powershell
-critique-bot --config config.json --mode general --prompt "Reply with exactly one word: PONG."
+crit ask --config config.json --prompt "Reply with exactly one word: PONG."
 ```
 
 The steps below leave that `config.json` and the signed-in browser profile where they are, and make `crit` available in every folder.
@@ -172,29 +172,21 @@ That prints `True` (PowerShell) or `yes` (bash) when the signed-in profile is in
 
 ### 2. Add a crit command that always uses this config
 
-`pip install -e .` wrote `crit` into the venv (`.venv\Scripts\crit.exe` on Windows, `.venv/bin/crit` on Linux and macOS). `bot-agent` is the same program. Calling it directly still expects `--config` on the first task in each folder. A small wrapper in front of it passes the config for you.
+`pip install -e .` wrote `crit` into the venv (`.venv\Scripts\crit.exe` on Windows, `.venv/bin/crit` on Linux and macOS). Calling it directly still expects `--config` on the first task in each folder. A small wrapper in front of it sets `CRIT_CONFIG` for you.
 
 Windows (PowerShell, from any directory):
 
 ```powershell
 $repo = "C:\path\to\critique-bot"
-$bin  = "$env:LOCALAPPDATA\critique-bot\bin"
+$bin  = "$env:LOCALAPPDATA\crit\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
 @"
 @echo off
-"$repo\.venv\Scripts\crit.exe" --config "$repo\config.json" %*
+setlocal
+set "CRIT_CONFIG=$repo\config.json"
+"$repo\.venv\Scripts\crit.exe" %*
 "@ | Set-Content -Encoding ASCII "$bin\crit.cmd"
-
-@"
-@echo off
-"$repo\.venv\Scripts\bot-agent.exe" --config "$repo\config.json" %*
-"@ | Set-Content -Encoding ASCII "$bin\bot-agent.cmd"
-
-@"
-@echo off
-"$repo\.venv\Scripts\critique-bot.exe" %*
-"@ | Set-Content -Encoding ASCII "$bin\critique-bot.cmd"
 ```
 
 Linux and macOS (bash or zsh):
@@ -206,30 +198,21 @@ mkdir -p "$bin"
 
 cat > "$bin/crit" <<EOF
 #!/bin/sh
-exec "$repo/.venv/bin/crit" --config "$repo/config.json" "\$@"
+CRIT_CONFIG="$repo/config.json"; export CRIT_CONFIG
+exec "$repo/.venv/bin/crit" "\$@"
 EOF
 
-cat > "$bin/bot-agent" <<EOF
-#!/bin/sh
-exec "$repo/.venv/bin/bot-agent" --config "$repo/config.json" "\$@"
-EOF
-
-cat > "$bin/critique-bot" <<EOF
-#!/bin/sh
-exec "$repo/.venv/bin/critique-bot" "\$@"
-EOF
-
-chmod +x "$bin/crit" "$bin/bot-agent" "$bin/critique-bot"
+chmod +x "$bin/crit"
 ```
 
-`crit` always adds `--config` pointing at the file from the PONG check. `bot-agent` does the same thing. `critique-bot` is the same install for `setup`, `worker`, and `submit`. Those commands still take `--config` when you run them.
+`crit` always uses the file from the PONG check through `CRIT_CONFIG`, so `crit setup`, `crit review`, and the other mode words and subcommands work too. `worker` and `submit` still take `--config` when you run them.
 
 ### 3. Put that folder on PATH
 
 Windows:
 
 ```powershell
-$bin = "$env:LOCALAPPDATA\critique-bot\bin"
+$bin = "$env:LOCALAPPDATA\crit\bin"
 $current = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $current) { $current = "" }
 $parts = @($current -split ";" | Where-Object { $_ -and ($_ -ne $bin) })
@@ -258,7 +241,7 @@ command -v crit
 crit --help
 ```
 
-`Get-Command` should show `...\AppData\Local\critique-bot\bin\crit.cmd`. `command -v` should show `~/.local/bin/crit` as a full path. The help text is the critique-bot help.
+`Get-Command` should show `...\AppData\Local\crit\bin\crit.cmd`. `command -v` should show `~/.local/bin/crit` as a full path.
 
 ### 5. Run it in another folder
 
@@ -276,7 +259,7 @@ crit
 crit "create a hello.txt file that says hello"
 ```
 
-The first `crit` creates `.bot` in that folder (settings, a symbol index, and a sessions folder), asks which text style looks right, asks which role crit plays in this project (see [Roles](#roles)), then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. Close the window when you are signed in. If the page later shows a **Log in** button, crit warns that it is not signed in: a signed-out session may answer with a smaller model and return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.bot/settings.json` is left as it is.
+The first `crit` creates `.crit` in that folder (settings, a symbol index, and a sessions folder), picks the role crit plays in this project from its files (see [Roles](#roles); the log file `~/.crit/logs/crit.log` says which), asks which text style looks right (once per user), then asks you to sign in. When the profile from step 1 is already signed in, it prints `Already signed in.` and goes on. Otherwise it opens a normal browser window for the login: no automation, no extra command-line flags, and no network filter, so Google and Microsoft sign-in work and there is no "unsupported command-line flag" bar. Close the window when you are signed in. If the page later shows a **Log in** button, crit notes in the log file that it is not signed in: a signed-out session may answer with a smaller model and return empty replies to the tool instructions. An empty folder is enough. `crit init` rebuilds the index later. An existing `.crit/settings.json` is left as it is. A project's old `.bot/` folder is renamed to `.crit/` on first use; when both exist, `.crit` is used. When the project is your home folder itself, its data lives in `~/.crit/projects/home/` instead.
 
 The task uses the url, selectors, and browser profile from the clone's `config.json`. Tasks stay headless. Add `--headed` when you want the window on a later task:
 
@@ -306,7 +289,7 @@ Each session opens with a box that shows the folder, model (and, for a local mod
 | Shift+Tab (or Alt+M) | Switch the mode: ask, accept edits, auto, plan (see [Modes](#modes)). The line under the input shows the mode. |
 | `/` | Command menu (below). |
 | `@` | Complete a file or folder path in the project. Mentioned paths that exist are listed for the model as `Referenced files:`. |
-| Up / Down | Earlier messages. History is kept in `.bot/history`. |
+| Up / Down | Earlier messages. History is kept in `.crit/history`. |
 | Ctrl+C | Clear the input. On an empty line, press it twice to leave. During a task it stops the task. |
 | Ctrl+D | Leave. |
 | `?` on an empty line | Show these shortcuts. |
@@ -321,7 +304,7 @@ Each session opens with a box that shows the folder, model (and, for a local mod
 | `/plan` | Plan mode for the next tasks. |
 | `/auto` | Auto mode for the rest of the session. |
 | `/skills [name ...]` | List the skills, or pin some for every task this session. `/skills off name` unpins. |
-| `/role [name]` | Show the roles, or switch this project's role (see [Roles](#roles)). The choice is kept in `.bot/settings.json`, and the next task starts a new conversation with the role's instructions. |
+| `/role [name]` | Show the roles, or switch this project's role (see [Roles](#roles)). The choice is kept in `.crit/settings.json`, and the next task starts a new conversation with the role's instructions. |
 | `/status` | Model, shell, folder, mode, role, pinned skills, and background commands. |
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |
@@ -345,7 +328,7 @@ The instructions from [`prompts/agent.txt`](../prompts/agent.txt) go out in fron
 
 ### Roles
 
-A role is the persona the instructions are shaped around. The first interactive `crit` in a folder asks for one on a screen like the text-style one (arrows move, Enter keeps, Esc means Generic for now and asks again next time), and stores it as `"role"` in `.bot/settings.json`, so it is asked once per project. The role's paragraph goes out right after the standard instructions in every new conversation. The header box and `/status` show the current role.
+A role is the persona the instructions are shaped around. The first `crit` in a folder picks one from the project's files, without a question, and stores it as `"role"` in `.crit/settings.json`; the log file names it (`Role for this project: ...`). The role's paragraph goes out right after the standard instructions in every new conversation. The header box and `/status` show the current role.
 
 | Role | `"role"` | What changes |
 | --- | --- | --- |
@@ -418,7 +401,7 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 - **The wrapper is called the right way.** In PowerShell, a bare `gradlew` or `./gradlew` becomes `.\gradlew.bat`, and in cmd it becomes `gradlew.bat`. `--console=plain` is added. Windows PowerShell 5.1's `NativeCommandError` decoration around a program's stderr is removed from the output.
 - **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
 
-Every command is listed by `/commands` and saved in `.bot/sessions/<stamp>/agent.json` under `commands`.
+Every command is listed by `/commands` and saved in `.crit/sessions/<stamp>/agent.json` under `commands`.
 
 ### Helper conversations: small sessions for parts of a task
 
@@ -432,7 +415,7 @@ The main conversation stays sharp when it stays small. A part of a task whose de
 - **One approval.** In ask mode the split is approved once, for the files it lists. A read-only split runs without asking, also in plan mode, so planning can investigate several places at once.
 - The status line shows `Running 2 helper chats…` with each helper's current step.
 
-`"helper_sessions"` in `.bot/settings.json` sets how many helper conversations may run at once (default 2, at most 4, 0 turns it off). Each helper's conversation counts against the same account limits. With the browser backend, helpers need its remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one conversation and `delegate` says so. With a local model, helpers are plain extra conversations with the server.
+`"helper_sessions"` in `.crit/settings.json` sets how many helper conversations may run at once (default 2, at most 4, 0 turns it off). Each helper's conversation counts against the same account limits. With the browser backend, helpers need its remote debugging, which crit turns on for its own browser; with no remote debugging, the task runs in one conversation and `delegate` says so. With a local model, helpers are plain extra conversations with the server.
 
 ### Long sessions and replies that never come
 
@@ -469,9 +452,11 @@ crit configure          # local, this PC, port 8080, pick the model
 crit "explain the build setup"
 ```
 
-With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder-14b · local at 127.0.0.1:8080`). The first run in a folder still asks for the text style and the role. Helper tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new conversation is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
+With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder-14b · local at 127.0.0.1:8080`). The first run still picks the role and, once per user, asks for the text style. Helper tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new conversation is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
 
-A local model has a smaller context window than a hosted one, so crit starts a new conversation sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). Set `local.num_ctx` in `config.json` to the context size the server was started with (`llama-server -c`); `compact_after_chars` and `max_result_chars` in `.bot/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
+A local model has a smaller context window than a hosted one, so crit starts a new conversation sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). crit never asks for the context size: with `local.num_ctx` at 0 it reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `max_model_len`), and when the server does not say, it assumes 32768. Set `local.num_ctx` in `config.json` to override it with the size the server was started with (`llama-server -c`); `compact_after_chars` and `max_result_chars` in `.crit/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
+
+A server that needs an API key (a 401 or 403 when crit checks it) makes the first run say `the server needs an API key` and ask `API key: ` without showing what you type; a refused key is asked once more, then `Try another key? [Y/n]`. Later, `crit config --api-key` asks for it the same way, `crit config --api-key -` reads it from stdin, and `crit config --api-key none` removes it; `CRIT_API_KEY` works too. It is stored as `local.api_key` only in your own `~/.crit/config.json` (a shared config file cannot set it), sent as `Authorization: Bearer <key>` only to the configured server, never logged, and redacted from transcripts. `crit config` shows `API key: set` or `API key: not set`, never the key.
 
 ### Privacy
 
@@ -512,7 +497,7 @@ How a skill is chosen for a task:
 
 A skill goes out once per conversation, and a new conversation sends it again. The line `Skills: android-testing` shows which ones went with a task. The model can load any other skill with the `skill` tool.
 
-To add a project skill, write `.bot/skills/<name>/SKILL.md`:
+To add a project skill, write `.crit/skills/<name>/SKILL.md`:
 
 ```markdown
 ---
@@ -533,7 +518,7 @@ When the output is not a terminal, crit prints plain text with no colors or spin
 
 ### Project notes
 
-The first `crit` writes `.bot/AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every conversation (the first task, `/new`, and each new conversation after compaction), the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
+The first `crit` writes `.crit/AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every conversation (the first task, `/new`, and each new conversation after compaction), the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
 
 ```markdown
 <!-- notes start -->
@@ -546,7 +531,7 @@ On Linux and macOS the same lines use `./gradlew`.
 
 ### Settings
 
-`.bot/settings.json` takes these optional keys:
+`.crit/settings.json` takes these optional keys:
 
 | Key | Effect |
 | --- | --- |
@@ -588,7 +573,7 @@ The tool protocol is long. Sending it as the first message works, but the model 
 
 1. In the service, create a project (or assistant) and paste the `<<<SYSTEM>>>` section of `prompts/agent.txt` into its instructions.
 2. Point `url` in `config.json` at that project.
-3. Set `"seed_instructions": false` in `.bot/settings.json`.
+3. Set `"seed_instructions": false` in `.crit/settings.json`.
 
 `/new` and compaction open an empty conversation inside the same project: a conversation link such as `https://ai.company.com/g/g-x/c/abc` becomes `https://ai.company.com/g/g-x`.
 
@@ -603,14 +588,14 @@ The model has 22 tools. `/tools` lists them in a session.
 | `search_code` | Regular-expression search. Definitions come first. |
 | `edit_file`, `write_files`, `apply_patch` | Change files. Edits show a diff and a syntax check. |
 | `move_file`, `delete_file` | Move, rename, or delete one file. |
-| `run_command` | One command in the session shell. Takes `cwd`, `timeout`, `shell`, and `background`. Output that does not fit is saved whole under `.bot/cache/output`, and the result names the file. |
+| `run_command` | One command in the session shell. Takes `cwd`, `timeout`, `shell`, and `background`. Output that does not fit is saved whole under `.crit/cache/output`, and the result names the file. |
 | `command_output`, `kill_command` | Read new output from a background command, or stop it. |
 | `command_input` | Type into a background command, like a terminal: a shell, `python -i`, `node -i`, `adb shell`, a debugger. Each line is checked and approved like a command. |
 | `git_status`, `git_diff`, `git_log`, `git_show` | Read git state. |
 | `web_fetch` | Read one http or https page as text. Asks first, per site. |
 | `ask_user` | Ask you one question when the task needs your decision. |
 | `todo` | The task list for a job with several steps. |
-| `skill` | Load a built-in skill or a `SKILL.md` from `.bot/skills`, `.agents/skills`, or `.opencode/skills`. With no name, list them. |
+| `skill` | Load a built-in skill or a `SKILL.md` from `.crit/skills`, `.agents/skills`, or `.opencode/skills`. With no name, list them. |
 
 ### Shells
 
@@ -622,7 +607,7 @@ On Windows, `run_command` uses PowerShell 7 (`pwsh.exe`) when it is installed, a
 - Each command runs from a temporary script file, so long commands work. PowerShell reads that file through a short `-EncodedCommand`, so a Group Policy execution policy (`AllSigned`, `Restricted`) does not block it, and runs with `-NoProfile -ExecutionPolicy Bypass`, so `npm.ps1`, `npx.ps1`, and `Activate.ps1` are not blocked where policy allows. Output is UTF-8; a native tool that writes the OEM code page is still decoded.
 - PowerShell exit codes follow the last statement: a native program's exit code, else 1 when a cmdlet failed or an error was thrown, else 0. `exit N` exits with N. A script made of `param(...)`, `begin`, `process`, and `end` blocks runs whole.
 - On Windows PowerShell 5.1, a top-level `a && b` or `a || b` is rewritten so it runs. A command that uses `export`, `grep`, `sed`, a heredoc, or other bash syntax is not run; the model is told the PowerShell form, or to resend it with `"shell": "bash"` when Git Bash is installed. Quoted text and `@{...}` hashtables are not checked.
-- Commands get a copy of your environment with secrets removed: names containing `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `CREDENTIAL`, and `CRITIQUE_*`, `OPENAI_*`, `ANTHROPIC_*`, `AWS_SECRET*`.
+- Commands get a copy of your environment with secrets removed: names containing `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `CREDENTIAL`, and `CRIT_*`, `OPENAI_*`, `ANTHROPIC_*`, `AWS_SECRET*`.
 - A timeout or Ctrl+C stops the command and every process it started, and keeps the output so far. Servers and watchers run with `"background": true`; they are stopped when `crit` exits.
 
 PowerShell 7 is recommended. Install it with:
@@ -645,7 +630,7 @@ Edits (`edit_file`) already match `old_string` exactly, then ignoring the `N|` p
 
 ### Undo
 
-Before a task changes a file for the first time, `crit` saves a copy under `.bot/cache/undo/`. `crit undo` (or `/undo` inside a session) restores the files changed by the most recent task, brings back files it deleted or moved, and deletes the files it created. Run it again to step back one more task. The last 20 tasks are kept.
+Before a task changes a file for the first time, `crit` saves a copy under `.crit/cache/undo/`. `crit undo` (or `/undo` inside a session) restores the files changed by the most recent task, brings back files it deleted or moved, and deletes the files it created. Run it again to step back one more task. The last 20 tasks are kept.
 
 ## What stays where it is
 
@@ -657,8 +642,8 @@ Windows:
 | `C:\path\to\critique-bot\.venv\` | The install from `pip install -e .`. |
 | `C:\path\to\critique-bot\config.json` | The url and selectors. The `crit` command passes this every time. |
 | `C:\path\to\critique-bot\.edge-profile\` | Signed-in browser session. `user_data_dir` points here with a full path. |
-| `%LOCALAPPDATA%\critique-bot\bin\` | `crit.cmd`, `bot-agent.cmd`, and `critique-bot.cmd` on your user `PATH`. |
-| `C:\some-project\.bot\` | Per-project settings, index, history, undo copies, and sessions, created the first time you run `crit` there. |
+| `%LOCALAPPDATA%\crit\bin\` | `crit.cmd` on your user `PATH`. |
+| `C:\some-project\.crit\` | Per-project settings, index, history, undo copies, and sessions, created the first time you run `crit` there. |
 
 Linux and macOS:
 
@@ -668,5 +653,5 @@ Linux and macOS:
 | `/path/to/critique-bot/.venv/` | The install from `pip install -e .`. |
 | `/path/to/critique-bot/config.json` | The url and selectors. The `crit` command passes this every time. |
 | `/path/to/critique-bot/.edge-profile/` | Signed-in browser session. `user_data_dir` points here with a full path. |
-| `~/.local/bin/` | `crit`, `bot-agent`, and `critique-bot` wrappers on your `PATH` (set in `~/.bashrc` or `~/.zshrc`). |
-| `~/some-project/.bot/` | Per-project settings, index, history, undo copies, and sessions, created the first time you run `crit` there. |
+| `~/.local/bin/` | the `crit` wrapper on your `PATH` (set in `~/.bashrc` or `~/.zshrc`). |
+| `~/some-project/.crit/` | Per-project settings, index, history, undo copies, and sessions, created the first time you run `crit` there. |

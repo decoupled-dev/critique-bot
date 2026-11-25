@@ -157,6 +157,8 @@ class LocalModelClient:
         #: The server's context window when the config says (used to warn when a chat fills it).
         self.num_ctx = config.local.num_ctx
         self.temperature = config.local.temperature
+        #: ``local.api_key`` (or CRIT_API_KEY): sent as a Bearer token, only to this server.
+        self._api_key = config.local.api_key
         self.first_chunk_seconds = max(config.reply_start_ms / 1000.0, _MIN_FIRST_CHUNK_SECONDS)
         self.stall_seconds = max(config.reply_stall_ms / 1000.0, 1.0)
         self.max_seconds = max(config.reply_max_ms / 1000.0, self.stall_seconds)
@@ -175,6 +177,12 @@ class LocalModelClient:
             status, body = self._request("GET", path, None, timeout=_PROBE_SECONDS, stream=False)
         except OSError as exc:
             raise LocalModelError(self._unreachable(exc)) from exc
+        if status in (401, 403):
+            raise LocalModelError(
+                f"the model server at {self.url} refused crit ({status}): "
+                + ("the API key was not accepted" if self._api_key else "it needs an API key")
+                + ". Set it with: crit config --api-key"
+            )
         if status != 200:
             raise LocalModelError(
                 f"the model server at {self.url} answered {status} to {path}: "
@@ -307,7 +315,7 @@ class LocalModelClient:
             log.warn(
                 f"local model: the conversation fills the {self.num_ctx}-token context window "
                 "(local.num_ctx); older messages are being dropped. Lower compact_after_chars in "
-                ".bot/settings.json or raise num_ctx."
+                ".crit/settings.json or raise num_ctx."
             )
 
     # ------------------------------------------------------------------ errors
@@ -343,7 +351,7 @@ class LocalModelClient:
         if _CONTEXT_RE.search(text):
             return (
                 f"the conversation no longer fits the context window of {self.model} ({where}): "
-                f"{_one_line(text, 100)}. Lower compact_after_chars in .bot/settings.json or raise local.num_ctx."
+                f"{_one_line(text, 100)}. Lower compact_after_chars in .crit/settings.json or raise local.num_ctx."
             )
         return f"the model server said ({where}): {_one_line(text, 160)}"
 
@@ -362,6 +370,9 @@ class LocalModelClient:
         headers = {"Accept": "application/x-ndjson, text/event-stream, application/json"}
         if payload is not None:
             headers["Content-Type"] = "application/json"
+        if self._api_key:
+            # The connection goes only to the configured server (self._host), never through a proxy.
+            headers["Authorization"] = f"Bearer {self._api_key}"
         try:
             conn.request(method, self._prefix + path, body=payload, headers=headers)
             if conn.sock is not None:
@@ -426,6 +437,8 @@ def _one_line(text: str, limit: int) -> str:
 PROBE_OK, PROBE_NO_MODELS, PROBE_REFUSED, PROBE_TIMEOUT, PROBE_UNKNOWN_HOST, PROBE_FAILED = (
     "ok", "no-models", "refused", "timeout", "unknown-host", "failed",
 )
+#: The server answers 401 or 403: it needs an API key (or a different one).
+PROBE_NEEDS_KEY = "needs-key"
 _PROBE_CONNECT_SECONDS = 3.0
 _PROBE_HTTP_SECONDS = 5.0
 _PROBE_PATHS = ("/v1/models", "/models", "/health")
@@ -477,9 +490,18 @@ def _model_names(body: bytes) -> list[str]:
     return names
 
 
-def probe_server(url: str) -> Probe:
+def _auth_headers(api_key: str | None) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def probe_server(url: str, api_key: str | None = None) -> Probe:
     """Whether a model server answers at ``url``: a TCP connect (3 s), then ``GET /v1/models``
-    (then ``/models``, ``/health``) with http.client, which never uses a proxy (5 s)."""
+    (then ``/models``, ``/health``) with http.client, which never uses a proxy (5 s).
+    ``api_key`` goes only to that server, as ``Authorization: Bearer``. A 401 or 403 is
+    :data:`PROBE_NEEDS_KEY`."""
     host, port, https, prefix = host_port(url)
     where = _where(host, port)
     try:
@@ -500,13 +522,17 @@ def probe_server(url: str) -> Probe:
         cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
         conn = cls(host, port, timeout=_PROBE_HTTP_SECONDS)
         try:
-            conn.request("GET", prefix + path, headers={"Accept": "application/json"})
+            conn.request("GET", prefix + path, headers=_auth_headers(api_key))
             response = conn.getresponse()
             status, body = response.status, response.read()
         except (OSError, http.client.HTTPException):
             continue
         finally:
             conn.close()
+        if status in (401, 403):
+            if api_key:
+                return Probe(PROBE_NEEDS_KEY, f"the server refused the API key ({status})")
+            return Probe(PROBE_NEEDS_KEY, "the server needs an API key")
         if status != 200:
             continue
         names = _model_names(body)
@@ -535,3 +561,67 @@ def probe_site(url: str) -> Probe:
     except OSError as exc:
         return Probe(PROBE_FAILED, f"could not connect to {where}: {_one_line(str(exc) or type(exc).__name__, 100)}")
     return Probe(PROBE_OK, f"reachable: {host} resolves and answers on port {port}")
+
+
+# --------------------------------------------------------------------------- context window
+
+#: The context window each server reported (url -> tokens; 0 when it reports none), once per run.
+_reported_ctx: dict[str, int] = {}
+
+
+def _get_json(url: str, path: str, api_key: str | None) -> Any:
+    host, port, https, prefix = host_port(url)
+    cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
+    conn = cls(host, port, timeout=_PROBE_HTTP_SECONDS)
+    try:
+        conn.request("GET", prefix + path, headers=_auth_headers(api_key))
+        response = conn.getresponse()
+        status, body = response.status, response.read()
+    except (OSError, http.client.HTTPException):
+        return None
+    finally:
+        conn.close()
+    if status != 200:
+        return None
+    try:
+        return json.loads(body.decode("utf-8", "replace") or "null")
+    except ValueError:
+        return None
+
+
+def _positive(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
+def server_context_window(url: str, model: str = "", api_key: str | None = None) -> int:
+    """The context window the server reports, or 0: llama.cpp ``GET /props``
+    (``default_generation_settings.n_ctx``), then vLLM ``GET /v1/models`` (``data[].max_model_len``,
+    the configured model's or else the first). Asked once per server per run; never asks the person."""
+    key = url.rstrip("/") + "|" + model
+    if key in _reported_ctx:
+        return _reported_ctx[key]
+    found = 0
+    props = _get_json(url, "/props", api_key)
+    if isinstance(props, dict):
+        settings = props.get("default_generation_settings")
+        if isinstance(settings, dict):
+            found = _positive(settings.get("n_ctx"))
+        found = found or _positive(props.get("n_ctx"))
+    if not found:
+        models = _get_json(url, "/v1/models", api_key)
+        items = models.get("data") if isinstance(models, dict) else None
+        if isinstance(items, list):
+            entries = [item for item in items if isinstance(item, dict)]
+            chosen = [item for item in entries if model and str(item.get("id") or "") == model] or entries
+            for item in chosen:
+                found = _positive(item.get("max_model_len"))
+                if found:
+                    break
+    if found:
+        log.info(f"local model: the server reports a {found}-token context window")
+    _reported_ctx[key] = found
+    return found

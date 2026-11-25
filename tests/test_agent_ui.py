@@ -343,7 +343,7 @@ class InputTests(_Base):
         (self.root / "node_modules" / "pkg").mkdir(parents=True)
         (self.root / "node_modules" / "pkg" / "app.js").write_text("", encoding="utf-8")
         (self.root / "README.md").write_text("", encoding="utf-8")
-        agent_ui.configure(workspace=self.root, cache_dir=self.root / ".bot" / "cache")
+        agent_ui.configure(workspace=self.root, cache_dir=self.root / ".crit" / "cache")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -364,21 +364,21 @@ class InputTests(_Base):
         self.assertIn("Update", text)
 
     def test_role_command_lists_sets_and_queues_a_reseed(self) -> None:
-        (self.root / ".bot").mkdir(exist_ok=True)
-        (self.root / ".bot" / "settings.json").write_text("{}", encoding="utf-8")
+        (self.root / ".crit").mkdir(exist_ok=True)
+        (self.root / ".crit" / "settings.json").write_text("{}", encoding="utf-8")
         reader = self._reader("/role", "/role wizard", "/role AOSPExpert", "/role aosp-expert", "fix it")
         self.assertEqual(agent_ui.read_message(reader=reader), "fix it")
         text = self.text()
         self.assertIn("code-reviewer", text)
         self.assertIn("Unknown role wizard", text)
-        self.assertIn("Role: AOSP Expert, kept in .bot/settings.json", text)
+        self.assertIn("Role: AOSP Expert, kept in .crit/settings.json", text)
         self.assertIn("(already)", text)
         self.assertEqual(agent_ui.current_role(), "aosp-expert")
         self.assertEqual(agent_ui.take_role_change(), "aosp-expert")
         self.assertIsNone(agent_ui.take_role_change())
         import json
 
-        settings = json.loads((self.root / ".bot" / "settings.json").read_text(encoding="utf-8"))
+        settings = json.loads((self.root / ".crit" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings["role"], "aosp-expert")
 
     def test_role_command_without_a_bot_folder_keeps_it_for_the_session(self) -> None:
@@ -442,7 +442,7 @@ class PromptToolkitTests(_Base):
     def setUp(self) -> None:
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
-        agent_ui.configure(workspace=Path(self.tmp.name), history_path=Path(self.tmp.name) / ".bot" / "history")
+        agent_ui.configure(workspace=Path(self.tmp.name), history_path=Path(self.tmp.name) / ".crit" / "history")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -450,7 +450,7 @@ class PromptToolkitTests(_Base):
 
     def test_enter_submits(self) -> None:
         self.assertEqual(self._run("hello\r", agent_ui.prompt_line), "hello")
-        self.assertIn("hello", (Path(self.tmp.name) / ".bot" / "history").read_text(encoding="utf-8"))
+        self.assertIn("hello", (Path(self.tmp.name) / ".crit" / "history").read_text(encoding="utf-8"))
 
     def test_trailing_backslash_and_ctrl_j_add_lines(self) -> None:
         self.assertEqual(self._run("one\\\rtwo\nthree\r", agent_ui.prompt_line), "one\ntwo\nthree")
@@ -567,11 +567,11 @@ class RunAgentTests(_Base):
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        with patch("critique_bot.bot_home.rebuild_index") as rebuild:
+        with patch("critique_bot.project_home.rebuild_index") as rebuild:
             from critique_bot.code_index import IndexStats
 
             rebuild.return_value = IndexStats(files=0, symbols=0)
-            from critique_bot.bot_home import init_bot_home
+            from critique_bot.project_home import init_bot_home
 
             self.home = init_bot_home(self.root)
         from critique_bot.config import BotConfig, Selectors
@@ -613,7 +613,7 @@ class RunAgentTests(_Base):
         self.assertIn("⏹ Interrupted", self.text())
 
     def test_settings_permissions_auto(self) -> None:
-        from critique_bot.bot_home import update_settings
+        from critique_bot.project_home import update_settings
 
         update_settings(self.home, permissions="auto")
         seen = {}

@@ -11,8 +11,8 @@ storage_state.json
 .edge-profile/
 .critique-queue/
 .python-version
-.bot/cache/
-.bot/sessions/
+.crit/cache/
+.crit/sessions/
 .claude/worktrees/
 config.json.*
 config*.bak*
