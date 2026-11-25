@@ -1,14 +1,22 @@
 {
-  "url": "https://ai.example.com/",
-  "allowed_hosts": ["login.example.com"],
+  "url": "https://ai.company.com/",
   "selectors": {
-    "prompt_input": "REPLACE_WITH_MESSAGE_BOX_SELECTOR",
-    "send_button": "REPLACE_WITH_SEND_BUTTON_SELECTOR",
-    "stop_button": "REPLACE_WITH_STOP_BUTTON_SELECTOR",
-    "assistant_messages": "REPLACE_WITH_REPLY_SELECTOR"
+    "prompt_input": "textarea, div[contenteditable='true'][role='textbox']",
+    "send_button": "button[type='submit'], button[aria-label*='Send' i]",
+    "stop_button": "button[aria-label*='Stop' i]",
+    "assistant_messages": "[data-role='assistant'], .assistant-message"
   },
-  "redact_terms": ["Example Corp", "Project Falcon"],
+  "redact_terms": ["Company Inc", "Customer X", "Project Falcon"],
   "redact_pii": true,
   "egress": "strict",
-  "page_network": "open"
+  "page_network": "open",
+  "allowed_hosts": [],
+  "model": "",
+  "timeout_ms": 180000,
+  "max_prompt_chars": 120000,
+  "max_file_chars": 32000,
+  "max_files": 80,
+  "gitlab": {
+    "base_url": ""
+  }
 }
