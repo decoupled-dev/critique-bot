@@ -80,16 +80,30 @@ jobs:
           python-version: "3.12"
           architecture: ${{ matrix.python_arch }}
 
-      - name: Install package and PyInstaller
+      - name: Install package and PyInstaller (Windows)
+        if: runner.os == 'Windows'
         run: python -m pip install -c constraints.txt -e ".[packaging]"
 
-      - name: Build zip
+      - name: Build zip (Windows)
+        if: runner.os == 'Windows'
         run: python scripts/build.py
 
-      - name: Build .deb
+      - name: Build zip and .deb on Debian 11 (Linux)
+        # Built against glibc 2.31 (Debian 11), so the program runs on Ubuntu 20.04+ and
+        # Debian 11+: a PyInstaller bundle needs the glibc it was built with, or newer.
+        # The image is pinned by digest (covers x64 and arm64).
         if: runner.os == 'Linux'
         run: |
-          python scripts/build_deb.py
+          docker run --rm -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" -v "$PWD:/w" -w /w \
+            python:3.12-slim-bullseye@sha256:411fa4dcfdce7e7a3057c45662beba9dcd4fa36b2e50a2bfcd6c9333e59bf0db \
+            bash -euc '
+              apt-get update -qq && apt-get install -y -qq binutils >/dev/null
+              git config --global --add safe.directory /w 2>/dev/null || true
+              python -m pip install -q --root-user-action=ignore -c constraints.txt -e ".[packaging]"
+              python scripts/build.py
+              python scripts/build_deb.py
+            '
+          sudo chown -R "$(id -u):$(id -g)" dist build
           dpkg-deb --info dist/critique-bot_*.deb
           dpkg-deb --contents dist/critique-bot_*.deb | head -20
 
@@ -101,6 +115,16 @@ jobs:
           crit --help > /dev/null
           systemctl cat critique-bot-worker.service | grep -q /etc/critique-bot/config.json
           getent passwd critique-bot
+
+      - name: Test the .deb on Ubuntu 20.04 (oldest supported)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:20.04 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get install -y --no-install-recommends /dist/critique-bot_*.deb
+            dpkg -s critique-bot | grep -q "Status: install ok installed"
+            useradd -m dev && su dev -c "crit --help >/dev/null && crit config >/dev/null"
+          '
 
       - name: Test the .deb on a minimal image
         # Docker's Ubuntu image leaves out /usr/share/doc (like many server and cloud images).
