@@ -11,7 +11,37 @@ Config file path (Enter if none):
 Then it says `Using <path>` and carries on. Every other folder the person opens crit in asks
 nothing (the role for a project is picked from its files; the person signs in once).
 
-A starter: [`config-file.example.json`](../config-file.example.json) (also in every release bundle).
+A starter: [`config-file.example.json`](../config-file.example.json). The .deb also installs
+it at `/usr/share/critique-bot/examples/`. Copy it, set the `url`, check the selectors once
+(see [Finding the selectors once](#finding-the-selectors-once)), and share that one file:
+
+```json
+{
+  "url": "https://ai.company.com/",
+  "selectors": {
+    "prompt_input": "textarea, div[contenteditable='true'][role='textbox']",
+    "send_button": "button[type='submit'], button[aria-label*='Send' i]",
+    "stop_button": "button[aria-label*='Stop' i]",
+    "assistant_messages": "[data-role='assistant'], .assistant-message"
+  },
+  "redact_terms": ["Company Inc", "Customer X", "Project Falcon"],
+  "redact_pii": true,
+  "egress": "strict",
+  "page_network": "open",
+  "allowed_hosts": [],
+  "model": "",
+  "timeout_ms": 180000,
+  "max_prompt_chars": 120000,
+  "max_file_chars": 32000,
+  "max_files": 80,
+  "gitlab": {
+    "base_url": ""
+  }
+}
+```
+
+The selectors there are starter guesses that match many pages; confirm them with `crit setup`.
+Empty values (`"model": ""`, `"base_url": ""`) mean crit's default.
 
 ## What it holds
 
@@ -43,14 +73,7 @@ Everything else is optional; a key you leave out keeps crit's default:
 | `gitlab.base_url` | none | your GitLab, for reviews |
 | `model`, `timeout_ms`, `idle_ms`, `max_files`, other limits | built-in | see config.json.md |
 
-JSON has no comments. An optional block you could add to the example:
-
-```json
-"model": "gpt-4.1",
-"gitlab": { "base_url": "https://gitlab.example.com" },
-"timeout_ms": 240000,
-"max_files": 40
-```
+JSON has no comments, so the table above is the reference for each key.
 
 Keys this crit version does not know are ignored (noted with `--logs`), so a newer file
 works with an older crit.
