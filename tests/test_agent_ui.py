@@ -220,7 +220,7 @@ class LiveRegionTests(_Base):
         agent_ui.waiting(True, "Fetching")
         state = agent_ui.state()
         con = _console(terminal=False)
-        con.print(agent_ui.live_renderable(now=state.waiting_since + 23))
+        con.print(agent_ui.live_renderable(now=state.waiting_since + 23.5))  # .5: (t + 23) - t can be 22.999…
         text = con.export_text()
         self.assertIn("● Bash(make)", text)
         self.assertNotIn("  b\n", text)
