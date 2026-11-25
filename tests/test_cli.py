@@ -144,7 +144,19 @@ class CiMetaAndCopyTests(unittest.TestCase):
 
 class ParserTests(unittest.TestCase):
     def test_requires_config(self) -> None:
-        code = main([])
+        # An empty folder (no config.json to find) and an empty stdin (review mode reads a
+        # patch from stdin when it is not a terminal; an open, silent stdin would block).
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with patch("sys.stdin", io.StringIO("")):
+                    code = main([])
+            finally:
+                os.chdir(cwd)
         self.assertEqual(code, 1)
 
     def test_parses_common_flags(self) -> None:
