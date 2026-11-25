@@ -60,7 +60,7 @@ if [ "$1" = "configure" ]; then
     # the worker's config.json stays 0640.
     install -d -o root -g critique-bot -m 0755 /etc/critique-bot
     if [ ! -e /etc/critique-bot/config.json ]; then
-        install -o root -g critique-bot -m 0640 /usr/share/doc/critique-bot/examples/config.example.json /etc/critique-bot/config.json
+        install -o root -g critique-bot -m 0640 /usr/share/critique-bot/examples/config.example.json /etc/critique-bot/config.json
     fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload || true
@@ -133,9 +133,13 @@ def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
         _write(root / "usr" / "bin" / "critique-bot", _WRAPPER.format(extra=""), 0o755)
         _write(root / "usr" / "bin" / "crit", _WRAPPER.format(extra="--as-crit "), 0o755)
         doc = root / "usr" / "share" / "doc" / "critique-bot"
-        (doc / "examples").mkdir(parents=True)
+        doc.mkdir(parents=True)
+        # Not under /usr/share/doc: minimal images (Docker, cloud) never install that folder,
+        # and postinst copies the worker's starter config from here.
+        examples = root / "usr" / "share" / "critique-bot" / "examples"
+        examples.mkdir(parents=True)
         for name in ("config.example.json", "config-file.example.json"):
-            shutil.copy2(ROOT / name, doc / "examples" / name)
+            shutil.copy2(ROOT / name, examples / name)
         for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
             if (ROOT / name).is_file():
                 shutil.copy2(ROOT / name, doc / ("copyright" if name == "LICENSE" else name))

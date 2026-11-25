@@ -102,6 +102,18 @@ jobs:
           systemctl cat critique-bot-worker.service | grep -q /etc/critique-bot/config.json
           getent passwd critique-bot
 
+      - name: Test the .deb on a minimal image
+        # Docker's Ubuntu image leaves out /usr/share/doc (like many server and cloud images).
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:22.04 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get install -y --no-install-recommends /dist/critique-bot_*.deb
+            dpkg -s critique-bot | grep -q "Status: install ok installed"
+            test -f /etc/critique-bot/config.json
+            useradd -m dev && su dev -c "crit --help >/dev/null && crit config >/dev/null"
+          '
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

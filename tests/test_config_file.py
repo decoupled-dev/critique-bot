@@ -443,7 +443,7 @@ class InstallerTests(_Isolated):
     def test_example_is_a_valid_config_file(self) -> None:
         data = json.loads((ROOT / "config-file.example.json").read_text(encoding="utf-8"))
         config.validate_company_data(data, "config-file.example.json")
-        # Shipped with the .deb (/usr/share/doc/critique-bot/examples); the zip holds only the program.
+        # Shipped with the .deb (/usr/share/critique-bot/examples); the zip holds only the program.
         self.assertIn("config-file.example.json", (ROOT / "scripts" / "build_deb.py").read_text(encoding="utf-8"))
 
     def test_deb_makes_the_system_folder_readable(self) -> None:
