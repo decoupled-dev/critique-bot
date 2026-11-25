@@ -35,6 +35,8 @@ __all__ = [
     "list_models",
     "model_label",
     "open_provider",
+    "probe_server",
+    "probe_site",
     "save_failure",
 ]
 
@@ -163,6 +165,20 @@ def list_models(config: BotConfig) -> list[str]:
     from critique_bot.local_model import LocalModelClient
 
     return LocalModelClient(config).list_models()
+
+
+def probe_server(url: str) -> Any:
+    """Whether a model server answers at ``url`` and which models it lists (see local_model.Probe)."""
+    from critique_bot.local_model import probe_server as probe
+
+    return probe(url)
+
+
+def probe_site(url: str) -> Any:
+    """Whether a web page's host resolves and answers (see local_model.Probe)."""
+    from critique_bot.local_model import probe_site as probe
+
+    return probe(url)
 
 
 def model_label(config: BotConfig) -> str:

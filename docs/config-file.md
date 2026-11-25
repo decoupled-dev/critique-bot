@@ -1,14 +1,12 @@
 # The config file (for the people who roll crit out)
 
-People who use crit should not have to configure anything. You write one **config file**
-with the url, the page elements, and the rules, and put it where crit finds it. After
-installing, crit either finds it on its own, or asks once for its path:
-
-```
-Config file path (Enter if none):
-```
-
-Then it says `Using <path>` and carries on. Every other folder the person opens crit in asks
+This is the option for rolling out one file to many people. People who use crit should not
+have to configure anything: you write one **config file** with the url, the page elements, and
+the rules, and put it where crit finds it (`CRITIQUE_CONFIG_FILE`, or the system location
+below). crit then asks no first-run questions: it says `Using <path>` and carries on. A person
+can also point at it themselves with `crit config --config-file PATH` (the first-run question
+names that command; at install time, `install --config-file PATH` or the installers'
+`CRIT_CONFIG_FILE`). Every other folder the person opens crit in asks
 nothing (the role for a project is picked from its files; the person signs in once).
 
 A starter: [`config-file.example.json`](../config-file.example.json). The .deb also installs
@@ -106,8 +104,8 @@ url: https://ai.example.com/ (config file, locked)
 
 The first of these that is set:
 
-1. `config_file` in the person's user config (written by the first-run question or
-   `crit config --config-file PATH`; `--config-file none` removes it);
+1. `config_file` in the person's user config (written by `crit config --config-file PATH` or
+   `install --config-file PATH`; `--config-file none` removes it);
 2. the `CRITIQUE_CONFIG_FILE` environment variable;
 3. the system location, if the file exists: `/etc/critique-bot/crit.json` on Linux and macOS,
    `%ProgramData%\critique-bot\crit.json` on Windows.
@@ -116,6 +114,10 @@ With 2 or 3 the first run asks nothing: it says `Using <path>` and goes on.
 
 Paths may be UNC (`\\server\share\crit.json`; kept as given) or `C:\...`; quotes from a
 pasted "Copy as path" are removed.
+
+Personal things never come from this file: a `user_data_dir` in it (the browser profile with
+the person's sign-in) is ignored with a log line. The profile is `~/.crit/browser-profile`
+unless the person sets their own.
 
 ## Deployment
 
@@ -147,7 +149,7 @@ On one PC, without a config file:
 ## Updates
 
 crit reads the file on every start, so an edit applies from the next start. After each good
-read it keeps a copy next to the user config (`config-file.cache.json`, owner-only, with the
+read it keeps a copy in crit's folder (`~/.crit/cache/config-file.cache.json`, owner-only, with the
 source path and time). When the file cannot be read (the share is offline), crit uses that copy
 and says once: `<path> cannot be read; using its copy from <date>.` With neither the file nor
 a copy, crit stops and says so. A file that is there but broken (bad JSON, missing keys) is

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from critique_bot import gitlab
 from critique_bot.browser import BrowserError, _open_cdp_version
-from critique_bot.config import load_config
+from critique_bot.config import default_browser_profile, load_config
 from critique_bot.output import private_dir
 from critique_bot.queue import FileQueue
 
@@ -67,9 +67,13 @@ class ProfileLocationTests(unittest.TestCase):
             os.chdir(project)
             try:
                 loaded = load_config(config)
+                config.write_text(json.dumps({**json.loads(config.read_text()), "user_data_dir": "profile"}))
+                custom = load_config(config)
             finally:
                 os.chdir(old)
-            self.assertEqual(Path(loaded.user_data_dir), (home / ".edge-profile").resolve())
+            # not set: browser-profile in crit's folder; a relative value: next to the config
+            self.assertEqual(Path(loaded.user_data_dir), default_browser_profile().resolve())
+            self.assertEqual(Path(custom.user_data_dir), (home / "profile").resolve())
 
 
 class CdpTests(unittest.TestCase):

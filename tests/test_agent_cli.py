@@ -19,7 +19,7 @@ def _own_user_folder(test: unittest.TestCase) -> Path:
 
     tmp = tempfile.TemporaryDirectory()
     test.addCleanup(tmp.cleanup)
-    env = patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp.name, "APPDATA": tmp.name, "CRITIQUE_CONFIG_FILE": ""})
+    env = patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp.name, "APPDATA": tmp.name, "CRIT_HOME": tmp.name + "/.crit", "CRITIQUE_CONFIG_FILE": ""})
     env.start()
     test.addCleanup(env.stop)
     from critique_bot.config import user_config_path

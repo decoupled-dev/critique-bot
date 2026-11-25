@@ -939,6 +939,7 @@ MODE_WORDS = {
 def main(argv: list[str] | None = None) -> int:
     """Run crit. Any failure ends in a plain sentence, never a traceback (those need --logs)."""
     try:
+        _migrate_legacy_files()
         return _main(argv)
     except KeyboardInterrupt:
         log.notice("Stopped.")
@@ -955,6 +956,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         config_prompts.disable()
+
+
+def _migrate_legacy_files() -> None:
+    """Move the files of crit before 1.1 into ~/.crit, once (see config.migrate_legacy_files)."""
+    from critique_bot.config import migrate_legacy_files
+
+    try:
+        migrate_legacy_files()
+    except Exception as exc:  # moving old files must never stop the command
+        log.debug(f"moving the old settings failed: {exc}")
 
 
 def _main_config(argv: list[str]) -> int:
@@ -1034,14 +1045,6 @@ def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
         return _config_error(exc)
     if result is None:
         return 1
-    if result.needs_selectors:
-        print("crit will open the page so you can point at the message box, the send button, and the replies.")
-        print("When the live test passes, close the setup page with Ctrl+C here.")
-        code = _main_setup(["--config", str(result.path)])
-        if code != 0:
-            return code
-        print("Done. Run your command again to start.")
-        return 0
     return result.path
 
 

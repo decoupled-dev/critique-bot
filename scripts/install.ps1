@@ -4,8 +4,8 @@
 #
 # Downloads the latest release for Windows x64, checks it against the release's
 # SHA256SUMS.txt, and runs "critique-bot.exe install", which puts crit in
-# %LOCALAPPDATA%\Programs\critique-bot and adds it to your PATH. Settings are asked
-# the first time crit needs them. Set $env:CRIT_VERSION = "1.0.1" for a given version.
+# %USERPROFILE%\.crit (app\<version> and bin; $env:CRIT_HOME moves it) and adds its bin
+# folder to your PATH. Settings are asked the first time crit needs them. Set $env:CRIT_VERSION = "1.0.1" for a given version.
 # Set $env:CRIT_CONFIG_FILE = "\\server\share\crit.json" to also set the config file
 # (url, page elements, ...), so crit asks nothing on first run.
 
@@ -47,7 +47,8 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "crit install failed (exit $LASTEXITCODE)" }
     # This window does not see the new PATH yet; make crit work in it right away.
-    $bin = Join-Path $env:LOCALAPPDATA "Programs\critique-bot\bin"
+    $critHome = if ($env:CRIT_HOME) { $env:CRIT_HOME } else { Join-Path $env:USERPROFILE ".crit" }
+    $bin = Join-Path $critHome "bin"
     if (($env:Path -split ";") -notcontains $bin) { $env:Path = "$env:Path;$bin" }
 } finally {
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue

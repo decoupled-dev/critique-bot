@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import tempfile
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -60,9 +61,10 @@ CONFIG_FILE_NAME = "config.json"
 
 #: Told when a command needs settings and cannot ask (no terminal).
 NOT_SET_UP = (
-    "crit is not set up yet. Run crit in a terminal, or set it up in one line: "
-    "crit config --config-file /path/to/crit.json (or crit config --url https://ai.company.com/). "
-    "See the settings with: crit config"
+    "crit is not set up yet. Run crit in a terminal to answer the setup questions, or set it up in one line: "
+    "crit config --url https://ai.company.com/ --selector prompt_input=CSS --selector assistant_messages=CSS (Web UI), "
+    "or crit config --backend local --local-url http://IP:PORT (local model), "
+    "or crit config --config-file /path/to/crit.json. See the settings with: crit config"
 )
 
 #: Said when a change touches a key the config file sets.
@@ -234,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  crit config --config-file /path/to/crit.json\n"
             "  crit config --url https://ai.company.com/ --redact \"Acme, Globex\"\n"
             "  crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b\n"
+            "  crit config --selector prompt_input=textarea --selector send_button=\n"
+            "  crit config --check\n"
             "  crit config --allow-host static.company-cdn.net\n"
             "  crit config --gitlab-url https://gitlab.company.com"
         ),
@@ -245,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-file", metavar="PATH", help="use this config file (url, page elements, ...); none: stop using one")
     parser.add_argument("--url", help="the https address of the page crit uses in the browser")
     parser.add_argument("--backend", choices=(BACKEND_BROWSER, BACKEND_LOCAL), help="browser: a web page; local: a model server")
-    parser.add_argument("--local-url", help=f"the model server's address (default {DEFAULT_LOCAL_URL})")
+    parser.add_argument("--local-url", help=f"the model server's address, ip:port or http://host:port (default {DEFAULT_LOCAL_URL})")
     parser.add_argument("--model", help="the model's name (empty: the default)")
     parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the page may reach (repeatable)")
     parser.add_argument("--remove-host", action="append", default=[], metavar="HOST", help="stop allowing a site (repeatable)")
@@ -259,7 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--theme", metavar="ID", help="the terminal style (for you, in every project)")
     parser.add_argument("--gitlab-url", metavar="URL", help="your GitLab's https address (empty to remove)")
-    parser.add_argument("--selector", action="append", default=[], metavar="KEY=CSS", help=f"a page element ({', '.join(SELECTOR_KEYS)})")
+    parser.add_argument("--selector", action="append", default=[], metavar="KEY=CSS", help=f"a page element ({', '.join(SELECTOR_KEYS)}); KEY= clears an optional one")
+    parser.add_argument("--check", action="store_true", help="check that the model server (or the page's site) answers")
     parser.add_argument("--reset", action="store_true", help="remove the settings file (asks first; --yes without a terminal)")
     parser.add_argument("--yes", "-y", action="store_true", help="with --reset: do not ask")
     return parser
@@ -333,7 +338,20 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
         data["allowed_hosts"] = hosts
         done.append(f"no longer allowed: {', '.join(gone)}" if gone else "those sites were not on the list")
     if args.local_url is not None:
-        url = _local_url(args.local_url, tuple(hosts))
+        from critique_bot.setup_wizard import parse_server
+
+        url = parse_server(args.local_url)
+        if url is None:
+            raise ConfigError(f"--local-url takes ip:port or http://host:port, not {args.local_url!r}")
+        try:
+            _local_url(url, ())
+        except ConfigError:
+            host = (urlsplit(url).hostname or "").lower()
+            if host not in hosts:
+                hosts.append(host)
+                data["allowed_hosts"] = hosts
+                done.append(f"crit will send prompts to the model server at {host}")
+        url = _local_url(url, tuple(hosts))
         data["url"] = url
         data["backend"] = BACKEND_LOCAL
         done.append(f"model server set to {url}")
@@ -462,6 +480,29 @@ def load_problem(data: dict) -> str | None:
     return None
 
 
+def check(location: ConfigLocation, *, probe_server: Callable | None = None, probe_site: Callable | None = None) -> int:
+    """``crit config --check``: whether the model server (or the page's site) answers. 0 when it does."""
+    from critique_bot import model_api as local_model
+
+    if not location.exists:
+        print("Nothing to check: crit is not set up yet. Run crit, or see crit config --help.", file=sys.stderr)
+        return 1
+    try:
+        with _quiet_globals():
+            config = load_config(location.path)
+    except ConfigError as exc:
+        print(f"Problem: {exc}", file=sys.stderr)
+        return 1
+    if not config.url:
+        print("Nothing to check: no url is set (crit config --url https://ai.company.com/).", file=sys.stderr)
+        return 1
+    probe = (probe_server or local_model.probe_server) if config.is_local else (probe_site or local_model.probe_site)
+    print(f"Checking {config.url} ...")
+    result = probe(config.url)
+    print(result.line)
+    return 0 if result.reachable else 1
+
+
 def _confirm(question: str) -> bool:
     try:
         return input(f"{question} [y/N] ").strip().lower() in {"y", "yes"}
@@ -488,6 +529,8 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
     if args.path:
         print(path)
         return 0
+    if args.check:
+        return check(location)
     if args.reset:
         if _changes_requested(args):
             print("Problem: --reset cannot be combined with other changes; run it on its own first.", file=sys.stderr)

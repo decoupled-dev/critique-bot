@@ -417,3 +417,121 @@ class _Stream:
 def _one_line(text: str, limit: int) -> str:
     compact = " ".join(str(text).split())
     return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+# --------------------------------------------------------------------------- reachability
+
+
+#: The answers a model server probe can have (see :func:`probe_server`).
+PROBE_OK, PROBE_NO_MODELS, PROBE_REFUSED, PROBE_TIMEOUT, PROBE_UNKNOWN_HOST, PROBE_FAILED = (
+    "ok", "no-models", "refused", "timeout", "unknown-host", "failed",
+)
+_PROBE_CONNECT_SECONDS = 3.0
+_PROBE_HTTP_SECONDS = 5.0
+_PROBE_PATHS = ("/v1/models", "/models", "/health")
+
+
+class Probe:
+    """What :func:`probe_server` found: ``outcome`` (one of PROBE_*), the models, one plain line."""
+
+    def __init__(self, outcome: str, line: str, models: list[str] | None = None) -> None:
+        self.outcome = outcome
+        self.line = line
+        self.models = list(models or [])
+
+    @property
+    def reachable(self) -> bool:
+        return self.outcome in (PROBE_OK, PROBE_NO_MODELS)
+
+
+def host_port(url: str) -> tuple[str, int, bool, str]:
+    """``(host, port, https, path prefix)`` of a server address."""
+    parts = urlsplit(url)
+    https = parts.scheme == "https"
+    return (parts.hostname or "", parts.port or (443 if https else 80), https, parts.path.rstrip("/"))
+
+
+def _where(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _model_names(body: bytes) -> list[str]:
+    try:
+        data = json.loads(body.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    names: list[str] = []
+    for key, fields in (("data", ("id",)), ("models", ("name", "model", "id"))):
+        items = data.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                name = next((str(item[f]) for f in fields if item.get(f)), "")
+                if name and name not in names:
+                    names.append(name)
+        if names:
+            break
+    return names
+
+
+def probe_server(url: str) -> Probe:
+    """Whether a model server answers at ``url``: a TCP connect (3 s), then ``GET /v1/models``
+    (then ``/models``, ``/health``) with http.client, which never uses a proxy (5 s)."""
+    host, port, https, prefix = host_port(url)
+    where = _where(host, port)
+    try:
+        sock = socket.create_connection((host, port), timeout=_PROBE_CONNECT_SECONDS)
+    except socket.gaierror:
+        return Probe(PROBE_UNKNOWN_HOST, f"unknown host: {host}")
+    except ConnectionRefusedError:
+        return Probe(PROBE_REFUSED, f"refused: nothing is listening on {where}")
+    except (socket.timeout, TimeoutError):
+        return Probe(PROBE_TIMEOUT, f"timed out: {where} does not answer (firewall or wrong address?)")
+    except OSError as exc:
+        return Probe(PROBE_FAILED, f"could not connect to {where}: {_one_line(str(exc) or type(exc).__name__, 100)}")
+    try:
+        sock.close()
+    except OSError:
+        pass
+    for path in _PROBE_PATHS:
+        cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
+        conn = cls(host, port, timeout=_PROBE_HTTP_SECONDS)
+        try:
+            conn.request("GET", prefix + path, headers={"Accept": "application/json"})
+            response = conn.getresponse()
+            status, body = response.status, response.read()
+        except (OSError, http.client.HTTPException):
+            continue
+        finally:
+            conn.close()
+        if status != 200:
+            continue
+        names = _model_names(body)
+        if names:
+            shown = ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+            return Probe(PROBE_OK, f"reachable, {len(names)} model{'s' if len(names) != 1 else ''}: {shown}", names)
+    return Probe(PROBE_NO_MODELS, "reachable, but it does not list models (is it an OpenAI-compatible server?)")
+
+
+def probe_site(url: str) -> Probe:
+    """Whether a web page's host resolves and answers (a TCP connect, 3 s); nothing is sent."""
+    host, port, _https, _prefix = host_port(url)
+    where = _where(host, port)
+    try:
+        socket.getaddrinfo(host, port)
+    except socket.gaierror:
+        return Probe(PROBE_UNKNOWN_HOST, f"unknown host: {host}")
+    try:
+        socket.create_connection((host, port), timeout=_PROBE_CONNECT_SECONDS).close()
+    except socket.gaierror:
+        return Probe(PROBE_UNKNOWN_HOST, f"unknown host: {host}")
+    except ConnectionRefusedError:
+        return Probe(PROBE_REFUSED, f"refused: nothing is listening on {where}")
+    except (socket.timeout, TimeoutError):
+        return Probe(PROBE_TIMEOUT, f"timed out: {where} does not answer (firewall, proxy, or wrong address?)")
+    except OSError as exc:
+        return Probe(PROBE_FAILED, f"could not connect to {where}: {_one_line(str(exc) or type(exc).__name__, 100)}")
+    return Probe(PROBE_OK, f"reachable: {host} resolves and answers on port {port}")

@@ -21,7 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from critique_bot import egress, log
 from critique_bot.output import private_dir
-from critique_bot.config import dedicated_edge_user_data_dir, system_edge_user_data_dir
+from critique_bot.config import dedicated_edge_user_data_dir, default_browser_profile, system_edge_user_data_dir
 from critique_bot.model_api import BackendError
 
 if TYPE_CHECKING:
@@ -495,7 +495,7 @@ def needs_visible_login(
     storage_state: str | None,
 ) -> bool:
     """True when this run must show a window so someone can sign in once."""
-    profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
+    profile_dir = Path(user_data_dir or default_browser_profile()).expanduser()
     use_system_profile = _is_system_profile(str(profile_dir))
     if use_system_profile:
         profile_dir = dedicated_edge_user_data_dir()
@@ -514,7 +514,7 @@ _SESSION_COOKIES: tuple[tuple[tuple[str, ...], str], ...] = ()
 
 def login_profile_dir(user_data_dir: str | None) -> Path:
     """The profile folder launch_edge uses for ``user_data_dir`` (absolute)."""
-    profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
+    profile_dir = Path(user_data_dir or default_browser_profile()).expanduser()
     if _is_system_profile(str(profile_dir)):
         profile_dir = dedicated_edge_user_data_dir()
     return profile_dir.resolve()
@@ -1901,7 +1901,7 @@ def launch_edge(
     attached_page = None
     started_desktop_edge = False
     desktop_proc: subprocess.Popen[bytes] | None = None
-    profile_dir = Path(user_data_dir or ".edge-profile").expanduser()
+    profile_dir = Path(user_data_dir or default_browser_profile()).expanduser()
     use_system_profile = _is_system_profile(str(profile_dir))
     if use_system_profile:
         profile_dir = dedicated_edge_user_data_dir()

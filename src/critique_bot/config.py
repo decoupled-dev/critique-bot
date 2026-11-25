@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from critique_bot import egress, log
 from critique_bot import redaction
@@ -43,6 +45,11 @@ LOCAL_API_OPENAI = "openai"
 LOCAL_APIS = (LOCAL_API_OPENAI,)
 
 DEFAULT_USER_DATA_DIR = ".edge-profile"
+#: crit's own folder in the home folder (see crit_home), and its override.
+CRIT_HOME_NAME = ".crit"
+ENV_CRIT_HOME = "CRIT_HOME"
+BROWSER_PROFILE_NAME = "browser-profile"
+DEDICATED_PROFILE_NAME = "msedge-user-data"
 DEFAULT_QUEUE_DIR_NAME = ".critique-queue"
 DEFAULT_MIN_INTERVAL_SECONDS = 30.0
 DEFAULT_INTERVAL_JITTER_SECONDS = 5.0
@@ -285,8 +292,10 @@ def load_config(
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a JSON object")
 
+    own_raw = raw
     company = find_company_settings(raw)
     locked: frozenset[str] = frozenset()
+    shared_file = _is_shared_config_file(config_path)
     if company is not None:
         raw, locked = merge_company(company.data, raw)
         log.info(f"config file {company.path}" + (f" (saved copy of {company.cached_at})" if company.cached_at else ""))
@@ -351,10 +360,18 @@ def load_config(
         log.debug("cdp_url overridden by --cdp-url")
     elif os.environ.get(ENV_CDP_URL):
         log.debug(f"cdp_url overridden by {ENV_CDP_URL}")
-    raw_user_data = os.environ.get(ENV_USER_DATA_DIR) or _clean(raw.get("user_data_dir"))
+    # The browser profile is personal: only the user's own config, CRITIQUE_USER_DATA_DIR, or
+    # the default; never a config file shared with others (nor relative to one).
+    own_user_data = "" if shared_file else _clean(own_raw.get("user_data_dir"))
+    if (company is not None and _clean(company.data.get("user_data_dir"))) or (
+        shared_file and _clean(own_raw.get("user_data_dir"))
+    ):
+        log.info("user_data_dir in the config file is ignored: the browser profile is personal "
+                 f"(set it in your own settings or {ENV_USER_DATA_DIR})")
+    raw_user_data = os.environ.get(ENV_USER_DATA_DIR) or own_user_data
     if os.environ.get(ENV_USER_DATA_DIR):
         log.debug(f"user_data_dir overridden by {ENV_USER_DATA_DIR}")
-    user_data_dir = _resolve_user_data_dir(raw_user_data, config_path)
+    user_data_dir = _resolve_user_data_dir(raw_user_data, None if shared_file else config_path)
     queue_dir = _resolve_queue_dir(
         os.environ.get(ENV_QUEUE_DIR) or _clean(raw.get("queue_dir")),
         config_path,
@@ -506,14 +523,115 @@ ENV_CONFIG = "CRITIQUE_CONFIG"
 CONFIG_FILE_NAME = "config.json"
 
 
+def crit_home() -> Path:
+    """crit's one folder for everything it keeps for this user (like ``~/.claude``): ``CRIT_HOME``,
+    else ``%USERPROFILE%\\.crit`` on Windows and ``~/.crit`` on Linux and macOS.
+
+    Inside: ``config.json`` (the user config), ``browser-profile/`` (the signed-in browser),
+    ``msedge-user-data/`` (for ``user_data_dir: "system"``), ``cache/``, and the self-installed
+    program in ``app/<version>/`` with its launchers in ``bin/``."""
+    override = os.environ.get(ENV_CRIT_HOME, "").strip()
+    if override:
+        return Path(os.path.expanduser(override))
+    if os.name == "nt":
+        base = os.environ.get("USERPROFILE") or str(Path.home())
+    else:
+        base = os.environ.get("HOME") or str(Path.home())
+    return Path(base) / CRIT_HOME_NAME
+
+
+def ensure_crit_home() -> Path:
+    """:func:`crit_home`, created owner-only (0700 on POSIX, an owner-only ACL on Windows)."""
+    from critique_bot.output import private_dir
+
+    return private_dir(crit_home())
+
+
 def user_config_path() -> Path:
-    """The person's own config: ``$XDG_CONFIG_HOME/critique-bot/config.json`` (default
-    ``~/.config/...``) on Linux and macOS, ``%APPDATA%\\critique-bot\\config.json`` on Windows."""
+    """The person's own config: ``config.json`` in :func:`crit_home`."""
+    return crit_home() / CONFIG_FILE_NAME
+
+
+def default_browser_profile() -> Path:
+    """The browser profile when ``user_data_dir`` is not set: ``browser-profile`` in :func:`crit_home`."""
+    return crit_home() / BROWSER_PROFILE_NAME
+
+
+def legacy_config_dir() -> Path:
+    """Where versions before 1.1 kept the user config (``~/.config/critique-bot``,
+    ``%APPDATA%\\critique-bot``); :func:`migrate_legacy_files` moves it into :func:`crit_home`."""
     if os.name == "nt":
         base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "critique-bot" / CONFIG_FILE_NAME
+    return Path(base) / "critique-bot"
+
+
+def _legacy_dedicated_dir() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "critique-bot" / DEDICATED_PROFILE_NAME
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "critique-bot" / DEDICATED_PROFILE_NAME
+    return legacy_config_dir() / DEDICATED_PROFILE_NAME
+
+
+_MIGRATED = False
+
+
+def migrate_legacy_files(say: Callable[[str], None] | None = None) -> bool:
+    """Once: move the user config, the saved config-file copy, and the browser profiles from the
+    old folders into :func:`crit_home`. Nothing happens when ``config.json`` is already there or
+    there is no old one. A profile that cannot be moved (the browser has it open) stays, the
+    config is copied instead of moved, and a line says so. True when something moved."""
+    global _MIGRATED
+    if _MIGRATED:
+        return False
+    _MIGRATED = True
+    say = say or (lambda text: print(text, file=sys.stderr))
+    new_config = user_config_path()
+    old_dir = legacy_config_dir()
+    old_config = old_dir / CONFIG_FILE_NAME
+    try:
+        if new_config.exists() or not old_config.is_file() or old_dir.resolve() == crit_home().resolve():
+            return False
+    except OSError:
+        return False
+    home = ensure_crit_home()
+    profile_failed = ""
+    for old, new in (
+        (old_dir / DEFAULT_USER_DATA_DIR, default_browser_profile()),
+        (_legacy_dedicated_dir(), home / DEDICATED_PROFILE_NAME),
+    ):
+        if not old.is_dir() or new.exists():
+            continue
+        try:
+            shutil.move(str(old), str(new))
+        except OSError as exc:
+            if new.exists() and old.exists():
+                shutil.rmtree(new, ignore_errors=True)  # a half copy is worse than none
+            profile_failed = profile_failed or (
+                f"The browser profile {old} could not be moved ({getattr(exc, 'strerror', None) or exc}); "
+                f"it stays there. Close the browser and move it to {new}, or sign in again."
+            )
+    cache = old_dir / COMPANY_CACHE_NAME
+    try:
+        if cache.is_file() and not company_cache_path().exists():
+            company_cache_path().parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(cache), str(company_cache_path()))
+        if profile_failed:
+            shutil.copy2(old_config, new_config)
+        else:
+            shutil.move(str(old_config), str(new_config))
+        if os.name != "nt":
+            os.chmod(new_config, 0o600)
+    except OSError as exc:
+        say(f"crit could not move its settings from {old_dir} to {home}: {exc}")
+        return False
+    say(f"Moved crit's files to {home}.")
+    if profile_failed:
+        say(profile_failed)
+    return True
 
 
 #: Per-user preferences kept in the user config next to the settings (never in a config file
@@ -582,7 +700,14 @@ def write_config_file(path: str | Path, data: dict) -> Path:
 
     path = Path(path)
     parent = path.parent
-    if not parent.exists() or path.resolve() == user_config_path().resolve():
+    home = crit_home()
+    try:
+        inside_home = path.resolve().is_relative_to(home.resolve())
+    except OSError:
+        inside_home = False
+    if inside_home:
+        private_dir(home)
+    if not parent.exists() or inside_home:
         private_dir(parent)
     import tempfile
 
@@ -656,7 +781,7 @@ def system_company_config_path() -> Path:
 
 
 def company_cache_path() -> Path:
-    return user_config_path().parent / COMPANY_CACHE_NAME
+    return crit_home() / "cache" / COMPANY_CACHE_NAME
 
 
 def company_path_value(text: str) -> str:
@@ -1041,26 +1166,14 @@ def _load_local(raw: object, url: str) -> LocalConfig:
 
 
 def dedicated_edge_user_data_dir() -> Path:
-    """Bot-owned Edge profile, outside Chromium's default User Data directory.
+    """Bot-owned Edge profile for ``user_data_dir: "system"``: ``msedge-user-data`` in crit's folder,
+    outside Chromium's default User Data directory.
 
     A sibling named ``User Data-critique-bot`` still string-prefix-matches
     Windows ``User Data``, so Chromium 136+ treats it as the daily profile and
     CDP returns HTTP 403.
     """
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(
-            Path.home() / "AppData" / "Local"
-        )
-        return Path(base) / "critique-bot" / "msedge-user-data"
-    if sys.platform == "darwin":
-        return (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "critique-bot"
-            / "msedge-user-data"
-        )
-    return Path.home() / ".config" / "critique-bot" / "msedge-user-data"
+    return crit_home() / DEDICATED_PROFILE_NAME
 
 
 def system_edge_user_data_dir() -> Path:
@@ -1101,18 +1214,40 @@ def _resolve_queue_dir(value: str, config_path: Path) -> str:
     return str(resolved)
 
 
+def _is_shared_config_file(config_path: Path) -> bool:
+    """True when ``config_path`` is itself the config file shared with others (the system
+    location or ``CRITIQUE_CONFIG_FILE``), used directly as the config."""
+    shared = [system_company_config_path()]
+    env = os.environ.get(ENV_COMPANY_CONFIG, "").strip()
+    if env:
+        shared.append(Path(env).expanduser())
+    try:
+        here = Path(config_path).resolve()
+        return any(here == Path(item).resolve() for item in shared)
+    except OSError:
+        return False
+
+
 def _resolve_user_data_dir(value: str, config_path: Path | None = None) -> str:
     """The browser profile folder. A relative path is next to config.json, never in the
     folder crit happens to run from: the profile holds the signed-in session's cookies,
-    and a project folder is where they could be committed or shared."""
+    and a project folder is where they could be committed or shared.
+
+    Not set (or the old relative default ``.edge-profile``): :func:`default_browser_profile`,
+    ``browser-profile`` in crit's folder, on every system."""
     raw = value or DEFAULT_USER_DATA_DIR
     if raw.lower() in {"system", "default"}:
         resolved = str(system_edge_user_data_dir())
         log.debug(f"user_data_dir {raw!r} -> system profile {resolved}")
         return resolved
+    if raw == DEFAULT_USER_DATA_DIR:
+        resolved = str(default_browser_profile())
+        log.debug(f"user_data_dir {raw!r} -> {resolved}")
+        return resolved
     path = Path(raw).expanduser()
-    if not path.is_absolute() and config_path is not None:
-        path = Path(config_path).parent / path
+    if not path.is_absolute():
+        base = Path(config_path).parent if config_path is not None else user_config_path().parent
+        path = base / path
     resolved = str(path.resolve())
     log.debug(f"user_data_dir {raw!r} -> {resolved}")
     return resolved

@@ -16,7 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PosixPath
 from unittest.mock import patch
 
-from critique_bot import config, config_cmd, egress, installer, redaction, roles, setup_wizard
+from critique_bot import config, config_cmd, egress, installer, local_model, redaction, roles, setup_wizard
 from critique_bot.config import ConfigError, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -260,7 +260,7 @@ class CacheTests(_Isolated):
         self.user_config({"config_file": str(path)})
         load_config(self.user)
         cache = config.company_cache_path()
-        self.assertEqual(cache.parent, self.user.parent)
+        self.assertEqual(cache.parent, self.user.parent / "cache")
         record = json.loads(cache.read_text(encoding="utf-8"))
         self.assertEqual(record["source"], str(path))
         self.assertIn("saved_at", record)
@@ -311,7 +311,6 @@ class FirstRunTests(_Isolated):
         assert result is not None
         self.assertEqual(script.asked, [])
         self.assertEqual(script.said, [f"Using {self.system}"])
-        self.assertFalse(result.needs_selectors)
         self.assertEqual(load_config(self.user).url, "https://ai.corp.example/")
 
     def test_env_file_is_used_without_questions(self) -> None:
@@ -321,24 +320,14 @@ class FirstRunTests(_Isolated):
             self.assertIsNotNone(setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say))
         self.assertEqual(script.said, [f"Using {path}"])
 
-    def test_asks_for_the_path_bad_then_good(self) -> None:
-        good = self.team_file()
-        bad = self.team_file({"url": "https://ai.corp.example/"}, name="bad.json")
-        script = _Script(str(self.root / "nope.json"), str(bad), f'"{good}"')
-        result = setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say)
-        assert result is not None
-        self.assertEqual(script.asked, [setup_wizard.CONFIG_FILE_PROMPT] * 3)
-        self.assertEqual(setup_wizard.CONFIG_FILE_PROMPT, "Config file path (Enter if none): ")
-        self.assertIn(f"  {self.root / 'nope.json'} does not exist.", script.said)
-        self.assertIn(f"  {bad} is missing: selectors.prompt_input, selectors.assistant_messages", script.said)
-        self.assertEqual(script.said[-1], f"Using {good}")
-        self.assertEqual(json.loads(self.user.read_text(encoding="utf-8")), {"config_file": str(good)})
-
-    def test_enter_goes_on_to_the_questions(self) -> None:
-        script = _Script("", "")  # no file; then Enter at "Where does the model run?"
+    def test_without_a_config_file_it_asks_how_crit_reaches_the_model(self) -> None:
+        script = _Script("^C")
+        script.ask = _interrupt_at(script, "^C")  # type: ignore[method-assign]
         self.assertIsNone(setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say))
-        self.assertIn(setup_wizard.DIY_PREFACE, script.said)
-        self.assertTrue(script.asked[1].startswith("Choose 1 or 2"))
+        self.assertEqual(script.asked, [setup_wizard.CHOICE_PROMPT])
+        self.assertIn("(Or use a config file: crit config --config-file PATH)", script.said)
+        self.assertNotIn("Config file path (Enter if none): ", script.asked)
+        self.assertFalse(self.user.exists())
 
     def test_command_line_first_run_continues_without_a_terminal(self) -> None:
         from critique_bot.cli import _find_config
@@ -356,11 +345,23 @@ class FirstRunTests(_Isolated):
         location = config_cmd.resolve_config_path(None, self.project)
         self.assertEqual(location.source, "user")
         self.assertFalse(location.exists)
-        good = self.team_file()
-        script = _Script(str(good))
-        setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say)
+        script = _Script("1", "127.0.0.1:8080", "", "")
+        probe = lambda url: local_model.Probe("ok", "reachable, 1 model: qwen", ["qwen"])  # noqa: E731
+        setup_wizard.run_wizard(self.user, ask=script.ask, say=script.say, probe=probe)
         data = json.loads(self.user.read_text(encoding="utf-8"))
-        self.assertEqual(data, {"config_file": str(good), "theme": "light"})  # the preference is kept
+        self.assertEqual(data["theme"], "light")  # the preference is kept
+        self.assertEqual(data["model"], "qwen")
+
+
+def _interrupt_at(script: "_Script", marker: str):
+    def ask(prompt: str) -> str:
+        script.asked.append(prompt)
+        answer = script.answers.pop(0)
+        if answer == marker:
+            raise KeyboardInterrupt
+        return answer
+
+    return ask
 
 
 def _run_config(argv: list[str]) -> tuple[int, str, str]:
@@ -460,7 +461,7 @@ class AutoInstallTests(_Isolated):
         (self.bundle / installer._exe_name()).write_text("", encoding="utf-8")
 
     def _installed(self, version: str) -> None:
-        app = installer.install_root() / f"app-{version}"
+        app = installer.install_root() / version
         app.mkdir(parents=True)
         (app / installer._exe_name()).write_text("", encoding="utf-8")
 
@@ -474,13 +475,13 @@ class AutoInstallTests(_Isolated):
         ):
             self.assertTrue(installer.auto_install(say=said.append))
         self.assertEqual(said, [
-            f"Installed crit {installer.__version__} in {installer.install_root() / f'app-{installer.__version__}'} and added it to your PATH."
+            f"Installed crit {installer.__version__} in {installer.install_root() / installer.__version__} and added it to your PATH."
         ])
         self.assertFalse(installer.should_auto_install(["fix it"], self.bundle))
 
     def test_installed_copy_does_not_reinstall(self) -> None:
         self._installed(installer.__version__)
-        app = installer.install_root() / f"app-{installer.__version__}"
+        app = installer.install_root() / installer.__version__
         self.assertFalse(installer.should_auto_install([], app))
         self.assertFalse(installer.should_auto_install([], self.bundle))  # the same version is installed
 
@@ -516,11 +517,11 @@ class AutoInstallTests(_Isolated):
 
 
 class DoubleClickTests(_Isolated):
-    def test_double_click_installs_asks_for_the_config_file_and_waits(self) -> None:
+    def test_double_click_uses_a_found_config_file_without_questions(self) -> None:
         from critique_bot import __main__ as entry
 
         good = self.team_file()
-        answers = iter([str(good), ""])  # the config file question, then Enter to close
+        answers = iter([""])  # only Enter to close
         asked: list[str] = []
 
         def fake_input(prompt: str = "") -> str:
@@ -532,14 +533,39 @@ class DoubleClickTests(_Isolated):
             entry.sys, "argv", ["critique-bot.exe"]
         ), patch.object(installer, "should_auto_install", return_value=True), patch.object(
             installer, "auto_install", return_value=True
-        ) as auto, patch("builtins.input", side_effect=fake_input), redirect_stdout(out), redirect_stderr(err):
+        ) as auto, patch("builtins.input", side_effect=fake_input), redirect_stdout(out), redirect_stderr(err), patch.dict(
+            os.environ, {"CRITIQUE_CONFIG_FILE": str(good)}
+        ):
             self.assertEqual(entry.main(), 0)
         auto.assert_called_once()
-        self.assertEqual(asked[0], setup_wizard.CONFIG_FILE_PROMPT)
-        self.assertNotIn("[Y/n]", "".join(asked))
-        self.assertIn(f"Using {good}", out.getvalue())
+        self.assertEqual(asked, ["\nPress Enter to close this window."])
+        self.assertIn(f"Using {good}", err.getvalue())
         self.assertIn("crit runs in a terminal", out.getvalue())
-        self.assertEqual(json.loads(self.user.read_text(encoding="utf-8")), {"config_file": str(good)})
+        self.assertEqual(json.loads(self.user.read_text(encoding="utf-8")), {})  # the file keeps being found
+
+
+    def test_double_click_asks_the_same_first_run_questions(self) -> None:
+        from critique_bot import __main__ as entry
+
+        answers = iter(["1", "127.0.0.1:8080", "", "", ""])  # local, server, model, names, Enter to close
+        asked: list[str] = []
+
+        def fake_input(prompt: str = "") -> str:
+            asked.append(prompt)
+            return next(answers)
+
+        probe = local_model.Probe("ok", "reachable, 1 model: qwen", ["qwen"])
+        out = io.StringIO()
+        with patch.object(entry, "launched_from_explorer", return_value=True), patch.object(
+            entry.sys, "argv", ["critique-bot.exe"]
+        ), patch.object(installer, "should_auto_install", return_value=False), patch(
+            "critique_bot.local_model.probe_server", return_value=probe
+        ), patch("builtins.input", side_effect=fake_input), redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(entry.main(), 0)
+        self.assertEqual(asked[:3], [setup_wizard.CHOICE_PROMPT, setup_wizard.SERVER_PROMPT, "Model [qwen]: "])
+        self.assertIn("How does crit reach the model?", out.getvalue())
+        self.assertIn("crit runs in a terminal", out.getvalue())
+        self.assertEqual(json.loads(self.user.read_text(encoding="utf-8"))["backend"], "local")
 
 
 class RoleDetectionTests(unittest.TestCase):

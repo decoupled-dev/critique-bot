@@ -1,10 +1,10 @@
 """Keep the whole test run away from the real user folders.
 
 Imported first by ``unittest discover`` (the name sorts first), before any test runs:
-HOME, the XDG folders, APPDATA, LOCALAPPDATA, and ProgramData point into a temporary
+HOME, CRIT_HOME, the XDG folders, APPDATA, LOCALAPPDATA, and ProgramData point into a temporary
 folder, the variables that name crit's files are cleared, and the system config file
 location points at a file that does not exist. So no test reads or writes the person's
-~/.config/critique-bot, /etc/critique-bot, or %APPDATA%.
+~/.crit, ~/.config/critique-bot, ~/.local, /etc/critique-bot, or %APPDATA%.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ for _name, _sub in (
     ("APPDATA", "home/AppData/Roaming"),
     ("LOCALAPPDATA", "home/AppData/Local"),
     ("ProgramData", "ProgramData"),
+    ("CRIT_HOME", "home/.crit"),
 ):
     _folder = _ROOT / _sub
     _folder.mkdir(parents=True, exist_ok=True)
@@ -46,4 +47,5 @@ _config.system_company_config_path = lambda: _SYSTEM  # type: ignore[assignment]
 class IsolationTest(unittest.TestCase):
     def test_user_folders_are_temporary(self) -> None:
         self.assertTrue(str(_config.user_config_path()).startswith(str(_ROOT)))
+        self.assertTrue(str(_config.crit_home()).startswith(str(_ROOT)))
         self.assertFalse(_config.system_company_config_path().exists())

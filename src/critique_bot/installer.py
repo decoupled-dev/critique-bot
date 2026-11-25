@@ -1,14 +1,17 @@
 """``critique-bot install``: put the downloaded program where every terminal finds it.
 
-Like other developer CLIs, crit lives in the user's own folders and needs no
-administrator rights:
+Like other developer CLIs, crit lives in the user's own folder and needs no administrator
+rights. Everything goes in crit's one folder (``config.crit_home()``: ``~/.crit``,
+``%USERPROFILE%\\.crit``, or ``CRIT_HOME``):
 
-* Windows: ``%LOCALAPPDATA%\\Programs\\critique-bot\\app-<version>\\`` holds the program,
-  ``...\\critique-bot\\bin\\`` holds ``crit.cmd`` and ``critique-bot.cmd``, and that bin
-  folder is added to the user's PATH.
-* Linux and macOS: ``~/.local/share/critique-bot/app-<version>/`` holds the program and
-  ``~/.local/bin/crit`` and ``critique-bot`` start it; ``~/.local/bin`` is added to PATH
-  in ``~/.profile`` (and ``~/.bashrc``) when it is not there yet.
+* ``app/<version>/`` holds the program;
+* ``bin/`` holds the launchers (``crit.cmd`` and ``critique-bot.cmd`` on Windows, ``crit`` and
+  ``critique-bot`` elsewhere) and is added to PATH: the user's PATH in the registry on
+  Windows, ``~/.profile`` (and ``~/.bashrc``, ``~/.zshrc``) elsewhere, when it is not there yet.
+
+Versions before 1.1 installed into ``%LOCALAPPDATA%\\Programs\\critique-bot`` or
+``~/.local/share/critique-bot`` with launchers in ``~/.local/bin``; the next install removes
+that copy, the launchers that point at it, and (Windows) its bin folder on PATH.
 
 Each version gets its own folder, so installing a new one works while the old one is
 running; the launchers then point at the new one and older folders are removed when
@@ -38,6 +41,21 @@ def frozen_bundle_dir() -> Path | None:
 
 
 def install_root() -> Path:
+    """``app`` in crit's folder: one ``<version>`` folder per installed version."""
+    from critique_bot.config import crit_home
+
+    return crit_home() / "app"
+
+
+def bin_dir() -> Path:
+    """``bin`` in crit's folder: the launchers, on PATH."""
+    from critique_bot.config import crit_home
+
+    return crit_home() / "bin"
+
+
+def legacy_install_root() -> Path:
+    """Where versions before 1.1 installed the program."""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "Programs" / "critique-bot"
@@ -45,9 +63,9 @@ def install_root() -> Path:
     return Path(base) / "critique-bot"
 
 
-def bin_dir() -> Path:
+def legacy_bin_dir() -> Path:
     if os.name == "nt":
-        return install_root() / "bin"
+        return legacy_install_root() / "bin"
     return Path.home() / ".local" / "bin"
 
 
@@ -89,9 +107,9 @@ def installed_versions() -> list[str]:
     root = install_root()
     if not root.is_dir():
         return found
-    for app in root.glob("app-*"):
-        if (app / _exe_name()).is_file():
-            found.append(app.name[len("app-"):])
+    for app in root.iterdir():
+        if not app.name.startswith(".") and (app / _exe_name()).is_file():
+            found.append(app.name)
     return sorted(found, key=_version_key)
 
 
@@ -120,7 +138,7 @@ def auto_install(*, say=_say_stderr) -> bool:
         for line in lines:
             log.notice(line)
         return False
-    say(f"Installed crit {__version__} in {install_root() / f'app-{__version__}'} and added it to your PATH.")
+    say(f"Installed crit {__version__} in {install_root() / __version__} and added it to your PATH.")
     return True
 
 
@@ -191,8 +209,66 @@ def _posix_add_to_path(folder: Path) -> list[Path]:
     return changed
 
 
+def _windows_remove_from_path(folder: Path) -> bool:
+    """Drop ``folder`` from the user's PATH (HKCU\\Environment). True when it was there."""
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+        try:
+            current, kind = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            return False
+        parts = [p for p in str(current).split(";") if p]
+        mine = os.path.normcase(str(folder)).rstrip("\\")
+        kept = [p for p in parts if os.path.normcase(os.path.expandvars(p)).rstrip("\\") != mine]
+        if len(kept) == len(parts):
+            return False
+        winreg.SetValueEx(key, "Path", 0, kind, ";".join(kept))
+    return True
+
+
+def remove_legacy_install(*, running: Path | None = None) -> list[Path]:
+    """Remove the copy versions before 1.1 installed: the launchers in the old bin folder that
+    point at the old program folder (others are left), the old bin folder on the Windows PATH,
+    and the old program folder unless crit is running from it. The ``~/.profile`` lines stay
+    (harmless). What was removed."""
+    root = legacy_install_root()
+    folder = legacy_bin_dir()
+    removed: list[Path] = []
+    names = ("crit.cmd", "critique-bot.cmd") if os.name == "nt" else ("crit", "critique-bot")
+    for name in names:
+        path = folder / name
+        try:
+            if path.is_file() and str(root) in path.read_text(encoding="utf-8", errors="replace"):
+                path.unlink()
+                removed.append(path)
+        except OSError as exc:
+            log.info(f"left {path}: {exc}")
+    if os.name == "nt" and root.is_dir():
+        try:
+            _windows_remove_from_path(folder)
+        except OSError as exc:
+            log.info(f"could not take {folder} off PATH: {exc}")
+    if root.is_dir():
+        inside = False
+        if running is not None:
+            try:
+                running.resolve().relative_to(root.resolve())
+                inside = True
+            except ValueError:
+                pass
+        if not inside:
+            shutil.rmtree(root, ignore_errors=True)
+            if not root.exists():
+                removed.append(root)
+    return removed
+
+
 def _remove_old_versions(keep: Path) -> None:
-    for old in install_root().glob("app-*"):
+    root = install_root()
+    if not root.is_dir():
+        return
+    for old in root.iterdir():
         if old.resolve() == keep.resolve():
             continue
         try:
@@ -211,10 +287,13 @@ def install(bundle: Path | None = None, *, say=print) -> int:
     if not (bundle / _exe_name()).is_file():
         say(f"Problem: {bundle} does not contain {_exe_name()}.")
         return 1
+    from critique_bot.config import ensure_crit_home
+
+    ensure_crit_home()
     root = install_root()
-    app = root / f"app-{__version__}"
+    app = root / __version__
     if bundle.resolve() != app.resolve():
-        staging = root / f".app-{__version__}.partial"
+        staging = root / f".{__version__}.partial"
         if staging.exists():
             shutil.rmtree(staging)
         root.mkdir(parents=True, exist_ok=True)
@@ -232,6 +311,7 @@ def install(bundle: Path | None = None, *, say=print) -> int:
             exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     _write_launchers(app)
     _remove_old_versions(app)
+    remove_legacy_install(running=bundle)
     folder = bin_dir()
     if os.name == "nt":
         _windows_add_to_path(folder)
@@ -244,7 +324,7 @@ def install(bundle: Path | None = None, *, say=print) -> int:
             say(f"Added {folder} to PATH in {', '.join(str(p) for p in changed)}. Open a new terminal, then type: crit")
         else:
             say("In any project folder, type: crit")
-    say("crit asks for the config file the first time it runs (or set it with: crit config --config-file PATH).")
+    say("crit asks how to reach the model the first time it runs (or set it with crit config; see crit config --help).")
     return 0
 
 
@@ -265,8 +345,9 @@ def uninstall(*, say=print) -> int:
             if str(install_root()) in text:
                 path.unlink()
     shutil.rmtree(install_root(), ignore_errors=True)
-    say("Removed crit. Your settings are kept; delete them with: crit config --reset (before uninstalling) "
-        "or remove the critique-bot folder in your user settings folder.")
+    from critique_bot.config import crit_home
+
+    say(f"Removed crit. Your settings and browser sign-in are kept in {crit_home()}; delete that folder to remove them too.")
     return 0
 
 

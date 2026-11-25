@@ -20,13 +20,16 @@ curl -fsSL https://github.com/decoupled-dev/critique-bot/releases/latest/downloa
 Then, in any project folder:
 
 ```
-crit            # the coding agent; the first run asks for the config file path
+crit            # the coding agent; the first run asks how to reach the model
 crit review     # review the current changes
 crit config     # see or change the settings
 ```
 
-Run the same line again to update. `critique-bot install --uninstall` removes it (your
-settings stay). Set `CRIT_CONFIG_FILE` (Linux) or `$env:CRIT_CONFIG_FILE` (Windows) before the
+The program goes in `~/.crit/app/<version>` (`%USERPROFILE%\.crit\app\<version>` on
+Windows) and the `crit` and `critique-bot` launchers in `~/.crit/bin`, which is added to your
+PATH. Run the same line again to update. `critique-bot install --uninstall` removes it (your
+settings stay). An install from before 1.1 (`%LOCALAPPDATA%\Programs\critique-bot`, or
+`~/.local/share/critique-bot` with launchers in `~/.local/bin`) is removed by the next install. Set `CRIT_CONFIG_FILE` (Linux) or `$env:CRIT_CONFIG_FILE` (Windows) before the
 one-liner to also store the config file's path, so the first run asks nothing.
 
 Instead of the one-liner you can download the zip yourself and run the program: the first
@@ -105,7 +108,7 @@ Then [set it up](#set-up) and run `crit` in a project, as above.
 ## Windows
 
 1. Unzip `critique-bot-1.0.0-windows-x64.zip` to a folder only you can write to, for example
-   `%LOCALAPPDATA%\Programs\critique-bot` (for a shared machine, `C:\Program Files\critique-bot`
+   `%USERPROFILE%\.crit\app\1.0.0` (for a shared machine, `C:\Program Files\critique-bot`
    as an administrator).
 2. Add that folder to your user PATH (Settings > System > About > Advanced system settings >
    Environment Variables), then open a new terminal.
@@ -120,55 +123,93 @@ it by its SHA-256 hash from `SHA256SUMS.txt`.
 
 ## Set up
 
-There is nothing to copy or edit. Your settings live in one file per user, created the
-first time they are needed:
+There is nothing to copy or edit. crit keeps everything it makes for you in one folder,
+readable by you only (0700; an owner-only ACL on Windows), created the first time it is needed:
 
-| System | File |
+| System | Folder |
 |---|---|
-| Linux, macOS | `$XDG_CONFIG_HOME/critique-bot/config.json` (normally `~/.config/critique-bot/config.json`) |
-| Windows | `%APPDATA%\critique-bot\config.json` |
+| Linux, macOS | `~/.crit` |
+| Windows | `%USERPROFILE%\.crit` (`C:\Users\<name>\.crit`) |
+| Anywhere | `CRIT_HOME` when set |
 
-The file and its folder are readable by you only. `crit config --path` prints where it is.
+```
+~/.crit/
+  config.json          your settings (0600); crit config --path prints it
+  browser-profile/     the signed-in browser (user_data_dir's default)
+  msedge-user-data/    only with "user_data_dir": "system"
+  cache/               the saved copy of the config file, and other caches
+  app/<version>/       the installed program (critique-bot install)
+  bin/                 the crit and critique-bot launchers, on PATH
+```
 
-**The config file.** Your team gives you one file with the url, the page elements, and the
-rules ([config-file.md](config-file.md)). Run `crit` in a terminal in a project folder:
+Projects keep their own `.bot/` folder. The .deb's program stays in `/opt/critique-bot`
+(apt manages it); your files still go in `~/.crit`. Settings from before 1.1
+(`~/.config/critique-bot`, `%APPDATA%\critique-bot`) and the old browser profiles are moved
+in once, with one line: `Moved crit's files to <path>.` A profile the browser has open stays
+where it is; a line says so (sign in again, or close the browser and move it).
 
-- If the file is already in place (`CRITIQUE_CONFIG_FILE`, `/etc/critique-bot/crit.json`, or
-  `%ProgramData%\critique-bot\crit.json`), crit says `Using <path>` and carries on. No question.
-- Otherwise it asks once: `Config file path (Enter if none): `. Paste the path (`C:\...`,
-  `\\server\share\crit.json`, or `/srv/...`; quotes are fine). A bad file is explained in one
-  line and the question comes again.
+**First run.** Run `crit` in a terminal in a project folder. If a config file is already in
+place (`CRITIQUE_CONFIG_FILE`, `/etc/critique-bot/crit.json`, or
+`%ProgramData%\critique-bot\crit.json`), crit says `Using <path>` and carries on with no
+question. Otherwise it asks, one question at a time:
 
-Then the browser window opens once to sign in. Every other project folder asks nothing: the
+```
+How does crit reach the model?
+  1) Local model (a model server on this PC or the network)
+  2) Web UI (a page in the browser)
+(Or use a config file: crit config --config-file PATH)
+Choose 1 or 2:
+```
+
+**1, Local model.** `Model server (ip:port):` takes `192.168.1.50:8080`, `localhost:8080`, or
+a full `http(s)://host:port/path` (http when no scheme is given; the port is required then).
+crit checks it at once (`Checking http://... ...`) and says one of: `reachable, N models: ...`,
+`reachable, but it does not list models`, `refused: nothing is listening on ...`,
+`timed out: ... does not answer (firewall or wrong address?)`, or `unknown host: ...`. On a
+failure it asks `Try another address? [Y/n]`; `n` saves it anyway (crit checks again on the
+next run). Then `Model [first]:` (Enter for the first, a number from the list, or a name), or
+`Model name:` when the server lists none. A server on another PC goes into `allowed_hosts`,
+and crit says `crit will send prompts only to <host>.`
+
+**2, Web UI.** `url:` (https; plain http only for localhost), then
+`Model (Enter for the page's default):`, then the page elements, each with a starter guess
+that Enter accepts: message box, send button, stop button, replies, and (Enter to skip) the
+model picker, its identifier, and its options. A string that is plainly not CSS (an unclosed
+bracket or quote) is refused with one line. With a model but no model picker, one line says
+crit keeps the page's current model. Then: `Saved. To check the page elements against the
+real page: crit setup`. crit does not open `crit setup` by itself; run it when you like.
+
+Either way it then asks for company, customer, or project names to hide (Enter for none),
+says that personal data (emails, phone numbers, card numbers, ...) is hidden too, prints
+`Saved to <path>.` and `Change any of this later with: crit config (see crit config --help)`,
+and carries on with your command. Ctrl+C at any question: `Stopped; nothing was written.`
+A double-click on `critique-bot.exe` asks the same questions.
+
+The browser window opens once to sign in (Web UI). Every other project folder asks nothing: the
 role for a project is picked from its files (one line says which; `crit --role NAME` changes
 it), and the terminal style is asked once per user (`crit config --theme ID` changes it).
 
-**Without a config file** (Enter at the question): `No config file: crit needs the url and the
-page elements.` Then:
-
-1. A web page (cloud) or a model on this or another PC.
-2. Cloud: the url (for example `https://ai.company.com/`; crit names the host and contacts no
-   other site). Local: the server's address and which of its models to use.
-3. Company, customer, or project names to hide (Enter for none).
-
-It then says that personal data (emails, phone numbers, card numbers, ...) is hidden too. For
-a web page it opens it so you can point at the message box, the send button, and the replies
-(`crit setup`), then asks you to run the command again.
-
-**Or set it up in one line** (scripts, CI images, IT rollout):
+**Or set it up in one line** (scripts, CI images, IT rollout). Every first-run answer has a flag:
 
 ```bash
-crit config --config-file /srv/team/crit.json                        # the config file
-crit config --url https://ai.company.com/ --redact "Acme, Globex"     # or by hand; then: crit setup
-crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
-crit config                                                      # review the settings
+crit config --config-file /srv/team/crit.json                        # a config file for many people
+crit config --url https://ai.company.com/ --selector prompt_input=textarea --selector assistant_messages=.reply
+crit config --backend local --local-url 192.168.1.50:8080 --model qwen2.5-coder-14b   # allows that host too
+crit config --redact "Acme, Globex"                                  # names to hide (--unredact removes)
+crit config --selector send_button=                                  # clears an optional page element
+crit config --check                                                  # does the server (or the page's site) answer?
+crit config                                                          # review the settings
 ```
+
+For rolling out one file to many people, see [config-file.md](config-file.md).
 
 Later, crit asks only when something is needed: if the page tries to reach another site
 (its CDN or sign-in host), crit blocks it and, after the current step, asks once whether to
 allow it from the next start on (default No; only say yes if it belongs to the service).
 A command that needs your GitLab address asks for it once. Without a terminal (CI, the worker,
-an IDE) crit never asks; it says which `crit config` command to run instead.
+an IDE) crit never asks; it names the `crit config --url ... --selector prompt_input=...
+--selector assistant_messages=...` or `crit config --backend local --local-url http://IP:PORT`
+command to run instead and stops (exit 1).
 
 Which file a command uses: `--config FILE`, else `CRITIQUE_CONFIG`, else the config recorded
 for the project in `.bot/settings.json`, else an untracked `config.json` in the project root,

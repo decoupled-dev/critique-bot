@@ -30,6 +30,7 @@ from critique_bot.config import (
     backend_kind,
     _resolve_queue_dir,
     _resolve_user_data_dir,
+    crit_home,
 )
 
 
@@ -257,8 +258,7 @@ class ParseHelpersTests(unittest.TestCase):
         self.assertFalse(
             str(dedicated.resolve()).startswith(str(system.resolve()))
         )
-        self.assertIn("critique-bot", str(dedicated))
-        self.assertIn("msedge-user-data", str(dedicated))
+        self.assertEqual(dedicated, crit_home() / "msedge-user-data")
 
 
 class LoadConfigErrorTests(EnvIsolated):

@@ -107,6 +107,8 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 
 ## On disk
 
+Everything crit keeps for you is in one folder, `~/.crit` (`%USERPROFILE%\.crit` on Windows; `CRIT_HOME` moves it): `config.json` (your settings, 0600), `browser-profile/` (the signed-in browser, with its cookies), `msedge-user-data/` (only with `user_data_dir: "system"`), `cache/` (the saved copy of the config file), and the self-installed program in `app/<version>/` with its launchers in `bin/`. The folder is readable only by your user: 0700 on Linux and macOS and an owner-only ACL (icacls) on Windows. The browser profile is never taken from a shared config file. Files from before 1.1 (`~/.config/critique-bot`, `%APPDATA%\critique-bot`, `%LOCALAPPDATA%\critique-bot\msedge-user-data`) are moved in once.
+
 `.bot/sessions` (transcripts), `.bot/cache` (undo copies), and `.bot/history` (your typed tasks) stay on the PC. Undo copies are never made of secret files. Transcripts are saved as they were sent, with secrets redacted. They are git-ignored in `.bot/.gitignore` and the project's `.gitignore`, so they are not committed by accident. The folders are readable only by your user: 0700 on Linux and macOS, set every time they are used, and an owner-only ACL (icacls) on Windows.
 
 ## Dependencies

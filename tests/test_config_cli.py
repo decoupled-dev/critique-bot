@@ -41,6 +41,7 @@ class _Isolated(unittest.TestCase):
         clean = {k: v for k, v in os.environ.items() if not k.startswith(("CRITIQUE_", "CRIT_", "CI"))}
         clean["XDG_CONFIG_HOME"] = str(self.xdg)
         clean["APPDATA"] = str(self.xdg)
+        clean["CRIT_HOME"] = str(self.root / "crit-home")
         self._env = patch.dict(os.environ, clean, clear=True)
         self._env.start()
         self._policy = egress.policy()
@@ -66,37 +67,39 @@ class _Isolated(unittest.TestCase):
 
 
 class UserConfigPathTests(unittest.TestCase):
-    # Pure paths stand in for Path so the POSIX branch can be checked on Windows too
-    # (a PosixPath cannot be created there), and the reverse for test_windows_uses_appdata.
-    def test_posix_uses_xdg_config_home(self) -> None:
+    """Everything crit keeps for a user is in one folder: ~/.crit, %USERPROFILE%\\.crit, or CRIT_HOME.
+
+    Pure paths stand in for Path so each OS's branch can be checked on the other."""
+
+    def _paths(self, name: str, env: dict) -> tuple[str, str, str, str]:
         from pathlib import PurePosixPath
 
-        with patch.object(os, "name", "posix"), patch.dict(os.environ, {"XDG_CONFIG_HOME": "/x/conf"}), patch(
+        from critique_bot import config as cfg
+
+        clean = {k: v for k, v in os.environ.items() if k not in ("CRIT_HOME", "HOME", "USERPROFILE")}
+        with patch.object(os, "name", name), patch.dict(os.environ, {**clean, **env}, clear=True), patch(
             "critique_bot.config.Path", PurePosixPath
         ):
-            self.assertEqual(str(user_config_path()), "/x/conf/critique-bot/config.json")
+            return (
+                str(cfg.crit_home()), str(user_config_path()), str(cfg.default_browser_profile()),
+                str(cfg.company_cache_path()),
+            )
 
-    def test_posix_default_is_dot_config(self) -> None:
-        from pathlib import PurePosixPath
+    def test_posix_home(self) -> None:
+        self.assertEqual(
+            self._paths("posix", {"HOME": "/home/me", "XDG_CONFIG_HOME": "/x/conf"}),
+            ("/home/me/.crit", "/home/me/.crit/config.json", "/home/me/.crit/browser-profile",
+             "/home/me/.crit/cache/config-file.cache.json"),
+        )
 
-        class _Home(PurePosixPath):
-            @classmethod
-            def home(cls) -> "_Home":
-                return cls("/home/me")
+    def test_windows_userprofile(self) -> None:
+        home, user, profile, _ = self._paths("nt", {"USERPROFILE": "/Users/me", "HOME": "/elsewhere", "APPDATA": "/appdata"})
+        self.assertEqual((home, user, profile), ("/Users/me/.crit", "/Users/me/.crit/config.json", "/Users/me/.crit/browser-profile"))
 
-        env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
-        with patch.object(os, "name", "posix"), patch.dict(os.environ, env, clear=True), patch(
-            "critique_bot.config.Path", _Home
-        ):
-            self.assertEqual(str(user_config_path()), "/home/me/.config/critique-bot/config.json")
-
-    def test_windows_uses_appdata(self) -> None:
-        from pathlib import PurePosixPath
-
-        with patch.object(os, "name", "nt"), patch.dict(os.environ, {"APPDATA": "/appdata"}), patch(
-            "critique_bot.config.Path", PurePosixPath
-        ):
-            self.assertEqual(str(user_config_path()), "/appdata/critique-bot/config.json")
+    def test_crit_home_overrides(self) -> None:
+        for name in ("posix", "nt"):
+            home, user, _, _ = self._paths(name, {"CRIT_HOME": "/srv/crit", "HOME": "/home/me", "USERPROFILE": "/Users/me"})
+            self.assertEqual((home, user), ("/srv/crit", "/srv/crit/config.json"))
 
 
 class ResolutionTests(_Isolated):
@@ -216,10 +219,57 @@ class ConfigCommandTests(_Isolated):
         config = load_config(self.user)
         self.assertTrue(config.is_local)
         self.assertEqual(config.url, "http://127.0.0.1:8080")
-        self.assertEqual(self.config("--local-url", "http://gpu.corp.example:8080")[0], 2)
-        code, _, err = self.config("--allow-host", "gpu.corp.example", "--local-url", "http://gpu.corp.example:8080")
+        code, out, err = self.config("--local-url", "gpu.corp.example:8080")  # the host is allowed with it
         self.assertEqual(code, 0, err)
-        self.assertEqual(load_config(self.user).url, "http://gpu.corp.example:8080")
+        self.assertIn("gpu.corp.example", out)
+        config = load_config(self.user)
+        self.assertEqual(config.url, "http://gpu.corp.example:8080")
+        self.assertIn("gpu.corp.example", config.allowed_hosts)
+        self.assertEqual(self.config("--local-url", "gpu.corp.example")[0], 2)  # no port
+
+    def test_selector_key_with_nothing_clears_an_optional_one(self) -> None:
+        self.config("--url", "https://chat.corp.example/", "--selector", "send_button=button.send")
+        self.assertEqual(self.data()["selectors"]["send_button"], "button.send")
+        code, _, err = self.config("--selector", "send_button=")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.data()["selectors"]["send_button"], "")
+
+    def test_help_lists_a_flag_for_every_first_run_question(self) -> None:
+        from critique_bot.config_cmd import build_parser
+
+        text = build_parser().format_help()
+        for flag in ("--backend", "--local-url", "--model", "--url", "--selector", "--redact", "--unredact", "--check"):
+            self.assertIn(flag, text)
+
+    def test_check_pings_the_local_server(self) -> None:
+        from critique_bot import config_cmd
+        from critique_bot.local_model import Probe
+
+        self.config("--backend", "local")
+        location = resolve_config_path(None, self.project)
+        seen: list[str] = []
+        ok = lambda url: seen.append(url) or Probe("ok", "reachable, 1 model: qwen", ["qwen"])  # noqa: E731
+        code, out, _ = _capture(config_cmd.check, location, probe_server=ok)
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["http://127.0.0.1:8080"])
+        self.assertIn("Checking http://127.0.0.1:8080 ...\nreachable, 1 model: qwen", out)
+        refused = lambda url: Probe("refused", "refused: nothing is listening on 127.0.0.1:8080")  # noqa: E731
+        code, out, _ = _capture(config_cmd.check, location, probe_server=refused)
+        self.assertEqual(code, 1)
+        self.assertIn("refused: nothing is listening", out)
+
+    def test_check_web_ui_reports_the_site(self) -> None:
+        from critique_bot import config_cmd
+        from critique_bot.local_model import Probe
+
+        self.config("--url", "https://chat.corp.example/")
+        location = resolve_config_path(None, self.project)
+        site = lambda url: Probe("unknown-host", "unknown host: chat.corp.example")  # noqa: E731
+        code, out, _ = _capture(config_cmd.check, location, probe_site=site)
+        self.assertEqual(code, 1)
+        self.assertIn("unknown host: chat.corp.example", out)
+        with patch("critique_bot.local_model.probe_site", return_value=Probe("ok", "reachable: x")):
+            self.assertEqual(self.config("--check")[0], 0)
 
     def test_a_change_that_breaks_a_working_config_is_refused(self) -> None:
         self.config("--url", "https://chat.corp.example/")
@@ -289,18 +339,20 @@ class FirstRunTests(_Isolated):
             code, out, err = _capture(crit_main, ["--repo-dir", str(self.project), "fix the build"])
         return code, (run, setup), out + err
 
-    def test_company_chat_opens_the_element_picker_then_stops(self) -> None:
-        code, (run, setup), text = self._agent(["", "1", "https://chat.corp.example/", "Acme Corp"])
+    def test_web_ui_saves_then_goes_on_with_the_command(self) -> None:
+        answers = ["2", "https://chat.corp.example/", "", "", "", "", "", "", "", "", "Acme Corp"]
+        code, (run, setup), text = self._agent(answers)
         self.assertEqual(code, 0, text)
-        self.assertIn("only chat.corp.example", text)
-        self.assertIn("point at the message box", text)
-        setup.assert_called_once()
-        self.assertEqual(Path(setup.call_args.args[0]), self.user)
-        run.assert_not_called()
+        self.assertIn("To check the page elements against the real page: crit setup", text)
+        self.assertNotIn("chat", text.replace("chat.corp.example", "").lower())
+        setup.assert_not_called()  # crit setup is never started by itself
+        run.assert_called_once()
 
     def test_local_model(self) -> None:
-        with patch("critique_bot.model_api.list_models", return_value=["qwen"]):
-            code, (run, _), text = self._agent(["", "2", "y", "", "1", ""])
+        from critique_bot.local_model import Probe
+
+        with patch("critique_bot.local_model.probe_server", return_value=Probe("ok", "reachable, 1 model: qwen", ["qwen"])):
+            code, (run, _), text = self._agent(["1", "127.0.0.1:8080", "", ""])
         self.assertEqual(code, 0, text)
         self.assertTrue(load_config(self.user).is_local)
         run.assert_called_once()
@@ -309,7 +361,8 @@ class FirstRunTests(_Isolated):
         with patch("critique_bot.welcome.stdio_is_tty", return_value=False):
             code, out, err = _capture(crit_main, ["ask", "--prompt", "hi", "--repo-dir", str(self.project)])
         self.assertEqual(code, 1)
-        self.assertIn("crit config --config-file /path/to/crit.json", err)
+        self.assertIn("crit config --url https://ai.company.com/ --selector prompt_input=", err)
+        self.assertIn("crit config --backend local --local-url http://IP:PORT", err)
         self.assertNotIn("Traceback", err)
         self.assertFalse(self.user.exists())
 

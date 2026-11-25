@@ -19,17 +19,20 @@ Every command uses the first of these that applies:
 2. the `CRITIQUE_CONFIG` environment variable;
 3. the config recorded for the project in `.bot/settings.json` (`"config"`), if the file exists;
 4. a `config.json` in the project root, if it exists and git does not track it;
-5. your user config: `$XDG_CONFIG_HOME/critique-bot/config.json` (default
-   `~/.config/critique-bot/config.json`) on Linux and macOS, `%APPDATA%\critique-bot\config.json`
-   on Windows.
+5. your user config: `config.json` in crit's folder, `~/.crit/config.json`
+   (`%USERPROFILE%\.crit\config.json` on Windows; `CRIT_HOME` moves the folder). Before 1.1
+   it was `~/.config/critique-bot/config.json` (`%APPDATA%\critique-bot\config.json`); crit
+   moves it once.
 
-crit writes the user config owner-only (0600 in a 0700 folder on Linux and macOS; an
-owner-only ACL on Windows), replacing it in one step so it is never half-written.
+crit writes the user config owner-only (0600 in the 0700 `.crit` folder on Linux and macOS;
+an owner-only ACL on Windows), replacing it in one step so it is never half-written.
 
-When no file exists, a command in a terminal asks the first-run questions (web page or local
-model; the url; names to hide) and writes the user config. Without
-a terminal (CI, the worker, `--acp`) it exits with a sentence naming the `crit config`
-command to run. `crit configure` asks the questions again.
+When no file exists, a command in a terminal asks the first-run questions (local model or Web
+UI; the server or the url, the model, the page elements; names to hide; see
+[install.md](install.md#set-up)) and writes the user config. Without a terminal (CI, the
+worker, `--acp`) it exits with a sentence naming `crit config --url ... --selector
+prompt_input=... --selector assistant_messages=...` or `crit config --backend local
+--local-url http://IP:PORT`. `crit configure` asks the questions again.
 
 ## The config file (`config_file`)
 
@@ -47,7 +50,8 @@ your own settings: `url`, `backend`, `local`, `cdp_url`, `allowed_hosts`, `redac
 be tightened; `redact_terms` add up; every other key is a default you may override. It must
 set `url` (and, for `backend: browser`, `selectors.prompt_input` and
 `selectors.assistant_messages`). A copy of the last good read is kept in
-`config-file.cache.json` next to the user config and used when the file cannot be read.
+`cache/config-file.cache.json` in crit's folder and used when the file cannot be read. A
+`user_data_dir` in it is ignored (the browser profile is personal).
 
 The user config also keeps per-user preferences: `theme`, `syntax_preview`, and `welcomed`
 (the first-run welcome was shown). They apply in every project; a project keeps its own
@@ -65,7 +69,7 @@ not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
 | `--config-file PATH` | `config_file` (checked first; `none` removes it) |
 | `--url URL` | `url` (https only; plain http only for localhost), `backend: browser`; starter `selectors` when none are set (run `crit setup` next) |
 | `--backend browser\|local` | `backend` (local defaults `url` to `http://127.0.0.1:8080`) |
-| `--local-url URL` | the model server's `url`, `backend: local` (another PC must be in `allowed_hosts`) |
+| `--local-url ADDR` | the model server's `url` (`ip:port` or `http(s)://host:port`), `backend: local`; a server on another PC is added to `allowed_hosts` |
 | `--model NAME` | `model` (`""` for the default) |
 | `--allow-host H` / `--remove-host H` | `allowed_hosts` (repeatable; a URL is reduced to its host) |
 | `--redact NAMES` / `--unredact NAME` | `redact_terms` (repeatable or comma-separated; at least 3 letters or digits) |
@@ -74,7 +78,8 @@ not in the file: `CRITIQUE_GITLAB_TOKEN` is an environment variable).
 | `--page-network open\|strict` | `page_network` |
 | `--theme ID` | the terminal style, in the user config (every project) |
 | `--gitlab-url URL` | `gitlab.base_url` (https only; `""` removes it) |
-| `--selector KEY=CSS` | one of `selectors` (repeatable) |
+| `--selector KEY=CSS` | one of `selectors` (repeatable); `KEY=` clears an optional one |
+| `--check` | checks that the local model server answers (and which models it lists), or that the Web UI's site resolves and answers |
 | `--reset` | removes the file (asks first in a terminal; needs `--yes` otherwise) |
 | `--path` | prints the file's path |
 | `--config FILE` | changes that file instead |
@@ -281,6 +286,21 @@ only at `gitlab.base_url`.
 
 ## `selectors` (object, required for `browser`)
 
+In plain words, as the first-run questions name them:
+
+| Question | Key | What it points at |
+| --- | --- | --- |
+| Message box | `prompt_input` | the box you type a message into |
+| Send button | `send_button` | the button that sends it (empty: crit presses Enter) |
+| Stop button | `stop_button` | the button that stops a reply while it is being written; crit uses it to tell a finished reply from a pause |
+| Replies | `assistant_messages` | each reply from the model; crit reads the last one |
+| Model picker | `model_dropdown` | the control that opens the list of models |
+| Model picker identifier | `model_dropdown_identifier` | text, a label, or an id that names that control exactly, so no other button is clicked |
+| Model option | `model_option` | one entry in the open list of models |
+
+The first run offers starter guesses for the first four; `crit setup` checks them against the
+real page (and lets you click the right element instead). The details:
+
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `prompt_input` | **yes** | Composer: `<textarea>`, contenteditable, or equivalent |
@@ -461,15 +481,19 @@ Pause after an ACK before the next paste in the same job. `0` (default) sends th
 | --- | --- |
 | Type | string |
 | Env | `CRITIQUE_USER_DATA_DIR` |
-| Default | `.edge-profile` |
+| Default | `browser-profile` in crit's folder (`~/.crit/browser-profile`, `%USERPROFILE%\.crit\browser-profile`) |
 
-Persistent Edge profile so cookies survive restarts.
+Persistent Edge profile so cookies survive restarts. It is never asked: it is personal and
+automatic. It comes only from your own config, `CRITIQUE_USER_DATA_DIR`, or the default; a
+`user_data_dir` in a shared config file (`config_file`, `CRITIQUE_CONFIG_FILE`, the system
+location) is ignored with a log line, and never resolved next to that file.
 
 | Value | Result |
 | --- | --- |
-| Relative path (default `.edge-profile`) | Resolved against the **process cwd**, not the config file. Worker systemd `WorkingDirectory=/opt/critique-bot` → `/opt/critique-bot/.edge-profile`. `crit` runs from each project folder, so use an absolute path there ([`bot-agent.md`](bot-agent.md); the setup scripts rewrite it for you) |
+| Not set, or the old default `.edge-profile` | `~/.crit/browser-profile` (moved there once from `~/.config/critique-bot/.edge-profile` or `%APPDATA%\critique-bot\.edge-profile`) |
+| Other relative path | Next to the config file that sets it, never the folder crit runs in |
 | Absolute path | Used as-is. Prefer this on CI |
-| `system` or `default` | Not the daily desktop profile (Chromium 136+ blocks remote debugging there and returns HTTP 403). Uses a dedicated dir **outside** Edge's default User Data path: Linux `~/.config/critique-bot/msedge-user-data`, Windows `%LOCALAPPDATA%\critique-bot\msedge-user-data` |
+| `system` or `default` | Not the daily desktop profile (Chromium 136+ blocks remote debugging there and returns HTTP 403). Uses a dedicated dir **outside** Edge's default User Data path: `~/.crit/msedge-user-data` |
 
 Do not share this directory with a human’s everyday Edge. Do not copy it between machines. Two processes must not use it at once (the worker already serializes jobs).
 

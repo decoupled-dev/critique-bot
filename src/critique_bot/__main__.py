@@ -8,9 +8,9 @@ A downloaded program (Windows exe or the Linux zip) installs itself the first ti
 runs, without a question (see installer.should_auto_install), then does what was asked.
 
 Double-clicked in Windows Explorer, crit is not in a project folder and its console
-window would close the moment it exits. So it then sets itself up if needed (the config
-file question), says how to use it from a terminal, and waits for Enter before the window
-closes.
+window would close the moment it exits. So it then sets itself up if needed (the same
+first-run questions as in a terminal, see setup_wizard), says how to use it from a
+terminal, and waits for Enter before the window closes.
 """
 
 import os
@@ -48,6 +48,7 @@ def _double_click_main() -> int:
 
     code = 0
     try:
+        cli._migrate_legacy_files()
         location = resolve_config_path(None, os.path.expanduser("~"))
         if not location.exists:
             outcome = cli._first_run_wizard(location.path)
