@@ -73,7 +73,7 @@ class LayoutTests(_Home):
         with patch.object(cfg, "os", _fake_os("nt")), patch.dict(os.environ, {"USERPROFILE": str(self.root / "Users" / "me")}):
             self.assertEqual(cfg.crit_home(), self.root / "Users" / "me" / ".crit")
             # Resolved on both sides: Windows may give the temp folder as a short name (RUNNER~1).
-        self.assertEqual(Path(cfg._resolve_user_data_dir("")).resolve(), (self.root / "Users" / "me" / ".crit" / "browser-profile").resolve())
+            self.assertEqual(Path(cfg._resolve_user_data_dir("")).resolve(), (self.root / "Users" / "me" / ".crit" / "browser-profile").resolve())
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions")
     def test_private_permissions(self) -> None:
