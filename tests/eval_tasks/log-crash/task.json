@@ -1,0 +1,9 @@
+{
+  "prompt": "logcat.txt in this folder is a long log from an Android Automotive head unit. An app crashed in it. Which package crashed, with which exception, and at which source file and line in the app's own code? Answer in one line. Do not change any file.",
+  "fixture": "files",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*com\\.example\\.hvac)(?=.*NullPointerException)(?=.*HvacPanelController\\.java:142)",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["logs", "android"]
+}

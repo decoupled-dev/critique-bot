@@ -1,0 +1,7 @@
+{
+  "prompt": "The unit tests in this project fail. Find the bug and fix it in the code (not in the tests).",
+  "check": "python3 -m unittest -q",
+  "requires": ["python3"],
+  "timeout": 600,
+  "tags": ["basic", "python"]
+}

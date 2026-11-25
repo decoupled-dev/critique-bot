@@ -1,0 +1,8 @@
+{
+  "prompt": "Which Soong module builds packages/services/Car/service/src/com/android/car/CarPropertyService.java into an app? Name the filegroup that lists the file and the android_app module that uses it. Do not change any file and do not run a build.",
+  "workspace": "$AOSP",
+  "answer": "(?=.*car-service-srcs)(?=.*CarServiceUpdatable)",
+  "requires": ["$AOSP"],
+  "timeout": 900,
+  "tags": ["aosp", "search"]
+}

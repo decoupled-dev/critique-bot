@@ -1,0 +1,9 @@
+{
+  "prompt": "The platform build failed. build.log in this folder is the full output of m. Find the error and fix its cause in the source. There is no build system here, so do not try to run the build.",
+  "fixture": "files",
+  "setup": "python3 gen_build_log.py",
+  "check": "python3 check.py",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["build", "aosp"]
+}

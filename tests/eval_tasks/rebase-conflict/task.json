@@ -1,0 +1,9 @@
+{
+  "prompt": "Rebase the branch feature onto main. greeting.txt will conflict: keep both new lines, main's line first, then feature's line. Finish the rebase so that feature is checked out with no rebase in progress.",
+  "setup": "sh setup.sh",
+  "check": "sh check.sh",
+  "fixture": "files",
+  "requires": ["git", "sh"],
+  "timeout": 600,
+  "tags": ["git"]
+}
