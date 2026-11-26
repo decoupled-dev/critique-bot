@@ -2543,6 +2543,9 @@ def _run_in_session(
         found = agent_build.hints(combined, _build_context(ctx, session, shell))
         if found:
             parts.append("HINTS (from crit, for this failure):\n" + "\n".join(f"- {line}" for line in found))
+        conflicts = _vcs_conflicts(command, combined, Path(session.cwd))
+        if conflicts:
+            parts.append(conflicts)
     if out:
         parts.append(out)
     if errs:
@@ -2562,6 +2565,34 @@ def _run_in_session(
     if code == 0:
         return ok("run_command", body, ctx, ui)
     return err("run_command", f"command failed with exit {code}", output=body, ctx=ctx, ui=ui)
+
+
+_VCS_CONFLICTING = re.compile(r"\bgit\b.*\b(?:rebase|merge|cherry-pick|pull|revert|stash\s+(?:pop|apply)|am)\b")
+
+
+def _vcs_conflicts(command: str, output: str, cwd: Path) -> str:
+    """After a git command stopped on conflicts: the files, and how to go on."""
+    if "CONFLICT" not in output and "could not apply" not in output and "Unmerged" not in output:
+        return ""
+    if not _VCS_CONFLICTING.search(command):
+        return ""
+    try:
+        proc = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=str(cwd),
+                              capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    files = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not files:
+        return ""
+    step = ("git rebase --continue" if "rebase" in command or "pull" in command
+            else "git cherry-pick --continue" if "cherry-pick" in command
+            else "git revert --continue" if "revert" in command
+            else "git am --continue" if " am" in command else "git commit")
+    return (
+        f"CONFLICTS ({len(files)} files): " + ", ".join(files[:20])
+        + "\nEdit each file: keep the right content and remove the <<<<<<<, =======, >>>>>>> lines; then git add "
+        f"the files and run {step} (no editor opens). To give up instead: the same command with --abort."
+    )
 
 
 def _duration(seconds: float) -> str:

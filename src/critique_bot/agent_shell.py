@@ -82,6 +82,9 @@ QUIET_ENV = {
     "GIT_PAGER": "cat",
     "PAGER": "cat",
     "GIT_TERMINAL_PROMPT": "0",
+    # No editor can be answered here: rebase --continue and merges keep their message.
+    "GIT_EDITOR": "true",
+    "GIT_MERGE_AUTOEDIT": "no",
     "GCM_INTERACTIVE": "never",
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
     "PIP_NO_INPUT": "1",
@@ -1343,6 +1346,14 @@ def tool_hints(
             + (f"lunch target {target}-{env.get('TARGET_BUILD_VARIANT', '')}. " if target else "run lunch <target> once first. ")
             + "Build the module you changed (m <module>), not m alone (hours)."
         )
+    missing = [name for name in ("rg",) if not find(name)]
+    if (aosp or _is_android_project(root)) and not find("adb"):
+        missing.append("adb")
+    if missing:
+        how = {"rg": "ripgrep: apt install ripgrep / brew install ripgrep / winget install BurntSushi.ripgrep.MSVC",
+               "adb": "adb: the Android SDK platform-tools (apt install adb / sdkmanager platform-tools)"}
+        hints.append("missing tools: " + "; ".join(how[name] for name in missing)
+                     + (". Search still works without rg, more slowly" if "rg" in missing else ""))
     if which is None and environ is None and (aosp or _is_android_project(root)):
         devices = android_devices()
         if devices:
