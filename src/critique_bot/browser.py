@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
-from critique_bot import egress, log
+from critique_bot import egress, integrations, log
 from critique_bot.output import private_dir
 from critique_bot.config import dedicated_edge_user_data_dir, default_browser_profile, system_edge_user_data_dir
 from critique_bot.model_api import BackendError
@@ -357,6 +357,39 @@ def _launch_args() -> list[str]:
     return args
 
 
+def site_auth_hosts(url: str | None) -> list[str]:
+    """The hosts that may get this machine's own sign-in: the chat url's host and ``site_login.host``."""
+    hosts = {(urlsplit(url).hostname or "").lower().rstrip(".")} if url else set()
+    site_host = integrations.current().site_host
+    if site_host:
+        hosts.add(site_host)
+    return sorted(host for host in hosts if host)
+
+
+def site_auth_args(url: str | None) -> list[str]:
+    """``--auth-server-allowlist`` for the chat site's own hosts.
+
+    A site that asks for a Windows sign-in (Negotiate/NTLM) gets it on Windows from the
+    signed-in account. On Linux, Chromium answers such a sign-in only for allowlisted
+    servers, so a Kerberos ticket (``kinit you@COMPANY``) works as SSO there too.
+    """
+    hosts = site_auth_hosts(url)
+    return [f"--auth-server-allowlist={','.join(hosts)}"] if hosts else []
+
+
+def site_http_credentials(url: str | None) -> dict[str, str] | None:
+    """Playwright ``http_credentials`` from ``site_login``, for that one origin only."""
+    current = integrations.current()
+    if not current.site_login_ready:
+        return None
+    origin = f"https://{current.site_host}"
+    if url:
+        parts = urlsplit(url)
+        if (parts.hostname or "").lower().rstrip(".") == current.site_host and parts.scheme in {"http", "https"}:
+            origin = f"{parts.scheme}://{parts.netloc.lower()}"
+    return {"username": current.site_user, "password": current.site_password, "origin": origin}
+
+
 _BROWSER_PROCESS_TOKENS = (
     "msedge",
     "microsoft-edge",
@@ -575,6 +608,7 @@ def sign_in_with_plain_browser(url: str, profile_dir: Path, *, timeout_s: float 
     ]
     if sandbox_disabled():
         cmd.append("--no-sandbox")
+    cmd.extend(site_auth_args(url))
     cmd.append(url)
     kwargs: dict[str, object] = {}
     if sys.platform == "win32":
@@ -1712,6 +1746,15 @@ def friendly_navigation_error(url: str, error: str) -> str:
     host = (urlsplit(url).hostname or url).lower()
     text = (error or "").upper()
     fix = "Check the address with: crit config"
+    if "ERR_INVALID_AUTH_CREDENTIALS" in text or "ERR_UNEXPECTED_PROXY_AUTH" in text or "ERR_MISSING_AUTH_CREDENTIALS" in text:
+        # Not the address: the server asked the browser itself to sign in (HTTP or Windows
+        # Negotiate/NTLM). Windows answers with the signed-in account; Linux has none to give.
+        if integrations.current().site_login_ready:
+            return (f"{host} did not accept the sign-in crit gave it (site_login). Check the username and "
+                    "password with: crit config --site-user NAME --site-password")
+        return (f"{host} asks the browser for a Windows/HTTP sign-in, which this machine cannot give by itself "
+                "(no SSO here, and crit's browser cannot fill in the sign-in box). Give crit your sign-in once: "
+                "crit config --site-user NAME --site-password. With Kerberos, run kinit you@COMPANY first instead.")
     if "ERR_NAME_NOT_RESOLVED" in text:
         if egress.page_restricted() and not egress.policy().permits(host):
             return (f"The url {url} is outside the allowed sites. Set it with crit config --url, "
@@ -1971,7 +2014,7 @@ def launch_edge(
         existing = _profile_has_data(profile_dir)
         _executable, channel = resolve_browser()
         args = _launch_args() + [flag for flag in EDGE_PRIVATE_ARGS if flag.startswith(("--force-webrtc", "--dns-prefetch"))]
-        args = merge_resolver_rules(args + browser_quiet_args(start_url))
+        args = merge_resolver_rules(args + browser_quiet_args(start_url) + site_auth_args(start_url))
         apply_private_prefs(profile_dir)
         no_sandbox = sandbox_disabled()
         debug_url = ""
@@ -2014,6 +2057,11 @@ def launch_edge(
         if storage_state:
             launch_kwargs["storage_state"] = storage_state
             log.debug(f"seeding profile with storage_state {storage_state}")
+        credentials = site_http_credentials(start_url)
+        if credentials is not None:
+            # The site's HTTP/Windows sign-in, answered for its own origin only.
+            launch_kwargs["http_credentials"] = credentials
+            log.info(f"site_login: answering the sign-in of {credentials['origin']} as {credentials['username']}")
         try:
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),

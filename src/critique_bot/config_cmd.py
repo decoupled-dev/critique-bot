@@ -38,6 +38,8 @@ from critique_bot.config import (
     ENV_GITLAB_TOKENS,
     ENV_JIRA_EMAIL,
     ENV_JIRA_TOKENS,
+    ENV_SITE_PASSWORDS,
+    ENV_SITE_USER,
     ENV_JIRA_URL,
     ENV_LOCAL_KEY,
     ENV_CONFIG,
@@ -234,7 +236,21 @@ def describe(location: ConfigLocation) -> list[str]:
         email = jira.get("email") or os.environ.get(ENV_JIRA_EMAIL, "")
         lines.append("Jira token: " + ("set" if _secret_set("jira", "token", ENV_JIRA_TOKENS) else "not set (crit config --jira-token)")
                      + (f", email {email} (Jira Cloud)" if email else ""))
+    site_user = os.environ.get(ENV_SITE_USER, "").strip() or _user_setting("site_login", "username")
+    if site_user or _secret_set("site_login", "password", ENV_SITE_PASSWORDS):
+        host = _user_setting("site_login", "host")
+        lines.append(f"Site sign-in: {site_user or 'no username (crit config --site-user)'}, password "
+                     + ("set" if _secret_set("site_login", "password", ENV_SITE_PASSWORDS) else "not set (crit config --site-password)")
+                     + (f", for {host}" if host else ", for the url's host"))
     return lines
+
+
+def _user_setting(section: str, key: str) -> str:
+    try:
+        block = read_config_dict(user_config_path()).get(section)
+    except (ConfigError, OSError):
+        return ""
+    return str(block.get(key) or "").strip() if isinstance(block, dict) else ""
 
 
 def _secret_set(section: str, key: str, env: tuple[str, ...]) -> bool:
@@ -372,6 +388,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="your Jira personal access token (Server/Data Center) or API token (Cloud, with --jira-email), "
         "kept in your user settings; crit only reads issues. No value asks for it; none removes it",
     )
+    parser.add_argument(
+        "--site-user", metavar="NAME",
+        help="your username for the chat site's own sign-in (a Windows/HTTP sign-in box; on Windows the "
+        "signed-in account answers it), kept in your user settings; none removes it. CRIT_SITE_USER overrides it",
+    )
+    parser.add_argument(
+        "--site-password", nargs="?", const=_ASK_KEY, metavar="PASSWORD",
+        help="the password for --site-user, kept in your user settings and given only to the chat site's host. "
+        "No value asks for it; - reads stdin; none removes it. CRIT_SITE_PASSWORD overrides it",
+    )
+    parser.add_argument(
+        "--site-login-host", metavar="HOST",
+        help="the host that asks for that sign-in, when it is not the chat url's own host; none removes it",
+    )
     parser.add_argument("--selector", action="append", default=[], metavar="KEY=CSS", help=f"a page element ({', '.join(SELECTOR_KEYS)}); KEY= clears an optional one")
     parser.add_argument("--check", action="store_true", help="check that the model server (or the page's site) answers")
     parser.add_argument("--reset", action="store_true", help="remove the settings file (asks first; --yes without a terminal)")
@@ -387,7 +417,8 @@ def _changes_requested(args: argparse.Namespace) -> bool:
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
             args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
             getattr(args, "gitlab_token", None), getattr(args, "jira_url", None), getattr(args, "jira_email", None),
-            getattr(args, "jira_token", None),
+            getattr(args, "jira_token", None), getattr(args, "site_user", None), getattr(args, "site_password", None),
+            getattr(args, "site_login_host", None),
         )
     )
 
@@ -688,7 +719,11 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
         args.api_key = None
         if code or not _changes_requested(args):
             return code
-    for attr, section, key, label in (("gitlab_token", "gitlab", "token", "GitLab token"), ("jira_token", "jira", "token", "Jira token")):
+    for attr, section, key, label in (
+        ("gitlab_token", "gitlab", "token", "GitLab token"), ("jira_token", "jira", "token", "Jira token"),
+        ("site_user", "site_login", "username", "site username"), ("site_password", "site_login", "password", "site password"),
+        ("site_login_host", "site_login", "host", "site sign-in host"),
+    ):
         if getattr(args, attr, None) is not None:
             code = set_user_secret(section, key, getattr(args, attr), label)
             setattr(args, attr, None)

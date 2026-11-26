@@ -12,6 +12,10 @@ redaction, so they never reach a transcript, the chat, or the log file.
 - Jira: ``jira.base_url``, a token (a personal access token on Jira Server/Data Center,
   sent as Bearer; an API token on Jira Cloud, sent with ``jira.email`` as Basic), read
   only (see ``jira``).
+- The chat site's own sign-in (``site_login``): a username and password the browser gives
+  when the site asks for an HTTP or Windows (Negotiate/NTLM) sign-in, which Windows answers
+  with the signed-in account and a Linux machine without SSO cannot. Sent only to
+  ``site_login.host`` (the chat url's host unless set).
 """
 
 from __future__ import annotations
@@ -27,6 +31,13 @@ class Integrations:
     jira_url: str = ""
     jira_email: str = ""
     jira_token: str = field(default="", repr=False)
+    site_user: str = ""
+    site_password: str = field(default="", repr=False)
+    site_host: str = ""
+
+    @property
+    def site_login_ready(self) -> bool:
+        return bool(self.site_user and self.site_password and self.site_host)
 
     @property
     def gitlab_host(self) -> str:
@@ -53,18 +64,20 @@ _current = Integrations()
 
 
 def configure(
-    *, gitlab_url: str = "", gitlab_token: str = "", jira_url: str = "", jira_email: str = "", jira_token: str = ""
+    *, gitlab_url: str = "", gitlab_token: str = "", jira_url: str = "", jira_email: str = "", jira_token: str = "",
+    site_user: str = "", site_password: str = "", site_host: str = "",
 ) -> Integrations:
     """Set the process-wide instances and tokens (called by config.load_config)."""
     global _current
     from critique_bot import redaction
 
-    for secret in (gitlab_token, jira_token):
+    for secret in (gitlab_token, jira_token, site_password):
         if secret:
             redaction.add_secret_value(secret)
     _current = Integrations(
         gitlab_url=gitlab_url.rstrip("/"), gitlab_token=gitlab_token,
         jira_url=jira_url.rstrip("/"), jira_email=jira_email, jira_token=jira_token,
+        site_user=site_user, site_password=site_password, site_host=(site_host or "").lower().rstrip("."),
     )
     return _current
 

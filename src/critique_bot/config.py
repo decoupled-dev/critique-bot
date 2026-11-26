@@ -97,6 +97,23 @@ class GitLabConfig:
 
 
 @dataclass(frozen=True)
+class SiteLoginConfig:
+    """The chat site's HTTP or Windows sign-in (Negotiate/NTLM), for machines without SSO.
+
+    The browser gives ``username`` and ``password`` only to ``host`` (the chat url's host
+    unless set). Both come only from the person's own config or the environment.
+    """
+
+    username: str = ""
+    password: str = field(default="", repr=False)
+    host: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.username and self.password and self.host)
+
+
+@dataclass(frozen=True)
 class JiraConfig:
     """A Jira instance crit reads issues from (never writes).
 
@@ -191,6 +208,7 @@ class BotConfig:
     local: LocalConfig = LocalConfig()
     gitlab: GitLabConfig = GitLabConfig()
     jira: JiraConfig = JiraConfig()
+    site_login: SiteLoginConfig = SiteLoginConfig()
     #: Company, customer, or project names replaced by ``[REDACTED:name]`` in everything sent.
     redact_terms: tuple[str, ...] = ()
     #: Personal data (emails, phone numbers, cards, IBANs, national IDs) is redacted too.
@@ -454,6 +472,7 @@ def load_config(
         gitlab, token=_user_secret(own_raw, company, shared_file, "gitlab", "token", ENV_GITLAB_TOKENS, "--gitlab-token")
     )
     jira = _load_jira(raw, own_raw, company, shared_file, env="jira.base_url" not in locked)
+    site_login = _load_site_login(own_raw, company, shared_file, url if backend != BACKEND_LOCAL else "")
     egress.configure(
         egress_mode,
         url if backend != BACKEND_LOCAL else "",
@@ -465,6 +484,7 @@ def load_config(
     integrations.configure(
         gitlab_url=gitlab.base_url, gitlab_token=gitlab.token,
         jira_url=jira.base_url, jira_email=jira.email, jira_token=jira.token,
+        site_user=site_login.username, site_password=site_login.password, site_host=site_login.host,
     )
 
     return BotConfig(
@@ -548,6 +568,7 @@ def load_config(
         local=local,
         gitlab=gitlab,
         jira=jira,
+        site_login=site_login,
         **_redaction_settings(raw),
     )
 
@@ -1285,6 +1306,32 @@ def _load_jira(raw: dict, own: dict, company: "CompanySettings | None", shared_f
     email = _clean(os.environ.get(ENV_JIRA_EMAIL)) or _clean(nested.get("email"))
     token = _user_secret(own, company, shared_file, "jira", "token", ENV_JIRA_TOKENS, "--jira-token")
     return JiraConfig(base_url=base_url, email=email, token=token)
+
+
+ENV_SITE_USER = "CRIT_SITE_USER"
+ENV_SITE_PASSWORDS = ("CRIT_SITE_PASSWORD",)
+
+
+def _user_value(own: dict, shared_file: bool, section: str, key: str) -> str:
+    """``<section>.<key>`` from the person's own config (never a shared one), not registered as a secret."""
+    if not shared_file and _secret_in(own, section, key):
+        return _secret_in(own, section, key)
+    try:
+        return _secret_in(read_config_dict(user_config_path()), section, key)
+    except (ConfigError, OSError):
+        return ""
+
+
+def _load_site_login(own: dict, company: "CompanySettings | None", shared_file: bool, url: str) -> SiteLoginConfig:
+    """``site_login``: the person's own username and password for the chat site's HTTP sign-in."""
+    from urllib.parse import urlsplit
+
+    username = _clean(os.environ.get(ENV_SITE_USER)) or _user_value(own, shared_file, "site_login", "username")
+    password = _user_secret(own, company, shared_file, "site_login", "password", ENV_SITE_PASSWORDS, "--site-password")
+    host = _user_value(own, shared_file, "site_login", "host").lower().rstrip(".")
+    if not host and url:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    return SiteLoginConfig(username=username, password=password, host=host)
 
 
 def _local_api_key(own: dict, company: "CompanySettings | None", *, shared_file: bool) -> str:

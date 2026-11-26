@@ -87,6 +87,9 @@ environment variable, and the API key is shown only as set or not set).
 | `--jira-url URL` | `jira.base_url` (https only; `""` removes it) |
 | `--jira-email EMAIL` | `jira.email`, Jira Cloud only (`""` removes it) |
 | `--jira-token [TOKEN]` | `jira.token` in your user config only (like `--gitlab-token`) |
+| `--site-user NAME` | `site_login.username` in your user config only (`none` removes it) |
+| `--site-password [PASSWORD]` | `site_login.password` in your user config only (like `--gitlab-token`) |
+| `--site-login-host HOST` | `site_login.host`, when the sign-in comes from another host than the url's |
 | `--selector KEY=CSS` | one of `selectors` (repeatable); `KEY=` clears an optional one |
 | `--check` | checks that the local model server answers (and which models it lists), or that the Web UI's site resolves and answers |
 | `--reset` | removes the file (asks first in a terminal; needs `--yes` otherwise) |
@@ -648,6 +651,33 @@ Scopes: `read_api` and `read_repository` to review and clone; add `api` to post 
 
 ---
 
+## `site_login` (object, optional): the chat site's own sign-in
+
+Some company chat sites ask the **browser itself** to sign in (an HTTP or Windows sign-in: Negotiate,
+NTLM, or Basic) instead of showing a sign-in page. On Windows, Edge answers with the signed-in Windows
+account (SSO). On Linux there is no such account, so a person gets a sign-in box every time and the
+browser crit drives fails with `net::ERR_INVALID_AUTH_CREDENTIALS`. The address is not the problem.
+
+Two ways to sign in:
+
+- **A Kerberos ticket**, if your company has one for Linux: run `kinit you@COMPANY.COM`. crit's browser
+  is started with `--auth-server-allowlist` naming the url's host (and `site_login.host`), so Chromium
+  uses the ticket like Windows SSO.
+- **Your username and password:** `crit config --site-user NAME --site-password`. The browser gives them
+  only when that one origin asks for a sign-in.
+
+| Key | Meaning |
+| --- | --- |
+| `username` | your sign-in name (for a Windows domain often `DOMAIN\name` or `name@company.com`). Env: `CRIT_SITE_USER` |
+| `password` | your user config only (`crit config --site-password`), or `CRIT_SITE_PASSWORD`. Redacted from everything crit sends or logs; `crit config` only shows whether it is set |
+| `host` | the host that asks for the sign-in, when it is not the url's own host (for example an ADFS server) |
+
+Like the tokens, these settings are read only from your own `~/.crit/config.json` or the environment,
+never from a project or shared config file. They apply to the browser crit starts itself (the default
+on Linux), not to an Edge window it attaches to.
+
+---
+
 ## `jira` (object, optional)
 
 Read-only Jira. Issue keys in a task (`CAR-123`) or in a merge request (title, branch, commits) are read and put
@@ -681,6 +711,8 @@ browser cannot reach it.
 | `CRIT_JIRA_URL` | `jira.base_url` |
 | `CRIT_JIRA_EMAIL` | `jira.email` |
 | `CRIT_JIRA_TOKEN`, `JIRA_API_TOKEN` | `jira.token` |
+| `CRIT_SITE_USER` | `site_login.username` |
+| `CRIT_SITE_PASSWORD` | `site_login.password` |
 | `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
 | `CRIT_API_KEY` | `local.api_key` |
 
