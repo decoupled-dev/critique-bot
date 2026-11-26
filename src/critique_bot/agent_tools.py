@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
-from critique_bot import file_catalog
+from critique_bot import big_file, file_catalog
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -1025,6 +1025,10 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         return err("read_files", "offset starts at 1")
     if limit is None and end_line is not None:
         limit = end_line - start + 1
+    try:
+        column = max(0, int(args.get("col") or args.get("column") or 0))
+    except (TypeError, ValueError):
+        return err("read_files", "col must be an integer (a character position in a long line)")
     if limit is not None and limit < 1:
         return err("read_files", "limit must be at least 1")
     force = bool(args.get("force"))
@@ -1046,7 +1050,7 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             raw = raw.get("path") or raw.get("file") or raw.get("filePath")
         if not isinstance(raw, str) or not raw.strip():
             return err("read_files", "each path must be a string")
-        parts.append(_read_one(raw, item_start, item_limit, item_explicit, budget, force, ctx))
+        parts.append(_read_one(raw, item_start, item_limit, item_explicit, budget, force, ctx, column=column))
     if len(paths) > MAX_READ_PATHS:
         parts.append(f"... {len(paths) - MAX_READ_PATHS} more paths not read; read at most {MAX_READ_PATHS} per call")
     output = "\n".join(parts)
@@ -1120,7 +1124,9 @@ def _redacted_file_lines(path: Path) -> list[str] | None:
         return None
 
 
-def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext) -> str:
+def _read_one(
+    raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext, *, column: int = 0
+) -> str:
     path = resolve(ctx.workspace, raw)
     name = rel(ctx.workspace, path)
     if path.is_dir():
@@ -1139,6 +1145,8 @@ def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: i
         return f"--- {name} ---\n{exc}"
     if looks_binary_path(str(path)) or looks_binary_bytes(head):
         return f"--- {name} ---\n{_binary_note(path, head)}"
+    if big_file.is_large(path) or column:
+        return _read_window(path, name, start, limit, budget, force, ctx, column)
     loaded = agent_edit.load_text(path)
     lines = _redact_lines(loaded.text.split("\n"))
     if lines and lines[-1] == "":
@@ -1188,6 +1196,61 @@ def _read_one(raw: str, start: int, limit: int | None, explicit: bool, budget: i
             f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}{capped_note}. "
             "Do not edit a span you have not seen."
         )
+    return "\n".join(out)
+
+
+#: Lines around a window that are redacted with it, so a secret cut by the window's edge
+#: (a private key's first lines without its END line) is still recognized.
+_REDACT_MARGIN = 60
+
+
+def _read_window(
+    path: Path, name: str, start: int, limit: int | None, budget: int, force: bool, ctx: ToolContext, column: int
+) -> str:
+    """A window of a very large file: read by seeking, not loading; long lines clipped."""
+    try:
+        index = big_file.line_index(path)
+    except OSError as exc:
+        return f"--- {name} ---\n{exc}"
+    total = index.total
+    window = min(limit if limit is not None else DEFAULT_READ_LINES, MAX_READ_LINES)
+    end = min(total, start + window - 1)
+    version = agent_edit.file_version(path)
+    state = ctx.state
+    if state is not None and not force and total and not column:
+        seen = state.seen_span(name, version, start, end)
+        if seen is not None:
+            return (
+                f"--- {name} ---\nlines {start}-{end} are unchanged since step {seen}; "
+                "use that text. Pass force true if you no longer have it."
+            )
+    size = os.path.getsize(path)
+    header = (
+        f"--- {name} (lines {start}-{end} of {total}, {agent_build.size_text(size)}, "
+        f"eol {'crlf' if index.crlf else 'lf'}, version {version}) ---"
+    )
+    if start > total:
+        return f"{header}\noffset {start} is past the end; the file has {total} lines"
+    lead = min(_REDACT_MARGIN, start - 1)
+    raw_lines = big_file.read_lines(path, start - lead, lead + (end - start + 1) + _REDACT_MARGIN)
+    lines = _redact_lines(raw_lines)[lead : lead + (end - start + 1)]
+    out = [header]
+    if size > big_file.LARGE_FILE_BYTES and start == 1 and not column:
+        out.append("(a large file: read it by window with offset and limit, or search it with search_code and path)")
+    numbered: list[str] = []
+    used = 0
+    for number, text in enumerate(lines, start):
+        piece = f"{number}|{big_file.clip_line(text, column=column)}"
+        if numbered and used + len(piece) + 1 > budget:
+            break
+        numbered.append(piece)
+        used += len(piece) + 1
+    out.extend(numbered)
+    shown_end = start + len(numbered) - 1
+    if numbered and state is not None and not column:
+        state.note_read(name, version, start, shown_end)
+    if numbered and shown_end < total:
+        out.append(f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}.")
     return "\n".join(out)
 
 
@@ -1967,10 +2030,20 @@ KEEP_OUTPUTS = 40
 _OUTPUT_LOCK = threading.Lock()
 
 
-def _clip_output(body: str, ctx: ToolContext) -> str:
+def _clip_output(body: str, ctx: ToolContext, full_log: str | None = None) -> str:
     """``body`` cut to fit one tool result. When something was cut, the whole text is saved
-    under ``.crit/cache/output`` and the result says where, so the middle is not lost."""
+    under ``.crit/cache/output`` and the result says where, so the middle is not lost.
+
+    ``full_log`` is a complete log the shell already kept (its captured text dropped lines);
+    the result then points there, since ``body`` itself is missing the middle.
+    """
     clipped = agent_shell.head_tail(body, max_chars=ctx.max_chars)
+    if full_log:
+        shown = rel(ctx.workspace, Path(full_log)) if inside(ctx.workspace, Path(full_log)) else full_log
+        return (
+            f"FULL OUTPUT saved to {shown}: the output below is shortened. "
+            "Read the middle with read_files (offset, limit) or search it with search_code (path).\n" + clipped
+        )
     if clipped == body or ctx.cache_dir is None:
         return clipped
     saved = _save_output(body, ctx)
@@ -2055,10 +2128,18 @@ def _session_cwd(ctx: ToolContext, raw: Any) -> tuple[Path | None, str]:
     return path, ""
 
 
+def _session_logs(ctx: ToolContext) -> None:
+    """Complete logs of long outputs and jobs go to .crit/cache/output, next to saved outputs."""
+    session = ctx.session
+    if session is not None and ctx.cache_dir is not None and getattr(session, "log_dir", "unset") is None:
+        session.log_dir = Path(ctx.cache_dir) / "output"
+
+
 def _run_in_session(
     args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool
 ) -> dict[str, Any]:
     session = ctx.session
+    _session_logs(ctx)
     try:
         shell = session.resolve(wanted or None)
     except ValueError as exc:
@@ -2077,10 +2158,12 @@ def _run_in_session(
         except (ValueError, KeyError, OSError) as exc:
             return err("run_command", f"could not start it: {exc}")
         state = "running" if running else f"already exited ({'exit ' + str(code) if code is not None else 'killed'})"
+        if not running and hasattr(session, "mark_reported"):
+            session.mark_reported(job_id)  # this result says how it ended; no note later
         body = (
             f"started background job {job_id} ({shell_name}): {state}\n"
             + (first.strip() or "(no output yet)")
-            + f"\nRead more with command_output {{\"job_id\": \"{job_id}\"}}; stop it with kill_command."
+            + f"\n{_JOB_NOTE.format(job=job_id)}"
         )
         if ctx.state is not None:
             ctx.state.last_command = command
@@ -2187,8 +2270,8 @@ def _run_in_session(
     if job_id:
         note = (
             f"still running after {timeout:.0f}s, so it was NOT stopped: it continues as background job {job_id}. "
-            f'Wait for it with command_output {{"job_id": "{job_id}", "wait": 30}} (repeat until it exits) '
-            "and read its result there; stop it with kill_command only if it is stuck"
+            + _JOB_NOTE.format(job=job_id)
+            + " Stop it with kill_command only if it is stuck"
         )
         body = "\n".join(part for part in (note, *head[1:], out, errs) if part)
         return ok(
@@ -2230,7 +2313,7 @@ def _run_in_session(
         parts.append(errs)
     if not out and not errs:
         parts.append("(no output)")
-    body = _clip_output("\n".join(parts), ctx)
+    body = _clip_output("\n".join(parts), ctx, getattr(result, "full_log", None))
     summary = f"exit {code} · {_duration(seconds)} · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
     if retried:
         summary += " · retried once"
@@ -2386,30 +2469,142 @@ def _format_jobs(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+#: How the model hears about jobs; crit tells it when one ends, so it need not poll.
+_JOB_NOTE = (
+    "crit will tell you when {job} ends: keep working on something else meanwhile. "
+    'To wait for it now, use command_output {{"job_id": "{job}", "until": "exit"}}.'
+)
+#: Longest single wait in command_output (seconds); the wait ends at once when the job exits.
+MAX_JOB_WAIT = 1200.0
+DEFAULT_UNTIL_WAIT = 600.0
+
+
+def _job_ids(session: Any, raw: Any) -> list[str]:
+    """``"b2"``, ``2``, ``["b1", "b2"]``, or ``"any"`` (every running job) as job ids."""
+    if isinstance(raw, (list, tuple)):
+        return [_job_id(session, item) for item in raw if str(item).strip()]
+    text = str(raw or "").strip()
+    if text.lower() in {"any", "all", "*"}:
+        return [str(row.get("id")) for row in session.jobs() if row.get("running")]
+    if "," in text:
+        return [_job_id(session, item) for item in text.split(",") if item.strip()]
+    return [_job_id(session, text)]
+
+
+def _until_pattern(raw: Any) -> tuple[re.Pattern[str] | None, str]:
+    """``until`` as a pattern (None for "exit"), or an error for the model."""
+    if raw is None or raw is False:
+        return None, ""
+    if not isinstance(raw, str):
+        return None, 'until must be "exit" or a regular expression such as "BUILD (SUCCESSFUL|FAILED)|error:"'
+    text = raw.strip()
+    if text.lower() in {"", "exit", "done", "end", "finish", "finished", "exits"}:
+        return None, ""
+    try:
+        return re.compile(text, re.IGNORECASE), ""
+    except re.error:
+        return re.compile(re.escape(text), re.IGNORECASE), ""
+
+
+def _job_result(info: dict, ctx: ToolContext, *, why: str = "") -> str:
+    """How a finished job went: status, then the key lines (errors, summary, hints), then
+    its output shortened, with the complete log for anything cut."""
+    code = info.get("exit_code")
+    state = f"exit {code}" if code is not None else "stopped"
+    command = str(info.get("command") or "")
+    combined = (str(info.get("stdout") or "") + "\n" + str(info.get("stderr") or "")).strip()
+    parts = [f"{info.get('id')}: {state} after {_duration(float(info.get('seconds') or 0))} · {_one_line(command, 120)}"]
+    if why:
+        parts.append(why)
+    if code not in (0, None) or agent_build.is_build_command(command) or len(combined) > 6_000:
+        summary_lines = agent_build.summarize(combined)
+        if summary_lines and (code != 0 or len(combined) > 6_000):
+            parts.append("SUMMARY (the key lines of the output below):\n" + "\n".join(summary_lines))
+        if code not in (0, None):
+            found = agent_build.hints(combined)
+            if found:
+                parts.append("HINTS (from crit, for this failure):\n" + "\n".join(f"- {line}" for line in found))
+    parts.append(combined or "(no output)")
+    log = info.get("log") if info.get("truncated") else None
+    return _clip_output("\n".join(parts), ctx, log)
+
+
+def finished_job_notes(ctx: ToolContext) -> list[str]:
+    """One line per background job that ended since the model last heard of it.
+
+    The engine adds these to the model's next message, so a job never has to be polled.
+    """
+    session = ctx.session
+    if session is None or not hasattr(session, "finished_unreported"):
+        return []
+    notes = []
+    for info in session.finished_unreported():
+        code = info.get("exit_code")
+        state = f"exit {code}" if code is not None else "stopped"
+        combined = str(info.get("stdout") or "") + "\n" + str(info.get("stderr") or "")
+        key = agent_build.summarize(combined, max_lines=3) if code not in (0, None) else []
+        last = key or [line for line in combined.strip().splitlines() if line.strip()][-2:]
+        detail = " | ".join(_one_line(line, 160) for line in last)
+        notes.append(
+            f"[crit] background job {info.get('id')} finished: {state} after {_duration(float(info.get('seconds') or 0))}"
+            f" · {_one_line(str(info.get('command') or ''), 80)}"
+            + (f" · {detail}" if detail else "")
+            + f' · full result: command_output {{"job_id": "{info.get("id")}"}}'
+        )
+    return notes
+
+
 def _command_output(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     session = ctx.session
     if session is None:
         return err("command_output", "there are no background jobs in this session; run_command with background true starts one")
-    if not args.get("job_id"):
+    _session_logs(ctx)
+    raw_job = args.get("job_id") if args.get("job_id") is not None else args.get("job_ids")
+    if not raw_job:
         rows = session.jobs()
         return ok("command_output", _format_jobs(rows), ctx, _ui(f"{len(rows)} background jobs", lines=_format_jobs(rows).split("\n")[:5]))
+    until, problem = _until_pattern(args.get("until"))
+    if problem:
+        return err("command_output", problem)
+    waiting_for = args.get("until") is not None
     try:
-        wait = float(args.get("wait") or 0)
+        default_wait = DEFAULT_UNTIL_WAIT if waiting_for else 0
+        wait = float(args.get("wait") if args.get("wait") is not None else default_wait)
     except (TypeError, ValueError):
         return err("command_output", "wait must be a number of seconds")
-    wait = min(max(wait, 0.0), 30.0)
-    job_id = _job_id(session, args.get("job_id"))
+    wait = min(max(wait, 0.0), MAX_JOB_WAIT)
+    job_ids = _job_ids(session, raw_job)
+    if not job_ids:
+        return ok("command_output", "no background job is running\n" + _format_jobs(session.jobs()), ctx, _ui("no running jobs"))
     try:
-        text, running, code = session.read_background(job_id, wait=wait)
+        if waiting_for or len(job_ids) > 1 or wait > 30:
+            job_id, why, line = session.wait_jobs(job_ids, until=until, timeout=wait, cancel=ctx.cancel)
+        else:
+            job_id, why, line = job_ids[0], "", ""
+        info = session.job_info(job_id)
     except KeyError as exc:
         return err("command_output", str(exc.args[0] if exc.args else exc))
-    state = "running" if running else (f"exit {code}" if code is not None else "stopped")
-    body = f"{job_id}: {state}\n" + (text.strip() or "(no new output)")
+    if not info.get("running"):
+        session.read_background(job_id)  # consume it: the result below has everything
+        session.mark_reported(job_id)
+        body = _job_result(info, ctx, why=f"matched: {line}" if why == "match" else "")
+        state = f"exit {info.get('exit_code')}" if info.get("exit_code") is not None else "stopped"
+        return ok("command_output", body, ctx, _ui(f"{job_id} {state}", lines=_preview(str(info.get("stdout") or "") + "\n" + str(info.get("stderr") or ""), tail=True)))
+    text, running, code = session.read_background(job_id, wait=0 if why else wait)
+    if why == "match":
+        head = f"{job_id}: still running; matched: {line}"
+    elif why == "timeout":
+        head = f"{job_id}: still running after waiting {wait:.0f}s. " + _JOB_NOTE.format(job=job_id)
+    elif why == "cancel":
+        head = f"{job_id}: still running (the wait was stopped by the user)"
+    else:
+        head = f"{job_id}: " + ("running" if running else (f"exit {code}" if code is not None else "stopped"))
+    body = head + "\n" + (text.strip() or "(no new output)")
     return ok(
         "command_output",
         _clip_output(body, ctx),
         ctx,
-        _ui(f"{job_id} {state}", lines=_preview(text, tail=True)),
+        _ui(f"{job_id} running" + (" · matched" if why == "match" else ""), lines=_preview(text, tail=True)),
     )
 
 

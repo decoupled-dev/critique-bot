@@ -282,6 +282,12 @@ _FALLBACKS = {
         "FAILED or BLOCKED must say what failed and why."
     ),
     "PLAN_NOTED": "Plan noted. Send the tool_call for its first step now, with no other words.",
+    "JOBS_RUNNING": (
+        "You replied COMPLETED, but background jobs you started are still running:\n{jobs}\n"
+        "If the task needs a job's result (a build or test), wait for it: command_output with that "
+        "job_id and until \"exit\". Stop servers or watchers you no longer need with kill_command. "
+        "Then reply COMPLETED again."
+    ),
     "NOTHING_CHANGED": (
         "No file changed in this task. If the task needs a change, send the edit now. "
         "If no change is needed, reply COMPLETED again."
@@ -1987,6 +1993,10 @@ class _TaskRun:
         self.check_cycles = 0
         self.check_passed = False
         self.nothing_nudged = False
+        #: Reminded once that jobs were still running at COMPLETED.
+        self.jobs_nudged = False
+        #: Jobs already running before this task (an earlier task's server): not this task's business.
+        self.jobs_before = {row["id"] for row in self._job_rows() if row.get("running")}
         self.reason_asked = False
         self.verify_asked = False
         self.verified = True
@@ -2575,6 +2585,15 @@ class _TaskRun:
                 return None
             if reason:
                 self.hooks.ui("bad", reason)
+        if status in _STATUS_OK and not self.jobs_nudged:
+            running = self._running_jobs()
+            if running:
+                self.jobs_nudged = True
+                self.hooks.ui("note", "Background jobs are still running. Asking about them.")
+                template = self.sections.get("JOBS_RUNNING") or _FALLBACKS["JOBS_RUNNING"]
+                self.sections = {**self.sections, "JOBS_RUNNING": template}
+                self._send_message("JOBS_RUNNING", jobs="\n".join(running))
+                return None
         if status in _STATUS_OK:
             changed = self._files_changed()
             if changed and self.check_command and not self.check_passed:
@@ -2759,10 +2778,37 @@ class _TaskRun:
         lines.append("The latest message from the program follows.")
         return "\n".join(lines)
 
+    def _job_rows(self) -> list[dict[str, Any]]:
+        session = getattr(self.ctx, "session", None)
+        try:
+            return list(session.jobs()) if session is not None and hasattr(session, "jobs") else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _running_jobs(self) -> list[str]:
+        """``- b2: ./gradlew test`` for each background job this task started that still runs."""
+        before = getattr(self, "jobs_before", set())
+        return [
+            f"- {row.get('id')}: {_one_line(str(row.get('command') or ''), 100)}"
+            for row in self._job_rows()
+            if row.get("running") and row.get("id") not in before
+        ]
+
+    def _job_notes(self) -> str:
+        """One line per background job that ended since the model last heard of it."""
+        try:
+            return "\n".join(tool_api.finished_job_notes(self.ctx))
+        except Exception as exc:  # a note is a convenience; never break a turn over it
+            log.debug(f"job notes failed: {exc}")
+            return ""
+
     def _send_results(
         self, results: list[dict[str, Any]], *, extra: str = "", calls: list[ToolCall] | None = None
     ) -> None:
         state_text = self._state_text()
+        notes = self._job_notes()
+        if notes:
+            extra = notes + ("\n\n" + extra if extra else "")
         room = max(2_000, self.max_result_chars - len(state_text) - len(extra) - 4)
         if self.tool_format == TOOL_FORMAT_OPENAI:
             from critique_bot import openai_format
@@ -2782,6 +2828,9 @@ class _TaskRun:
 
     def _send_message(self, section: str, **values: str) -> None:
         text = fill(self.sections[section], path=self.state.last_path or "path/to/file", **values)
+        notes = self._job_notes()
+        if notes:
+            text = notes + "\n\n" + text
         self.payload = text + "\n\n" + self._state_text()
         self.turns.append({"role": "user", "content": self.payload})
 

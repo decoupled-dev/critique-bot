@@ -66,6 +66,7 @@ CAPTURE_HEAD_BYTES = 256 * 1024
 CAPTURE_TAIL_LINES = 4000
 CAPTURE_TAIL_BYTES = 1024 * 1024
 UNREAD_BYTES = 256 * 1024
+RECENT_BYTES = 256 * 1024
 MAX_LINE_BYTES = 64 * 1024
 PIPE_GRACE_SECONDS = 2.0
 LOGIN_ENV_TIMEOUT = 5.0
@@ -1695,10 +1696,25 @@ class _Capture:
         self.unread = bytearray()
         self.unread_dropped = 0
         self.total = 0
+        #: The complete stream also goes here (a shared log file), so nothing is lost.
+        self.sink: Any = None
+        self.sink_lock: threading.Lock | None = None
+        #: The last RECENT_BYTES of the stream, for matching ``until`` patterns.
+        self.recent = bytearray()
 
     def feed(self, data: bytes) -> None:
+        sink = self.sink
+        if sink is not None:
+            try:
+                with self.sink_lock or self.lock:
+                    sink.write(data)
+            except (OSError, ValueError):
+                self.sink = None
         with self.lock:
             self.total += len(data)
+            self.recent += data
+            if len(self.recent) > RECENT_BYTES:
+                del self.recent[: len(self.recent) - RECENT_BYTES]
             self.unread += data
             if len(self.unread) > UNREAD_BYTES:
                 cut = len(self.unread) - UNREAD_BYTES
@@ -1739,6 +1755,14 @@ class _Capture:
             del self.unread[:cut]
             skipped, self.unread_dropped = self.unread_dropped, 0
             return data, skipped
+
+    def since(self, position: int) -> tuple[bytes, int]:
+        """Stream bytes from ``position`` (a count of bytes fed) on, as far as they are
+        still held, and the position after them. Reading does not consume anything."""
+        with self.lock:
+            start = self.total - len(self.recent)
+            offset = max(0, position - start)
+            return bytes(self.recent[offset:]), self.total
 
     def text(self) -> str:
         with self.lock:
@@ -1841,6 +1865,18 @@ class _Launch:
         self.stdout = _Capture()
         self.stderr = _Capture()
         self.wake = threading.Event()
+        #: Every byte of stdout and stderr, interleaved as it arrived (None if it could not open).
+        self.log_path: str | None = os.path.join(folder, f"{token}.log")
+        self._log: Any = None
+        try:
+            self._log = open(self.log_path, "wb")
+        except OSError:
+            self.log_path = None
+        if self._log is not None:
+            shared = threading.Lock()
+            for capture in (self.stdout, self.stderr):
+                capture.sink = self._log
+                capture.sink_lock = shared
         try:
             self.proc = subprocess.Popen(
                 script_argv(shell, self.script),
@@ -1930,7 +1966,41 @@ class _Launch:
         if pipe is not None and not pipe.closed:
             pipe.close()
 
+    def truncated(self) -> bool:
+        """True when the bounded captures dropped lines (the log file still has them)."""
+        return bool(self.stdout.dropped or self.stderr.dropped)
+
+    def keep_log(self, folder: str | Path | None = None) -> str | None:
+        """Close the log and move it to ``folder`` (or keep it where it is); its path."""
+        self._close_log()
+        if not self.log_path or not os.path.exists(self.log_path):
+            return None
+        path = self.log_path
+        if folder is not None:
+            try:
+                os.makedirs(folder, exist_ok=True)
+                target = os.path.join(str(folder), time.strftime("%Y%m%d-%H%M%S-") + os.path.basename(path))
+                shutil.move(path, target)
+                path = target
+            except OSError:
+                pass
+        self.log_path = None  # kept: cleanup must not remove it
+        return path
+
+    def _close_log(self) -> None:
+        log = getattr(self, "_log", None)
+        if log is not None:
+            for capture in (self.stdout, self.stderr):
+                capture.sink = None
+            try:
+                log.close()
+            except OSError:
+                pass
+            self._log = None
+
     def cleanup(self) -> None:
+        self._close_log()
+        _remove(getattr(self, "log_path", None))
         _remove(getattr(self, "script", None))
         _remove(getattr(self, "marker", None))
         marker = getattr(self, "env_marker", None)
@@ -1954,6 +2024,8 @@ class CommandResult:
     #: Environment variables this command set (kept for later commands) and removed.
     env_set: tuple[str, ...] = ()
     env_unset: tuple[str, ...] = ()
+    #: The complete output, saved when ``stdout``/``stderr`` had to drop lines.
+    full_log: str | None = None
 
 
 def _execute(
@@ -2059,6 +2131,13 @@ class _Job:
     shell: Shell
     exit_code: int | None = None
     done: bool = False
+    ended_wall: float | None = None
+    #: The model has seen how it ended (a finished note or a read), so no note is due.
+    reported: bool = False
+    #: The complete output, kept after the job ends.
+    log: str | None = None
+    #: Where ``until`` matching resumes, per stream (bytes fed).
+    scan: list[int] = field(default_factory=lambda: [0, 0])
 
 
 class ShellSession:
@@ -2092,6 +2171,8 @@ class ShellSession:
         self.history: list[dict[str, Any]] = []
         #: A foreground command still running at its timeout becomes a background job instead of being killed.
         self.detach_on_timeout = True
+        #: Where complete logs of long outputs and jobs are kept (None: crit's private temp folder).
+        self.log_dir: Path | None = None
         if self.shell.is_posix and sys.platform != "win32":
             prewarm_login_environment()
         _SESSIONS.add(self)
@@ -2201,6 +2282,7 @@ class ShellSession:
             elif cwd is not None:
                 self.cwd = start
             env_set, env_unset = self._keep_env(launch) if not (timed_out or interrupted) else ((), ())
+            full_log = launch.keep_log(self.log_dir) if launch.truncated() else None
             result = CommandResult(
                 exit_code=launch.exit_code(),
                 stdout=tidy(launch.stdout.text()),
@@ -2212,6 +2294,7 @@ class ShellSession:
                 shell=chosen,
                 env_set=env_set,
                 env_unset=env_unset,
+                full_log=full_log,
             )
             self._remember(command, result, start)
             return result
@@ -2311,6 +2394,8 @@ class ShellSession:
             job.launch.join_readers(0.5)
             job.exit_code = job.launch.exit_code()
             job.done = True
+            job.ended_wall = time.time()
+            job.log = job.launch.keep_log(self.log_dir)
             job.launch.cleanup()
 
     def read_background(self, job_id: str, *, wait: float = 0.0) -> tuple[str, bool, int | None]:
@@ -2360,8 +2445,104 @@ class ShellSession:
         job.launch.join_readers(0.5)
         job.exit_code = None
         job.done = True
+        job.ended_wall = time.time()
+        job.reported = True  # the model stopped it itself
+        job.log = job.launch.keep_log(self.log_dir)
         job.launch.cleanup()
         return True
+
+    def wait_jobs(
+        self,
+        job_ids: list[str],
+        *,
+        until: "re.Pattern[str] | None" = None,
+        timeout: float,
+        cancel: threading.Event | None = None,
+    ) -> tuple[str, str, str]:
+        """Block until one of ``job_ids`` exits or prints a line matching ``until``.
+
+        Returns ``(job_id, why, line)``: ``why`` is ``"exit"``, ``"match"`` (``line`` is
+        the matching line), ``"timeout"``, or ``"cancel"``. An exit always ends the wait,
+        so a crashed job cannot hang it. Output is not consumed: a later read still sees it.
+        """
+        jobs = [self._job(job_id) for job_id in job_ids]
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            for job in jobs:
+                if until is not None:
+                    line = self._scan(job, until)
+                    if line is not None:
+                        return job.id, "match", line
+                self._reap(job)
+                if job.done:
+                    if until is not None:  # the last lines may hold the match
+                        line = self._scan(job, until, final=True)
+                        if line is not None:
+                            return job.id, "match", line
+                    return job.id, "exit", ""
+            if cancel is not None and cancel.is_set():
+                return jobs[0].id, "cancel", ""
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return jobs[0].id, "timeout", ""
+            if len(jobs) == 1:
+                jobs[0].launch.wake.wait(min(0.2, left))
+                jobs[0].launch.wake.clear()
+            else:
+                time.sleep(min(0.2, left))
+
+    def _scan(self, job: _Job, until: "re.Pattern[str]", *, final: bool = False) -> str | None:
+        for index, capture in enumerate((job.launch.stdout, job.launch.stderr)):
+            data, end = capture.since(job.scan[index])
+            if not data:
+                continue
+            # whole lines only; a partial last line waits for the next scan
+            cut = len(data) if final else data.rfind(b"\n") + 1
+            if cut == 0:
+                continue
+            chunk = data[:cut]
+            job.scan[index] = end - (len(data) - cut)
+            text = _decode_as(chunk, detect_encoding(chunk))
+            for line in text.splitlines():
+                if until.search(line):
+                    return line.strip()
+        return None
+
+    def finished_unreported(self) -> list[dict]:
+        """Jobs that ended since the model last heard of them; each is returned once."""
+        out = []
+        for job in list(self._jobs.values()):
+            self._reap(job)
+            if job.done and not job.reported:
+                job.reported = True
+                out.append(self._describe(job))
+        return out
+
+    def mark_reported(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is not None and job.done:
+            job.reported = True
+
+    def job_info(self, job_id: str) -> dict:
+        """Status and the bounded output of one job (it is not consumed)."""
+        job = self._job(job_id)
+        self._reap(job)
+        return self._describe(job)
+
+    def _describe(self, job: _Job) -> dict:
+        launch = job.launch
+        end = job.ended_wall or time.time()
+        return {
+            "id": job.id,
+            "command": job.command,
+            "running": not job.done,
+            "exit_code": job.exit_code,
+            "seconds": max(0.0, end - launch.started_wall),
+            "log": job.log or launch.log_path,
+            "stdout": tidy(launch.stdout.text()),
+            "stderr": tidy(launch.stderr.text()),
+            "truncated": launch.truncated(),
+        }
 
     def jobs(self) -> list[dict]:
         rows = []

@@ -40,6 +40,7 @@ TaskState = _impl.TaskState
 ToolContext = _impl.ToolContext
 Permission = _impl.Permission
 canonical_tool = _impl.canonical_tool
+finished_job_notes = _impl.finished_job_notes
 normalize_args = _impl.normalize_args
 fill = _impl.fill
 is_git_repo = _impl.is_git_repo
@@ -140,6 +141,7 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
             "limit": _i("lines to read", 1, 400),
             "symbol": _s("a class or function, e.g. OrderService.place"),
             "force": _b("read again even when unchanged since an earlier read"),
+            "col": _i("start each line at this character (to read on in a very long, clipped line)", 0),
         }),
         read_only=True,
     ),
@@ -185,8 +187,12 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "command_output",
-        "New output and status of a background command; omit job_id to list jobs.",
-        _obj({"job_id": _S, "wait": _i("seconds to wait for more output", 0, 30)}),
+        "Output and status of a background command; omit job_id to list jobs. crit reports a job's end "
+        "on its own; until waits (no turns spent) for the job to exit or print a matching line.",
+        _obj({"job_id": _S,
+              "until": {"type": "string",
+                        "description": '"exit", or a regular expression such as "BUILD (SUCCESSFUL|FAILED)|error:"'},
+              "wait": _i("seconds to wait (up to 1200 with until; the wait ends when the job exits)", 0, 1200)}),
         read_only=True,
     ),
     ToolSpec(
