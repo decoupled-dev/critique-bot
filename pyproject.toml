@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "critique-bot"
-version = "1.0.6"
+version = "1.0.7"
 description = "crit: coding agent and code reviewer that drives a web chat UI in Microsoft Edge or a local model."
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"

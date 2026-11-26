@@ -64,20 +64,20 @@ Linux:
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS.txt
 # optional, proves the file was built by this repository's release workflow:
-gh attestation verify crit_1.0.6_amd64.deb --repo decoupled-dev/critique-bot
+gh attestation verify crit_1.0.7_amd64.deb --repo decoupled-dev/critique-bot
 ```
 
 Windows (PowerShell):
 
 ```powershell
-(Get-FileHash .\crit-1.0.6-windows-x64.zip -Algorithm SHA256).Hash
+(Get-FileHash .\crit-1.0.7-windows-x64.zip -Algorithm SHA256).Hash
 # compare with the line for that file in SHA256SUMS.txt
 ```
 
 ## Linux, .deb
 
 ```bash
-sudo apt install ./crit_1.0.6_amd64.deb
+sudo apt install ./crit_1.0.7_amd64.deb
 ```
 
 The package is `crit`. It installs the program in `/opt/crit`, adds the `crit` command
@@ -98,8 +98,8 @@ To remove it, see [Uninstall](#uninstall).
 ## Linux, zip
 
 ```bash
-unzip crit-1.0.6-linux-x64.zip
-./crit-1.0.6-linux-x64/crit install
+unzip crit-1.0.7-linux-x64.zip
+./crit-1.0.7-linux-x64/crit install
 ```
 
 That installs it in `~/.crit` for your user and puts `crit` on your PATH, the same as the
@@ -108,7 +108,7 @@ one-line installer (running `./crit` any other way installs it too). Open a new 
 
 ## Windows
 
-1. Unzip `crit-1.0.6-windows-x64.zip`.
+1. Unzip `crit-1.0.7-windows-x64.zip`.
 2. Double-click `crit.exe` (or run `.\crit.exe install`). It installs itself in
    `%USERPROFILE%\.crit`, adds it to your user PATH, registers crit under Settings > Apps >
    Installed apps, and asks the first-run questions (see [Set up](#set-up)).
