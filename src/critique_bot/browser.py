@@ -215,6 +215,34 @@ def _gnome_proxy() -> tuple[str, str]:
     return "", ""
 
 
+def proxy_bypass() -> str:
+    """The hosts that skip the proxy, comma-separated: NO_PROXY, else GNOME's "Ignore Hosts".
+
+    Once crit hands the browser its proxy, the browser stops reading the desktop setting,
+    so an internal chat site on that list would go through the proxy (and fail) without this.
+    """
+    for name in ("NO_PROXY", "no_proxy"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return ",".join(part.strip() for part in value.split(",") if part.strip())
+    if not sys.platform.startswith("linux"):
+        return ""
+    import shutil
+
+    gsettings = shutil.which("gsettings")
+    if not gsettings:
+        return ""
+    try:
+        done = subprocess.run([gsettings, "get", "org.gnome.system.proxy", "ignore-hosts"],
+                              capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    hosts = re.findall(r"'([^']+)'", done.stdout)
+    return ",".join(host.strip() for host in hosts if host.strip())
+
+
 def _without_login(server: str) -> str:
     """``http://user:pass@proxy:8080`` without ``user:pass@``: the browser takes the login apart."""
     if "@" not in server:
@@ -259,8 +287,11 @@ def apply_proxy_login(args: list[str], launch_kwargs: dict[str, object], start_u
         server = server if server and "=" not in server else ""
     if server:
         launch_kwargs["proxy"] = {"server": _without_login(server), "username": user, "password": password}
+        bypass = proxy_bypass()
+        if bypass:
+            launch_kwargs["proxy"]["bypass"] = bypass  # type: ignore[index]
         log.info(f"proxy_login: answering the proxy {_without_login(server)} as {user}")
-        return [arg for arg in args if not arg.startswith("--proxy-server=")]
+        return [arg for arg in args if not arg.startswith(("--proxy-server=", "--proxy-bypass-list="))]
     if start_url and "http_credentials" not in launch_kwargs:
         parts = urlsplit(start_url)
         launch_kwargs["http_credentials"] = {"username": user, "password": password,
@@ -293,7 +324,8 @@ def _strict_proxy_args() -> tuple[list[str], list[str]]:
         return [f"--proxy-pac-url={pac}"], _proxy_hosts("", pac)
     if server:
         server = _without_login(server)
-        return [f"--proxy-server={server}"], _proxy_hosts(server, "")
+        bypass = proxy_bypass()
+        return [f"--proxy-server={server}"] + ([f"--proxy-bypass-list={bypass}"] if bypass else []), _proxy_hosts(server, "")
     return ["--no-proxy-server"], []
 
 

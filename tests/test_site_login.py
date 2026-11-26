@@ -114,8 +114,8 @@ class ProxyLoginTests(_Isolated):
         self.assertEqual(browser.proxy_login(), ("CORP\\jdoe", PROXY_PASSWORD))
 
     def test_login_inside_https_proxy_is_used_and_kept_off_the_command_line(self) -> None:
-        env = {"HTTPS_PROXY": f"http://jdoe:{PROXY_PASSWORD}@proxy.corp.example:8080"}
-        with mock.patch.dict("os.environ", env):
+        env = {"HTTPS_PROXY": f"http://jdoe:{PROXY_PASSWORD}@proxy.corp.example:8080", "NO_PROXY": "", "no_proxy": ""}
+        with mock.patch.dict("os.environ", env), mock.patch("shutil.which", return_value=None):
             self.assertEqual(browser.proxy_login(), ("jdoe", PROXY_PASSWORD))
             args, _hosts = browser._strict_proxy_args()
         self.assertEqual(args, ["--proxy-server=http://proxy.corp.example:8080"])
@@ -123,9 +123,34 @@ class ProxyLoginTests(_Isolated):
     def test_a_known_proxy_gets_the_login_for_every_request(self) -> None:
         integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
         kwargs: dict = {}
-        args = browser.apply_proxy_login(["--a", "--proxy-server=proxy.corp.example:8080"], kwargs, "https://chat.corp.example/")
+        with mock.patch.object(browser, "proxy_bypass", return_value="localhost,*.corp.example"):
+            args = browser.apply_proxy_login(
+                ["--a", "--proxy-server=proxy.corp.example:8080", "--proxy-bypass-list=x"], kwargs, "https://chat.corp.example/")
         self.assertEqual(args, ["--a"])
-        self.assertEqual(kwargs["proxy"], {"server": "proxy.corp.example:8080", "username": "jdoe", "password": PROXY_PASSWORD})
+        self.assertEqual(kwargs["proxy"], {"server": "proxy.corp.example:8080", "username": "jdoe", "password": PROXY_PASSWORD,
+                                           "bypass": "localhost,*.corp.example"})
+
+    def test_gnome_manual_proxy_and_its_ignore_hosts(self) -> None:
+        answers = {
+            ("org.gnome.system.proxy", "mode"): "'manual'",
+            ("org.gnome.system.proxy.https", "host"): "''",
+            ("org.gnome.system.proxy.https", "port"): "0",
+            ("org.gnome.system.proxy.http", "host"): "'proxy.corp.example'",
+            ("org.gnome.system.proxy.http", "port"): "8080",
+            ("org.gnome.system.proxy", "ignore-hosts"): "['localhost', '127.0.0.0/8', '*.corp.example']",
+        }
+
+        def run(cmd, **_kwargs):
+            return mock.Mock(returncode=0, stdout=answers.get((cmd[2], cmd[3]), "''") + "\n")
+
+        clean = {k: v for k, v in __import__("os").environ.items()
+                 if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY")}
+        with mock.patch.dict("os.environ", clean, clear=True), \
+                mock.patch.object(browser.sys, "platform", "linux"), \
+                mock.patch("shutil.which", return_value="/usr/bin/gsettings"), \
+                mock.patch.object(browser.subprocess, "run", side_effect=run):
+            self.assertEqual(browser.system_proxy(), ("proxy.corp.example:8080", ""))
+            self.assertEqual(browser.proxy_bypass(), "localhost,127.0.0.0/8,*.corp.example")
 
     def test_a_pac_proxy_gets_the_login_through_the_chat_page(self) -> None:
         integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
