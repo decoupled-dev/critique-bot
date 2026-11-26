@@ -84,7 +84,7 @@ class BuildScriptTests(unittest.TestCase):
     def test_package_version_dunder(self) -> None:
         from critique_bot import __version__
 
-        self.assertEqual(__version__, "1.0.5")
+        self.assertEqual(__version__, "1.0.6")
 
 
 if __name__ == "__main__":

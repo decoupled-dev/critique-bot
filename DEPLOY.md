@@ -96,16 +96,16 @@ crit-<version>-windows-x64\
 **Linux (bash)**
 
 ```bash
-unzip crit-1.0.5-linux-x64.zip
-cd crit-1.0.5-linux-x64
+unzip crit-1.0.6-linux-x64.zip
+cd crit-1.0.6-linux-x64
 cp config.example.json config.json
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-Expand-Archive .\crit-1.0.5-windows-x64.zip -DestinationPath .
-Set-Location .\crit-1.0.5-windows-x64
+Expand-Archive .\crit-1.0.6-windows-x64.zip -DestinationPath .
+Set-Location .\crit-1.0.6-windows-x64
 Copy-Item .\config.example.json .\config.json
 ```
 
@@ -202,14 +202,14 @@ Or one line:
 
 ```bash
 cd ~/my-project
-/path/to/crit-1.0.5-linux-x64/crit --config /path/to/config.json
+/path/to/crit-1.0.6-linux-x64/crit --config /path/to/config.json
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
 cd C:\my-project
-C:\path\to\crit-1.0.5-windows-x64\crit.exe --config C:\path\to\config.json
+C:\path\to\crit-1.0.6-windows-x64\crit.exe --config C:\path\to\config.json
 ```
 
 Set `user_data_dir` in that `config.json` to an absolute path so every project folder uses the same signed-in profile. The short `crit` command and the setup scripts are for a source install; see [Pip wheel](#pip-wheel-python-already-on-the-target).

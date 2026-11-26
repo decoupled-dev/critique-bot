@@ -6,7 +6,7 @@
 # Downloads the latest release for this machine (x64 or arm64), checks it against the
 # release's SHA256SUMS.txt, and runs "crit install", which puts crit in
 # ~/.crit (app/<version> and bin, added to PATH if needed; CRIT_HOME moves it). Settings
-# are asked the first time crit needs them. CRIT_VERSION=1.0.5 picks a version (1.0.5 or later).
+# are asked the first time crit needs them. CRIT_VERSION=1.0.6 picks a version (1.0.5 or later).
 # CRIT_CONFIG_FILE=/path/to/crit.json also sets the config file (url, page elements, ...),
 # so crit asks nothing on first run.
 set -eu
