@@ -467,6 +467,24 @@ class PromptToolkitTests(_Base):
     def test_ctrl_d_exits(self) -> None:
         self.assertIsNone(self._run("\x04", agent_ui.prompt_line))
 
+    def test_prompts_work_inside_a_running_event_loop(self) -> None:
+        # The web UI backend (Playwright's sync API) keeps a loop running in the main
+        # thread; prompt_toolkit's asyncio.run used to fail there with
+        # "coroutine 'Application.run_async' was never awaited".
+        import asyncio
+        import warnings
+
+        async def inside() -> tuple[object, object]:
+            line = self._run("hello\r", agent_ui.prompt_line)
+            choice = self._run("2\r", agent_ui._choose, options=[("yes", "Yes"), ("no", "No")])
+            return line, choice
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            line, choice = asyncio.run(inside())
+        self.assertEqual(line, "hello")
+        self.assertEqual(choice, (1, ""))
+
     def test_bracketed_paste_stays_one_message(self) -> None:
         pasted = "\x1b[200~line one\nline two\x1b[201~\r"
         self.assertEqual(self._run(pasted, agent_ui.prompt_line), "line one\nline two")

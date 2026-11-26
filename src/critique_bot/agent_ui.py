@@ -1280,10 +1280,27 @@ def _choose(
         input=pt_input,
         output=pt_output,
     )
-    result = app.run()
+    result = app.run(in_thread=_loop_running())
     if not result:
         return (-1, "")
     return (int(result[0]), str(result[1] or ""))
+
+
+def _loop_running() -> bool:
+    """True when this thread already runs an asyncio loop.
+
+    The web UI backend drives the browser with Playwright's sync API, which keeps a loop
+    running in the main thread. prompt_toolkit's ``run()``/``prompt()`` call ``asyncio.run``
+    and fail there ("coroutine 'Application.run_async' was never awaited"), so they run in
+    their own thread instead.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _pt_color(rich_style: str) -> str:
@@ -1414,7 +1431,7 @@ def _ask_reason(*, pt_input: Any = None, pt_output: Any = None) -> str:
         from prompt_toolkit import PromptSession
 
         session: Any = PromptSession(input=pt_input, output=pt_output)
-        return str(session.prompt("  Tell crit what to do differently (Enter to skip): ") or "").strip()
+        return str(session.prompt("  Tell crit what to do differently (Enter to skip): ", in_thread=_loop_running()) or "").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     except Exception:
@@ -1477,7 +1494,7 @@ def _free_text(label: str, *, pt_input: Any = None, pt_output: Any = None) -> st
         from prompt_toolkit import PromptSession
 
         session: Any = PromptSession(input=pt_input, output=pt_output)
-        return str(session.prompt(label) or "").strip()
+        return str(session.prompt(label, in_thread=_loop_running()) or "").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     except Exception:
@@ -1798,7 +1815,7 @@ def prompt_line(*, pt_input: Any = None, pt_output: Any = None) -> str | None:
         session = _prompt_session
     _rule()
     try:
-        text = session.prompt([("class:prompt", "> ")])
+        text = session.prompt([("class:prompt", "> ")], in_thread=_loop_running())
     except EOFError:
         return None
     except KeyboardInterrupt:
