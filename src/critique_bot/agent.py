@@ -3117,7 +3117,6 @@ def run_agent_loop(
                 pass
             outcome_code = "INTERRUPTED"
             turns.append({"role": "assistant", "content": "INTERRUPTED by the user"})
-            _ui("bad", "Interrupted. The task stopped.")
             try:
                 run._show_disk_once()
             except Exception as exc:  # the diff is a courtesy; the prompt must come back

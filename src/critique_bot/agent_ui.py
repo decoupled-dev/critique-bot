@@ -497,6 +497,15 @@ def final_status(code: str, *, ok: bool, reason: str = "") -> None:
     """``✓ Done`` / ``✗ Failed: reason`` / ``⏹ Interrupted``."""
     g = glyphs()
     code = (code or "").upper()
+    # The task is over: nothing runs any more. A Ctrl+C mid-command never marked its tool done,
+    # and its "Running 1 shell command…" must not come back under this line or on the next task.
+    with _lock:
+        _state.tool_title = None
+        _state.tool_tail = []
+        _state.active.clear()
+        _state.waiting_explicit = False
+        _state.waiting_depth = 0
+    _pause_live()
     _print()
     if ok:
         _print(Text(f"{g.check} Done", style=f"bold {_style('ok')}"))
@@ -1181,10 +1190,12 @@ def _choose(
 ) -> tuple[int, str]:
     """Pick an option with the arrows, or type ``1``, ``2.``, ``yes``, ``No``, ``always`` and press Enter.
 
-    Returns ``(index, rest)``; ``rest`` is text typed after the answer. Esc or
-    Ctrl+C gives ``(-1, "")``. With ``free_text`` set, typing that matches no
+    Returns ``(index, rest)``; ``rest`` is text typed after the answer. Esc gives
+    ``(-1, "")``; Ctrl+C raises ``KeyboardInterrupt`` so the task stops. With ``free_text`` set, typing that matches no
     option picks that row and returns the typed text as ``rest``.
     """
+    if pt_input is None and _plain_prompts():
+        return _choose_plain(options, free_text=free_text)
     from prompt_toolkit.application import Application
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
@@ -1244,9 +1255,13 @@ def _choose(
             typed[0] = ""
 
     @bindings.add("escape", eager=True)
-    @bindings.add("c-c")
     def _cancel(event: Any) -> None:
         event.app.exit(result=(-1, ""))
+
+    @bindings.add("c-c")
+    def _interrupt(event: Any) -> None:
+        # Ctrl+C stops the task, as it does while crit works; Esc is the "no".
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
 
     @bindings.add("<any>")
     def _type(event: Any) -> None:
@@ -1303,6 +1318,17 @@ def _loop_running() -> bool:
     return True
 
 
+def _plain_prompts() -> bool:
+    """Ask with plain ``input()`` instead of prompt_toolkit.
+
+    On Windows, prompt_toolkit waits for console keys in a helper thread of its event loop.
+    Run in a thread of its own (needed while the web UI's loop runs, see :func:`_loop_running`),
+    ending its loop can wait on that helper, so crit could stall after an answer, before the
+    tool result goes back to the chat page. Plain input has no such wait.
+    """
+    return sys.platform == "win32" and _loop_running()
+
+
 def _pt_color(rich_style: str) -> str:
     first = rich_style.split(" on ")[0].replace("bold", "").strip()
     if first.startswith("#"):
@@ -1328,7 +1354,7 @@ def approve(
     _print(approval_panel(permission, risky=risky))
     try:
         index, rest = _choose(options, pt_input=pt_input, pt_output=pt_output)
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         index, rest = -1, ""
     except Exception as exc:  # no usable console (e.g. mintty without winpty)
         log.warn(f"approval prompt failed: {exc}")
@@ -1382,7 +1408,7 @@ def review_plan(*, pt_input: Any = None, pt_output: Any = None) -> tuple[str, st
     )
     try:
         index, rest = _choose(PLAN_OPTIONS, pt_input=pt_input, pt_output=pt_output)
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         index, rest = -1, ""
     except Exception as exc:
         log.warn(f"plan prompt failed: {exc}")
@@ -1408,36 +1434,45 @@ def review_plan(*, pt_input: Any = None, pt_output: Any = None) -> tuple[str, st
     return (answer, "")
 
 
-def _choose_plain(options: list[tuple[str, str]], *, tries: int = 3) -> tuple[int, str]:
-    """Numbered list and ``input()``, for consoles prompt_toolkit cannot drive."""
+def _choose_plain(options: list[tuple[str, str]], *, tries: int = 3, free_text: int | None = None) -> tuple[int, str]:
+    """Numbered list and ``input()``, for consoles prompt_toolkit cannot drive.
+
+    With ``free_text`` set, an answer that matches no option picks that row, as in :func:`_choose`.
+    """
     for index, (_answer, label) in enumerate(options):
         log.print_safe(f"   {index + 1}. {label}", flush=True)
     for _ in range(max(1, tries)):
         try:
             line = input(f"  Choose ({_choice_hint(options)}): ")
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             return (-1, "")
         if not line.strip():
             continue
         index, rest = parse_choice(line, options)
         if index >= 0:
             return (index, rest)
+        if free_text is not None:
+            return (free_text, line.strip())
         log.print_safe(f"   Didn't understand {line.strip()!r}.", flush=True)
     return (-1, "")
 
 
 def _ask_reason(*, pt_input: Any = None, pt_output: Any = None) -> str:
     try:
+        if pt_input is None and _plain_prompts():
+            return input("  Tell crit what to do differently (Enter to skip): ").strip()
         from prompt_toolkit import PromptSession
 
         session: Any = PromptSession(input=pt_input, output=pt_output)
         return str(session.prompt("  Tell crit what to do differently (Enter to skip): ", in_thread=_loop_running()) or "").strip()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         return ""
+    except KeyboardInterrupt:
+        raise
     except Exception:
         try:
             return input("  Tell crit what to do differently (Enter to skip): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             return ""
 
 
@@ -1479,7 +1514,7 @@ def ask_question(
                 answer = rest or _free_text("  Answer: ", pt_input=pt_input, pt_output=pt_output)
         else:
             answer = _free_text("  Answer: ", pt_input=pt_input, pt_output=pt_output)
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         answer = None
     if answer:
         _print(_elbow(f"{g.check} {answer}", style=_style("ok")))
@@ -1491,16 +1526,20 @@ def ask_question(
 
 def _free_text(label: str, *, pt_input: Any = None, pt_output: Any = None) -> str:
     try:
+        if pt_input is None and _plain_prompts():
+            return input(label).strip()
         from prompt_toolkit import PromptSession
 
         session: Any = PromptSession(input=pt_input, output=pt_output)
         return str(session.prompt(label, in_thread=_loop_running()) or "").strip()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         return ""
+    except KeyboardInterrupt:
+        raise
     except Exception:
         try:
             return input(label).strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             return ""
 
 
@@ -1880,6 +1919,8 @@ def read_message(
 
 
 def _interactive_line() -> str | None:
+    if _plain_prompts():
+        return _fallback_line()
     try:
         return prompt_line()
     except Exception as exc:  # e.g. NoConsoleScreenBufferError under mintty

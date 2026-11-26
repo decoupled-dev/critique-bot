@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from rich.console import Console
@@ -466,6 +467,38 @@ class PromptToolkitTests(_Base):
 
     def test_ctrl_d_exits(self) -> None:
         self.assertIsNone(self._run("\x04", agent_ui.prompt_line))
+
+    def test_ctrl_c_in_the_menu_stops_the_task_and_esc_declines(self) -> None:
+        options = [("yes", "Yes"), ("no", "No")]
+        with self.assertRaises(KeyboardInterrupt):
+            self._run("\x03", agent_ui._choose, options=options)
+        self.assertEqual(self._run("\x1b", agent_ui._choose, options=options), (-1, ""))
+
+    def test_ctrl_c_on_an_approval_reaches_the_loop(self) -> None:
+        with mock.patch.object(agent_ui, "_choose", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                agent_ui.approve(_Permission(kind="command", summary="Run: ls", key="ls"), pt_input=object(), pt_output=object())
+
+    def test_windows_with_the_browser_loop_asks_with_plain_input(self) -> None:
+        # prompt_toolkit in a thread of its own can stall on Windows: plain input() there.
+        options = [("yes", "Yes"), ("no", "No")]
+        with mock.patch.object(agent_ui.sys, "platform", "win32"), \
+                mock.patch.object(agent_ui, "_loop_running", return_value=True), \
+                mock.patch("builtins.input", side_effect=["2", "why not", "free answer"]):
+            self.assertEqual(agent_ui._choose(options), (1, ""))
+            self.assertEqual(agent_ui._ask_reason(), "why not")
+            self.assertEqual(agent_ui._choose(options, free_text=2), (2, "free answer"))
+        with mock.patch.object(agent_ui.sys, "platform", "linux"), \
+                mock.patch.object(agent_ui, "_loop_running", return_value=True):
+            self.assertFalse(agent_ui._plain_prompts())
+
+    def test_final_status_clears_a_tool_left_running(self) -> None:
+        with agent_ui._lock:
+            agent_ui._state.tool_title = "Bash(sleep 30)"
+            agent_ui._state.active["shell command"] = 1
+        agent_ui.final_status("INTERRUPTED", ok=False)
+        self.assertIsNone(agent_ui._state.tool_title)
+        self.assertEqual(dict(agent_ui._state.active), {})
 
     def test_prompts_work_inside_a_running_event_loop(self) -> None:
         # The web UI backend (Playwright's sync API) keeps a loop running in the main
