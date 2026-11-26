@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
-from critique_bot import big_file, file_catalog
+from critique_bot import big_file, file_catalog, log_tools
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -65,6 +65,7 @@ ALLOWED_TOOLS = (
     "command_input",
     "kill_command",
     "delegate",
+    "log",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -82,6 +83,7 @@ READ_ONLY = frozenset(
             "ask_user",
         "command_output",
         "kill_command",
+        "log",
     }
 )
 SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
@@ -1236,7 +1238,11 @@ def _read_window(
     lines = _redact_lines(raw_lines)[lead : lead + (end - start + 1)]
     out = [header]
     if size > big_file.LARGE_FILE_BYTES and start == 1 and not column:
-        out.append("(a large file: read it by window with offset and limit, or search it with search_code and path)")
+        if log_tools.looks_like_log(path):
+            out.append(f'(a large log: log {{"path": "{name}"}} lists its crashes and errors at once; '
+                       "read it by window with offset and limit)")
+        else:
+            out.append("(a large file: read it by window with offset and limit, or search it with search_code and path)")
     numbered: list[str] = []
     used = 0
     for number, text in enumerate(lines, start):
@@ -1252,6 +1258,92 @@ def _read_window(
     if numbered and shown_end < total:
         out.append(f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}.")
     return "\n".join(out)
+
+
+_LOG_ACTIONS = ("summary", "query", "around", "diff")
+
+
+def _log_path(ctx: ToolContext, raw: Any, what: str = "path") -> tuple[Path | None, str]:
+    if not isinstance(raw, str) or not raw.strip():
+        return None, f"{what} is required: the log file"
+    path = resolve(ctx.workspace, raw)
+    if not path.is_file():
+        return None, f"not found: {raw}" + _path_hint(ctx, raw)
+    if sensitive_file(path):
+        return None, f"{raw} usually holds secrets; it is not read as a log"
+    return path, ""
+
+
+def _log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Logs of any size: what went wrong (summary), filtered lines (query), context (around), good vs bad (diff)."""
+    action = str(args.get("action") or "summary").strip().lower()
+    action = {"summarize": "summary", "overview": "summary", "grep": "query", "filter": "query", "search": "query",
+              "context": "around", "compare": "diff"}.get(action, action)
+    if action not in _LOG_ACTIONS:
+        return err("log", f"action must be one of {', '.join(_LOG_ACTIONS)}")
+    path, problem = _log_path(ctx, args.get("path"))
+    if problem:
+        return err("log", problem)
+    name = rel(ctx.workspace, path)
+    try:
+        if action == "summary":
+            summary = log_tools.summarize(path, cancel=ctx.cancel)
+            body = log_tools.render_summary(summary, max_chars=max(2_000, ctx.max_chars - 400), name=name)
+            body += '\nNext: log action "around" with line N for the context of an event, or "query" with level, tag, pid, package or pattern.'
+            return ok("log", redact_secrets(body)[0], ctx, _ui(f"Summarized {name}", lines=body.split("\n")[1:4]))
+        if action == "around":
+            try:
+                line = int(args.get("line") or args.get("offset") or 0)
+                before = min(max(int(args.get("before") or 20), 0), 200)
+                after = min(max(int(args.get("after") or 30), 0), 300)
+            except (TypeError, ValueError):
+                return err("log", "line, before and after must be integers")
+            if line < 1:
+                return err("log", "line is required (1-based), for example an event's line from the summary")
+            rows = log_tools.around(path, line, before=before, after=after)
+            body = f"--- {name} lines {max(1, line - before)}-{line + after} ---\n" + "\n".join(rows)
+            return ok("log", _clip_output(redact_secrets(body)[0], ctx), ctx, _ui(f"{name} around line {line}"))
+        if action == "diff":
+            good, problem = _log_path(ctx, args.get("good"), "good")
+            if problem:
+                return err("log", problem + " (diff compares a good log, good, with a bad one, path)")
+            rows = log_tools.diff(good, path)
+            body = f"--- {rel(ctx.workspace, good)} (good) vs {name} (bad) ---\n" + "\n".join(rows)
+            return ok("log", _clip_output(redact_secrets(body)[0], ctx), ctx, _ui(f"Compared {name} with a good log"))
+        # query
+        raw_pattern = args.get("pattern") or args.get("text")
+        matcher = None
+        if raw_pattern:
+            try:
+                matcher = re.compile(str(raw_pattern), re.IGNORECASE)
+            except re.error:
+                matcher = re.compile(re.escape(str(raw_pattern)), re.IGNORECASE)
+        pid = str(args.get("pid") or "").strip()
+        package = str(args.get("package") or "").strip()
+        pids: set[str] = {pid} if pid else set()
+        if package:
+            pids |= log_tools.pids_for_package(path, package)
+            if not pids:
+                return ok("log", f"no process of {package} found in {name} (no 'Start proc' or 'PID:' line names it)", ctx)
+        try:
+            start = max(1, int(args.get("offset") or args.get("start") or 1))
+            end = int(args["end"]) if args.get("end") else None
+            limit = min(max(int(args.get("limit") or 100), 1), 400)
+        except (TypeError, ValueError):
+            return err("log", "offset, end and limit must be integers")
+        rows, matched, resume = log_tools.query(
+            path, level=str(args.get("level") or ""), tag=str(args.get("tag") or ""), pids=pids, text=matcher,
+            start=start, end=end, limit=limit, cancel=ctx.cancel,
+        )
+        head = (
+            f"--- {name}: first {len(rows)} matching lines from line {start}; more follow ---" if resume
+            else f"--- {name}: {matched} matching lines from line {start} ---"
+        )
+        tail = f"\n... more: offset={resume}" if resume else ""
+        body = head + "\n" + ("\n".join(rows) if rows else "(no matching lines)") + tail
+        return ok("log", _clip_output(redact_secrets(body)[0], ctx), ctx, _ui(f"{matched} lines in {name}"))
+    except OSError as exc:
+        return err("log", f"could not read {name}: {exc}")
 
 
 def _read_symbol(symbol: str, raw_path: Any, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -4574,6 +4666,8 @@ def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:
     raws: list[Any] = []
     if tool in {"list_files", "find_files", "search_code", "delete_file", "edit_file", "git_diff", "git_log", "git_show"}:
         raws.append(args.get("path"))
+    elif tool == "log":
+        raws += [args.get("path"), args.get("good")]
     elif tool == "read_files":
         paths = args.get("paths")
         if paths is None:
@@ -4683,4 +4777,5 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "command_input": _command_input,
     "kill_command": _kill_command,
     "delegate": _delegate,
+    "log": _log,
 }

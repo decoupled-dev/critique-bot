@@ -204,6 +204,20 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec("kill_command", "Stop a background command and its children.", _obj({"job_id": _S}, ["job_id"]),
              read_only=True),
+    ToolSpec(
+        "log",
+        "Analyze a log of any size (logcat, dmesg, bugreport, build output). summary: crashes, ANRs, errors "
+        "grouped with counts and line numbers. query: lines by level/tag/pid/package/pattern. around: lines "
+        "near a line. diff: what is new in a bad log (path) against a good one (good).",
+        _obj({"action": {"type": "string", "enum": ["summary", "query", "around", "diff"]},
+              "path": _PATH, "good": _s("diff: the good log"),
+              "level": _s("query: lowest level, e.g. W or E"), "tag": _S, "pid": _S,
+              "package": _s("query: an app package; its processes' lines"),
+              "pattern": _s("query: a regular expression"), "line": _i("around: the line", 1),
+              "offset": _i("query: first line", 1), "limit": _i("query: lines to return", 1, 400)},
+             ["path"]),
+        read_only=True,
+    ),
     ToolSpec("git_status", "The git status of the workspace.", _obj(), read_only=True),
     ToolSpec("git_diff", "The git diff of the workspace.",
              _obj({"path": _PATH, "staged": _B, "stat": _b("summary only")}), read_only=True),
