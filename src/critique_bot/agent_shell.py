@@ -1335,7 +1335,65 @@ def tool_hints(
         hints.append("node: npm (package.json present)")
     if (root / "pyproject.toml").is_file() or (root / "setup.py").is_file():
         hints.append("python project: pyproject.toml present")
+    aosp = (root / "build" / "envsetup.sh").is_file() and (root / ".repo").is_dir()
+    if aosp:
+        target = str(env.get("TARGET_PRODUCT") or "")
+        hints.append(
+            "aosp tree: yes. m, mm, mmm and atest work in run_command (crit sources build/envsetup.sh); "
+            + (f"lunch target {target}-{env.get('TARGET_BUILD_VARIANT', '')}. " if target else "run lunch <target> once first. ")
+            + "Build the module you changed (m <module>), not m alone (hours)."
+        )
+    if which is None and environ is None and (aosp or _is_android_project(root)):
+        devices = android_devices()
+        if devices:
+            hints.append("devices (adb): " + "; ".join(devices))
+        elif shutil.which("adb"):
+            hints.append("devices (adb): none connected")
     return hints
+
+
+def android_devices(*, timeout: float = 4.0, limit: int = 4) -> list[str]:
+    """One line per connected device: serial, product, build type, API level, automotive, user.
+
+    Empty when adb is missing or answers nothing in time. One adb shell call per device.
+    """
+    adb = shutil.which("adb")
+    if not adb:
+        return []
+    try:
+        listed = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows = []
+    for line in listed.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        serial, state = parts[0], parts[1]
+        if state != "device":
+            rows.append(f"{serial} ({state})")
+            continue
+        if len(rows) >= limit:
+            rows.append("...")
+            break
+        script = (
+            "getprop ro.product.name; getprop ro.build.type; getprop ro.build.version.sdk; "
+            "pm has-feature android.hardware.type.automotive && echo automotive || echo -; "
+            "am get-current-user 2>/dev/null || echo -"
+        )
+        try:
+            probe = subprocess.run([adb, "-s", serial, "shell", script], capture_output=True, text=True,
+                                   timeout=timeout, check=False)
+            values = [item.strip() for item in probe.stdout.splitlines()] + ["", "", "", "", ""]
+        except (OSError, subprocess.TimeoutExpired):
+            values = ["?", "", "", "", ""]
+        product, build_type, sdk, automotive, user = values[:5]
+        detail = ", ".join(item for item in (
+            product, build_type, f"API {sdk}" if sdk else "", "automotive" if automotive == "automotive" else "",
+            f"current user {user}" if user and user != "-" else "",
+        ) if item)
+        rows.append(f"{serial} ({detail})")
+    return rows
 
 
 def _which_first(find: Callable[[str], str | None], names: tuple[str, ...]) -> str | None:
@@ -1844,6 +1902,7 @@ class _Launch:
         offline: bool = False,
         want_env: bool = False,
         stdin_pipe: bool = False,
+        log_dir: Path | None = None,
     ) -> None:
         self.shell = shell
         self.command = command
@@ -1866,7 +1925,15 @@ class _Launch:
         self.stderr = _Capture()
         self.wake = threading.Event()
         #: Every byte of stdout and stderr, interleaved as it arrived (None if it could not open).
-        self.log_path: str | None = os.path.join(folder, f"{token}.log")
+        log_folder = folder
+        if log_dir is not None:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                log_folder = str(log_dir)
+            except OSError:
+                pass
+        stamp = time.strftime("%Y%m%d-%H%M%S-") if log_folder != folder else ""
+        self.log_path: str | None = os.path.join(log_folder, f"{stamp}{token}.log")
         self._log: Any = None
         try:
             self._log = open(self.log_path, "wb")
@@ -1976,7 +2043,7 @@ class _Launch:
         if not self.log_path or not os.path.exists(self.log_path):
             return None
         path = self.log_path
-        if folder is not None:
+        if folder is not None and os.path.dirname(os.path.abspath(path)) != os.path.abspath(str(folder)):
             try:
                 os.makedirs(folder, exist_ok=True)
                 target = os.path.join(str(folder), time.strftime("%Y%m%d-%H%M%S-") + os.path.basename(path))
@@ -2373,7 +2440,10 @@ class ShellSession:
         """Start a long-running command; returns its job id (``b1``, ``b2``...)."""
         chosen = self.resolve(shell)
         start = self._start_dir(cwd)
-        launch = _Launch(chosen, command, start, self.environment(), want_cwd=False, offline=self.offline, stdin_pipe=True)
+        launch = _Launch(
+            chosen, command, start, self.environment(), want_cwd=False, offline=self.offline, stdin_pipe=True,
+            log_dir=self.log_dir,
+        )
         with self._lock:
             self._counter += 1
             job_id = f"b{self._counter}"

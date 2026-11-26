@@ -85,6 +85,32 @@ def is_build_command(command: str) -> bool:
     return False
 
 
+#: AOSP shell functions from build/envsetup.sh.
+AOSP_PROGRAMS = frozenset({"m", "mm", "mmm", "mma", "mmma", "atest", "lunch", "croot", "banchan", "tapas", "printconfig"})
+_LOGCAT_ONCE = re.compile(r"(?:^|\s)(?:-d|--dump|-c|--clear|-g|--buffer-size|-S|--statistics|-t\s*\d+|-f\s|--file)(?:\s|$)")
+
+
+def aosp_program(command: str) -> str:
+    """The envsetup.sh function a command starts with (``m``, ``lunch``, ...), or ""."""
+    for words in _segments(command):
+        program = _program(words[0]) if words else ""
+        return program if program in AOSP_PROGRAMS else ""
+    return ""
+
+
+def is_logcat_stream(command: str) -> bool:
+    """``adb logcat`` that keeps streaming until stopped (no -d, -t N, -c, ...)."""
+    for words in _segments(command):
+        if not words or _program(words[0]) != "adb":
+            continue
+        if "logcat" not in words:
+            continue
+        rest = " " + " ".join(words[words.index("logcat") + 1 :]) + " "
+        if not _LOGCAT_ONCE.search(rest):
+            return True
+    return False
+
+
 def is_gradle_command(command: str) -> bool:
     return any(_program(tokens[0]) in {"gradlew", "gradle"} for tokens in _segments(command))
 
@@ -263,6 +289,41 @@ def _rules(ctx: Context) -> list[tuple[re.Pattern[str], str]]:
          "The code does not compile: fix the e:/error: lines above in the source files, then rerun the same build."),
         (r"Execution failed for task '[^']*(?:lint|Lint)[^']*'",
          "Lint failed: fix the issues it lists (the report path is in the output); do not turn lint off unless the task says so."),
+        # adb and the device
+        (r"more than one device/emulator|more than one device and emulator",
+         "Several devices are connected: run adb devices -l, then pass -s <serial> to every adb command "
+         "(or set ANDROID_SERIAL=<serial> in the same command)."),
+        (r"no devices/emulators found|device '[^']*' not found|adb: no devices",
+         "No device is connected. Check adb devices -l; start an emulator (emulator -avd <name>, emulator -list-avds), "
+         "or for a car head unit over the network run adb connect <ip>:5555."),
+        (r"device unauthorized|adb: unauthorized|unauthorized\s+(?:usb|device)",
+         "The device has not allowed this computer: accept the USB debugging prompt on its screen, then rerun."),
+        (r"device offline",
+         "The device is offline: adb reconnect (or adb kill-server; adb start-server), then rerun."),
+        (r"INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match",
+         "An app with the same package but another signature is installed: adb uninstall <package> (add --user 0 "
+         "on a car head unit), then install again. A platform-signed app needs the platform build's key."),
+        (r"INSTALL_FAILED_VERSION_DOWNGRADE",
+         "A newer version is installed: install with adb install -r -d, or uninstall it first."),
+        (r"INSTALL_FAILED_USER_RESTRICTED|INSTALL_FAILED_INSUFFICIENT_STORAGE",
+         "The install was refused by the device (user restriction or storage). On Android Automotive install for the "
+         "driver's user: adb install -r --user current <apk>; check space with adb shell df /data."),
+        (r"INSTALL_FAILED_NO_MATCHING_ABIS",
+         "The APK has native code for another CPU: build the ABI of the device (adb shell getprop ro.product.cpu.abi)."),
+        (r"INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|sharedUserId|INSTALL_FAILED_INVALID_APK.*priv",
+         "A privileged or sharedUserId app (android.uid.system) cannot be installed like a normal app: push the "
+         "platform build's output with adb root; adb remount; adb sync (or adb push to /system/priv-app/...), then adb reboot."),
+        (r"Not running as root|adbd cannot run as root in production builds",
+         "This command needs root: run adb root first (works on userdebug/eng builds only), then rerun."),
+        (r"Read-only file system|remount of .* failed|verity",
+         "The system partition is read-only: adb root; adb disable-verity; adb reboot; then adb root; adb remount, and rerun."),
+        # AOSP builds
+        (r"Couldn't locate the top of the tree|build/envsetup\.sh: No such file|lunch: command not found|m: command not found",
+         "Run AOSP build commands from inside the tree; crit sources build/envsetup.sh for m, mm, mmm and atest."),
+        (r"Invalid lunch combo|Can't find product|Cannot locate config makefile for product",
+         "That lunch target does not exist in this tree: pick one the error or `lunch` lists (a car target for AAOS)."),
+        (r"error: .* depends on undefined module|depends on undefined module",
+         "A module names a dependency that does not exist (or is not visible): fix the name in Android.bp, or add the missing module."),
     ]
     return [(re.compile(pattern, re.I), text) for pattern, text in raw]
 

@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
-from critique_bot import big_file, file_catalog, log_tools
+from critique_bot import big_file, file_catalog, log_tools, soong
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -124,6 +124,8 @@ class TaskState:
     step: int = 0
     reads: dict[str, ReadRecord] = field(default_factory=dict)
     edits: dict[str, int] = field(default_factory=dict)
+    #: An AOSP full build (m alone) after edits was questioned once already.
+    full_build_warned: bool = False
     last_command: str = ""
     last_exit: str = ""
     failures_in_row: int = 0
@@ -2279,7 +2281,64 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         )
     if ctx.session is None:
         return _run_plain(args, ctx, command, timeout, wanted, bool(background))
+    command, refused = _aosp_defaults(ctx, command)
+    if refused is not None:
+        return refused
+    if not background and agent_build.is_logcat_stream(command):
+        background = True  # it never ends by itself; the log tool reads its output file
     return _run_in_session(args, ctx, command, timeout, wanted, bool(background))
+
+
+def _aosp_defaults(ctx: ToolContext, command: str) -> tuple[str, dict[str, Any] | None]:
+    """In an AOSP tree, make m, mm, mmm and atest just work.
+
+    - envsetup.sh is sourced for them (its functions do not outlive one command; the
+      variables lunch sets do, through the session).
+    - No lunch target yet: say which targets the tree has, instead of a cryptic failure.
+    - ``m`` alone after edits builds the whole platform (hours): name the modules that
+      build the changed files first. Running ``m`` again goes ahead.
+    """
+    program = agent_build.aosp_program(command)
+    session = ctx.session
+    if not program or session is None:
+        return command, None
+    envsetup = ctx.workspace / "build" / "envsetup.sh"
+    if not envsetup.is_file() or file_catalog.catalog_for(ctx.workspace).kind != "repo":
+        return command, None
+    if getattr(getattr(session, "shell", None), "kind", "") not in {"bash", "zsh"}:
+        return command, None
+    try:
+        env = session.environment()
+    except Exception:  # noqa: BLE001
+        env = {}
+    if program not in {"lunch", "croot", "printconfig"} and not env.get("TARGET_PRODUCT"):
+        choices = soong.lunch_choices(ctx.workspace)
+        listed = (" Targets in this tree (car first): " + ", ".join(choices[:8]) + ".") if choices else ""
+        return command, err(
+            "run_command",
+            "not run: no build target is chosen yet. Run lunch <target> once, for example "
+            f"lunch {choices[0] if choices else 'sdk_car_x86_64-trunk_staging-userdebug'}; crit keeps it for later "
+            f"commands.{listed}",
+        )
+    if program == "m" and re.fullmatch(r"\s*m(?:\s+-j\s*\d+)?\s*", command) and ctx.state is not None:
+        state = ctx.state
+        if state.edits and not getattr(state, "full_build_warned", False):
+            state.full_build_warned = True
+            names: list[str] = []
+            for path in list(state.edits)[:8]:
+                owner = soong.modules_for_file(ctx.workspace, path)
+                if owner is not None and owner.modules and owner.modules[0].name not in names:
+                    names.append(owner.modules[0].name)
+            if names:
+                return command, err(
+                    "run_command",
+                    "not run: m alone builds the whole platform, which takes hours. The files you changed are built by "
+                    f"{', '.join(names)} (from Android.bp): run m {' '.join(names)} instead. "
+                    "Run m alone again only if the whole platform is really needed.",
+                )
+    if "envsetup.sh" in command:
+        return command, None
+    return f"source {shlex.quote(str(envsetup))} >/dev/null 2>&1 && {command}", None
 
 
 def _session_cwd(ctx: ToolContext, raw: Any) -> tuple[Path | None, str]:
@@ -2335,6 +2394,13 @@ def _run_in_session(
             + (first.strip() or "(no output yet)")
             + f"\n{_JOB_NOTE.format(job=job_id)}"
         )
+        if agent_build.is_logcat_stream(command) and hasattr(session, "job_info"):
+            log_file = session.job_info(job_id).get("log") or ""
+            if log_file:
+                body += (
+                    f'\nlogcat streams until stopped, so it runs in the background. Its output goes to {log_file}: '
+                    f'log {{"path": "{log_file}"}} lists crashes and errors so far; stop it with kill_command when done.'
+                )
         if ctx.state is not None:
             ctx.state.last_command = command
             ctx.state.last_exit = f"background {job_id}"
@@ -3680,6 +3746,10 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
     args = normalize_args(tool, args if isinstance(args, (dict, str)) else {})
     paths = _paths_of(tool, args, ctx)
     outside = [item for item in paths if not inside(ctx.workspace, item)]
+    if tool in READ_ONLY and ctx.cache_dir is not None:
+        # crit's own saved outputs and job logs (of commands already allowed) read freely
+        saved = Path(ctx.cache_dir) / "output"
+        outside = [item for item in outside if not inside(saved, item)]
     if tool in READ_ONLY:
         # The secret check comes first: ~/.ssh/id_rsa is outside the workspace *and* a secret.
         secret = [item for item in paths if sensitive_file(item)]
