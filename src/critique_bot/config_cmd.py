@@ -38,6 +38,8 @@ from critique_bot.config import (
     ENV_GITLAB_TOKENS,
     ENV_JIRA_EMAIL,
     ENV_JIRA_TOKENS,
+    ENV_PROXY_PASSWORDS,
+    ENV_PROXY_USER,
     ENV_SITE_PASSWORDS,
     ENV_SITE_USER,
     ENV_JIRA_URL,
@@ -236,6 +238,10 @@ def describe(location: ConfigLocation) -> list[str]:
         email = jira.get("email") or os.environ.get(ENV_JIRA_EMAIL, "")
         lines.append("Jira token: " + ("set" if _secret_set("jira", "token", ENV_JIRA_TOKENS) else "not set (crit config --jira-token)")
                      + (f", email {email} (Jira Cloud)" if email else ""))
+    proxy_user = os.environ.get(ENV_PROXY_USER, "").strip() or _user_setting("proxy_login", "username")
+    if proxy_user or _secret_set("proxy_login", "password", ENV_PROXY_PASSWORDS):
+        lines.append(f"Proxy sign-in: {proxy_user or 'no username (crit config --proxy-user)'}, password "
+                     + ("set" if _secret_set("proxy_login", "password", ENV_PROXY_PASSWORDS) else "not set (crit config --proxy-password)"))
     site_user = os.environ.get(ENV_SITE_USER, "").strip() or _user_setting("site_login", "username")
     if site_user or _secret_set("site_login", "password", ENV_SITE_PASSWORDS):
         host = _user_setting("site_login", "host")
@@ -389,6 +395,16 @@ def build_parser() -> argparse.ArgumentParser:
         "kept in your user settings; crit only reads issues. No value asks for it; none removes it",
     )
     parser.add_argument(
+        "--proxy-user", metavar="NAME",
+        help="your username for the company proxy (the \"proxy\" sign-in box Edge shows), kept in your user "
+        "settings; none removes it. CRIT_PROXY_USER overrides it",
+    )
+    parser.add_argument(
+        "--proxy-password", nargs="?", const=_ASK_KEY, metavar="PASSWORD",
+        help="the password for --proxy-user, kept in your user settings and given only to the proxy. No value asks "
+        "for it; - reads stdin; none removes it. CRIT_PROXY_PASSWORD overrides it",
+    )
+    parser.add_argument(
         "--site-user", metavar="NAME",
         help="your username for the chat site's own sign-in (a Windows/HTTP sign-in box; on Windows the "
         "signed-in account answers it), kept in your user settings; none removes it. CRIT_SITE_USER overrides it",
@@ -418,7 +434,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
             args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
             getattr(args, "gitlab_token", None), getattr(args, "jira_url", None), getattr(args, "jira_email", None),
             getattr(args, "jira_token", None), getattr(args, "site_user", None), getattr(args, "site_password", None),
-            getattr(args, "site_login_host", None),
+            getattr(args, "site_login_host", None), getattr(args, "proxy_user", None), getattr(args, "proxy_password", None),
         )
     )
 
@@ -723,6 +739,7 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
         ("gitlab_token", "gitlab", "token", "GitLab token"), ("jira_token", "jira", "token", "Jira token"),
         ("site_user", "site_login", "username", "site username"), ("site_password", "site_login", "password", "site password"),
         ("site_login_host", "site_login", "host", "site sign-in host"),
+        ("proxy_user", "proxy_login", "username", "proxy username"), ("proxy_password", "proxy_login", "password", "proxy password"),
     ):
         if getattr(args, attr, None) is not None:
             code = set_user_secret(section, key, getattr(args, attr), label)

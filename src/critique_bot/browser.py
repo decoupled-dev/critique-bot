@@ -182,7 +182,91 @@ def system_proxy() -> tuple[str, str]:
     for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
         if os.environ.get(name, "").strip():
             return os.environ[name].strip(), ""
+    if sys.platform.startswith("linux"):
+        return _gnome_proxy()
     return "", ""
+
+
+def _gnome_proxy() -> tuple[str, str]:
+    """The desktop's proxy (GNOME settings, which Chrome and Edge follow on Linux), if any."""
+    import shutil
+
+    gsettings = shutil.which("gsettings")
+    if not gsettings:
+        return "", ""
+
+    def get(schema: str, key: str) -> str:
+        try:
+            done = subprocess.run([gsettings, "get", schema, key], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return done.stdout.strip().strip("'\"") if done.returncode == 0 else ""
+
+    mode = get("org.gnome.system.proxy", "mode")
+    if mode == "auto":
+        return "", get("org.gnome.system.proxy", "autoconfig-url")
+    if mode != "manual":
+        return "", ""
+    for kind in ("https", "http"):
+        host = get(f"org.gnome.system.proxy.{kind}", "host")
+        port = get(f"org.gnome.system.proxy.{kind}", "port")
+        if host:
+            return (f"{host}:{port}" if port and port != "0" else host), ""
+    return "", ""
+
+
+def _without_login(server: str) -> str:
+    """``http://user:pass@proxy:8080`` without ``user:pass@``: the browser takes the login apart."""
+    if "@" not in server:
+        return server
+    scheme, sep, rest = server.partition("://")
+    if not sep:
+        scheme, rest = "", server
+    rest = rest.rsplit("@", 1)[1]
+    return f"{scheme}://{rest}" if scheme else rest
+
+
+def proxy_login() -> tuple[str, str]:
+    """The company proxy's username and password: ``proxy_login``, else ``user:pass@`` in HTTPS_PROXY."""
+    current = integrations.current()
+    if current.proxy_user and current.proxy_password:
+        return current.proxy_user, current.proxy_password
+    server, _pac = system_proxy()
+    parts = urlsplit(server if "://" in server else "http://" + server) if server else None
+    if parts is not None and parts.username and parts.password:
+        from urllib.parse import unquote
+
+        return unquote(parts.username), unquote(parts.password)
+    return "", ""
+
+
+def apply_proxy_login(args: list[str], launch_kwargs: dict[str, object], start_url: str | None) -> list[str]:
+    """Answer the company proxy's sign-in in the browser crit drives (it cannot show the box).
+
+    A known proxy goes to Playwright's ``proxy`` option with the login, which answers the
+    proxy for every request. A proxy the browser finds by itself (a PAC file) gets the login
+    as ``http_credentials`` for the chat site's origin: the browser asks the proxy for that
+    page first and reuses the login for the rest. Returns ``args`` without ``--proxy-server``
+    when the option replaces it.
+    """
+    user, password = proxy_login()
+    if not (user and password) or "--no-proxy-server" in args:
+        return args
+    servers = [arg.split("=", 1)[1] for arg in args if arg.startswith("--proxy-server=")]
+    server = servers[-1] if servers else ""
+    if not server and not any(arg.startswith("--proxy-pac-url=") for arg in args):
+        server, _pac = system_proxy()
+        server = server if server and "=" not in server else ""
+    if server:
+        launch_kwargs["proxy"] = {"server": _without_login(server), "username": user, "password": password}
+        log.info(f"proxy_login: answering the proxy {_without_login(server)} as {user}")
+        return [arg for arg in args if not arg.startswith("--proxy-server=")]
+    if start_url and "http_credentials" not in launch_kwargs:
+        parts = urlsplit(start_url)
+        launch_kwargs["http_credentials"] = {"username": user, "password": password,
+                                             "origin": f"{parts.scheme}://{parts.netloc.lower()}"}
+        log.info(f"proxy_login: answering the proxy's sign-in for {parts.netloc} as {user}")
+    return args
 
 
 def _proxy_hosts(server: str, pac: str) -> list[str]:
@@ -208,6 +292,7 @@ def _strict_proxy_args() -> tuple[list[str], list[str]]:
     if pac:
         return [f"--proxy-pac-url={pac}"], _proxy_hosts("", pac)
     if server:
+        server = _without_login(server)
         return [f"--proxy-server={server}"], _proxy_hosts(server, "")
     return ["--no-proxy-server"], []
 
@@ -1747,14 +1832,20 @@ def friendly_navigation_error(url: str, error: str) -> str:
     text = (error or "").upper()
     fix = "Check the address with: crit config"
     if "ERR_INVALID_AUTH_CREDENTIALS" in text or "ERR_UNEXPECTED_PROXY_AUTH" in text or "ERR_MISSING_AUTH_CREDENTIALS" in text:
-        # Not the address: the server asked the browser itself to sign in (HTTP or Windows
-        # Negotiate/NTLM). Windows answers with the signed-in account; Linux has none to give.
-        if integrations.current().site_login_ready:
-            return (f"{host} did not accept the sign-in crit gave it (site_login). Check the username and "
-                    "password with: crit config --site-user NAME --site-password")
-        return (f"{host} asks the browser for a Windows/HTTP sign-in, which this machine cannot give by itself "
-                "(no SSO here, and crit's browser cannot fill in the sign-in box). Give crit your sign-in once: "
-                "crit config --site-user NAME --site-password. With Kerberos, run kinit you@COMPANY first instead.")
+        # Not the address: someone asked the browser itself for a sign-in box it cannot show.
+        # Most often the company proxy (Edge's "proxy username and password" box), else the site
+        # (HTTP or Windows Negotiate/NTLM, which Windows answers with the signed-in account).
+        have_proxy = all(proxy_login())
+        have_site = integrations.current().site_login_ready
+        if have_proxy or have_site:
+            given = " and ".join(part for part, on in (("proxy_login", have_proxy), ("site_login", have_site)) if on)
+            return (f"The sign-in crit gave ({given}) was not accepted on the way to {host}. Check the username and "
+                    "password with: crit config --proxy-user NAME --proxy-password (the company proxy), or "
+                    "crit config --site-user NAME --site-password (the site itself).")
+        return (f"The browser was asked for a username and password on the way to {host}, and crit's browser "
+                "cannot show that box. If Edge asks you for a proxy username and password, give crit them once: "
+                "crit config --proxy-user NAME --proxy-password. If the site itself asks: "
+                "crit config --site-user NAME --site-password (with Kerberos, run kinit you@COMPANY instead).")
     if "ERR_NAME_NOT_RESOLVED" in text:
         if egress.page_restricted() and not egress.policy().permits(host):
             return (f"The url {url} is outside the allowed sites. Set it with crit config --url, "
@@ -2062,6 +2153,7 @@ def launch_edge(
             # The site's HTTP/Windows sign-in, answered for its own origin only.
             launch_kwargs["http_credentials"] = credentials
             log.info(f"site_login: answering the sign-in of {credentials['origin']} as {credentials['username']}")
+        launch_kwargs["args"] = apply_proxy_login(list(args), launch_kwargs, start_url)
         try:
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),

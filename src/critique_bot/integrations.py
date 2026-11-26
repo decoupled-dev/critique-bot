@@ -16,6 +16,8 @@ redaction, so they never reach a transcript, the chat, or the log file.
   when the site asks for an HTTP or Windows (Negotiate/NTLM) sign-in, which Windows answers
   with the signed-in account and a Linux machine without SSO cannot. Sent only to
   ``site_login.host`` (the chat url's host unless set).
+- The company proxy's sign-in (``proxy_login``): the username and password Edge asks for in a
+  "proxy" box. The browser crit drives cannot show that box, so it gives these instead.
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ class Integrations:
     site_user: str = ""
     site_password: str = field(default="", repr=False)
     site_host: str = ""
+    proxy_user: str = ""
+    proxy_password: str = field(default="", repr=False)
 
     @property
     def site_login_ready(self) -> bool:
@@ -66,18 +70,20 @@ _current = Integrations()
 def configure(
     *, gitlab_url: str = "", gitlab_token: str = "", jira_url: str = "", jira_email: str = "", jira_token: str = "",
     site_user: str = "", site_password: str = "", site_host: str = "",
+    proxy_user: str = "", proxy_password: str = "",
 ) -> Integrations:
     """Set the process-wide instances and tokens (called by config.load_config)."""
     global _current
     from critique_bot import redaction
 
-    for secret in (gitlab_token, jira_token, site_password):
+    for secret in (gitlab_token, jira_token, site_password, proxy_password):
         if secret:
             redaction.add_secret_value(secret)
     _current = Integrations(
         gitlab_url=gitlab_url.rstrip("/"), gitlab_token=gitlab_token,
         jira_url=jira_url.rstrip("/"), jira_email=jira_email, jira_token=jira_token,
         site_user=site_user, site_password=site_password, site_host=(site_host or "").lower().rstrip("."),
+        proxy_user=proxy_user, proxy_password=proxy_password,
     )
     return _current
 

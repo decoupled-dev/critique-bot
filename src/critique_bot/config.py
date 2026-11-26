@@ -473,6 +473,8 @@ def load_config(
     )
     jira = _load_jira(raw, own_raw, company, shared_file, env="jira.base_url" not in locked)
     site_login = _load_site_login(own_raw, company, shared_file, url if backend != BACKEND_LOCAL else "")
+    proxy_user = _clean(os.environ.get(ENV_PROXY_USER)) or _user_value(own_raw, shared_file, "proxy_login", "username")
+    proxy_password = _user_secret(own_raw, company, shared_file, "proxy_login", "password", ENV_PROXY_PASSWORDS, "--proxy-password")
     egress.configure(
         egress_mode,
         url if backend != BACKEND_LOCAL else "",
@@ -485,6 +487,7 @@ def load_config(
         gitlab_url=gitlab.base_url, gitlab_token=gitlab.token,
         jira_url=jira.base_url, jira_email=jira.email, jira_token=jira.token,
         site_user=site_login.username, site_password=site_login.password, site_host=site_login.host,
+        proxy_user=proxy_user, proxy_password=proxy_password,
     )
 
     return BotConfig(
@@ -1310,6 +1313,8 @@ def _load_jira(raw: dict, own: dict, company: "CompanySettings | None", shared_f
 
 ENV_SITE_USER = "CRIT_SITE_USER"
 ENV_SITE_PASSWORDS = ("CRIT_SITE_PASSWORD",)
+ENV_PROXY_USER = "CRIT_PROXY_USER"
+ENV_PROXY_PASSWORDS = ("CRIT_PROXY_PASSWORD",)
 
 
 def _user_value(own: dict, shared_file: bool, section: str, key: str) -> str:

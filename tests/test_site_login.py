@@ -79,9 +79,76 @@ class BrowserSiteAuthTests(_Isolated):
 
     def test_the_error_names_the_sign_in_not_the_address(self) -> None:
         error = "Page.goto: net::ERR_INVALID_AUTH_CREDENTIALS at https://chat.corp.example/"
-        text = browser.friendly_navigation_error("https://chat.corp.example/", error)
+        with mock.patch.object(browser, "system_proxy", return_value=("", "")):
+            text = browser.friendly_navigation_error("https://chat.corp.example/", error)
         self.assertIn("crit config --site-user NAME --site-password", text)
         self.assertIn("kinit", text)
         self.assertNotIn("Check the address", text)
         integrations.configure(site_user="jdoe", site_password=PASSWORD, site_host="chat.corp.example")
-        self.assertIn("did not accept the sign-in", browser.friendly_navigation_error("https://chat.corp.example/", error))
+        self.assertIn("(site_login) was not accepted", browser.friendly_navigation_error("https://chat.corp.example/", error))
+
+
+PROXY_PASSWORD = "proxy-pass-" + "z" * 16
+
+
+class ProxyLoginTests(_Isolated):
+    """The company proxy asks every browser for a password; Chrome only fills in a saved one.
+    crit's own browser profile has none, so it gives proxy_login."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertEqual(self.config("--url", "https://chat.corp.example/")[0], 0)
+
+    def tearDown(self) -> None:
+        integrations.configure()
+        super().tearDown()
+
+    def test_flags_and_display_never_show_the_password(self) -> None:
+        self.assertEqual(self.config("--proxy-user", "CORP\\jdoe")[0], 0)
+        code, out, _ = self.config("--proxy-password", PROXY_PASSWORD)
+        self.assertEqual((code, PROXY_PASSWORD in out), (0, False))
+        _, out, _ = self.config()
+        self.assertIn("Proxy sign-in: CORP\\jdoe, password set", out)
+        self.assertNotIn(PROXY_PASSWORD, out)
+        load_config(self.user)
+        self.assertEqual(browser.proxy_login(), ("CORP\\jdoe", PROXY_PASSWORD))
+
+    def test_login_inside_https_proxy_is_used_and_kept_off_the_command_line(self) -> None:
+        env = {"HTTPS_PROXY": f"http://jdoe:{PROXY_PASSWORD}@proxy.corp.example:8080"}
+        with mock.patch.dict("os.environ", env):
+            self.assertEqual(browser.proxy_login(), ("jdoe", PROXY_PASSWORD))
+            args, _hosts = browser._strict_proxy_args()
+        self.assertEqual(args, ["--proxy-server=http://proxy.corp.example:8080"])
+
+    def test_a_known_proxy_gets_the_login_for_every_request(self) -> None:
+        integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
+        kwargs: dict = {}
+        args = browser.apply_proxy_login(["--a", "--proxy-server=proxy.corp.example:8080"], kwargs, "https://chat.corp.example/")
+        self.assertEqual(args, ["--a"])
+        self.assertEqual(kwargs["proxy"], {"server": "proxy.corp.example:8080", "username": "jdoe", "password": PROXY_PASSWORD})
+
+    def test_a_pac_proxy_gets_the_login_through_the_chat_page(self) -> None:
+        integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
+        kwargs: dict = {}
+        args = browser.apply_proxy_login(["--proxy-pac-url=http://wpad/p.pac"], kwargs, "https://chat.corp.example/x")
+        self.assertEqual(args, ["--proxy-pac-url=http://wpad/p.pac"])
+        self.assertNotIn("proxy", kwargs)
+        self.assertEqual(kwargs["http_credentials"]["origin"], "https://chat.corp.example")
+
+    def test_no_proxy_no_login(self) -> None:
+        integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
+        kwargs: dict = {}
+        self.assertEqual(browser.apply_proxy_login(["--no-proxy-server"], kwargs, "https://chat.corp.example/"), ["--no-proxy-server"])
+        self.assertEqual(kwargs, {})
+        integrations.configure()
+        with mock.patch.object(browser, "system_proxy", return_value=("", "")):
+            self.assertEqual(browser.apply_proxy_login(["--proxy-server=p:1"], kwargs, "https://chat.corp.example/"), ["--proxy-server=p:1"])
+        self.assertEqual(kwargs, {})
+
+    def test_the_error_names_the_proxy_first(self) -> None:
+        error = "Page.goto: net::ERR_INVALID_AUTH_CREDENTIALS at https://chat.corp.example/"
+        with mock.patch.object(browser, "system_proxy", return_value=("", "")):
+            text = browser.friendly_navigation_error("https://chat.corp.example/", error)
+        self.assertIn("crit config --proxy-user NAME --proxy-password", text)
+        integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
+        self.assertIn("(proxy_login) was not accepted", browser.friendly_navigation_error("https://chat.corp.example/", error))

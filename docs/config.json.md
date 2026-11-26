@@ -87,6 +87,8 @@ environment variable, and the API key is shown only as set or not set).
 | `--jira-url URL` | `jira.base_url` (https only; `""` removes it) |
 | `--jira-email EMAIL` | `jira.email`, Jira Cloud only (`""` removes it) |
 | `--jira-token [TOKEN]` | `jira.token` in your user config only (like `--gitlab-token`) |
+| `--proxy-user NAME` | `proxy_login.username` in your user config only (`none` removes it) |
+| `--proxy-password [PASSWORD]` | `proxy_login.password` in your user config only (like `--gitlab-token`) |
 | `--site-user NAME` | `site_login.username` in your user config only (`none` removes it) |
 | `--site-password [PASSWORD]` | `site_login.password` in your user config only (like `--gitlab-token`) |
 | `--site-login-host HOST` | `site_login.host`, when the sign-in comes from another host than the url's |
@@ -651,10 +653,35 @@ Scopes: `read_api` and `read_repository` to review and clone; add `api` to post 
 
 ---
 
+## `proxy_login` (object, optional): the company proxy's sign-in
+
+A company proxy that wants a username and password asks every browser for them in a "proxy" box.
+Your own Edge or Chrome fills that box in from its saved passwords. crit's browser has its own profile
+with no saved passwords and cannot show the box, so the page fails with
+`net::ERR_INVALID_AUTH_CREDENTIALS`. Give crit the proxy login once:
+
+```
+crit config --proxy-user 'DOMAIN\name' --proxy-password     # asks without echo
+```
+
+| Key | Meaning |
+| --- | --- |
+| `username` | the proxy username. Env: `CRIT_PROXY_USER` |
+| `password` | your user config only (`crit config --proxy-password`), or `CRIT_PROXY_PASSWORD`. Redacted from everything crit sends or logs |
+
+A login inside `HTTPS_PROXY` (`http://name:password@proxy:8080`, as curl and git use it) works too.
+When crit knows the proxy's address (`HTTPS_PROXY`, or the desktop's proxy setting on Linux), the browser
+gets the login through its proxy setting, and it answers the proxy for every request. With a proxy script
+(PAC), the browser gives it when the chat page asks, and reuses it for the rest. crit never puts the login on
+the browser's command line.
+
+---
+
 ## `site_login` (object, optional): the chat site's own sign-in
 
 Some company chat sites ask the **browser itself** to sign in (an HTTP or Windows sign-in: Negotiate,
-NTLM, or Basic) instead of showing a sign-in page. On Windows, Edge answers with the signed-in Windows
+NTLM, or Basic) instead of showing a sign-in page. (If the box says "proxy", it is the proxy: see
+[`proxy_login`](#proxy_login-object-optional-the-company-proxys-sign-in).) On Windows, Edge answers with the signed-in Windows
 account (SSO). On Linux there is no such account, so a person gets a sign-in box every time and the
 browser crit drives fails with `net::ERR_INVALID_AUTH_CREDENTIALS`. The address is not the problem.
 
@@ -711,6 +738,8 @@ browser cannot reach it.
 | `CRIT_JIRA_URL` | `jira.base_url` |
 | `CRIT_JIRA_EMAIL` | `jira.email` |
 | `CRIT_JIRA_TOKEN`, `JIRA_API_TOKEN` | `jira.token` |
+| `CRIT_PROXY_USER` | `proxy_login.username` |
+| `CRIT_PROXY_PASSWORD` | `proxy_login.password` |
 | `CRIT_SITE_USER` | `site_login.username` |
 | `CRIT_SITE_PASSWORD` | `site_login.password` |
 | `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
