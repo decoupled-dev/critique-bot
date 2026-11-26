@@ -16,6 +16,9 @@ files: AndroidManifest.xml, Android.bp
 
 ## Do
 - Target a device explicitly when several are attached: `adb -s <serial> ...` (or ANDROID_SERIAL env var).
+- In crit, the log tool reads a saved log of any size (logcat -d > log.txt, a bugreport, a
+  build log): log summary lists crashes, ANRs and errors with line numbers; log query filters by
+  level, tag, pid, or package. A plain `adb logcat` runs as a background job the log tool can read.
 - Filter logcat narrowly:
 ```bash
 adb logcat -c                                   # clear before repro

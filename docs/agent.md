@@ -382,7 +382,9 @@ Use the arrow keys and Enter, or type an answer and press Enter: a number (`1`, 
 crit treats a build differently from other commands. Builds include `gradlew`, `gradle`, `mvn`, AOSP `m`/`mm`, `make`, `ninja`, `cmake --build`, `atest`, `npm install`, `npm ci`, `dotnet build`, `cargo build`, and `build.sh`/`build.ps1`.
 
 - **Time.** A build gets at least 30 minutes (`build_timeout`), whatever timeout the model asked for. Other commands get 2 minutes unless the model asks for more, up to 10.
-- **Nothing is lost at the timeout.** A command still running at its timeout is not killed. It continues as a background job (`b1`), and the model waits for it with `command_output`. A command waiting for input (`[y/n]`, `password:`) is still stopped.
+- **Nothing is lost at the timeout.** A command still running at its timeout is not killed. It continues as a background job (`b1`). A command waiting for input (`[y/n]`, `password:`) is still stopped.
+- **The model does not poll.** When a background job ends, the model's next message starts with one line about it: exit code, time, and the key error lines. `command_output` with `until` (`"exit"` or a pattern such as `BUILD (SUCCESSFUL|FAILED)`) waits up to 20 minutes in one call, for one job, several, or `"any"`. A finished job comes back as SUMMARY and HINTS, then the output. Replying COMPLETED while a job of the task still runs gets one reminder.
+- **Nothing is cut away.** The complete output of every command is written to a log as it streams. When the result has to be shortened, it names that log, and the model reads the middle from there.
 - **The JDK and SDK are set for the project.** crit finds every installed JDK. It looks in Android Studio's own `jbr`, `C:\Program Files\Java`, Eclipse Adoptium, Microsoft, Zulu, Corretto, `~/.gradle/jdks`, `~/.jdks`, SDKMAN, `/usr/lib/jvm`, and `/Library/Java/JavaVirtualMachines`. It then picks the one the project needs: AGP 8 needs JDK 17+, AGP 7 needs 11, and the wrapper's Gradle version caps the newest. When JAVA_HOME fits, it is kept. The Android SDK is found from `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `sdk.dir` in `local.properties`, or the default folder (`%LOCALAPPDATA%\Android\Sdk` on Windows). Commands run with both set, and ENVIRONMENT tells the model which ones.
 - **The result starts with what matters.** A failed build's result begins with **SUMMARY**: Gradle's "What went wrong", the `e:`/`error:` lines, and BUILD FAILED. Then comes **HINTS** for the failures crit recognizes:
   - SDK not found (with the `sdk.dir` line to write)
@@ -399,6 +401,9 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
   A successful `assembleDebug` lists the APK/AAB files it wrote under **ARTIFACTS**, with their sizes.
 - **One automatic retry.** A build that failed because Gradle's files were locked or its daemon died is retried once after `gradlew --stop`. A build cut off by a dropped download or a 5xx from a repository is retried once after 5 seconds. Compile errors, a wrong JDK, and certificate problems are not retried, since they would fail the same way. The result says `retried once: <reason>`.
 - **The wrapper is called the right way.** In PowerShell, a bare `gradlew` or `./gradlew` becomes `.\gradlew.bat`, and in cmd it becomes `gradlew.bat`. `--console=plain` is added. Windows PowerShell 5.1's `NativeCommandError` decoration around a program's stderr is removed from the output.
+- **AOSP trees.** In a `repo` checkout, `m`, `mm`, `mmm`, and `atest` get `build/envsetup.sh` sourced for them, and the `lunch` target stays set for later commands. With no target yet, crit lists the tree's targets, car ones first. A bare `m` after edits (a full platform build takes hours) is answered once with the modules that build the changed files, found from the `Android.bp` files above them; running `m` again goes ahead.
+- **Devices.** ENVIRONMENT lists connected devices (product, build type, API level, automotive, current user). A streaming `adb logcat` runs as a background job whose output file the `log` tool reads while it grows. Failed `adb` commands get hints: several devices (`-s`), none, unauthorized, offline, signature or version conflicts, `--user` on a car head unit, privileged apps, root, and a read-only system partition.
+- **git never waits for an editor.** `rebase --continue`, merges and reverts keep their message. A git command that stops on conflicts adds a CONFLICTS section with the files and the exact next command.
 - **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
 
 Every command is listed by `/commands` and saved in `.crit/sessions/<stamp>/agent.json` under `commands`.
@@ -579,17 +584,18 @@ The tool protocol is long. Sending it as the first message works, but the model 
 
 ### Tools
 
-The model has 22 tools. `/tools` lists them in a session.
+The model has 23 tools. `/tools` lists them in a session. New areas get one tool with an action, not one tool per action: a small model picks better from fewer.
 
 | Tool | What it does |
 | --- | --- |
-| `list_files`, `find_files` | List one folder, or find files by name at any depth. Generated trees such as `out`, `build`, `prebuilts`, and `node_modules` are skipped. |
-| `read_files` | Read up to 20 files in one call, a window of a long file, or one function or class by name. An image or binary file returns only its type and size. |
-| `search_code` | Regular-expression search. Definitions come first. |
+| `list_files`, `find_files` | List one folder, or find files by name at any depth. Generated trees such as `out`, `build`, `prebuilts`, and `node_modules` are skipped; in an AOSP `repo` tree only the top-level `out` and `prebuilts` are, so `build/soong` is found. The file list is cached per git project and checked again only where a project changed (1.4M files: 0.05s). |
+| `read_files` | Read up to 20 files in one call, a window of a long file, or one function or class by name. A file over 8MB (a log) is read by window without loading it; lines over 2000 characters are shortened, and `col` reads on. An image or binary file returns only its type and size. |
+| `search_code` | Regular-expression search. Definitions come first. ripgrep's output is streamed and stopped after 4000 matches. A file named as the path is searched whatever its size. |
+| `log` | Any log, any size (logcat, dmesg, bugreport, build output). `summary` (the default): crashes, ANRs, native crashes, kills, SELinux denials and build errors with their lines, then errors grouped into kinds with counts. `query` by level, tag, pid, package, or pattern; `around` a line; `diff` a bad log against a good one. A 3-million-line logcat is summarized in about 17 seconds. |
 | `edit_file`, `write_files`, `apply_patch` | Change files. Edits show a diff and a syntax check. |
 | `move_file`, `delete_file` | Move, rename, or delete one file. |
 | `run_command` | One command in the session shell. Takes `cwd`, `timeout`, `shell`, and `background`. Output that does not fit is saved whole under `.crit/cache/output`, and the result names the file. |
-| `command_output`, `kill_command` | Read new output from a background command, or stop it. |
+| `command_output`, `kill_command` | Read a background command's output, wait for it to end or print a matching line (`until`), or stop it. |
 | `command_input` | Type into a background command, like a terminal: a shell, `python -i`, `node -i`, `adb shell`, a debugger. Each line is checked and approved like a command. |
 | `git_status`, `git_diff`, `git_log`, `git_show` | Read git state. |
 | `web_fetch` | Read one http or https page as text. Asks first, per site. |

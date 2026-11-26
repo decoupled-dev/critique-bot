@@ -60,11 +60,13 @@ aidl_interface {
 - Flashing a device without confirming target, bootloader state, and that vbmeta/partition images match; never `fastboot flashall -w` without stating it wipes data.
 
 ## Commands
+In crit, run_command sources build/envsetup.sh for m, mm, mmm and atest, and keeps the lunch
+target once set. Build the module of the file you changed (a bare m after edits names it);
+a long build reports by itself when it ends, and its errors come back summarized.
 ```bash
-source build/envsetup.sh
-lunch <product>-<release>-<variant>        # e.g. aosp_cf_x86_64_phone-trunk_staging-userdebug
-m                                          # full build
-m <module>                                 # one module + deps
+lunch <product>-<release>-<variant>        # once; e.g. sdk_car_x86_64-trunk_staging-userdebug for the car emulator
+m <module>                                 # one module + deps (minutes)
+m                                          # full build (hours)
 mm / mmm path/to/dir                       # modules in cwd / given dir
 m update-api                               # regenerate API txt files
 m <aidl_name>-update-api                   # stable AIDL current API

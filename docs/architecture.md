@@ -12,7 +12,9 @@ wires the concrete pieces together.
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
-             agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home
+             agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
+             file_catalog (cached file lists, repo trees), big_file (windowed reads),
+             log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
 1  models    model_api (interface), provider + browser + chat_client (web page in Edge),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM), setup_ui
 0  core      config, log, patch (input limits), redaction, output, roles
