@@ -93,5 +93,60 @@ class ReadFilesWindowTests(unittest.TestCase):
         self.assertIn("80000|", result["output"])
 
 
+class SearchBigFileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.ctx = ToolContext(workspace=self.root, state=TaskState(task="t"))
+        with open(self.root / "logcat.txt", "w") as out:
+            for i in range(1, 200_001):  # about 5MB: over rg's 1MB folder limit
+                out.write("E AndroidRuntime: FATAL EXCEPTION: main\n" if i == 150_000 else f"I CarService: event {i} ok\n")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _search(self, **args) -> str:
+        return execute("search_code", args, self.ctx)["output"]
+
+    def test_a_named_big_file_is_searched_with_rg(self) -> None:
+        if not __import__("shutil").which("rg"):
+            self.skipTest("needs rg")
+        self.assertIn("logcat.txt:150000: E AndroidRuntime: FATAL EXCEPTION", self._search(pattern="FATAL EXCEPTION", path="logcat.txt"))
+
+    def test_a_named_big_file_is_searched_without_rg(self) -> None:
+        import critique_bot.agent_tools as tools
+
+        with mock.patch.object(tools.shutil, "which", return_value=None):
+            out = self._search(pattern="FATAL EXCEPTION", path="logcat.txt")
+        self.assertIn("logcat.txt:150000:", out)
+
+    def test_many_matches_stop_early_with_a_note(self) -> None:
+        if not __import__("shutil").which("rg"):
+            self.skipTest("needs rg")
+        import critique_bot.agent_tools as tools
+
+        with mock.patch.object(tools, "RG_PER_FILE", 100_000), mock.patch.object(tools, "RG_MAX_MATCHES", 500):
+            out = self._search(pattern="CarService", path="logcat.txt")
+        self.assertIn("search stopped after 500 matches", out)
+
+    def test_a_repo_tree_searches_its_build_folder(self) -> None:
+        if not __import__("shutil").which("rg"):
+            self.skipTest("needs rg")
+        from critique_bot import file_catalog
+
+        root = self.root / "tree"
+        (root / ".repo").mkdir(parents=True)
+        (root / ".repo" / "project.list").write_text("build/soong\n")
+        (root / "build" / "soong").mkdir(parents=True)
+        (root / "build" / "soong" / "main.go").write_text("func soongMarker() {}\n")
+        (root / "out").mkdir()
+        (root / "out" / "gen.go").write_text("func soongMarker() {}\n")
+        file_catalog.forget(root)
+        ctx = ToolContext(workspace=root, state=TaskState(task="t"))
+        out = execute("search_code", {"pattern": "soongMarker"}, ctx)["output"]
+        self.assertIn("build/soong/main.go:1:", out)
+        self.assertNotIn("out/gen.go", out)
+
+
 if __name__ == "__main__":
     unittest.main()

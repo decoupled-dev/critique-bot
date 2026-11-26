@@ -1335,19 +1335,20 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     order = sorted(hits, key=lambda item: (item not in touched, item.count("/"), item))
     shown = 0
     for path in order:
-        # Hit lines come from the whole file after redaction, so a hit inside a key shows no part of it.
-        full = _redacted_file_lines(ctx.workspace / path)
+        # Hit lines come from the file after redaction, so a hit inside a key shows no part of it.
+        wanted = [line_no for line_no, _text in hits[path][:HITS_PER_FILE]]
+        full = _redacted_hit_lines(ctx.workspace / path, wanted, context)
         for line_no, text in hits[path][:HITS_PER_FILE]:
             if (path, line_no) in seen:
                 continue
             if len(lines) >= limit:
                 break
-            if full is not None and 0 < line_no <= len(full):
-                text = full[line_no - 1].strip()
+            if full is not None and line_no in full:
+                text = full[line_no].strip()
             lines.append(f"{path}:{line_no}: {_one_line(text, SNIPPET_CHARS)}")
             shown += 1
-            if context:
-                lines.extend(_context_lines(ctx.workspace / path, line_no, context, full))
+            if context and full is not None:
+                lines.extend(_context_lines(line_no, context, full))
     remaining = total - shown
     if remaining > 0:
         notes.append(f"{remaining} more hits in {files_hit} files; narrow with path, glob, or a longer pattern")
@@ -1373,15 +1374,35 @@ def risky_regex(pattern: str) -> bool:
     return bool(_NESTED_REPEAT_RE.search(pattern))
 
 
-def _context_lines(path: Path, line_no: int, context: int, text: list[str] | None = None) -> list[str]:
-    if text is None:
-        text = _redacted_file_lines(path)
-        if text is None:
-            return []
+def _context_lines(line_no: int, context: int, text: dict[int, str]) -> list[str]:
     out = []
-    for number in range(max(1, line_no - context), min(len(text), line_no + context) + 1):
-        if number != line_no:
-            out.append(f"    {number}| {_one_line(text[number - 1], SNIPPET_CHARS)}")
+    for number in range(max(1, line_no - context), line_no + context + 1):
+        if number != line_no and number in text:
+            out.append(f"    {number}| {_one_line(text[number], SNIPPET_CHARS)}")
+    return out
+
+
+def _redacted_hit_lines(path: Path, line_numbers: list[int], context: int) -> dict[int, str] | None:
+    """The hit lines (and their context) of ``path`` after redaction, by line number.
+
+    A normal file is redacted whole. A very large one (a log) is redacted in a window
+    around each hit, with the same margin as windowed reads, so it is never loaded whole.
+    """
+    if not big_file.is_large(path):
+        full = _redacted_file_lines(path)
+        return None if full is None else {number: text for number, text in enumerate(full, 1)}
+    out: dict[int, str] = {}
+    try:
+        for line_no in sorted(set(line_numbers)):
+            if line_no in out:
+                continue
+            first = max(1, line_no - context - _REDACT_MARGIN)
+            raw = big_file.read_lines(path, first, (line_no - first) + context + _REDACT_MARGIN + 1)
+            for number, text in enumerate(_redact_lines(raw), first):
+                if abs(number - line_no) <= context:
+                    out[number] = text
+    except OSError:
+        return None
     return out
 
 
@@ -1411,7 +1432,7 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
 
 
 def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes):
-    via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern)
+    via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes)
     if via_rg is not None:
         return via_rg
     if not literal and risky_regex(source):
@@ -1434,17 +1455,22 @@ def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, litera
             continue
         path = ctx.workspace / item
         try:
-            if path.stat().st_size > _SCAN_MAX_BYTES:
-                continue
-            data = path.read_bytes()
+            size = path.stat().st_size
+            if size > _SCAN_MAX_BYTES and not root.is_file():
+                continue  # a big file is searched only when named on purpose
+            with open(path, "rb") as handle:
+                head = handle.read(8192)
         except OSError:
             continue
-        if looks_binary_bytes(data[:8192]):
+        if looks_binary_bytes(head):
             continue
         if time.monotonic() > deadline:
             notes.append(f"search stopped after {_SCAN_SECONDS:.0f}s; narrow with path or glob")
             break
-        for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), start=1):
+        for number, line in enumerate(_scan_lines(path, size), start=1):
+            if number % 50_000 == 0 and time.monotonic() > deadline:
+                notes.append(f"search stopped after {_SCAN_SECONDS:.0f}s at line {number}; narrow the pattern")
+                break
             if matcher.search(line[:_SCAN_LINE_CHARS]) is None:
                 continue
             total += 1
@@ -1456,48 +1482,100 @@ def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, litera
     return hits, total, len(hits)
 
 
-def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern):
+def _scan_lines(path: Path, size: int):
+    """The lines of a file for the Python search: read whole when small, streamed when big."""
+    if size <= _SCAN_MAX_BYTES:
+        yield from path.read_bytes().decode("utf-8", "replace").splitlines()
+        return
+    with open(path, "rb") as handle:
+        for raw in handle:
+            yield raw.decode("utf-8", "replace").rstrip("\r\n")
+
+
+#: Matches read from rg before it is stopped: enough to rank and show, not to drown.
+RG_MAX_MATCHES = 4000
+#: Matches taken from one file (a log can match a pattern a million times).
+RG_PER_FILE = 200
+RG_SECONDS = 90.0
+
+
+def _rg_skips(ctx: ToolContext) -> list[str]:
+    """rg globs for generated trees. A repo tree skips its top-level out/ and prebuilts/
+    only: its build/ is source (build/soong), and each project's .gitignore still applies."""
+    if file_catalog.catalog_for(ctx.workspace).kind == "repo":
+        names = sorted(file_catalog.GIT_SKIP)
+        return [arg for name in names for arg in ("-g", f"!{name}/")] + [
+            arg for top in file_catalog.REPO_ROOT_SKIP for arg in ("-g", f"!/{top}/")
+        ]
+    return [arg for name in sorted(SKIP_DIR_NAMES) for arg in ("-g", f"!{name}/")]
+
+
+def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes=None):
     exe = shutil.which("rg")
     if exe is None or ctx.runner is not None:
         return None
-    argv = [exe, "--json", "--hidden", "--max-columns", "400", "--max-filesize", "1M"]
+    argv = [exe, "--json", "--hidden", "--max-columns", "400", "--max-count", str(RG_PER_FILE)]
+    if not root.is_file():
+        argv += ["--max-filesize", "1M"]  # a file named on purpose is searched whatever its size
     if ignore_case:
         argv.append("-i")
     if literal:
         argv += ["-F", "-e", pattern]
     else:
         argv += ["-e", source]
-    for name in sorted(SKIP_DIR_NAMES):
-        argv += ["-g", f"!{name}/"]
+    argv += _rg_skips(ctx)
     if glob:
         argv += ["-g", glob]
     target = rel(ctx.workspace, root) if root != ctx.workspace else "."
     argv += ["--", target]
     try:
-        proc = subprocess.run(argv, cwd=str(ctx.workspace), capture_output=True, check=False, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode not in (0, 1):
+        proc = subprocess.Popen(argv, cwd=str(ctx.workspace), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
         return None
     hits: dict[str, list[tuple[int, str]]] = {}
     total = 0
-    for raw in proc.stdout.splitlines():
-        try:
-            event = json.loads(raw)
-        except ValueError:
-            continue
-        if event.get("type") != "match":
-            continue
-        data = event.get("data", {})
-        path_text = (data.get("path") or {}).get("text", "")
-        if not path_text:
-            continue
-        item = rel(ctx.workspace, ctx.workspace / path_text)
-        text = (data.get("lines") or {}).get("text", "")
-        total += 1
-        bucket = hits.setdefault(item, [])
-        if len(bucket) < HITS_PER_FILE:
-            bucket.append((int(data.get("line_number") or 0), text.strip()))
+    stopped = ""
+    deadline = time.monotonic() + RG_SECONDS
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            if b'"type":"match"' not in raw[:40]:
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            data = event.get("data", {})
+            path_text = (data.get("path") or {}).get("text", "")
+            if not path_text:
+                continue
+            item = rel(ctx.workspace, ctx.workspace / path_text)
+            text = (data.get("lines") or {}).get("text", "")
+            total += 1
+            bucket = hits.setdefault(item, [])
+            if len(bucket) < HITS_PER_FILE:
+                bucket.append((int(data.get("line_number") or 0), text.strip()))
+            if total >= RG_MAX_MATCHES:
+                stopped = f"stopped after {total} matches"
+                break
+            if ctx.cancel is not None and ctx.cancel.is_set():
+                stopped = "stopped by the user"
+                break
+            if time.monotonic() > deadline:
+                stopped = f"stopped after {RG_SECONDS:.0f}s"
+                break
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if proc.stdout is not None:
+            proc.stdout.close()
+        proc.wait()
+    if not stopped and proc.returncode not in (0, 1):
+        return None
+    if stopped and notes is not None:
+        notes.append(f"search {stopped}; there are more. Narrow it with path, glob, or a tighter pattern")
+    if notes is not None and any(len(rows) >= HITS_PER_FILE for rows in hits.values()) and root.is_file():
+        notes.append(f"at most {RG_PER_FILE} matches are read per file; for logs, filter by a narrower pattern")
     return hits, total, len(hits)
 
 
