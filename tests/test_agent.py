@@ -626,7 +626,7 @@ class ToolTests(unittest.TestCase):
     def test_tool_count(self) -> None:
         # Few tools: a small model picks better from fewer. New areas get one tool with an
         # action enum (log: summary/query/around/diff), not one tool per action.
-        self.assertEqual(len(ALLOWED_TOOLS), 23)
+        self.assertEqual(len(ALLOWED_TOOLS), 24)
 
     def test_opencode_names_run_the_same_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

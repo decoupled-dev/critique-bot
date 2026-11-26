@@ -153,7 +153,12 @@ class ConfigCommandTests(_Isolated):
         self.assertIn("Names hidden: 1 (Acme Corp)", out)
         self.assertIn("Personal data hidden: on", out)
         self.assertIn("GitLab: https://gitlab.corp.example", out)
-        self.assertNotIn("token", out.lower())
+        self.assertIn("GitLab token: not set", out)
+        secret = "glpat-" + "x" * 20
+        self.assertEqual(self.config("--gitlab-token", secret)[0], 0)
+        code, out, _ = self.config()
+        self.assertIn("GitLab token: set", out)
+        self.assertNotIn(secret, out)  # a token is never printed, only whether it is set
 
     def test_show_before_setup(self) -> None:
         code, out, _ = self.config()

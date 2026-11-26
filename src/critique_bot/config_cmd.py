@@ -35,6 +35,10 @@ from critique_bot.config import (
     BACKEND_BROWSER,
     BACKEND_LOCAL,
     DEFAULT_LOCAL_URL,
+    ENV_GITLAB_TOKENS,
+    ENV_JIRA_EMAIL,
+    ENV_JIRA_TOKENS,
+    ENV_JIRA_URL,
     ENV_LOCAL_KEY,
     ENV_CONFIG,
     PLACEHOLDER_MODEL,
@@ -222,7 +226,25 @@ def describe(location: ConfigLocation) -> list[str]:
     lines.append(f"Personal data hidden: {'on' if pii else 'off'}" + mark("redact_pii"))
     gitlab = data.get("gitlab") if isinstance(data.get("gitlab"), dict) else {}
     lines.append(f"GitLab: {gitlab.get('base_url') or 'not set'}" + mark("gitlab.base_url"))
+    lines.append("GitLab token: " + ("set" if _secret_set("gitlab", "token", ENV_GITLAB_TOKENS) else
+                                     "not set (crit config --gitlab-token; it decides the projects crit may use)"))
+    jira = data.get("jira") if isinstance(data.get("jira"), dict) else {}
+    lines.append(f"Jira: {jira.get('base_url') or os.environ.get(ENV_JIRA_URL, '') or 'not set'}" + mark("jira.base_url"))
+    if jira.get("base_url") or os.environ.get(ENV_JIRA_URL):
+        email = jira.get("email") or os.environ.get(ENV_JIRA_EMAIL, "")
+        lines.append("Jira token: " + ("set" if _secret_set("jira", "token", ENV_JIRA_TOKENS) else "not set (crit config --jira-token)")
+                     + (f", email {email} (Jira Cloud)" if email else ""))
     return lines
+
+
+def _secret_set(section: str, key: str, env: tuple[str, ...]) -> bool:
+    if any(os.environ.get(name, "").strip() for name in env):
+        return True
+    try:
+        block = read_config_dict(user_config_path()).get(section)
+    except (ConfigError, OSError):
+        return False
+    return isinstance(block, dict) and bool(str(block.get(key) or "").strip())
 
 
 # --------------------------------------------------------------------------- changing
@@ -232,12 +254,12 @@ def describe(location: ConfigLocation) -> list[str]:
 _ASK_KEY = "\0ask"
 
 
-def _read_api_key(value: str) -> str | None:
+def _read_api_key(value: str, prompt: str = "API key: ") -> str | None:
     """The key ``--api-key`` names: asked (getpass), read from stdin (``-``), or given. None: removed."""
     if value == _ASK_KEY:
         import getpass
 
-        return getpass.getpass("API key: ").strip()
+        return getpass.getpass(prompt).strip()
     if value == "-":
         return sys.stdin.readline().strip()
     if value.strip().lower() == "none":
@@ -247,8 +269,17 @@ def _read_api_key(value: str) -> str | None:
 
 def set_api_key(value: str) -> int:
     """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it."""
+    return set_user_secret("local", "api_key", value, "API key")
+
+
+def set_user_secret(section: str, key: str, value: str, label: str) -> int:
+    """Store (or remove) ``<section>.<key>`` in the person's own config. Never prints it.
+
+    Tokens live only there (``~/.crit/config.json``, private to the user), never in a
+    project or a shared config file.
+    """
     try:
-        key = _read_api_key(value)
+        secret = _read_api_key(value, f"{label}: ")
     except (EOFError, KeyboardInterrupt):
         print("Not saved.", file=sys.stderr)
         return 1
@@ -258,21 +289,21 @@ def set_api_key(value: str) -> int:
     except ConfigError as exc:
         print(f"Not saved: {exc}", file=sys.stderr)
         return 2
-    local = data.get("local") if isinstance(data.get("local"), dict) else {}
-    if key is None:
-        local.pop("api_key", None)
-        what = "API key removed"
-    elif not key:
-        print("Not saved: the API key is empty (none removes it).", file=sys.stderr)
+    block = data.get(section) if isinstance(data.get(section), dict) else {}
+    if secret is None:
+        block.pop(key, None)
+        what = f"{label} removed"
+    elif not secret:
+        print(f"Not saved: the {label} is empty (none removes it).", file=sys.stderr)
         return 2
     else:
-        local["api_key"] = key
-        redaction.add_secret_value(key)
-        what = "API key set"
-    if local:
-        data["local"] = local
+        block[key] = secret
+        redaction.add_secret_value(secret)
+        what = f"{label} set"
+    if block:
+        data[section] = block
     else:
-        data.pop("local", None)
+        data.pop(section, None)
     try:
         write_config_file(path, data)
     except OSError as exc:
@@ -328,6 +359,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--theme", metavar="ID", help="the terminal style (for you, in every project)")
     parser.add_argument("--gitlab-url", metavar="URL", help="your GitLab's https address (empty to remove)")
+    parser.add_argument(
+        "--gitlab-token", nargs="?", const=_ASK_KEY, metavar="TOKEN",
+        help="your GitLab personal access token (scopes read_api and read_repository; add api and write_repository "
+        "to post reviews and push), kept in your user settings. The projects it can reach are the ones crit may "
+        "use. No value asks for it; - reads stdin; none removes it. CRIT_GITLAB_TOKEN overrides it",
+    )
+    parser.add_argument("--jira-url", metavar="URL", help="your Jira's https address (empty to remove)")
+    parser.add_argument("--jira-email", metavar="EMAIL", help="Jira Cloud only: the account email for the API token (empty to remove)")
+    parser.add_argument(
+        "--jira-token", nargs="?", const=_ASK_KEY, metavar="TOKEN",
+        help="your Jira personal access token (Server/Data Center) or API token (Cloud, with --jira-email), "
+        "kept in your user settings; crit only reads issues. No value asks for it; none removes it",
+    )
     parser.add_argument("--selector", action="append", default=[], metavar="KEY=CSS", help=f"a page element ({', '.join(SELECTOR_KEYS)}); KEY= clears an optional one")
     parser.add_argument("--check", action="store_true", help="check that the model server (or the page's site) answers")
     parser.add_argument("--reset", action="store_true", help="remove the settings file (asks first; --yes without a terminal)")
@@ -342,6 +386,8 @@ def _changes_requested(args: argparse.Namespace) -> bool:
             args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
             args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
+            getattr(args, "gitlab_token", None), getattr(args, "jira_url", None), getattr(args, "jira_email", None),
+            getattr(args, "jira_token", None),
         )
     )
 
@@ -465,6 +511,20 @@ def apply_changes(data: dict, args: argparse.Namespace) -> list[str]:
             data["gitlab"] = gitlab
         else:
             data.pop("gitlab", None)
+    for flag_value, field_name, label in ((args.jira_url, "base_url", "Jira"), (args.jira_email, "email", "Jira email")):
+        if flag_value is None:
+            continue
+        jira = data.get("jira") if isinstance(data.get("jira"), dict) else {}
+        if flag_value.strip():
+            jira[field_name] = clean_gitlab_url(flag_value) if field_name == "base_url" else flag_value.strip()
+            done.append(f"{label} set to {jira[field_name]}")
+        else:
+            jira.pop(field_name, None)
+            done.append(f"{label} removed")
+        if jira:
+            data["jira"] = jira
+        else:
+            data.pop("jira", None)
     if args.selector:
         selectors = data.get("selectors") if isinstance(data.get("selectors"), dict) else {}
         for item in args.selector:
@@ -509,6 +569,7 @@ def locked_change(data: dict, args: argparse.Namespace) -> str | None:
         ("--egress", args.egress == egress.OPEN and str(cfg.get("egress") or "").lower() == egress.STRICT),
         ("--page-network", args.page_network == egress.OPEN and str(cfg.get("page_network") or "").lower() == egress.STRICT),
         ("--gitlab-url", args.gitlab_url is not None and "gitlab.base_url" in locked),
+        ("--jira-url", args.jira_url is not None and "jira.base_url" in locked),
         ("--selector", any(f"selectors.{item.partition('=')[0].strip()}" in locked for item in args.selector)),
     ]
     company_terms = {str(t).casefold() for t in (cfg.get("redact_terms") or [])}
@@ -627,6 +688,12 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
         args.api_key = None
         if code or not _changes_requested(args):
             return code
+    for attr, section, key, label in (("gitlab_token", "gitlab", "token", "GitLab token"), ("jira_token", "jira", "token", "Jira token")):
+        if getattr(args, attr, None) is not None:
+            code = set_user_secret(section, key, getattr(args, attr), label)
+            setattr(args, attr, None)
+            if code or not _changes_requested(args):
+                return code
     if args.theme is not None:
         from critique_bot.welcome import THEMES
 

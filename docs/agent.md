@@ -403,6 +403,7 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 - **The wrapper is called the right way.** In PowerShell, a bare `gradlew` or `./gradlew` becomes `.\gradlew.bat`, and in cmd it becomes `gradlew.bat`. `--console=plain` is added. Windows PowerShell 5.1's `NativeCommandError` decoration around a program's stderr is removed from the output.
 - **AOSP trees.** In a `repo` checkout, `m`, `mm`, `mmm`, and `atest` get `build/envsetup.sh` sourced for them, and the `lunch` target stays set for later commands. With no target yet, crit lists the tree's targets, car ones first. A bare `m` after edits (a full platform build takes hours) is answered once with the modules that build the changed files, found from the `Android.bp` files above them; running `m` again goes ahead.
 - **Devices.** ENVIRONMENT lists connected devices (product, build type, API level, automotive, current user). A streaming `adb logcat` runs as a background job whose output file the `log` tool reads while it grows. Failed `adb` commands get hints: several devices (`-s`), none, unauthorized, offline, signature or version conflicts, `--user` on a car head unit, privileged apps, root, and a read-only system partition.
+- **GitLab projects come from your token.** With `crit config --gitlab-token`, `git clone`, `fetch`, `pull`, `push`, and `ls-remote` work for the projects the token's user is a member of, even under strict egress; every other network command stays blocked. See [`gitlab.token`](config.json.md#gitlabtoken-the-projects-crit-may-use).
 - **git never waits for an editor.** `rebase --continue`, merges and reverts keep their message. A git command that stops on conflicts adds a CONFLICTS section with the files and the exact next command.
 - **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
 
@@ -584,13 +585,14 @@ The tool protocol is long. Sending it as the first message works, but the model 
 
 ### Tools
 
-The model has 23 tools. `/tools` lists them in a session. New areas get one tool with an action, not one tool per action: a small model picks better from fewer.
+The model has 24 tools. `/tools` lists them in a session. New areas get one tool with an action, not one tool per action: a small model picks better from fewer.
 
 | Tool | What it does |
 | --- | --- |
 | `list_files`, `find_files` | List one folder, or find files by name at any depth. Generated trees such as `out`, `build`, `prebuilts`, and `node_modules` are skipped; in an AOSP `repo` tree only the top-level `out` and `prebuilts` are, so `build/soong` is found. The file list is cached per git project and checked again only where a project changed (1.4M files: 0.05s). |
 | `read_files` | Read up to 20 files in one call, a window of a long file, or one function or class by name. A file over 8MB (a log) is read by window without loading it; lines over 2000 characters are shortened, and `col` reads on. An image or binary file returns only its type and size. |
 | `search_code` | Regular-expression search. Definitions come first. ripgrep's output is streamed and stopped after 4000 matches. A file named as the path is searched whatever its size. |
+| `jira` | Read Jira (never changes it): one issue by key, or a JQL search. Issues a task names arrive with the task. Needs `crit config --jira-url` and `--jira-token`. |
 | `log` | Any log, any size (logcat, dmesg, bugreport, build output). `summary` (the default): crashes, ANRs, native crashes, kills, SELinux denials and build errors with their lines, then errors grouped into kinds with counts. `query` by level, tag, pid, package, or pattern; `around` a line; `diff` a bad log against a good one. A 3-million-line logcat is summarized in about 17 seconds. |
 | `edit_file`, `write_files`, `apply_patch` | Change files. Edits show a diff and a syntax check. |
 | `move_file`, `delete_file` | Move, rename, or delete one file. |

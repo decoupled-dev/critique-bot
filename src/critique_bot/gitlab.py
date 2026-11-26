@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from critique_bot import egress, env_names, log
+from critique_bot import gitlab_access, integrations, jira
 from critique_bot.review_comments import parse_diff_lines
 
 TOKEN_ENV = ("CRIT_GITLAB_TOKEN", "GITLAB_TOKEN", "CI_JOB_TOKEN")
@@ -65,6 +66,8 @@ class MrContext:
     target_branch: str = ""
     labels: tuple[str, ...] = ()
     tickets: tuple[str, ...] = ()
+    #: The Jira issues behind ``tickets`` (summary, status, description), when Jira is set up.
+    ticket_details: str = ""
     commits: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
     patch: str = ""
@@ -100,8 +103,12 @@ def parse_mr_url(url: str) -> tuple[str, str, str] | None:
 
 
 def resolve_token() -> str:
+    """CRIT_GITLAB_TOKEN or GITLAB_TOKEN, else the token in the person's own config
+    (crit config --gitlab-token), else CI_JOB_TOKEN."""
     for name in TOKEN_ENV:
         value = (env_names.get(name) or "").strip()
+        if name == "CI_JOB_TOKEN" and integrations.current().gitlab_token:
+            return integrations.current().gitlab_token
         if value:
             if name == "CI_JOB_TOKEN":
                 log.warn(
@@ -180,6 +187,28 @@ def resolve_target(
         mr_iid=resolved_iid,
         token=resolved_token,
     )
+
+
+def require_project_access(target: "GitLabTarget") -> None:
+    """Refuse a project the person's GitLab token cannot reach (as a member).
+
+    Applies when the target uses the configured personal access token on the configured
+    host; a CI job token is scoped to its own project by GitLab already.
+    """
+    settings = integrations.current()
+    if not settings.gitlab_ready or target.token != settings.gitlab_token:
+        return
+    if _host(target.api_url).split(":")[0] != settings.gitlab_host:
+        return
+    try:
+        allowed = gitlab_access.project_allowed(target.project_id)
+    except gitlab_access.AccessError as exc:
+        raise GitLabError(f"could not check which projects the GitLab token reaches: {exc}") from exc
+    if not allowed:
+        raise GitLabError(
+            f"the GitLab token cannot reach project {target.project_id}: crit uses only the projects its token's "
+            "user is a member of"
+        )
 
 
 def _host(url: str) -> str:
@@ -549,6 +578,7 @@ def fetch_mr_context(
             "no GitLab token. Create a project access token with scope `api` "
             "and set CI/CD variable CRIT_GITLAB_TOKEN (unprotected, masked)"
         )
+    require_project_access(target)
     root = target.mr_api_url
     data = do_request("GET", root, target.token)
     if not isinstance(data, dict):
@@ -578,6 +608,10 @@ def fetch_mr_context(
             do_request=do_request,
         )
     changed = summarize_changed_files(patch) if patch else ()
+    details = ""
+    jira_keys = [ticket for ticket in tickets if not ticket.startswith("#")][:5]
+    if jira_keys and jira.ready():
+        details = jira.issues_text(jira_keys)
     return MrContext(
         title=title,
         description=description,
@@ -587,6 +621,7 @@ def fetch_mr_context(
         target_branch=target_branch,
         labels=labels,
         tickets=tickets,
+        ticket_details=details,
         commits=commits,
         changed_files=changed,
         patch=patch,
@@ -609,6 +644,10 @@ def format_mr_context(ctx: MrContext) -> str:
         lines.append("Tickets: " + ", ".join(ctx.tickets))
     if ctx.labels:
         lines.append("Labels: " + ", ".join(ctx.labels))
+    if ctx.ticket_details:
+        lines.append("")
+        lines.append("Jira issues (what the change is for):")
+        lines.append(ctx.ticket_details)
     description = _truncate(ctx.description.strip(), MAX_DESCRIPTION_CHARS)
     if description:
         lines.append("")

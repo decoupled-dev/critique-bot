@@ -44,6 +44,8 @@ class Policy:
     allowed_hosts: tuple[str, ...] = ()
     #: gitlab.base_url's host: reachable by the GitLab client only, never by the browser.
     gitlab_host: str = ""
+    #: jira.base_url's host: reachable by the Jira client only (read-only issue lookups).
+    jira_host: str = ""
     #: config.json "page_network": "open" (the page works as for a person) or "strict". Strict
     #: until a config was loaded; configure() defaults to open, as config.json does.
     page_network: str = STRICT
@@ -72,7 +74,7 @@ class Policy:
             return True
         if not self.strict:
             return True
-        if host in (self.chat_host, self.gitlab_host):
+        if host in (self.chat_host, self.gitlab_host, self.jira_host):
             return True
         return any(host == allowed or host.endswith("." + allowed) for allowed in self.allowed_hosts)
 
@@ -82,7 +84,8 @@ _policy = Policy()
 
 
 def configure(
-    mode: str, chat_url: str = "", allowed_hosts: tuple[str, ...] = (), gitlab_url: str = "", *, page_network: str = OPEN
+    mode: str, chat_url: str = "", allowed_hosts: tuple[str, ...] = (), gitlab_url: str = "", *,
+    page_network: str = OPEN, jira_url: str = "",
 ) -> Policy:
     """Set the process-wide policy (called by config.load_config); return it."""
     global _policy
@@ -92,11 +95,13 @@ def configure(
         raise ValueError(f"page_network must be one of {', '.join(MODES)}, not {page_network!r}")
     host = (urlsplit(chat_url).hostname or "").lower().rstrip(".") if chat_url else ""
     gitlab_host = (urlsplit(gitlab_url).hostname or "").lower().rstrip(".") if gitlab_url else ""
+    jira_host = (urlsplit(jira_url).hostname or "").lower().rstrip(".") if jira_url else ""
     _policy = Policy(
         mode=mode,
         chat_host=host,
         allowed_hosts=tuple(h.lower().rstrip(".") for h in allowed_hosts),
         gitlab_host=gitlab_host,
+        jira_host=jira_host,
         page_network=page_network,
         configured=True,
     )

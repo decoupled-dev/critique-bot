@@ -41,6 +41,7 @@ ToolContext = _impl.ToolContext
 Permission = _impl.Permission
 canonical_tool = _impl.canonical_tool
 finished_job_notes = _impl.finished_job_notes
+jira_context = _impl.jira_context
 normalize_args = _impl.normalize_args
 fill = _impl.fill
 is_git_repo = _impl.is_git_repo
@@ -204,6 +205,14 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec("kill_command", "Stop a background command and its children.", _obj({"job_id": _S}, ["job_id"]),
              read_only=True),
+    ToolSpec(
+        "jira",
+        "Read Jira (never changes it): one issue by key (summary, status, description, links, recent comments), "
+        "or issues matching a JQL search.",
+        _obj({"issue": _s("an issue key such as CAR-123"), "jql": _s("a JQL search, e.g. project = CAR AND status = Open"),
+              "limit": _i("search: issues to list", 1, 50)}),
+        read_only=True,
+    ),
     ToolSpec(
         "log",
         "Analyze a log of any size (logcat, dmesg, bugreport, build output). summary: crashes, ANRs, errors "

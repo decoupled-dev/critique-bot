@@ -57,6 +57,7 @@ def post_review(
             "need project and merge request: pass --project-id and --mr-iid "
             "(or --mr-url), or set CI_PROJECT_ID / CI_MERGE_REQUEST_IID"
         )
+    gl.require_project_access(target)
     resolved_token = target.token or _resolve_token()
     if not resolved_token:
         raise GitLabPostError(

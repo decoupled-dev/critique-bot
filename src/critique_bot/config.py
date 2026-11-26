@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-from critique_bot import egress, env_names, log
+from critique_bot import egress, env_names, integrations, log
 from critique_bot import redaction
 from critique_bot.patch import (
     ABSOLUTE_MAX_FILE_CHARS,
@@ -87,9 +87,28 @@ class GitLabConfig:
     MR IID, and MR URL are never stored here; they come from CI or CLI for
     the current merge request. crit builds
     ``{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}``.
+
+    ``token`` is the person's GitLab personal access token (``crit config --gitlab-token``,
+    or ``CRIT_GITLAB_TOKEN``). The projects it can reach are the ones crit may use.
     """
 
     base_url: str = ""
+    token: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True)
+class JiraConfig:
+    """A Jira instance crit reads issues from (never writes).
+
+    ``base_url`` is the instance (``https://jira.example.com`` or ``https://x.atlassian.net``).
+    ``token``: a personal access token (Jira Server/Data Center, sent as Bearer), or an API
+    token with ``email`` (Jira Cloud, sent as Basic). Tokens come only from the person's own
+    config or the environment.
+    """
+
+    base_url: str = ""
+    email: str = ""
+    token: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -171,6 +190,7 @@ class BotConfig:
     backend: str = BACKEND_BROWSER
     local: LocalConfig = LocalConfig()
     gitlab: GitLabConfig = GitLabConfig()
+    jira: JiraConfig = JiraConfig()
     #: Company, customer, or project names replaced by ``[REDACTED:name]`` in everything sent.
     redact_terms: tuple[str, ...] = ()
     #: Personal data (emails, phone numbers, cards, IBANs, national IDs) is redacted too.
@@ -430,12 +450,21 @@ def load_config(
             'crit cannot limit. Remove cdp_url (crit starts its own browser), or set "egress": "open".'
         )
     gitlab = _load_gitlab(raw, env="gitlab.base_url" not in locked)
+    gitlab = replace(
+        gitlab, token=_user_secret(own_raw, company, shared_file, "gitlab", "token", ENV_GITLAB_TOKENS, "--gitlab-token")
+    )
+    jira = _load_jira(raw, own_raw, company, shared_file, env="jira.base_url" not in locked)
     egress.configure(
         egress_mode,
         url if backend != BACKEND_LOCAL else "",
         allowed_hosts,
         gitlab_url=gitlab.base_url,
+        jira_url=jira.base_url,
         page_network=page_network,
+    )
+    integrations.configure(
+        gitlab_url=gitlab.base_url, gitlab_token=gitlab.token,
+        jira_url=jira.base_url, jira_email=jira.email, jira_token=jira.token,
     )
 
     return BotConfig(
@@ -518,6 +547,7 @@ def load_config(
         backend=backend,
         local=local,
         gitlab=gitlab,
+        jira=jira,
         **_redaction_settings(raw),
     )
 
@@ -997,6 +1027,9 @@ def merge_company(company: dict, user: dict) -> tuple[dict, frozenset[str]]:
     company_gitlab = company.get("gitlab") if isinstance(company.get("gitlab"), dict) else {}
     if _clean(company_gitlab.get("base_url")):
         locked.add("gitlab.base_url")
+    company_jira = company.get("jira") if isinstance(company.get("jira"), dict) else {}
+    if _clean(company_jira.get("base_url")):
+        locked.add("jira.base_url")
     for key, value in user.items():
         if key in ("egress", "page_network") and key in company:
             merged[key] = _tighter(company[key], value)
@@ -1011,6 +1044,8 @@ def merge_company(company: dict, user: dict) -> tuple[dict, frozenset[str]]:
             merged["redact_terms"] = list(redact_term_list(company.get("redact_terms"))) + value
         elif key == "gitlab" and isinstance(value, dict):
             merged["gitlab"] = {**value, **company_gitlab}
+        elif key == "jira" and isinstance(value, dict):
+            merged["jira"] = {**value, **{k: v for k, v in company_jira.items() if k == "base_url"}}
         elif key == "gitlab_base_url" and "gitlab.base_url" in locked:
             continue
         else:
@@ -1202,6 +1237,54 @@ def user_api_key() -> str:
 def _api_key_in(data: object) -> str:
     local = data.get("local") if isinstance(data, dict) else None
     return _clean(local.get("api_key")) if isinstance(local, dict) else ""
+
+
+#: GitLab personal access token. CI_JOB_TOKEN stays gitlab.py's last resort in CI.
+ENV_GITLAB_TOKENS = ("CRIT_GITLAB_TOKEN", "GITLAB_TOKEN")
+ENV_JIRA_URL = "CRIT_JIRA_URL"
+ENV_JIRA_EMAIL = "CRIT_JIRA_EMAIL"
+ENV_JIRA_TOKENS = ("CRIT_JIRA_TOKEN", "JIRA_API_TOKEN")
+
+
+def _secret_in(data: object, section: str, key: str) -> str:
+    block = data.get(section) if isinstance(data, dict) else None
+    return _clean(block.get(key)) if isinstance(block, dict) else ""
+
+
+def _user_secret(
+    own: dict, company: "CompanySettings | None", shared_file: bool, section: str, key: str,
+    env: tuple[str, ...], flag: str,
+) -> str:
+    """A token: the environment first, else ``<section>.<key>`` in the person's own config.
+
+    A company or shared config file never supplies one: it would hand everyone one
+    identity, and the file is readable by others.
+    """
+    if company is not None and _secret_in(company.data, section, key):
+        log.info(f"{section}.{key} in the config file {company.path} is ignored; set it with crit config {flag}")
+    value = next((_clean(os.environ.get(name)) for name in env if _clean(os.environ.get(name))), "")
+    if not value:
+        if shared_file and _secret_in(own, section, key):
+            log.info(f"{section}.{key} in a shared config file is ignored; set it with crit config {flag}")
+        elif not shared_file:
+            value = _secret_in(own, section, key)
+    if not value:
+        try:
+            value = _secret_in(read_config_dict(user_config_path()), section, key)
+        except (ConfigError, OSError):
+            value = ""
+    if value:
+        redaction.add_secret_value(value)
+    return value
+
+
+def _load_jira(raw: dict, own: dict, company: "CompanySettings | None", shared_file: bool, *, env: bool = True) -> JiraConfig:
+    nested = raw.get("jira") if isinstance(raw.get("jira"), dict) else {}
+    base_url = (_clean(os.environ.get(ENV_JIRA_URL)) if env else "") or _clean(nested.get("base_url"))
+    base_url = clean_gitlab_url(base_url) if base_url else ""
+    email = _clean(os.environ.get(ENV_JIRA_EMAIL)) or _clean(nested.get("email"))
+    token = _user_secret(own, company, shared_file, "jira", "token", ENV_JIRA_TOKENS, "--jira-token")
+    return JiraConfig(base_url=base_url, email=email, token=token)
 
 
 def _local_api_key(own: dict, company: "CompanySettings | None", *, shared_file: bool) -> str:

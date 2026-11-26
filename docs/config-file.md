@@ -68,7 +68,8 @@ Everything else is optional; a key you leave out keeps crit's default:
 | `redact_terms` | `[]` | company, customer, project names to hide |
 | `redact_pii` | `true` | hide emails, phone numbers, card numbers, national IDs |
 | `backend`, `local` | `browser` | `local`: a model server (llama.cpp, LM Studio, vLLM) |
-| `gitlab.base_url` | none | your GitLab, for reviews |
+| `gitlab.base_url` | none | your GitLab, for reviews and git access |
+| `jira.base_url` | none | your Jira, read-only (issues for tasks and reviews) |
 | `model`, `timeout_ms`, `idle_ms`, `max_files`, other limits | built-in | see config.json.md |
 
 JSON has no comments, so the table above is the reference for each key.
@@ -82,11 +83,13 @@ crit layers three things: its built-in defaults, then the config file, then the 
 settings (`crit config`). The file decides these, and `crit config` refuses to change them
 ("This is set in the config file <path>; change it there.", exit 2):
 
-- `url`, `backend`, `local`, `cdp_url`, `allowed_hosts`, `redact_pii`, `gitlab.base_url`;
+- `url`, `backend`, `local`, `cdp_url`, `allowed_hosts`, `redact_pii`, `gitlab.base_url`, `jira.base_url`;
 - each selector the file sets (one it leaves out stays the person's);
 - `egress` and `page_network`: a person may tighten `"open"` to `"strict"`, never loosen;
   `CRIT_EGRESS=open` does not loosen the file's `"strict"` either.
 - `redact_terms`: the person may add names, never remove the file's.
+- Tokens (`gitlab.token`, `jira.token`, `local.api_key`) are never read from the file: each person sets their
+  own with `crit config --gitlab-token`, `--jira-token`, or `--api-key`.
 
 Everything else (model, timeouts, limits) is a default: the file's value applies unless the
 person set their own. Environment overrides such as `CRIT_URL` do not change a

@@ -71,7 +71,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
   - publishing: `npm publish`, `twine upload`, `mvn deploy`, `gradlew publish`, `gradlew --scan`, `docker push`, `repo upload`
   - file servers (`python -m http.server`), DNS lookups and `ping`, mail, and `python -c` or `node -e` one-liners that open sockets
   - raw sockets (`/dev/tcp`, `openssl s_client`), opening a web address in a browser (`start`, `xdg-open`, `explorer`), and Windows file shares (`\\host\share`, `net use`)
-  - git to an address the model chose (`git clone https://...`, `git ls-remote`, `git -c`, `GIT_SSH_COMMAND`, `git remote add`)
+  - git to an address the model chose (`git clone https://...`, `git ls-remote`, `git -c`, `GIT_SSH_COMMAND`, `git remote add`). The one exception: with a GitLab token set (`crit config --gitlab-token`), plain `git clone`/`fetch`/`pull`/`push`/`ls-remote` to a project that token's user is a member of, on the `gitlab.base_url` host, runs even under strict egress. The remote is resolved by git itself (`insteadOf` applied), no option may run another program, crit forces plain ssh and no credential helper or submodule recursion, the token goes only as a header to that host, and git trace variables are cleared for that one command. See [config.json.md](config.json.md#gitlabtoken-the-projects-crit-may-use).
   - package managers pointed at another address, and installing a package the model named (`pip install x`, `npm install x`, `npx`); installing from the project's own files (`npm ci`, `pip install -r`) still works
   - encoded or decoded commands (`powershell -enc`, `base64 -d | sh`)
 

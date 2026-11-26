@@ -83,6 +83,10 @@ environment variable, and the API key is shown only as set or not set).
 | `--page-network open\|strict` | `page_network` |
 | `--theme ID` | the terminal style, in the user config (every project) |
 | `--gitlab-url URL` | `gitlab.base_url` (https only; `""` removes it) |
+| `--gitlab-token [TOKEN]` | `gitlab.token` in your user config only. No value asks for it without echo, `-` reads stdin, `none` removes it |
+| `--jira-url URL` | `jira.base_url` (https only; `""` removes it) |
+| `--jira-email EMAIL` | `jira.email`, Jira Cloud only (`""` removes it) |
+| `--jira-token [TOKEN]` | `jira.token` in your user config only (like `--gitlab-token`) |
 | `--selector KEY=CSS` | one of `selectors` (repeatable); `KEY=` clears an optional one |
 | `--check` | checks that the local model server answers (and which models it lists), or that the Web UI's site resolves and answers |
 | `--reset` | removes the file (asks first in a terminal; needs `--yes` otherwise) |
@@ -617,7 +621,47 @@ The merge-request endpoint is:
 
 `{base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}`
 
-Posting still needs `CRIT_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gitlab-ci.md).
+Posting needs a token: `CRIT_GITLAB_TOKEN` in CI (see [`gitlab-ci.md`](gitlab-ci.md)), or on your own machine the
+personal access token you set with `crit config --gitlab-token`.
+
+### `gitlab.token`: the projects crit may use
+
+There is no list of allowed projects to keep. **The token decides:** crit asks GitLab which projects the
+token's user is a member of (`/projects?membership=true`, cached for 10 minutes) and uses only those:
+
+- **Reviews and `gitlab-post`** refuse a merge request in any other project.
+- **Agent commands:** `git clone`, `fetch`, `pull`, `push`, and `ls-remote` to those projects run even under
+  `"egress": "strict"`, which blocks every other network command. A command is let through only when it is one
+  plain git command (no `;`, `&&`, pipes, or substitutions). Its remote, after git's own `insteadOf`
+  rewriting, must be on the `gitlab.base_url` host and in the token's projects, and it must use no option that
+  runs another program (`-c`, `--upload-pack`, `--recurse-submodules`, ...). crit adds its own `-c` settings
+  (plain ssh, no credential helper from the repository, no submodule recursion) and, over https, sends the token
+  as an `Authorization` header scoped to the GitLab host. Pushes still ask first in every mode but auto.
+
+Scopes: `read_api` and `read_repository` to review and clone; add `api` to post review comments and
+`write_repository` to push. Rules for the token:
+
+- It is read only from your own `~/.crit/config.json` (set with `crit config --gitlab-token`), `CRIT_GITLAB_TOKEN`,
+  or `GITLAB_TOKEN`, never from a project or a shared config file.
+- It is redacted from everything crit sends or logs.
+- `crit config` shows only whether it is set.
+
+---
+
+## `jira` (object, optional)
+
+Read-only Jira. Issue keys in a task (`CAR-123`) or in a merge request (title, branch, commits) are read and put
+next to the task or the review: summary, status, priority, assignee, labels, links, description, and the last
+comments. The agent's `jira` tool reads one issue or a JQL search. crit never changes an issue.
+
+| Key | Meaning |
+| --- | --- |
+| `base_url` | `https://jira.example.com` (Server/Data Center) or `https://x.atlassian.net` (Cloud). Env: `CRIT_JIRA_URL`. A config file locks it like `gitlab.base_url` |
+| `email` | Jira Cloud only: the account email that goes with the API token. Env: `CRIT_JIRA_EMAIL` |
+| `token` | your user config only (`crit config --jira-token`), or `CRIT_JIRA_TOKEN` / `JIRA_API_TOKEN`. Server/Data Center: a personal access token, sent as `Bearer`. Cloud: an API token, sent with `email` as Basic |
+
+The Jira host is reachable by crit's Jira client under `"egress": "strict"`, like the GitLab host; the
+browser cannot reach it.
 
 ---
 
@@ -633,6 +677,10 @@ Posting still needs `CRIT_GITLAB_TOKEN` (not this file); see [`gitlab-ci.md`](gi
 | `CRIT_QUEUE_DIR` | `queue_dir` |
 | `CRIT_MAX_PARALLEL_TABS` | `max_parallel_tabs` |
 | `CRIT_GITLAB_URL` | `gitlab.base_url` |
+| `CRIT_GITLAB_TOKEN`, `GITLAB_TOKEN` | `gitlab.token` |
+| `CRIT_JIRA_URL` | `jira.base_url` |
+| `CRIT_JIRA_EMAIL` | `jira.email` |
+| `CRIT_JIRA_TOKEN`, `JIRA_API_TOKEN` | `jira.token` |
 | `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
 | `CRIT_API_KEY` | `local.api_key` |
 

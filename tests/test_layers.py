@@ -32,6 +32,7 @@ LAYERS: dict[str, int] = {
     "egress": CORE,
     "output": CORE,
     "roles": CORE,
+    "integrations": CORE,
     # models: the model behind crit; model_api is its interface
     "model_api": MODELS,
     "provider": MODELS,
@@ -51,6 +52,8 @@ LAYERS: dict[str, int] = {
     "big_file": TOOLS,
     "log_tools": TOOLS,
     "soong": TOOLS,
+    "gitlab_access": TOOLS,
+    "jira": TOOLS,
     "workspace": TOOLS,
     "project_home": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
@@ -84,7 +87,8 @@ INTERFACES: dict[int, frozenset[str]] = {
     MODELS: frozenset({"model_api"}),
     # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
     # services the engine drives directly are part of the interface.
-    TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home"}),
+    TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home",
+                       "gitlab_access", "jira"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, log, roles
+from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, integrations, log, roles
 from critique_bot.config import effective_theme
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
@@ -1454,7 +1454,8 @@ def load_role_instructions(role_id: object) -> str:
 
 
 def task_message(
-    task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "", prefix: str | None = None
+    task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "", prefix: str | None = None,
+    tickets: str = "",
 ) -> str:
     """The task with the short protocol reminder, the repo map, skills, and the mode note."""
     body = task.strip()
@@ -1471,6 +1472,8 @@ def task_message(
             "REPO MAP (files ranked for this task; numbers are definition lines; "
             "read before editing)\n" + repo_map.strip()
         )
+    if tickets.strip():
+        parts.append("JIRA (issues the task names, read by crit; read more with the jira tool)\n" + tickets.strip())
     parts.append("Task:\n" + body)
     return "\n\n".join(parts)
 
@@ -1507,6 +1510,14 @@ def seed_message(
             "wrapper gets --offline, and git works with local repositories only. A build that needs a "
             "dependency that is not in the local cache fails; say which one in your report."
         )
+    access = integrations.current()
+    if access.gitlab_ready:
+        lines.append(
+            f"gitlab: {access.gitlab_url}. git clone, fetch, pull, ls-remote, and push work for the projects your "
+            "GitLab token can reach (one plain git command each); other network commands follow the rules below."
+        )
+    if access.jira_ready:
+        lines.append(f"jira: {access.jira_url} (read-only, with the jira tool)")
     sites = () if web_hosts is None else web_hosts
     if sites:
         lines.append("web_fetch sites (https, plain page addresses only): " + ", ".join(sites))
@@ -3088,7 +3099,10 @@ def run_agent_loop(
         if read_only or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes
-        message = task_message(task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"])
+        tickets = tool_api.jira_context(task)
+        message = task_message(
+            task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"], tickets=tickets,
+        )
         if carry:
             message = carry + "\n\n" + message
             carry = ""

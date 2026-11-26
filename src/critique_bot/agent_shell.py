@@ -2316,15 +2316,21 @@ class ShellSession:
         cwd: Path | None = None,
         on_output: Callable[[str], None] | None = None,
         cancel: threading.Event | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> CommandResult:
-        """Run one command. ``cwd`` sets where it starts; the folder it ends in becomes the session cwd."""
+        """Run one command. ``cwd`` sets where it starts; the folder it ends in becomes the session cwd.
+
+        ``extra_env`` applies to this command only (crit's own settings, such as network
+        access for a git command to an allowed GitLab project); it is never kept.
+        """
         chosen = self.resolve(shell)
         start = self._start_dir(cwd)
+        env = self.environment() if not extra_env else {**self.environment(), **extra_env}
         launch, timed_out, interrupted = _execute(
             chosen,
             command,
             cwd=start,
-            env=self.environment(),
+            env=env,
             timeout=timeout,
             on_output=on_output,
             cancel=cancel,

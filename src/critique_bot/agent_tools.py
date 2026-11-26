@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
-from critique_bot import big_file, file_catalog, log_tools, soong
+from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, soong
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -66,6 +66,7 @@ ALLOWED_TOOLS = (
     "kill_command",
     "delegate",
     "log",
+    "jira",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -84,6 +85,7 @@ READ_ONLY = frozenset(
         "command_output",
         "kill_command",
         "log",
+        "jira",
     }
 )
 SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
@@ -1262,6 +1264,45 @@ def _read_window(
     return "\n".join(out)
 
 
+def jira_context(text: str, *, limit: int = 3) -> str:
+    """The Jira issues ``text`` names (up to ``limit``), for the task message; "" when Jira is
+    not set up or none is found. Fetching never stops a task."""
+    from critique_bot import jira
+
+    if not jira.ready():
+        return ""
+    keys = jira.keys_in(text, limit=limit)
+    if not keys:
+        return ""
+    try:
+        return jira.issues_text(keys)
+    except Exception:  # noqa: BLE001 - a ticket lookup is a convenience
+        return ""
+
+
+def _jira(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    from critique_bot import jira
+
+    if not jira.ready():
+        return err("jira", "Jira is not set up; the user runs crit config --jira-url URL and crit config --jira-token")
+    issue = str(args.get("issue") or args.get("key") or "").strip()
+    jql = str(args.get("jql") or args.get("query") or "").strip()
+    try:
+        if issue:
+            body = jira.format_issue(jira.get_issue(issue))
+            return ok("jira", body, ctx, _ui(f"Read {issue.upper()}", lines=body.split("\n")[:2]))
+        if jql:
+            try:
+                limit = int(args.get("limit") or 20)
+            except (TypeError, ValueError):
+                return err("jira", "limit must be an integer")
+            issues = jira.search(jql, limit=limit)
+            return ok("jira", jira.format_search(issues), ctx, _ui(f"{len(issues)} Jira issues"))
+    except jira.JiraError as exc:
+        return err("jira", str(exc))
+    return err("jira", "pass issue (a key such as CAR-123) or jql (a search)")
+
+
 _LOG_ACTIONS = ("summary", "query", "around", "diff")
 
 
@@ -2273,10 +2314,21 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         script = network_script(command, ctx.workspace, current)
         if script:
             reach = f"runs {script}, which opens network connections"
+    extra_env: dict[str, str] | None = None
+    gitlab_note = ""
+    if reach and command.lstrip().startswith("git ") and ctx.session is not None:
+        # git to one of the GitLab token's projects may use the network even under strict egress
+        current = Path(getattr(ctx.session, "cwd", ctx.workspace) or ctx.workspace)
+        decision = gitlab_access.git_network_command(command, current)
+        if decision.allowed:
+            command, extra_env, reach = decision.command, decision.env, ""
+        elif integrations.current().gitlab_ready:
+            gitlab_note = f" (GitLab: {decision.reason})"
     if reach and str(ctx.network_commands or "block").lower() != "ask":
         return err(
             "run_command",
-            f"not run: this command {reach}, and nothing may leave this machine except what crit sends to the model. "
+            f"not run: this command {reach}, and nothing may leave this machine except what crit sends to the model"
+            f"{gitlab_note}. git clone, fetch, pull, and push work for the projects your GitLab token can reach. "
             "Read documentation with web_fetch; builds may still download their dependencies",
         )
     if ctx.session is None:
@@ -2286,7 +2338,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         return refused
     if not background and agent_build.is_logcat_stream(command):
         background = True  # it never ends by itself; the log tool reads its output file
-    return _run_in_session(args, ctx, command, timeout, wanted, bool(background))
+    return _run_in_session(args, ctx, command, timeout, wanted, bool(background), extra_env=extra_env)
 
 
 def _aosp_defaults(ctx: ToolContext, command: str) -> tuple[str, dict[str, Any] | None]:
@@ -2365,7 +2417,8 @@ def _session_logs(ctx: ToolContext) -> None:
 
 
 def _run_in_session(
-    args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool
+    args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool,
+    *, extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     session = ctx.session
     _session_logs(ctx)
@@ -2414,6 +2467,7 @@ def _run_in_session(
     started_wall = time.time()
 
     def once() -> Any:
+        kwargs = {"extra_env": extra_env} if extra_env else {}
         return session.run(
             command,
             timeout=timeout,
@@ -2421,6 +2475,7 @@ def _run_in_session(
             cwd=cwd,
             on_output=ctx.on_output,
             cancel=ctx.cancel,
+            **kwargs,
         )
 
     try:
@@ -4879,4 +4934,5 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "kill_command": _kill_command,
     "delegate": _delegate,
     "log": _log,
+    "jira": _jira,
 }
