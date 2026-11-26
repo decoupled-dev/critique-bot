@@ -8,6 +8,8 @@ and allowlists the site's hosts so a Kerberos ticket works.
 
 from __future__ import annotations
 
+import os
+import unittest
 from unittest import mock
 
 from critique_bot import browser, integrations
@@ -116,9 +118,12 @@ class ProxyLoginTests(_Isolated):
     def test_login_inside_https_proxy_is_used_and_kept_off_the_command_line(self) -> None:
         env = {"HTTPS_PROXY": f"http://jdoe:{PROXY_PASSWORD}@proxy.corp.example:8080", "NO_PROXY": "", "no_proxy": ""}
         with mock.patch.dict("os.environ", env), mock.patch("shutil.which", return_value=None):
-            self.assertEqual(browser.proxy_login(), ("jdoe", PROXY_PASSWORD))
-            args, _hosts = browser._strict_proxy_args()
-        self.assertEqual(args, ["--proxy-server=http://proxy.corp.example:8080"])
+            self.assertEqual(browser.proxy_login(), ("jdoe", PROXY_PASSWORD))  # every OS
+            if os.name != "nt":  # Windows takes the proxy address from the registry
+                args, _hosts = browser._strict_proxy_args()
+                self.assertEqual(args, ["--proxy-server=http://proxy.corp.example:8080"])
+        self.assertEqual(browser._without_login(f"http://jdoe:{PROXY_PASSWORD}@proxy.corp.example:8080"),
+                         "http://proxy.corp.example:8080")
 
     def test_a_known_proxy_gets_the_login_for_every_request(self) -> None:
         integrations.configure(proxy_user="jdoe", proxy_password=PROXY_PASSWORD)
@@ -130,6 +135,7 @@ class ProxyLoginTests(_Isolated):
         self.assertEqual(kwargs["proxy"], {"server": "proxy.corp.example:8080", "username": "jdoe", "password": PROXY_PASSWORD,
                                            "bypass": "localhost,*.corp.example"})
 
+    @unittest.skipIf(os.name == "nt", "GNOME's proxy setting is read on Linux; Windows uses the registry")
     def test_gnome_manual_proxy_and_its_ignore_hosts(self) -> None:
         answers = {
             ("org.gnome.system.proxy", "mode"): "'manual'",

@@ -259,12 +259,15 @@ def proxy_login() -> tuple[str, str]:
     current = integrations.current()
     if current.proxy_user and current.proxy_password:
         return current.proxy_user, current.proxy_password
-    server, _pac = system_proxy()
-    parts = urlsplit(server if "://" in server else "http://" + server) if server else None
-    if parts is not None and parts.username and parts.password:
-        from urllib.parse import unquote
+    from urllib.parse import unquote
 
-        return unquote(parts.username), unquote(parts.password)
+    # HTTPS_PROXY first on every OS (Windows reads its proxy address from the registry,
+    # which never holds a login), then the proxy crit found.
+    names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")
+    for server in [os.environ.get(name, "").strip() for name in names] + [system_proxy()[0]]:
+        parts = urlsplit(server if "://" in server else "http://" + server) if server else None
+        if parts is not None and parts.username and parts.password:
+            return unquote(parts.username), unquote(parts.password)
     return "", ""
 
 

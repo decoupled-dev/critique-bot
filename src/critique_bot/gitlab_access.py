@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import re
 import shlex
 import subprocess
@@ -204,13 +205,30 @@ def _remote_url(cwd: Path, words: list[str], sub: str, args: list[str]) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
+def _split(text: str) -> list[str]:
+    """Words of a command line. On Windows a backslash is a path separator, not an escape."""
+    if sys.platform != "win32":
+        return shlex.split(text)
+    words = shlex.split(text, posix=False)
+    return [word[1:-1] if len(word) >= 2 and word[0] == word[-1] and word[0] in "\"'" else word for word in words]
+
+
+def _quote(word: str) -> str:
+    """Quote one word for the shell the command runs in (double quotes work in cmd and PowerShell)."""
+    if sys.platform != "win32":
+        return shlex.quote(word)
+    if word and not any(ch in word for ch in ' \t"\'&|<>^%$`;(),'):
+        return word
+    return '"' + word.replace('"', '""') + '"'
+
+
 def git_network_command(command: str, cwd: Path) -> GitDecision:
     """Whether ``command`` is a git network command to one of the token's projects, and how to run it."""
     text = str(command or "").strip()
     if not text.startswith("git ") or _SHELL_CONTROL.search(text):
         return GitDecision(False, "not one plain git command")
     try:
-        words = shlex.split(text)
+        words = _split(text)
     except ValueError:
         return GitDecision(False, "the command could not be parsed")
     settings = integrations.current()
@@ -283,5 +301,5 @@ def git_network_command(command: str, cwd: Path) -> GitDecision:
         "GIT_CONFIG_KEY_0": f"http.{origin}.extraHeader",
         "GIT_CONFIG_VALUE_0": f"Authorization: Basic {header}",
     })
-    rebuilt = " ".join(shlex.quote(word) for word in ["git", *prefix, *safety, sub, *rest])
+    rebuilt = " ".join(_quote(word) for word in ["git", *prefix, *safety, sub, *rest])
     return GitDecision(True, "", rebuilt, env, path)

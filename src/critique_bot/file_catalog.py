@@ -160,7 +160,7 @@ def _manifest_projects(repo: Path) -> list[str] | None:
             return
         seen.add(path)
         try:
-            tree = ET.parse(path)
+            tree = ET.parse(path)  # nosec B314 - the repo tool's own manifest in the user's checkout
         except (ET.ParseError, OSError):
             return
         for node in tree.getroot():

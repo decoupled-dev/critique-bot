@@ -38,7 +38,7 @@ def _project(root: Path, rel: str, files: dict[str, str]) -> None:
 class RepoTreeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()  # the long name on Windows (not RUNNER~1)
         (self.root / ".repo").mkdir()
         (self.root / ".repo" / "project.list").write_text("build/soong\nframeworks/base\nprebuilts/clang\n")
         _project(self.root, "build/soong", {"Android.bp": "x", "ui/build.go": "y"})

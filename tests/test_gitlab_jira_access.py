@@ -147,6 +147,13 @@ class AccessTests(unittest.TestCase):
             self.assertFalse(decision.allowed, command)
             self.assertIn(why, decision.reason, command)
 
+    def test_windows_paths_keep_their_backslashes(self) -> None:
+        with mock.patch.object(gitlab_access.sys, "platform", "win32"):
+            self.assertEqual(gitlab_access._split(r'git -C C:\work\repo fetch "my remote"'),
+                             ["git", "-C", r"C:\work\repo", "fetch", "my remote"])
+            self.assertEqual(gitlab_access._quote(r"C:\work\my repo"), r'"C:\work\my repo"')
+            self.assertEqual(gitlab_access._quote("core.gitProxy="), "core.gitProxy=")
+
     def test_fetch_and_push_use_the_repositorys_remote(self) -> None:
         repo = self.root / "app"
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
