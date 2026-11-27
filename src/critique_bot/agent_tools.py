@@ -4450,6 +4450,10 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             from critique_bot.agent_rules import suggest_rule
 
             perm.rule = suggest_rule(str(normalized.get("command") or ""))
+            if not perm.rule:
+                # "Don't ask again" remembers the rule the prompt shows. With no rule to show, it is
+                # not offered: a whole program (every git or adb command) is wider than what was asked.
+                perm.key = ""
         if perm.kind == "command" and tool in {"run_command", "command_input"}:
             policy = getattr(ctx.session, "sandbox", None)
             perm.contained = bool(policy is not None and getattr(policy, "sandboxed", False))
@@ -5347,26 +5351,95 @@ def _segment_options_ok(program: str, args: list[str]) -> bool:
     return True
 
 
-def _git_read_only(args: list[str]) -> bool:
-    """True for a git command that only reads this repository (``git log``, ``git config --get x``)."""
+# Every subcommand git ships. Anything else is an alias (``alias.x = !sh -c ...``) or a
+# ``git-x`` program on PATH, so a rule that names a built-in subcommand never covers it.
+_GIT_BUILTINS = frozenset({
+    "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bugreport", "bundle", "cat-file",
+    "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+    "cherry-pick", "citool", "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config",
+    "count-objects", "credential", "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-tree",
+    "difftool", "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo",
+    "format-patch", "fsck", "gc", "get-tar-commit-id", "grep", "gui", "hash-object", "help", "index-pack", "init",
+    "instaweb", "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit",
+    "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-tree", "mergetool", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-refs", "prune", "prune-packed", "pull",
+    "push", "range-diff", "read-tree", "rebase", "reflog", "remote", "repack", "replace", "replay", "request-pull",
+    "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "shortlog", "show",
+    "show-branch", "show-index", "show-ref", "sparse-checkout", "stash", "status", "stripspace", "submodule",
+    "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index", "update-ref",
+    "update-server-info", "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged",
+    "worktree", "write-tree",
+})
+
+
+def git_subcommand(args: list[str]) -> str:
+    """``["-P", "log", "-5"]`` -> ``"log"``: the subcommand after git's own options ("" when there is none)."""
+    for arg in args:
+        if not arg.startswith("-"):
+            return arg.lower()
+    return ""
+
+
+def _git_option_problem(args: list[str]) -> str:
+    """Why git's options let it write a file, run a program, or work on another repository, or "".
+
+    An option before the subcommand other than the harmless ones (``-c``, ``-C``,
+    ``--git-dir``, ``--exec-path``, ``-p``, ...), or one after it that writes or runs
+    something (``--output``, ``--ext-diff``, ``--textconv``, ``--exec``, ``--upload-pack``,
+    ``-O``), abbreviations included.
+    """
+    if args and all(arg.lower() in _VERSION_FLAGS for arg in args):
+        return ""
     index = 0
     while index < len(args) and args[index].startswith("-"):
         if args[index] not in _GIT_GLOBAL_OK:
-            return False  # -C, -c, --git-dir, --work-tree, --exec-path, -p, ...
+            return f"git {args[index]} changes what git runs or where it works"
         index += 1
-    if index >= len(args):
-        return False
-    sub, rest = args[index].lower(), args[index + 1 :]
-    for arg in rest:
+    for arg in args[index + 1 :]:
         if arg == "--":
             break
         name = _long_name(arg)
         if name and name not in _GIT_HARMLESS_SHORT and len(name) > 2 and any(
             name == bad or bad.startswith(name) for bad in _GIT_BAD_OPTIONS
         ):
-            return False
+            return f"git {name} writes a file or runs a program"
         if arg.startswith("-O"):
-            return False  # git grep -O opens a pager; diff -O reads an order file
+            return "git -O opens a pager or reads an order file"
+    return ""
+
+
+def unsafe_options(program: str, args: list[str]) -> str:
+    """Why an option in ``args`` makes ``program`` write a file or run a program, or "".
+
+    The same per-option checks the read-only test uses (``git log --output``, ``git -c``,
+    ``sort -o``, ``find -exec``, ``rg --pre``, ...). A saved allow rule never covers such
+    a command: ``git log*`` was saved for reading history, not for writing ``~/.bashrc``.
+    """
+    if program == "git":
+        return _git_option_problem(args)
+    if program == "repo":
+        if any(arg == "-o" or arg.startswith("--output") for arg in args):
+            return "repo --output writes a file"
+        return ""
+    if program == "rg":
+        if any(_long_name(arg) in {"--pre", "--search-zip"} or "z" in _short_bundle(arg) for arg in args):
+            return "rg --pre and --search-zip run programs"
+        return ""
+    if program in {"sort", "uniq", "find", "fd", "xxd", "tree", "less", "file"} and not _segment_options_ok(program, args):
+        return f"{program} with an option that writes a file or runs a program"
+    return ""
+
+
+def _git_read_only(args: list[str]) -> bool:
+    """True for a git command that only reads this repository (``git log``, ``git config --get x``)."""
+    if _git_option_problem(args):
+        return False
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 1
+    if index >= len(args):
+        return False
+    sub, rest = args[index].lower(), args[index + 1 :]
     words = [arg.lower() for arg in rest if not arg.startswith("-")]
     flags = set(rest)
     if sub in _GIT_LOOK:

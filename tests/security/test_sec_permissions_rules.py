@@ -97,8 +97,7 @@ class AlwaysAllowTests(SecBase):
         # What the "don't ask again" option says it covers.
         self.assertEqual(agent_rules.suggest_rule("git log --oneline -5"), "git log*")
 
-    # SECURITY FINDING PM-3: "don't ask again for git log*" silently allows every git command this session
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-3 (fixed): "don't ask again for git log*" silently allows every git command this session
     def test_always_for_git_log_does_not_allow_git_config_and_aliases(self) -> None:
         # The user says "always" to a harmless git log. The injected model then defines a shell alias
         # and runs it: arbitrary code, with no further question.
@@ -114,8 +113,7 @@ class AlwaysAllowTests(SecBase):
         self.assertFalse((self.root / "pwned-by-alias").exists(), "a git alias ran a shell command unasked")
         self.assertGreaterEqual(len(approvals.asked), 2)
 
-    # SECURITY FINDING PM-4: the auto-suggested rule "git log*" lets git log --output write any file, anywhere
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-4 (fixed): the auto-suggested rule "git log*" lets git log --output write any file, anywhere
     def test_git_log_rule_does_not_cover_output_to_any_path(self) -> None:
         target = self.outside / "written-outside.txt"
         approvals = Approvals()
@@ -128,8 +126,7 @@ class AlwaysAllowTests(SecBase):
         self.assertFalse(target.exists(), "an allow rule for git log wrote a file outside the workspace")
         self.assertEqual(len(approvals.asked), 1)
 
-    # SECURITY FINDING PM-4: the same rule can overwrite .git/config (then any git command runs code)
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-4 (fixed): the same rule can overwrite .git/config (then any git command runs code)
     def test_git_log_rule_cannot_rewrite_git_config(self) -> None:
         before = (self.root / ".git" / "config").read_text(encoding="utf-8")
         session = Scripted([
@@ -139,6 +136,52 @@ class AlwaysAllowTests(SecBase):
         with Approvals().patch():
             self.loop(session, approve_mode="ask", settings={"allow": ["git log*"]})
         self.assertEqual((self.root / ".git" / "config").read_text(encoding="utf-8"), before)
+
+
+class RuleScopeTests(SecBase):
+    """Regression tests for PM-3 and PM-4: a rule covers what it says, and no option that writes or runs."""
+
+    def allowed(self, patterns: list[str], command: str) -> object:
+        rules = agent_rules.load_rules({"allow": patterns})[0]
+        return agent_rules.allowed_by(rules, tool="run_command", perm_kind="command", command=command,
+                                      paths=(), workspace=self.root)
+
+    def test_rules_never_cover_options_that_write_or_run(self) -> None:
+        for patterns, command in (
+            (["git log*"], "git log --output=/tmp/x"),
+            (["git log*"], "git log --outp=/tmp/x"),
+            (["git diff*"], "git diff --ext-diff"),
+            (["git *"], "git -c core.pager=sh log"),
+            (["git *"], "git -C ../other status"),
+            (["git *"], "git rebase --exec 'sh x' HEAD~1"),
+            (["git *"], "git fetch --upload-pack=x origin"),
+            (["sort*"], "sort -o /tmp/x a.txt"),
+            (["find*"], "find . -exec sh {} ;"),
+            (["rg*"], "rg --pre ./x foo a.txt"),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.allowed(patterns, command))
+                self.assertEqual(agent_rules.suggest_rule(command), "")
+
+    def test_rules_still_cover_plain_uses(self) -> None:
+        self.assertIsNotNone(self.allowed(["git log*"], "git log --oneline -5"))
+        self.assertIsNotNone(self.allowed(["git *"], "git -P log --stat"))
+        self.assertIsNotNone(self.allowed(["sort*"], "sort -n a.txt"))
+
+    def test_a_git_rule_does_not_cover_an_alias(self) -> None:
+        self.assertIsNone(self.allowed(["git log*"], "git logx"))
+        self.assertIsNone(self.allowed(["git *"], "git pwn"))
+        # A rule that spells the external command out still covers it.
+        self.assertIsNotNone(self.allowed(["git lfs*"], "git lfs pull"))
+
+    def test_no_dont_ask_again_without_a_rule_to_show(self) -> None:
+        from critique_bot import agent_tools
+
+        ctx = agent_tools.ToolContext(workspace=self.root)
+        perm = agent_tools.permission_for("run_command", {"command": "git log --output=x"}, ctx)
+        self.assertEqual((perm.rule, perm.key), ("", ""))
+        perm = agent_tools.permission_for("run_command", {"command": "git log -5"}, ctx)
+        self.assertEqual(perm.rule, "git log*")
 
 
 class WrittenCodeTests(SecBase):

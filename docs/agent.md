@@ -356,7 +356,7 @@ Shift+Tab cycles through four modes, as in Claude Code. The line under the input
 | --- | --- | --- |
 | **ask** (default) | Every edit, command, web fetch, and path outside the project. | `crit`, or `"permissions": "ask"` |
 | **edits** (accept edits) | Commands, fetches, and outside paths. File edits in the project run at once. | `--permission-mode edits` |
-| **auto** | Risky commands (below), and commands that are not read-only when they run outside the OS sandbox (once per program with "don't ask again"). Edits, reads, read-only commands, and every command inside the sandbox run; questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
+| **auto** | Risky commands (below), and commands that are not read-only when they run outside the OS sandbox (not once a rule saved with "don't ask again" covers them). Edits, reads, read-only commands, and every command inside the sandbox run; questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
 | **plan** | Nothing changes. The model reads the code and sends a plan, then you approve it. | `crit --plan`, `/plan` |
 
 **The sandbox.** On Linux (bubblewrap) and macOS (sandbox-exec) commands run in an OS sandbox by default (`"sandbox": "workspace-write"`): they may write the project, `.crit`, temp folders, and build caches, see no secrets (`~/.ssh`, `~/.aws`, `.env` files, ...), and reach the network only through crit's egress proxy, which applies the `egress` allow-list. That is why auto mode runs them without asking. When a command needs more (a folder outside the project, a host off the list), crit asks once with the exact path or host and remembers the answer for the session. `crit doctor sandbox` checks the machine; without bubblewrap, or on Windows, commands run as before and auto mode keeps asking. Details: [security.md](security.md#the-sandbox).
@@ -379,7 +379,7 @@ On a yes the mode switches and the model carries out the plan in the same conver
 Reading and searching run without asking. In ask mode, edits, commands, web fetches, and anything outside the project folder show a box first:
 
 1. **Yes** runs this step.
-2. **Yes, and don't ask again** remembers the choice for this session: all file edits, commands that start with the same program (for example every `npm` command), or one web site. It never covers a command that chains, redirects, or nests another command; those are asked each time. Paths outside the project are always asked.
+2. **Yes, and don't ask again** remembers the choice: all file edits or one web site for this session, and for a command exactly the rule the box shows (`npm test*`, `git log*`), saved in `.crit/settings.json`. It never covers the whole program (`git log*` does not cover `git config` or a git alias), and it is not offered when no rule can describe the command: one that chains, redirects, or nests another command, or uses an option that writes a file or runs a program (`git log --output`, `git -c`, `sort -o`); those are asked each time. Paths outside the project are always asked.
 3. **No** (or Esc) skips the step. After `3` you can type what to do instead, and the model gets that note.
 4. **Yes, and switch to auto mode** runs this step and stops asking about edits for the rest of the session (commands that are not read-only, and risky ones, still ask).
 

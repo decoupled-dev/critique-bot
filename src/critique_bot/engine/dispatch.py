@@ -439,11 +439,14 @@ class Dispatch:
             return True, ""
         decision, reason = ui._approve_prompt(perm, risky=risky) if risky else ui._approve_prompt(perm)
         if decision == "always":
-            if rememberable:
-                self.always.add(key)
             rule = str(getattr(perm, "rule", "") or "")
-            if rule and kind == "command" and not risky:
-                _save_allow_rule(self.ctx, rule)
+            if kind == "command" and rule:
+                # Remember exactly what the prompt showed ("git log*"), never the whole program:
+                # "always" on git log must not cover git config or an alias.
+                if not risky:
+                    _save_allow_rule(self.ctx, rule)
+            elif rememberable:
+                self.always.add(key)
             return True, ""
         if decision == "yes":
             return True, ""
