@@ -43,6 +43,9 @@ Each event has `seq` (1, 2, ...), `ts` (UTC), `turn` (model replies so far) and 
 | `compaction` | `new_chat`, `mask` or `summarize`, with tokens before and after |
 | `task_finished` | the finish code (COMPLETED, FAILED, INTERRUPTED, ...) and the files changed |
 | `error` | a reply that failed (it is retried) |
+| `notice`, `assistant_text` | what the terminal would show: a note (`kind`, `text`) and the model's words (written by Engine API sessions, [server.md](server.md)) |
+| `request`, `request_answered` | an approval, a question or a plan review asked of a client (`id`, `kind`), and its answer (`reply`, `by`) |
+| `session_closed` | an Engine API session ended |
 
 Writes are flushed at once and fsync'd at every turn boundary, so a hard kill loses at most
 the turn in progress. A half-written last line is skipped when the log is read.

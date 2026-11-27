@@ -104,11 +104,16 @@ this for in-process front ends during the transition.
 - Security: no token → 401; a non-loopback bind without a flag → refuses to start.
 
 ## Completion targets
-- [ ] `agent.py` deleted or under 300 lines of wrappers; no module in `engine/` over 800 lines
+- [x] `agent.py` deleted or under 300 lines of wrappers; no module in `engine/` over 800 lines
+  (agent.py: 90 lines of re-exports; largest engine module `delegate.py`, 776)
 - [ ] TUI, ACP, review, queue and `crit run --json` all use the Engine API only
-- [ ] `crit serve` + `crit attach` work across processes; the OpenAPI spec matches (contract tests)
+  (`crit run --json`, `crit attach` and agent runs: yes. TUI, ACP and review use the engine
+  package's interface (`engine.run_agent`, `engine.run_read_only_task`), not `SessionHandle`;
+  the queue worker is unchanged. See Status.)
+- [x] `crit serve` + `crit attach` work across processes; the OpenAPI spec matches (contract tests)
 - [ ] Suite pass@1 within ±1 point of Stage 4; no new failures in the test suite
-- [ ] Layer test passes with the new modules
+  (no new failures: 1,938 tests OK; the pass@1 eval needs the model machines)
+- [x] Layer test passes with the new modules
 
 ## Risks
 - **Big-bang refactor:** move one piece per commit with tests green; keep wrapper functions
@@ -116,3 +121,62 @@ this for in-process front ends during the transition.
 - **Concurrency against one local GPU:** many sessions on one server compete for slots.
   The engine keeps a per-server request queue sized to the server's slot count (from
   `/props` or the preset), and a session pins its slot (Stage 3).
+
+## Status (2026-11-27)
+
+Done:
+- **Split** (work items 1, 7): `agent.py` became `critique_bot/engine/` in nine commits, the
+  full suite green after each: `parse`, `json_repair`, `replies`, `text`, `prompts`, `ui`,
+  `runtime`, `chat`, `context`, `task` with the `dispatch` / `modes` / `stop_rules` mixins,
+  `contracts`, `delegate` (was `agent_helpers`), `loop`, `setup`, `runs`, then `api`. Every
+  module is under 800 lines. `session_log`, `compaction` and `prompt_build` stay sibling
+  engine modules (decisions.md). `agent.py` is 90 lines of compatibility names; apps may not
+  import it (`INTERFACES[ENGINE]` = `engine`, `ui_api`, `session_log`). Tests that patched
+  `agent._approve_prompt`, `_sleep`, `_execute`, ... patch `engine.ui`, `engine.chat`,
+  `engine.dispatch`, ... now.
+- **Engine API** (items 2, 3): `Engine` (create / open / fork / list sessions) and
+  `SessionHandle` (`send`, `events(since_seq)` live, `answer`, `cancel`, `set_mode`, `undo`,
+  `close`), `EventUI` (approvals, questions and plan review are `request` events with ids;
+  one answer per request), `drive_ui` (a NullUI-style front end on a session). Each session
+  runs on its own thread with its own UI (`ui.use_thread_ui`), registry (`ToolContext.registry`),
+  native tools and extensions (`runtime`).
+- **History from the engine** (Stage 3's leftover): `_Chat.messages` is the conversation of a
+  model API session, installed before every request; compaction, resume and new chats
+  replace it through the engine. The web chat's conversation stays on its page.
+- **Server** (item 5): `crit serve` (stdlib `ThreadingHTTPServer` + SSE; decisions.md),
+  127.0.0.1 and a random port in `~/.crit/server.json`, a per-start token in
+  `~/.crit/server.token` (0600), 401 without it, `--listen` + `--insecure` for another
+  address. `docs/api/openapi.yaml` + `tests/test_server.py` (routes = spec, every operation's
+  status and schema, 401 everywhere, 0600 files, the bind refusal, two clients / one answer,
+  SIGKILL mid-approval then `crit attach` resumes on a new server).
+- **Clients** (item 6): `crit attach [--url] [--session]`, `crit run [--agent] [--json]
+  [--url]`, `POST /v1/agents/{name}/runs` (Stage 6's hook), ACP `session/load`
+  (`loadSession: true`; the ACP session id is the log id).
+- **Leftovers from Stages 1-3**: profile `tool_output_cap_tokens`, `shell_timeout_s`,
+  `edit_format` and the new `masking_penalty` field become loop settings; `apply_patch` only
+  for `edit_format` `apply_patch` / `patch`; `tool_api.environment_snapshot` (with the running
+  background jobs) in the first user turn; background jobs a task started are stopped when
+  it ends (`keep_background_jobs`).
+
+Left:
+- **TUI on `SessionHandle`.** The terminal runs `engine.run_agent` in process with
+  `agent_ui` as the process UI. Moving it onto `SessionHandle` + `drive_ui` needs the
+  terminal's own commands (`/mode`, `/role`, `/shell`, `/resume`, `/fork`, Shift+Tab) turned
+  into Engine calls (`set_mode`, a role change and a shell change on the handle, open/fork)
+  instead of the `take_*` hooks the loop polls. `crit attach` has the same gap (its slash
+  commands change only the local terminal).
+- **ACP on `SessionHandle`.** ACP has `session/load` but still runs as a UI module of one
+  `run_agent`. The port maps `session/new` to `create_session`, prompts to `send`, the
+  events to `session/update` (tool calls from `tool_started` / `tool_result`, live command
+  output from the handle's live-only `tool_output`), and `request` events to
+  `session/request_permission`.
+- **Review and queue as sessions.** The agent review uses `engine.run_read_only_task` (a
+  read-only run with `AnswerContract`; it asks nothing, so it needs no request events). The
+  queue worker still runs one-shot reviews; CI can use `crit serve` with
+  `crit run --url ... --agent code-reviewer` meanwhile.
+- **Work item 4** (delete the text-reply loop) is not done, by decision: the web chat stays
+  as a removable module and speaks the text formats (decisions.md, 2026-11-27).
+- **Concurrency limits**: run counters and taint are per process; cancel waits for the model's
+  reply; no per-server request queue sized to the model server's slots yet.
+- **Item 8** (eval: no regression, `plan/results/05/`) needs the model machines.
+- TLS for `crit serve` (`--listen` without `--insecure`).

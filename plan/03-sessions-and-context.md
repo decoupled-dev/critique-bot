@@ -157,6 +157,9 @@ Done (model-agnostic, tested with scripted sessions and fake servers):
   `slot_pinning` setting), cache hit ratio in `/status`.
 
 Left:
+- **Stage 5 (done 2026-11-27):** the engine owns a model API session's list (`_Chat.messages`,
+  installed before every request; resume, compaction and new chats replace it), ACP
+  `session/load`, and the sessions in `crit serve`. The original note follows.
 - **Stage 5:** history only from the projection. Today the session object owns the live list
   (`LocalModelSession.messages`, the web page) and the log mirrors it; the projection rebuilds
   it on resume and is checked equal to it in tests. In the split, the engine should own the
@@ -173,7 +176,8 @@ Left:
   ≥ 80%, the long-task subset, no context overflow. `crit eval` does not summarize the cache
   ratio per run yet (the counters are in `agent.json` `stats`).
 - Thinking-off profiles: `masking_penalty` is read from settings; wiring it from Stage 1
-  profiles is a one-line merge once profiles land.
+  profiles is a one-line merge once profiles land. (Done in Stage 5: a profile field that
+  becomes a loop setting; no built-in profile sets it yet.)
 
 ## Risks
 - **Log size on AOSP sessions:** blobs are deduplicated by hash, and large tool outputs are
