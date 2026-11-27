@@ -60,6 +60,10 @@ for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
 for skill_md in sorted((ROOT / "src" / "critique_bot" / "skills").glob("*/SKILL.md")):
     datas.append((str(skill_md), f"critique_bot/skills/{skill_md.parent.name}"))
 
+# Built-in agents (one per former role): extensions.agent_files.builtin_dir().
+for agent_md in sorted((ROOT / "src" / "critique_bot" / "agents").glob("*.md")):
+    datas.append((str(agent_md), "critique_bot/agents"))
+
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],
     pathex=[str(ROOT / "src")],

@@ -922,6 +922,9 @@ SUBCOMMANDS = {
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
     "eval": "measure crit (or opencode) on a suite of real tasks (crit eval --help)",
+    "trust": "approve the project's extension files (tools, hooks, MCP servers) once per content",
+    "tool": "list, show and test manifest tools (crit tool --help)",
+    "mcp": "list MCP servers; approve a server's changed tool definitions",
 }
 
 
@@ -1100,8 +1103,19 @@ def _main(argv: list[str] | None = None) -> int:
             "gitlab-post": _main_gitlab_post,
             "eval": _main_eval,
         }
+        if command in {"trust", "tool", "mcp"}:
+            return _main_extensions([command, *rest])
         return handlers[command](rest)
     return _main_run(argv)
+
+
+def _main_extensions(argv: list[str]) -> int:
+    """``crit trust``, ``crit tool``, ``crit mcp`` (see extensions_cmd)."""
+    from critique_bot import extensions_cmd
+
+    command, rest = argv[0], argv[1:]
+    handler = {"trust": extensions_cmd.main_trust, "tool": extensions_cmd.main_tool, "mcp": extensions_cmd.main_mcp}
+    return handler[command](rest)
 
 
 def _main_eval(argv: list[str]) -> int:
