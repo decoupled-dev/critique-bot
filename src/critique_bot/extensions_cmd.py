@@ -91,6 +91,8 @@ def main_trust(argv: list[str]) -> int:
         for path, entry in sorted(found.items()):
             state = trust.state_of(Path(path)) if Path(path).exists() else "missing"
             print(f"{state:9} {path}  ({entry.get('approved', '?')}, sha256 {str(entry.get('sha256'))[:12]})")
+            for name in sorted(entry.get("covers") or {}):
+                print(f"            also covers {name}")
         for path, entry in sorted(values.items()):
             keys = ", ".join(entry.get("keys") or []) or "values"
             print(f"{'settings':9} {path}  ({entry.get('approved', '?')}: {keys})")
@@ -113,8 +115,17 @@ def main_trust(argv: list[str]) -> int:
         print(f"{path}:")
         for line in describe(item) if kind else ["not an extension file crit reads; approving it anyway"]:
             print("  " + line)
-        digest = trust.trust(path, kind=kind)
-        print(f"  approved (sha256 {digest[:12]}). An edit to the file turns it off until you approve it again.")
+        covers = trust.covered_files(path)
+        for name, digest in sorted(covers.items()):
+            print(f"  runs {name}" + ("" if digest else " (not there yet: it must stay absent)"))
+        try:
+            digest = trust.trust(path, kind=kind)
+        except (OSError, ValueError) as exc:
+            print(f"  not approved: {exc}")
+            code = 1
+            continue
+        print(f"  approved (sha256 {digest[:12]}). An edit to the file"
+              + (" or to a program it runs" if covers else "") + " turns it off until you approve it again.")
     if args.files or args.revoke:
         return code
     root = _root(args.repo)
