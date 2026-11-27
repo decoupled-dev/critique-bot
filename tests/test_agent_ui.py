@@ -688,3 +688,11 @@ class RunAgentTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SearchLabelTests(unittest.TestCase):
+    def test_multi_pattern_search_shows_its_patterns(self) -> None:
+        label = agent_ui.arg_summary("search_code", {"patterns": ["isActive", "expiresAt"], "path": "src"})
+        self.assertIn('patterns: "isActive | expiresAt"', label)
+        self.assertIn('path: "src"', label)
+        self.assertIn('pattern: "foo"', agent_ui.arg_summary("search_code", {"pattern": "foo"}))

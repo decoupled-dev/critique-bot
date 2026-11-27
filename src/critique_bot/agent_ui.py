@@ -595,7 +595,12 @@ def arg_summary(name: str, args: dict[str, Any] | None) -> str:
     if name == "run_command":
         return _short(args.get("command") or "", 100)
     if name == "search_code":
-        text = f'pattern: "{_short(args.get("pattern") or args.get("query") or "", 50)}"'
+        patterns = args.get("patterns")
+        if isinstance(patterns, list) and patterns:
+            shown = " | ".join(str(item) for item in patterns if str(item))
+            text = f'patterns: "{_short(shown, 70)}"'
+        else:
+            text = f'pattern: "{_short(args.get("pattern") or args.get("query") or "", 50)}"'
         if path and str(path) not in {"", "."}:
             text += f', path: "{_short(path, 40)}"'
         return text
