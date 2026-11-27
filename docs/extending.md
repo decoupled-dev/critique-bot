@@ -50,8 +50,9 @@ hook programs self-contained, or in `~/.crit/hooks/`, and pin package versions
 
 Project agents and commands are prompts, so they load without approval. Until you approve
 one, though, it cannot set a looser permission mode than `ask` (agents) or `ask`/`plan`
-(commands). The model cannot write to any extension file or to `trust.json` /
-`mcp-lock.json`, in either scope.
+(commands). The model cannot write to any extension file, to `hooks/` (in `.crit` and
+`~/.crit`), to a program an extension file runs, or to `trust.json` / `mcp-lock.json`, in
+either scope.
 
 ## Manifest tools
 

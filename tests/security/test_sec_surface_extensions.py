@@ -63,8 +63,7 @@ class TrustCoversWhatRunsTest(_Isolated):
 
 
 class ModelCannotWriteWhatHooksRunTest(_Isolated):
-    # SECURITY FINDING SF-2: the edit guard protects hooks.json but not the scripts it runs (.crit/hooks/*).
-    @unittest.expectedFailure
+    # SECURITY FINDING SF-2 (fixed): the edit guard protects hooks.json but not the scripts it runs (.crit/hooks/*).
     def test_the_edit_guard_refuses_a_script_an_approved_hook_runs(self) -> None:
         from critique_bot import agent_tools
 

@@ -223,5 +223,35 @@ class TrustCoversWhatRunsTests(_Isolated):
         self.assertIn("check.py (not there yet", text)
 
 
+class ModelCannotWriteWhatRunsTests(_Isolated):
+    """SF-2 / PM-15: the edit guard covers programs extensions run and every skill folder."""
+
+    def refused(self, rel: str) -> bool:
+        from critique_bot import agent_tools
+
+        ctx = agent_tools.ToolContext(workspace=self.root)
+        target = self.root / rel
+        return bool(agent_tools._guard_target(ctx, target.resolve(), rel))
+
+    def test_a_script_an_approved_hook_runs_anywhere_in_the_project(self) -> None:
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "gate.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        hooks = self.root / ".crit" / "hooks.json"
+        hooks.write_text(json.dumps({"pre_tool": [{"argv": ["sh", "scripts/gate.sh"]}]}), encoding="utf-8")
+        trust.trust(hooks, kind="hooks")
+        self.assertTrue(self.refused("scripts/gate.sh"))
+        self.assertFalse(self.refused("scripts/other.sh"))
+
+    def test_a_script_a_user_hook_runs(self) -> None:
+        (self.home / ".crit" / "hooks.json").write_text(
+            json.dumps({"post_tool": [{"argv": ["python3", "tools/fmt.py"]}]}), encoding="utf-8")
+        self.assertTrue(self.refused("tools/fmt.py"))
+
+    def test_hook_folders_and_every_skill_root(self) -> None:
+        for rel in (".crit/hooks/new.py", ".agents/skills/aosp/SKILL.md", ".opencode/skills/x/SKILL.md",
+                    ".bot/skills/x/SKILL.md"):
+            self.assertTrue(self.refused(rel), rel)
+
+
 if __name__ == "__main__":
     unittest.main()
