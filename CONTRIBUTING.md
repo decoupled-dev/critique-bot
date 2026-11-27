@@ -33,7 +33,7 @@ Before you open a pull request, run:
 PYTHONPATH=src python -m unittest discover -s tests          # all green
 PYTHONPATH=src python -m critique_bot.eval_harness audit     # crit eval audit: every grader is sound
 python scripts/check_webchat_removable.py                    # core crit works without the web chat
-python -W error::SyntaxWarning -m compileall -q src scripts tests   # the CI lint step
+python -W error::SyntaxWarning -m compileall -q -x tests/eval_tasks src scripts tests  # CI lint
 ```
 
 CI runs the same commands on Linux, macOS and Windows (see
