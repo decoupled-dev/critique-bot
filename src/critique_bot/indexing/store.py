@@ -65,7 +65,6 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_path);
 CREATE INDEX IF NOT EXISTS idx_edges_name ON edges(kind, dst_name);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_path);
-CREATE INDEX IF NOT EXISTS idx_edges_symbol ON edges(src_symbol);
 CREATE TABLE IF NOT EXISTS strings (
     path TEXT NOT NULL,
     line INTEGER NOT NULL,

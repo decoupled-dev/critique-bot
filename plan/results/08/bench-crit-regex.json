@@ -1,0 +1,88 @@
+{
+ "crit-regex": {
+  "repo": "/home/dc/Abhinav/critique-bot/.claude/worktrees/s8-index",
+  "mode": "project",
+  "treesitter": false,
+  "python": "3.14.4",
+  "build_seconds": 3.78,
+  "rows": {
+   "files": 779,
+   "symbols": 6094,
+   "refs": 102155,
+   "edges": 30452,
+   "strings": 33941,
+   "modules": 18
+  },
+  "files": 779,
+  "source_bytes": 4486459,
+  "db_bytes": 41254912,
+  "db_share_of_source": 9.195,
+  "incremental_10_seconds": 0.214,
+  "incremental_changed": 10,
+  "noop_refresh_seconds": 0.034,
+  "history_seconds": 0.06,
+  "history_commits": 179,
+  "queries": {
+   "find_symbol": {
+    "p50_ms": 3.4,
+    "p95_ms": 4.0,
+    "n": 40
+   },
+   "symbol_refs": {
+    "p50_ms": 1.6,
+    "p95_ms": 24.6,
+    "n": 40
+   },
+   "who_calls": {
+    "p50_ms": 0.9,
+    "p95_ms": 2.5,
+    "n": 40
+   },
+   "callees": {
+    "p50_ms": 1.1,
+    "p95_ms": 5.2,
+    "n": 40
+   },
+   "imports_of": {
+    "p50_ms": 0.7,
+    "p95_ms": 0.8,
+    "n": 40
+   },
+   "imported_by": {
+    "p50_ms": 0.5,
+    "p95_ms": 0.7,
+    "n": 40
+   },
+   "module_of": {
+    "p50_ms": 0.8,
+    "p95_ms": 1.5,
+    "n": 40
+   },
+   "find_strings": {
+    "p50_ms": 38.7,
+    "p95_ms": 51.0,
+    "n": 40
+   },
+   "repo_map": {
+    "p50_ms": 81.7,
+    "p95_ms": 123.4,
+    "n": 40
+   },
+   "locate": {
+    "p50_ms": 112.1,
+    "p95_ms": 137.5,
+    "n": 40
+   },
+   "cochanged": {
+    "p50_ms": 5.3,
+    "p95_ms": 7.4,
+    "n": 40
+   },
+   "git_history": {
+    "p50_ms": 5.5,
+    "p95_ms": 6.9,
+    "n": 40
+   }
+  }
+ }
+}

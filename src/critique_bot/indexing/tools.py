@@ -665,6 +665,10 @@ def locate(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
         if found.late:
             footer += f"; over the time budget: {', '.join(found.late)}"
         footer += ")"
+        from critique_bot.indexing import symbols as _symbols
+
+        if not _symbols.treesitter_available("java"):
+            footer += "\nparser: regex (tree-sitter is not installed: pip install 'critique-bot[index]' for exact spans and calls)"
         if terms:
             footer += f"\nexpanded terms: {', '.join(terms)}"
         if lines:

@@ -172,9 +172,26 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", _VOLATILE.sub("#", text)).strip().lower()
 
 
+_PLACEHOLDER = re.compile(r"%[-#0 +]*\d*(?:\.\d+)?[lhzjt]*[diouxXeEfgGcspn@]|\{[^{}]*\}|\$\{[^}]*\}|\$[A-Za-z_]\w*")
+
+
+def matches_format(value: str, text: str) -> bool:
+    """True when ``text`` is what the format string ``value`` prints (placeholders match anything)."""
+    if not _PLACEHOLDER.search(value):
+        return False
+    pattern = "".join(
+        ".*?" if index % 2 else re.escape(part)
+        for index, part in enumerate(re.split(f"({_PLACEHOLDER.pattern})", value)) if part is not None
+    )
+    try:
+        return re.fullmatch(pattern, text.strip(), re.S) is not None or re.search(pattern + r"\s*$", text.strip(), re.S) is not None
+    except re.error:
+        return False
+
+
 def _fragments(text: str) -> list[str]:
     pieces = [piece for chunk in _VOLATILE.split(text) for piece in re.split(r":\s|\s-\s|;\s", chunk)]
-    parts = [part.strip(" :,.;'\"=()[]") for part in pieces]
+    parts = [part.strip(" :,.;'\"=()[]-+#") for part in pieces]
     return sorted({part for part in parts if len(part) >= 5}, key=len, reverse=True)[:4]
 
 
@@ -227,6 +244,8 @@ def search_strings(conn: sqlite3.Connection, text: str, *, kind: str = "", path:
             score = 1.0
         elif normalized and normalized == wanted:
             score = 0.97
+        elif len(value) >= 6 and matches_format(value, text):
+            score = 0.95
         elif text.lower() in value.lower():
             score = 0.6 + 0.3 * len(text) / max(len(value), 1)
         elif len(value) >= 8 and value.lower() in text.lower():

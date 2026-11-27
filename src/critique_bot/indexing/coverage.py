@@ -173,7 +173,9 @@ class Ranked:
 
 
 def _is_test(path: str) -> bool:
-    return bool(re.search(r"(^|/)(tests?|testing|androidTest|test_\w+\.py$)|_test\.\w+$|Tests?\.\w+$|/test_[^/]+$", path))
+    name = path.rsplit("/", 1)[-1]
+    return bool(re.search(r"(^|/)(tests?|testing|androidTest)/", path)
+                or re.search(r"(^|_)tests?(_|\.)|Tests?\.\w+$|_test\.\w+$|^conftest\.py$", name))
 
 
 def ochiai(failing: list[Lines], passing: list[Lines]) -> dict[tuple[str, int], float]:
@@ -221,7 +223,8 @@ def rank_functions(conn: sqlite3.Connection, scores: dict[tuple[str, int], float
         rest = [line for line in lines if line not in claimed]
         if rest and not rows:
             out.append(Ranked(path, "", min(rest), max(rest), round(max(lines[line] for line in rest), 3), len(rest)))
-    out.sort(key=lambda item: (-item.score, item.executed, item.path, item.line))
+    # module-level code (imports, constants) runs in every test: functions first
+    out.sort(key=lambda item: (-item.score, not item.symbol, item.executed, item.path, item.line))
     return out[:limit]
 
 

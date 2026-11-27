@@ -1,0 +1,64 @@
+{
+ "coverage": {
+  "tasks": [
+   {
+    "task": "fix-py-catalog-extra-page",
+    "truth": [
+     [
+      "catalog/paging.py",
+      "page_count"
+     ]
+    ],
+    "rank": 2,
+    "exit": 1,
+    "passing_runs": 1,
+    "seconds": 0.22,
+    "top": [
+     "catalog/listing.py:paginate",
+     "catalog/paging.py:page_count",
+     "catalog/listing.py:Page.has_next",
+     "catalog/listing.py:Page.has_prev",
+     "catalog/listing.py:Page.label"
+    ]
+   },
+   {
+    "task": "fix-py-stocksync-batch-leak",
+    "truth": [
+     [
+      "stocksync/util.py",
+      "deep_merge"
+     ]
+    ],
+    "rank": 6,
+    "exit": 1,
+    "passing_runs": 1,
+    "seconds": 0.24,
+    "top": [
+     "stocksync/jobs.py:run_batch",
+     "stocksync/filters.py:sort_items",
+     "stocksync/inventory.py:StockItem.value",
+     "stocksync/util.py:money",
+     "stocksync/jobs.py:run_job"
+    ]
+   },
+   {
+    "task": "py-fix-test",
+    "truth": [
+     [
+      "temps.py",
+      "to_fahrenheit"
+     ]
+    ],
+    "rank": 1,
+    "exit": 1,
+    "passing_runs": 0,
+    "seconds": 0.22,
+    "top": [
+     "temps.py:to_fahrenheit",
+     "temps.py:clamp_setpoint"
+    ]
+   }
+  ],
+  "top5": 0.67
+ }
+}

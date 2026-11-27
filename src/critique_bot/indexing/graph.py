@@ -220,7 +220,7 @@ def resolve_imports(conn: sqlite3.Connection, *, sources: list[str] | None = Non
             chunk = sources[start : start + 500]
             marks = ",".join("?" * len(chunk))
             rows += conn.execute(
-                f"SELECT rowid, src_path, dst_name FROM edges WHERE kind = 'imports' AND src_path IN ({marks})", chunk
+                f"SELECT rowid, src_path, dst_name FROM edges WHERE +kind = 'imports' AND src_path IN ({marks})", chunk
             ).fetchall()
     updates = []
     resolved = 0
@@ -250,7 +250,7 @@ class Edge:
 def imports_of(conn: sqlite3.Connection, path: str) -> list[Edge]:
     rows = conn.execute(
         "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges "
-        "WHERE src_path = ? AND kind = 'imports' ORDER BY line",
+        "WHERE src_path = ? AND +kind = 'imports' ORDER BY line",
         (path,),
     ).fetchall()
     return [Edge(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4] or ""), int(r[5])) for r in rows]
@@ -262,7 +262,7 @@ def imported_by(conn: sqlite3.Connection, path: str, *, limit: int = 200) -> lis
     marks = ",".join("?" * len(targets))
     rows = conn.execute(
         "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges "
-        f"WHERE kind = 'imports' AND dst_path IN ({marks}) ORDER BY src_path, line LIMIT ?",
+        f"WHERE +kind = 'imports' AND dst_path IN ({marks}) ORDER BY src_path, line LIMIT ?",
         (*targets, limit),
     ).fetchall()
     return [Edge(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4] or ""), int(r[5])) for r in rows]
@@ -315,17 +315,23 @@ def callees(conn: sqlite3.Connection, symbol: str, *, path: str = "", limit: int
     """Names called from inside ``symbol`` and where each is defined (several when ambiguous)."""
     parent, name = split_symbol(symbol)
     qualified = f"{parent}.{name}" if parent else name
-    sql = "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges WHERE kind = 'calls' AND (src_symbol = ? OR src_symbol LIKE ?)"
-    params: list[object] = [qualified, "%." + qualified]
-    if not parent:
-        sql = "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges WHERE kind = 'calls' AND (src_symbol = ? OR src_symbol LIKE ?)"
-        params = [name, "%." + name]
+    # the definitions first (indexed by name), then the calls inside their line ranges (indexed by file)
+    def_sql = "SELECT path, line, end_line, parent FROM symbols WHERE name = ?"
+    def_params: list[object] = [name]
     if path:
-        sql += " AND src_path = ?"
-        params.append(path)
-    sql += " ORDER BY src_path, line LIMIT ?"
-    params.append(limit)
-    rows = conn.execute(sql, params).fetchall()
+        def_sql += " AND path = ?"
+        def_params.append(path)
+    defs = [d for d in conn.execute(def_sql + " LIMIT 20", def_params).fetchall() if not parent or str(d[3]) == parent]
+    rows: list = []
+    for def_path, start, end, _parent in defs:
+        rows += conn.execute(
+            "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges WHERE src_path = ? AND +kind = 'calls' "
+            "AND line BETWEEN ? AND ? AND (src_symbol = ? OR src_symbol LIKE ?) ORDER BY line",
+            (def_path, start, end, qualified, "%." + qualified),
+        ).fetchall()
+        if len(rows) >= limit:
+            break
+    rows = rows[:limit]
     out: list[tuple[Edge, list[str]]] = []
     imported: dict[str, set[str]] = {}
     external: dict[str, set[str]] = {}
