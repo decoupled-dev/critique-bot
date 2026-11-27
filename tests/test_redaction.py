@@ -136,6 +136,31 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("Xk9mP2qL7vR4", redact_outgoing("DB_PASSWORD=Xk9mP2qL7vR4\n"))  # gitleaks:allow
 
 
+class JsonTextTests(unittest.TestCase):
+    """Tool results are redacted as JSON text: an escaped line break or quote ends a value."""
+
+    def test_an_escaped_newline_ends_the_value(self) -> None:
+        import json
+
+        text = json.dumps({"output": "-MY_DB_PASS=xY7abcQ9\n+NAME=yvalue\n"})
+        redacted, count = redact_secrets(text)
+        self.assertEqual(count, 1)
+        self.assertNotIn("xY7abcQ9", redacted)
+        self.assertIn("\\n+NAME=yvalue\\n", redacted)  # the next line survives, the diff stays whole
+        self.assertEqual(json.loads(redacted)["output"], "-MY_DB_PASS=[REDACTED:my_db_pass]\n+NAME=yvalue\n")
+
+    def test_an_escaped_quote_ends_the_value(self) -> None:
+        import json
+
+        text = json.dumps({"output": 'cfg = {"api_key": "Qz7vLp2Xk9mR4wT8", "name": "bob"}'})
+        redacted, _count = redact_secrets(text)
+        self.assertNotIn("Qz7vLp2Xk9mR4wT8", redacted)
+        self.assertEqual(json.loads(redacted)["output"], 'cfg = {"api_key": "[REDACTED:api_key]", "name": "bob"}')
+
+    def test_a_backslash_inside_a_plain_value_is_kept(self) -> None:
+        self.assertEqual(redact_secrets("DB_PASSWORD=ab\\cdefg1 rest")[0], "DB_PASSWORD=[REDACTED:db_password] rest")
+
+
 class SensitiveFileTests(unittest.TestCase):
     def test_secret_files(self) -> None:
         for name in [

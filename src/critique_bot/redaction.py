@@ -97,8 +97,11 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _SECRET_ASSIGN_RE = re.compile(
     r"(?im)\b(?P<key>[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
     r"client[_-]?secret|auth[_-]?key|storepass|keypass|passphrase|credentials?|cookie|session[_-]?(?:key|secret)|"
-    r"(?:signing|encryption|master)[_-]?key|(?<![a-z])pass(?![a-z])|(?<![a-z])pw(?![a-z]))[\w.-]*)(?P<kq>[\"']?)(?P<sep>[ \t]*(?::=|=>|[:=])[ \t]*)"
-    r"(?P<q>[\"']?)(?P<val>[^\s\"'<>{}()\[\]$;,`]{6,})(?P=q)(?=$|[\s\"',;)}\]])"
+    r"(?:signing|encryption|master)[_-]?key|(?<![a-z])pass(?![a-z])|(?<![a-z])pw(?![a-z]))[\w.-]*)(?P<kq>(?:\\[\"']|[\"'])?)(?P<sep>[ \t]*(?::=|=>|[:=])[ \t]*)"
+    # A value ends at a quote, a space, or a JSON escape (``\n``, ``\"``): tool results are often
+    # redacted as JSON text, where a line break is the two characters backslash and n.
+    r"(?P<q>(?:\\[\"']|[\"'])?)(?P<val>(?:[^\s\"'<>{}()\[\]$;,`\\]|\\(?![nrt\"'])){6,})(?P=q)"
+    r"(?=$|[\s\"',;)}\]]|\\[nrt\"'])"
 )
 _SECRET_XML_RE = re.compile(
     r"(?i)(name=\"[^\"]*(?:password|secret|token|api[_-]?key|apikey|client[_-]?secret)[^\"]*\"[^>]*>)([^<\s]{8,})(<)"
@@ -108,7 +111,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*$")
 _ENV_LINE_PREFIX_RE = re.compile(r"[+\- ]?(?:export[ \t]+|set[ \t]+)?[\"']?")
 _YAML_LINE_PREFIX_RE = re.compile(r"[+\- ]?[ \t]*(?:-[ \t]+)?[\"']?")
 # What may follow the value on such a line: nothing, a ``;`` or a comment.
-_LINE_REST_RE = re.compile(r"[ \t]*;?[ \t]*(?:#.*)?(?:\r?\n|\Z)")
+_LINE_REST_RE = re.compile(r"[ \t]*;?[ \t]*(?:#.*?)?(?:\r?\n|\\r\\n|\\n|\Z)")
 _PLACEHOLDER_VALUES = frozenset({"true", "false", "null", "none", "required", "optional", "password", "changeit!"})
 
 
@@ -129,6 +132,9 @@ def _value_is_secret(text: str, match: re.Match[str]) -> bool:
     if not _LINE_REST_RE.match(text, match.end()):
         return False  # more code follows: ``f(token=resolved_token, ...)``
     line_start = text.rfind("\n", 0, match.start()) + 1
+    escaped = text.rfind("\\n", line_start, match.start())  # a line break inside JSON text
+    if escaped >= 0:
+        line_start = escaped + 2
     sep = match.group("sep")
     if sep == "=":  # .env / .properties: ``KEY=value`` at the start of a line
         config_line = bool(_ENV_LINE_PREFIX_RE.fullmatch(text, line_start, match.start()))
