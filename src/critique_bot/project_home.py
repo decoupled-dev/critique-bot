@@ -67,6 +67,8 @@ SECURITY_KEYS = frozenset(
         "network_commands",
         "check_command",
         "auto_questions",
+        # commands crit runs on its own after every edit
+        "lint",
     }
 )
 

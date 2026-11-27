@@ -36,7 +36,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_patch, agent_shell, code_index
-from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, run_stats, soong
+from critique_bot import big_file, edit_guard, file_catalog, gitlab_access, integrations, log_tools, run_stats, soong
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -1845,6 +1845,38 @@ def _protected_paths(ctx: ToolContext) -> list[Path]:
     return out
 
 
+def _guard_refusal(ctx: ToolContext, name: str, before: str | None, after: str) -> tuple[str, str]:
+    """The parse half of the edit guard, before anything is written.
+
+    Returns ``(refusal, flagged)``: a refusal means "do not write" (a Python/JSON/XML file
+    that parsed and would not, or any new syntax error with ``edit_guard: reject``);
+    ``flagged`` is a new syntax error to report after writing (``edit_guard: flag``).
+    """
+    strict = Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES
+    if strict and before is not None:
+        after_check = agent_edit.syntax_check(name, after)
+        if after_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
+            return f"it would leave {name} with a syntax {after_check}", ""
+    mode = edit_guard.mode(ctx.settings)
+    if mode == "off":
+        return "", ""
+    _parse, problem = edit_guard.new_syntax_error(name, before, after)
+    if problem and mode == "reject":
+        return f"it would introduce a syntax error in {name}: {problem} (edit_guard is reject)", ""
+    return "", problem
+
+
+def _guard_report(ctx: ToolContext, path: Path, name: str, before: str | None, flagged: str,
+                  like: agent_edit.TextFile | None) -> str:
+    """The rest of the guard after a write: the flagged syntax error and new lint issues."""
+    if edit_guard.mode(ctx.settings) == "off":
+        return ""
+    report = edit_guard.Report(name, edit_guard.Parse(""), new_syntax=flagged)
+    if path.is_file() and not sensitive_file(path):
+        report.lint, report.lint_note = edit_guard.lint_new(path, name, before, ctx.settings, ctx.workspace, like=like)
+    return report.text()
+
+
 #: A whole-file write that leaves fewer than this share of a file this long needs overwrite true.
 SHRINK_GUARD_LINES = 40
 SHRINK_GUARD_SHARE = 0.4
@@ -1938,11 +1970,10 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                 "never sees. Edit the other lines with edit_file instead of rewriting the file"
             )
             continue
-        if existed and Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES:
-            new_check = agent_edit.syntax_check(name, contents)
-            if new_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
-                errors.append(f"{name} not replaced: the new contents have a syntax {new_check}")
-                continue
+        refusal, flagged = _guard_refusal(ctx, name, before if existed else None, contents)
+        if refusal:
+            errors.append(f"{name} not {'replaced' if existed else 'written'}: {refusal}")
+            continue
         if existed and before and contents:
             # The file's own convention for the last line wins over the model's habit.
             if before.endswith("\n") and not contents.endswith("\n"):
@@ -1966,6 +1997,9 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             summary += f"; syntax {check}"
         if notes:
             summary += "; " + "; ".join(notes)
+        guarded = _guard_report(ctx, path, name, before if existed else None, flagged, like)
+        if guarded:
+            summary += "\n" + guarded
         diff = agent_edit.hunk_diff(before, contents.replace("\r\n", "\n"), name)
         if diff and existed and sensitive_file(path):
             diff = _SECRET_DIFF_NOTE
@@ -2213,20 +2247,14 @@ def _edit_file_once(args: dict[str, Any], ctx: ToolContext, raw: str, path: Path
             f"edit not applied: it would write a {REDACTED}...] marker into {name}. That marker stands for a secret "
             "the model never sees; leave the lines that hold it unchanged",
         )
-    before_check = agent_edit.syntax_check(name, loaded.text)
     after_check = agent_edit.syntax_check(name, text)
     diff = agent_edit.hunk_diff(loaded.text, text, name)
     if sensitive_file(path):
         diff = _SECRET_DIFF_NOTE if diff else ""  # its lines would carry the file's secrets to the chat
-    strict = Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES
-    if strict and before_check == "ok" and after_check.startswith("error"):
+    refusal, flagged = _guard_refusal(ctx, name, loaded.text, text)
+    if refusal:
         run_stats.edit_step("edit_file", "guard_rejected")
-        return err(
-            "edit_file",
-            f"edit not applied: it would leave {name} with a syntax {after_check}",
-            output=diff,
-            ctx=ctx,
-        )
+        return err("edit_file", f"edit not applied: {refusal}", output=diff, ctx=ctx)
     if ctx.checkpoints is not None and not ctx.checkpoints.save(path) and sensitive_file(path):
         notes.append(_NO_UNDO_NOTE)
     try:
@@ -2245,6 +2273,9 @@ def _edit_file_once(args: dict[str, Any], ctx: ToolContext, raw: str, path: Path
     if after_check:
         message += f"; syntax {after_check}"
     message += f"; version {version}"
+    guarded = _guard_report(ctx, path, name, loaded.text, flagged, loaded)
+    if guarded:
+        message += "\n" + guarded
     if diff:
         message += "\n" + diff
     plus, minus = _diff_counts(diff)
@@ -2398,13 +2429,10 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             return err("apply_patch", f"patch not applied: it would write a {REDACTED}...] marker into {name}. That "
                        "marker stands for a secret the model never sees; leave the lines that hold it unchanged")
         target_name = rel(ctx.workspace, entry["dest"]) if entry["dest"] is not None else name
-        if Path(target_name).suffix.lower() in agent_edit.STRICT_SUFFIXES:
-            after_check = agent_edit.syntax_check(target_name, after)
-            if after_check.startswith("error") and (not entry["existed"] or
-                                                   agent_edit.syntax_check(name, entry["before"]) == "ok"):
-                if entry["existed"]:
-                    run_stats.edit_step("apply_patch", "guard_rejected")
-                    return err("apply_patch", f"patch not applied: it would leave {target_name} with a syntax {after_check}")
+        refusal, entry["flagged"] = _guard_refusal(ctx, target_name, entry["before"] if entry["existed"] else None, after)
+        if refusal:
+            run_stats.edit_step("apply_patch", "guard_rejected")
+            return err("apply_patch", f"patch not applied: {refusal}")
     written: list[dict[str, Any]] = []
     try:
         for entry in staged:
@@ -2452,6 +2480,10 @@ def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         check = agent_edit.syntax_check(shown, entry["after"])
         if check:
             line += f"; syntax {check}"
+        guarded = _guard_report(ctx, entry["dest"] or entry["path"], shown, entry["before"] if entry["existed"] else None,
+                                entry.get("flagged", ""), entry["like"])
+        if guarded:
+            line += "\n" + guarded
         lines.append(line)
         if diff:
             diffs.append(diff)
