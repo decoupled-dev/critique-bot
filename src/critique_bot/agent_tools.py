@@ -24,7 +24,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -36,7 +35,7 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from critique_bot import agent_build, agent_edit, agent_shell, code_index
+from critique_bot import agent_build, agent_edit, agent_patch, agent_shell, code_index
 from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, run_stats, soong
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
@@ -2323,56 +2322,163 @@ def _patch_text(args: dict[str, Any]) -> Any:
 
 
 def _apply_patch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Apply a unified diff or V4A patch with crit's own parser (agent_patch), all files or none.
+
+    Line numbers are ignored: each hunk is found by its context through the edit match
+    ladder. Nothing is written until every hunk of every file matched; a write that fails
+    part way restores the files already written.
+    """
     patch = _patch_text(args)
     if not isinstance(patch, str) or not patch.strip():
-        return err("apply_patch", "patch is required: one unified diff as text")
+        return err("apply_patch", "patch is required: one unified diff (or V4A patch) as text")
     patch = patch.replace("\r\n", "\n")
-    if not patch.endswith("\n"):
-        patch += "\n"
-    folder = ctx.cache_dir or Path(tempfile.mkdtemp(prefix="crit-patch-"))
-    folder.mkdir(parents=True, exist_ok=True)
-    patch_path = folder / "apply.patch"
-    patch_path.write_text(patch, encoding="utf-8")
-    prefixed = _patch_has_prefixes(patch)
-    paths = patched_paths(patch)
-    strip = [] if prefixed else ["-p0"]
-    attempts = (
-        ["apply", "--whitespace=nowarn", *strip],
-        ["apply", "--whitespace=nowarn", *strip, "--ignore-whitespace", "--recount"],
-    )
-    check_error = ""
-    for flags in attempts:
-        checked = _git(ctx, [*flags, "--check", str(patch_path)], tool="apply_patch")
-        if checked.get("ok"):
-            break
-        check_error = checked.get("error") or checked.get("output") or ""
-    else:
-        return err(
-            "apply_patch",
-            "patch does not apply: " + _one_line(check_error, 400)
-            + ". Read the file again and fix the context lines, or use edit_file",
-        )
-    if ctx.checkpoints is not None:
-        for item in paths:
-            ctx.checkpoints.save(resolve(ctx.workspace, item))
-    result = _git(ctx, [*flags, str(patch_path)], tool="apply_patch")
-    if result.get("ok"):
-        checks = []
-        for item in paths:
-            target = resolve(ctx.workspace, item)
-            _after_write(ctx, target)
-            if target.is_file():
-                check = agent_edit.syntax_check(item, agent_edit.load_text(target).text)
-                if check:
-                    checks.append(f"{item}: syntax {check}")
-        if checks or paths:
-            result["output"] = (
-                "applied to " + ", ".join(paths) + ("\n" + "\n".join(checks) if checks else "")
-            )
-        plus, minus = _diff_counts(patch)
-        shown = patch if len(patch) <= 2_500 else patch[:2_500] + "\n... diff truncated"
-        result["ui"] = _ui(f"Patched {', '.join(paths[:3])}" + (" ..." if len(paths) > 3 else "") + f" (+{plus} -{minus})", shown)
-    return result
+    try:
+        files = agent_patch.parse_patch(patch)
+    except agent_patch.PatchError as exc:
+        return err("apply_patch", str(exc))
+    staged: list[dict[str, Any]] = []
+    steps: list[str] = []
+    for item in files:
+        path = resolve(ctx.workspace, item.path)
+        name = rel(ctx.workspace, path)
+        problem = _guard_target(ctx, path, item.path)
+        if problem:
+            return err("apply_patch", problem)
+        dest = resolve(ctx.workspace, item.move_to) if item.move_to else None
+        if dest is not None:
+            problem = _guard_target(ctx, dest, item.move_to)
+            if problem:
+                return err("apply_patch", problem)
+            if dest.exists() and dest != path:
+                return err("apply_patch", f"{rel(ctx.workspace, dest)} already exists; the patch would move {name} onto it")
+        if item.kind == "add":
+            if path.is_file() and path.stat().st_size:
+                return err("apply_patch", f"{name} already exists; the patch adds it as a new file. Update it instead "
+                           "(*** Update File, or a diff against the current text)")
+            staged.append({"path": path, "name": name, "like": None, "before": "",
+                           "after": agent_patch.new_file_text(item), "existed": False, "dest": None})
+            continue
+        if not path.is_file():
+            return err("apply_patch", f"not found: {item.path}{_path_hint(ctx, item.path)}")
+        stale = stale_problem(ctx, path, name, "\n".join(item.hunks[0].old_lines) if item.hunks else "")
+        if stale and stale != UNREAD:
+            result = err("apply_patch", stale)
+            result["stale"] = True
+            return result
+        loaded = agent_edit.load_text(path)
+        if item.kind == "delete":
+            if item.hunks:
+                try:
+                    left = agent_patch.apply_hunks(loaded.text, item)
+                except agent_patch.PatchError as exc:
+                    return _patch_failure(ctx, path, name, exc)
+                if left.text.strip():
+                    return err("apply_patch", f"{name}: the patch deletes the file, but its '-' lines do not cover "
+                               "all of it; read it again")
+            staged.append({"path": path, "name": name, "like": loaded, "before": loaded.text, "after": None,
+                           "existed": True, "dest": None})
+            continue
+        try:
+            applied = agent_patch.apply_hunks(loaded.text, item)
+        except agent_patch.PatchError as exc:
+            if stale == UNREAD:
+                return err("apply_patch", unread_message(name))
+            return _patch_failure(ctx, path, name, exc)
+        if stale == UNREAD and any(step not in {"exact", "insert"} for step in applied.steps):
+            return err("apply_patch", unread_message(name))
+        steps.extend(applied.steps)
+        staged.append({"path": path, "name": name, "like": loaded, "before": loaded.text, "after": applied.text,
+                       "existed": True, "dest": dest})
+    for entry in staged:
+        after = entry["after"]
+        if after is None:
+            continue
+        name = entry["name"]
+        if REDACTED in after and REDACTED not in entry["before"]:
+            return err("apply_patch", f"patch not applied: it would write a {REDACTED}...] marker into {name}. That "
+                       "marker stands for a secret the model never sees; leave the lines that hold it unchanged")
+        target_name = rel(ctx.workspace, entry["dest"]) if entry["dest"] is not None else name
+        if Path(target_name).suffix.lower() in agent_edit.STRICT_SUFFIXES:
+            after_check = agent_edit.syntax_check(target_name, after)
+            if after_check.startswith("error") and (not entry["existed"] or
+                                                   agent_edit.syntax_check(name, entry["before"]) == "ok"):
+                if entry["existed"]:
+                    run_stats.edit_step("apply_patch", "guard_rejected")
+                    return err("apply_patch", f"patch not applied: it would leave {target_name} with a syntax {after_check}")
+    written: list[dict[str, Any]] = []
+    try:
+        for entry in staged:
+            if ctx.checkpoints is not None:
+                ctx.checkpoints.save(entry["path"])
+                if entry["dest"] is not None:
+                    ctx.checkpoints.save(entry["dest"])
+            if entry["after"] is None:
+                entry["path"].unlink()
+            else:
+                target = entry["dest"] or entry["path"]
+                agent_edit.save_text(target, entry["after"], entry["like"])
+                if entry["dest"] is not None and entry["dest"] != entry["path"]:
+                    entry["path"].unlink()
+            written.append(entry)
+    except (OSError, ValueError) as exc:
+        for entry in reversed(written):  # put back what was already written
+            try:
+                if entry["dest"] is not None and entry["dest"] != entry["path"]:
+                    entry["dest"].unlink(missing_ok=True)
+                if entry["existed"]:
+                    agent_edit.save_text(entry["path"], entry["before"], entry["like"])
+                else:
+                    entry["path"].unlink(missing_ok=True)
+            except OSError:
+                pass
+        return err("apply_patch", f"patch not applied: {exc}; every file is as it was")
+    lines: list[str] = []
+    diffs: list[str] = []
+    for entry in staged:
+        _after_write(ctx, entry["path"])
+        name = entry["name"]
+        if entry["dest"] is not None:
+            _after_write(ctx, entry["dest"])
+        if entry["after"] is None:
+            lines.append(f"deleted {name}")
+            continue
+        shown = rel(ctx.workspace, entry["dest"]) if entry["dest"] is not None else name
+        diff = agent_edit.hunk_diff(entry["before"], entry["after"], shown)
+        if sensitive_file(entry["path"]):
+            diff = _SECRET_DIFF_NOTE if diff else ""
+        where = _changed_lines(entry["before"], entry["after"])
+        verb = "created" if not entry["existed"] else ("moved " + name + " ->" if entry["dest"] is not None else "updated")
+        line = f"{verb} {shown}" + (f" (now {where})" if where and entry["existed"] else "")
+        check = agent_edit.syntax_check(shown, entry["after"])
+        if check:
+            line += f"; syntax {check}"
+        lines.append(line)
+        if diff:
+            diffs.append(diff)
+        if ctx.state is not None:
+            ctx.state.edit_failures.pop(name, None)
+    for step in steps:
+        run_stats.edit_step("apply_patch", step)
+    loose = sorted({step for step in steps if step not in {"exact", "insert"}})
+    if loose:
+        lines.append("some hunks matched loosely (" + ", ".join(loose) + "); check the diff")
+    output = "\n".join(lines) + ("\n" + "\n".join(diffs) if diffs else "")
+    plus, minus = _diff_counts("\n".join(diffs))
+    names = [entry["name"] for entry in staged]
+    return ok("apply_patch", output, ctx,
+              _ui(f"Patched {', '.join(names[:3])}" + (" ..." if len(names) > 3 else "") + f" (+{plus} -{minus})",
+                  "\n".join(diffs)))
+
+
+def _patch_failure(ctx: ToolContext, path: Path, name: str, exc: "agent_patch.PatchError") -> dict[str, Any]:
+    run_stats.edit_step("apply_patch", "refused")
+    output = ""
+    if exc.candidate and sensitive_file(path):
+        output = "(the closest text is not shown: this file usually holds secrets; read it to see it)"
+    elif exc.candidate:
+        output = "closest text in the file:\n" + exc.candidate
+    result = err("apply_patch", f"{exc}; no file was changed", output=output, ctx=ctx)
+    return _note_edit_outcome(ctx, name, path, result)
 
 
 def _patch_has_prefixes(patch: str) -> bool:
@@ -2420,6 +2526,8 @@ def patched_paths(patch: str) -> list[str]:
             add(line.split(" ", 2)[2].strip(), "")
         elif line.startswith(("rename to ", "copy to ")):
             add(line.split(" ", 2)[2].strip(), "")
+    for raw in agent_patch.paths_in(patch):  # V4A headers, and whatever the parser reads
+        add(raw, "")
     return paths
 
 
