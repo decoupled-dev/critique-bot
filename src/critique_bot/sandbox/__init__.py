@@ -226,6 +226,38 @@ def _env_files(workspace: Path, *, limit_dirs: int = 400) -> list[Path]:
     return found
 
 
+def git_dirs(workspace: Path) -> tuple[list[Path], list[Path]]:
+    """For a git worktree or submodule (``.git`` is a file): its git folders outside the workspace,
+    (writable, protected). Commits need the objects, refs, and index; ``config`` and ``hooks`` stay read-only."""
+    marker = workspace / ".git"
+    if not marker.is_file():
+        return [], []
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return [], []
+    if not text.startswith("gitdir:"):
+        return [], []
+    gitdir = Path(text[len("gitdir:"):].strip())
+    if not gitdir.is_absolute():
+        gitdir = workspace / gitdir
+    gitdir = _real(gitdir)
+    if not gitdir.is_dir():
+        return [], []
+    writable = [gitdir]
+    common = gitdir
+    try:
+        pointer = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+        common = _real(gitdir / pointer) if not Path(pointer).is_absolute() else _real(pointer)
+    except OSError:
+        pass
+    if common != gitdir and common.is_dir():
+        writable.append(common)
+    protected = [item for root in dict.fromkeys([gitdir, common]) for item in (root / "config", root / "hooks")
+                 if os.path.lexists(item)]
+    return writable, [_real(item) for item in protected]
+
+
 def build_policy(
     settings: Settings,
     workspace: Path | str,
@@ -269,6 +301,9 @@ def build_policy(
             real = _real(item)
             if real.exists() and real not in writable:
                 writable.append(real)
+    git_writable, git_protected = git_dirs(root)
+    if settings.mode == WORKSPACE_WRITE:
+        writable += [item for item in git_writable if item not in writable and not _within(item, root)]
     masked: list[Path] = []
     for item in SECRET_HOME_PATHS:
         path = _expand(item, root, home_dir)
@@ -289,6 +324,7 @@ def build_policy(
     if not settings.env_files:
         masked += [_real(item) for item in _env_files(root)]
     protected = [_real(root / item) for item in PROTECTED_WORKSPACE if os.path.lexists(root / item)]
+    protected += [item for item in git_protected if item not in protected]
     readable: list[Path] = []
     for item in {sys.prefix, sys.base_prefix, str(Path(__file__).resolve().parents[1])}:
         real = _real(item)

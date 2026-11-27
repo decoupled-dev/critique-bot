@@ -2400,8 +2400,8 @@ def _sandbox_escapes(ctx: ToolContext, session: Any, result: Any, since: float) 
     allowed: list[str] = []
     for folder in folders:
         try:
-            answer = ask(f"The sandbox stopped this command writing to {folder}. "
-                                  f"Allow writes to {folder} for the rest of this session? (yes/no)")
+            answer = ask(f"The sandbox stopped this command writing to {folder}. Allow writes to {folder} "
+                         "for the rest of this session (crit then runs the command again)? (yes/no)")
         except (EOFError, KeyboardInterrupt):
             answer = ""
         audit.record("permission", tool="sandbox", perm_kind="escape", summary=f"write {folder}", allowed=_yes(answer))
@@ -2409,8 +2409,8 @@ def _sandbox_escapes(ctx: ToolContext, session: Any, result: Any, since: float) 
             allowed.append(str(folder))
     for host in hosts:
         try:
-            answer = ask(f"The sandbox stopped this command connecting to {host}. "
-                                  f"Allow {host} for the rest of this session? (yes/no)")
+            answer = ask(f"The sandbox stopped this command connecting to {host}. Allow {host} "
+                         "for the rest of this session (crit then runs the command again)? (yes/no)")
         except (EOFError, KeyboardInterrupt):
             answer = ""
         audit.record("permission", tool="sandbox", perm_kind="escape", summary=f"connect {host}", allowed=_yes(answer))

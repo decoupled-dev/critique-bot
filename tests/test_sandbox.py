@@ -127,6 +127,21 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(read_only.can_write(self.ws / "app" / "x"))
         self.assertFalse(self.policy().can_write(self.home / "x"))
 
+    def test_a_git_worktree_can_commit_but_not_change_config_or_hooks(self) -> None:
+        main = self.base / "main" / ".git"
+        (main / "worktrees" / "wt").mkdir(parents=True)
+        (main / "hooks").mkdir()
+        (main / "config").write_text("", encoding="utf-8")
+        (main / "worktrees" / "wt" / "commondir").write_text("../..\n", encoding="utf-8")
+        shutil.rmtree(self.ws / ".git")
+        (self.ws / ".git").write_text(f"gitdir: {main / 'worktrees' / 'wt'}\n", encoding="utf-8")
+        policy = self.policy()
+        self.assertTrue(policy.can_write(main / "objects" / "ab" / "cd"))
+        self.assertTrue(policy.can_write(main / "worktrees" / "wt" / "index"))
+        self.assertFalse(policy.can_write(main / "config"))
+        self.assertFalse(policy.can_write(main / "hooks" / "pre-commit"))
+        self.assertFalse(self.policy("read-only").can_write(main / "objects" / "x"))
+
     def test_aosp_preset_adds_out_and_build_caches(self) -> None:
         (self.ws / "out").mkdir()
         (self.home / ".ccache").mkdir()
