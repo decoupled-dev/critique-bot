@@ -62,8 +62,11 @@ one module. Add a new module to its `LAYERS` table.
 | `loop.py` | `run_agent_loop`: tasks in, one task run each; the first message (task, repo map, skills, notes, first-turn context); task-end bookkeeping |
 | `task.py` | `_TaskRun`: the turn loop of one task (send, read the reply, decide), with three mixins: |
 | `dispatch.py` | running a reply's tool calls: permission, approval, rules, taint, parallel reads, repeat and loop detection |
-| `modes.py` | ask / edits / auto / plan, plan review, mode change notes |
-| `stop_rules.py` | when a task stops: finish checks, the project check, refusals, budgets |
+| `modes.py` | ask / edits / auto / plan, plan review, mode change notes, plan triggers |
+| `stop_rules.py` | when a task stops: finish checks, the project check, refusals, budgets; the flow's no-progress watch and per-state token budgets |
+| `task_class.py` | Stage 7: bugfix / feature / refactor / question / ops by rules, one model question when unclear; the flow for a class |
+| `flows/` | Stage 7: the verified flow (`verified.py`: REPRODUCE, FIX, TEST, REVIEW, DONE as sub-goal messages and permission profiles on the one writer), its model-free checks (`checks.py`: repro verdicts, failing-test counts, test selection), the reviewer (`review.py`: the `verifier` agent in a fresh chat, the review JSON contract) and the per-task start (`start.py`: which flow, the impact list, plan triggers) |
+| `impact.py` | Stage 7: signature changes after an edit and their call sites, as todos |
 | `contracts.py` | `AnswerContract`, `run_read_only_task` (the review's read-only session) |
 | `delegate.py` | helper chats and file-defined agents (`delegate`), one pool per session |
 | `chat.py` | `_Chat`: the conversation, retries, size and health; **the engine's message list** for a model API session |

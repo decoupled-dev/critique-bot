@@ -8,7 +8,7 @@ runs in process for crit's own front ends (`critique_bot.engine.Engine`).
 ```
 crit serve [--repo-dir DIR] [--port N] [--model NAME] [--listen ADDRESS --insecure]
 crit attach [--url URL] [--session ID] [task]
-crit run [--agent NAME] [--json] [--mode MODE] [--url URL] "task"
+crit run [--agent NAME] [--json] [--mode MODE] [--flow FLOW] [--url URL] "task"
 ```
 
 ## Starting and finding the server
@@ -111,9 +111,12 @@ change the terminal, not the remote session, in this version.
 ## crit run
 
 `crit run --agent NAME --json "task"` runs one task with no one at the terminal and prints
-every event as one JSON line on stdout (like `opencode run`), ending with `session_closed`.
-The exit code is 0 when the task finished `COMPLETED`. Without `--json` it prints the
-model's words and the outcome. `--agent` takes a file-defined agent or a role; the agent's
+every event as one JSON line on stdout (like `opencode run`), then `session_closed`, then
+a final object: `{"type": "final", "code": "COMPLETED", "changed": [...], "evidence": {...}}`,
+where `evidence` is the verified flow's checklist and numbers ([verified-changes.md](verified-changes.md);
+`null` for a plain task). The exit code is 0 when the task finished `COMPLETED`. Without
+`--json` it prints the model's words, the checklist and the outcome. `--flow verified|plain|auto`
+picks the flow (in this process only). `--agent` takes a file-defined agent or a role; the agent's
 mode applies unless an agent file you have not approved would loosen it (then `ask`), and a
 `read-only` agent runs in `ask` with no one to approve. `--mode` overrides it. `--url` runs
 the task on a `crit serve` instead of in this process. `crit run` without `--agent`,
