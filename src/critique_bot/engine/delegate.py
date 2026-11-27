@@ -586,7 +586,7 @@ class _AgentRun:
         run.definition = found
         run.name = found.name
         if found.tools is not None or found.deny_tools or found.read_only:
-            registry = agent_tools.registry()
+            registry = fields.get("registry") or agent_tools.registry()
             run.tools = registry.only(found.allowed_tools(registry.names()))
         if found.effective_isolation == "worktree":
             parent = Path(fields.get("cache_dir") or tempfile.gettempdir()) / "worktrees"

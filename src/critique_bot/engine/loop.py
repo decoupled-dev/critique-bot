@@ -233,6 +233,7 @@ def run_agent_loop(
         web_hosts=_web_hosts(options),
         rules=_load_rules(options),
         settings=options,
+        registry=options.get("_registry"),
     )
     outcome_code = "COMPLETED"
     helpers = delegate_mod.SessionHelpers(

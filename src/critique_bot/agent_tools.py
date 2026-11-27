@@ -255,6 +255,10 @@ class ToolContext:
     #: The effective .crit/settings.json (tool_output_cap_tokens, edit_fail_limit, whole_file_max_lines,
     #: edit_guard, lint, lint_timeout_s, shell_timeout_s, ...). None: every default.
     settings: dict[str, Any] | None = None
+    #: The session's own ToolRegistry (tool_api.execute and permission_for use it), or None for
+    #: the installed one. The Engine gives each session its own, so sessions in one process
+    #: with different extensions do not share a global.
+    registry: Any = None
 
     def setting(self, key: str, default: Any = None) -> Any:
         """One setting, or ``default`` when it is not set."""

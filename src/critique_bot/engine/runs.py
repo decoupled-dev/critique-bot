@@ -62,6 +62,8 @@ def run_agent(
     approve_mode: str | None = None,
     role: str | None = None,
     resume: str | None = None,
+    session_log: Any = None,
+    shared_process: bool = False,
 ) -> int:
     """Open the Edge session, run the tool loop, and write the transcript.
 
@@ -72,14 +74,22 @@ def run_agent(
 
     Every session is logged in ``.crit/sessions/<id>/`` (session_log). ``resume`` is the id
     (or a prefix, or ``last``) of a logged session to continue instead of starting a new one.
+
+    The Engine passes ``session_log`` (a log it opened, so the session id is known before the
+    run starts; with ``resume`` set the log already holds the earlier run) and
+    ``shared_process``: other sessions run in this process, so the tool registry goes to this
+    session's tool context instead of being installed process-wide, and the run counters are
+    not reset.
     """
     started = datetime.now(timezone.utc)
-    run_stats.reset()
+    if not shared_process:
+        run_stats.reset()
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
     try:
-        slog = _open_session_log(home, config, task, resume=resume, settings=settings)
+        slog = session_log if session_log is not None else _open_session_log(
+            home, config, task, resume=resume, settings=settings)
     except session_log_mod.SessionNotFound as exc:
         log.notice(f"Problem: {exc}")
         return 1
@@ -160,7 +170,8 @@ def run_agent(
 
     seed = build_seed(role_id)
     code = 1
-    previous_registry = tool_api.use_registry(setup.registry) if setup.registry is not None else None
+    previous_registry = (tool_api.use_registry(setup.registry)
+                         if setup.registry is not None and not shared_process else None)
     try:
         engine_setup._remove_old_codegraph()
         code = _run_session(
@@ -182,7 +193,8 @@ def run_agent(
                 "session_shell": session_shell,
                 "turns": turns,
                 "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
-                             "_native_tools": setup.native_tools, "_extensions": extensions, **_session_settings(config, home)},
+                             "_native_tools": setup.native_tools, "_extensions": extensions, **_session_settings(config, home),
+                             **({"_registry": setup.registry} if shared_process else {})},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
                 "role": role_id,

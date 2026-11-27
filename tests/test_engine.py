@@ -179,5 +179,215 @@ class FirstTurnAndJobsTest(unittest.TestCase):
         self.assertEqual(jobs.killed, [])
 
 
+
+# --------------------------------------------------------------------------- the Engine API
+
+import threading  # noqa: E402
+
+from critique_bot.engine import api as engine_api  # noqa: E402
+
+
+def _edit_call(path: str, old: str, new: str) -> str:
+    return ('<tool_call>\n{"tool": "edit_file", "arguments": '
+            + __import__("json").dumps({"path": path, "old_string": old, "new_string": new}) + "}\n</tool_call>")
+
+
+class _ScriptSession:
+    """A model session that answers from a shared script; ``gate`` holds a reply back until set."""
+
+    def __init__(self, script: list[str], gate: threading.Event | None = None) -> None:
+        self.script = script
+        self.gate = gate
+        self.sent: list[str] = []
+        self.last_detail = None
+
+    def send(self, prompt: str) -> str:
+        self.sent.append(prompt)
+        if self.gate is not None:
+            self.gate.wait(10)
+        return self.script.pop(0) if self.script else "COMPLETED"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeProvider:
+    def __init__(self, script: list[str], gate: threading.Event | None = None) -> None:
+        self.script = script
+        self.gate = gate
+        self.sessions: list[_ScriptSession] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def session(self, **_kwargs):
+        made = _ScriptSession(self.script, self.gate)
+        self.sessions.append(made)
+        return made
+
+
+def _engine_home(root: Path):
+    from critique_bot.code_index import IndexStats
+    from critique_bot.project_home import init_bot_home
+
+    with mock.patch("critique_bot.project_home.rebuild_index", return_value=IndexStats(files=0, symbols=0)):
+        home = init_bot_home(root)
+    home.settings.update({"tool_format": "tags", "helper_sessions": 0, "environment_snapshot": False})
+    return home
+
+
+class EngineApiTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from critique_bot.config import Selectors
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "note.txt").write_text("one\n", encoding="utf-8")
+        self.home = _engine_home(self.root)
+        self.config = BotConfig(url="https://chat.example/", selectors=Selectors(prompt_input="textarea",
+                                                                                   assistant_messages=".m"),
+                                model="Model")
+        self.provider = _FakeProvider([])
+        patches = [
+            mock.patch("critique_bot.model_api.open_provider", lambda *_a, **_k: self.provider),
+            mock.patch("critique_bot.engine.setup._open_shell_session", return_value=None),
+            mock.patch("critique_bot.engine.setup._remove_old_codegraph"),
+            mock.patch("critique_bot.engine.setup._prewarm_shell_environment"),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        self.engine = engine_api.Engine(self.config, self.home)
+        self.addCleanup(self.engine.close)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _until(self, handle, kind: str, since: int = 0) -> dict:
+        for event in handle.events(since, idle_timeout=10):
+            if event["type"] == kind:
+                return event
+        self.fail(f"no {kind} event")
+
+    def test_an_approval_is_a_request_event_answered_once(self) -> None:
+        self.provider.script[:] = [_edit_call("note.txt", "one", "two"), "COMPLETED"]
+        handle = self.engine.create_session(mode="ask")
+        self.assertTrue(handle.id)
+        handle.send("change note.txt to two")
+        request = self._until(handle, "request")
+        self.assertEqual(request["kind"], "permission")
+        self.assertEqual(handle.state, engine_api.WAITING)
+        handle.answer(request["id"], {"decision": "yes"})
+        with self.assertRaises(engine_api.RequestClosed):
+            handle.answer(request["id"], {"decision": "no"})
+        finished = self._until(handle, "task_finished", request["seq"])
+        self.assertEqual(finished["code"], "COMPLETED")
+        self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "two\n")
+        kinds = [event["type"] for event in handle.events(0, follow=False)]
+        self.assertIn("request_answered", kinds)
+        self.assertIn("tool_result", kinds)
+
+    def test_two_watchers_see_the_same_events(self) -> None:
+        self.provider.script[:] = ["4."]
+        handle = self.engine.create_session(mode="auto")
+        seen: list[list[int]] = [[], []]
+
+        def watch(index: int) -> None:
+            for event in handle.events(0, idle_timeout=10):
+                seen[index].append(event["seq"])
+                if event["type"] == "task_finished":
+                    return
+
+        threads = [threading.Thread(target=watch, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        handle.send("what is 2 + 2?")
+        for thread in threads:
+            thread.join(15)
+        self.assertTrue(seen[0])
+        self.assertEqual(seen[0], seen[1])
+
+    def test_unattended_requests_are_denied_and_cancel_interrupts(self) -> None:
+        self.provider.script[:] = [_edit_call("note.txt", "one", "two"), "COMPLETED", "COMPLETED", "COMPLETED"]
+        handle = self.engine.create_session(mode="ask", unattended=True)
+        handle.send("change note.txt to two")
+        answered = self._until(handle, "request_answered")
+        self.assertEqual(answered["by"], "unattended")
+        self._until(handle, "task_finished")
+        self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "one\n")
+
+        self.provider.script[:] = [_edit_call("note.txt", "one", "three")]
+        second = self.engine.create_session(mode="ask")
+        second.send("change note.txt to three")
+        request = self._until(second, "request")
+        self.assertTrue(second.cancel())
+        finished = self._until(second, "task_finished", request["seq"])
+        self.assertEqual(finished["code"], "INTERRUPTED")
+        with self.assertRaises(engine_api.RequestClosed):
+            second.answer(request["id"], "yes")
+
+    def test_close_then_open_resumes_the_same_log(self) -> None:
+        self.provider.script[:] = ["4."]
+        handle = self.engine.create_session(mode="auto")
+        handle.send("what is 2 + 2?", close_after=True)
+        self._until(handle, "session_closed")
+        last = handle.last_seq()
+        self.assertIsNone(self.engine.session(handle.id))
+        self.assertEqual(self.engine.list_sessions()[0]["id"], handle.id)
+        again = self.engine.open_session(handle.id)
+        self.assertEqual(again.last_seq(), last)
+        self.provider.script[:] = ["6."]
+        again.send("and 3 + 3?", close_after=True)
+        resumed = self._until(again, "session_resumed", last)
+        self.assertGreater(resumed["seq"], last)
+        self._until(again, "session_closed", resumed["seq"])
+
+    def test_set_mode_and_bad_replies(self) -> None:
+        handle = self.engine.create_session(mode="ask")
+        self.assertEqual(handle.set_mode("yolo"), "auto")
+        with self.assertRaises(engine_api.BadReply):
+            handle.set_mode("sideways")
+        with self.assertRaises(engine_api.BadReply):
+            engine_api._check_reply("permission", {"decision": "maybe"})
+        self.assertEqual(engine_api._check_reply("question", "blue"), {"text": "blue"})
+        with self.assertRaises(engine_api.EngineError):
+            self.engine.create_session(cwd="/somewhere/else")
+
+    def test_a_front_end_drives_a_session_in_process(self) -> None:
+        from critique_bot import ui_api
+
+        class Front(ui_api.NullUI):
+            def __init__(self) -> None:
+                super().__init__()
+                self.asked: list[str] = []
+                self.notes: list[str] = []
+                self.tasks = ["and now three"]
+
+            def note(self, kind: str, message: str) -> None:
+                self.notes.append(message)
+
+            def approve(self, permission, *, risky: str = ""):
+                self.asked.append(permission.kind)
+                return "yes", ""
+
+            def read_message(self):
+                return self.tasks.pop(0) if self.tasks else None
+
+        self.provider.script[:] = [_edit_call("note.txt", "one", "two"), "COMPLETED",
+                                   _edit_call("note.txt", "two", "three"), "COMPLETED"]
+        handle = self.engine.create_session(mode="ask")
+        front = Front()
+        handle.send("change note.txt to two")
+        code = engine_api.drive_ui(handle.events(0, idle_timeout=10), front, answer=handle.answer, send=handle.send)
+        self.assertEqual(code, "COMPLETED")
+        self.assertEqual(front.asked, ["edit", "edit"])
+        self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "three\n")
+        self.assertTrue(any("Working on" in note for note in front.notes))
+
+
 if __name__ == "__main__":
     unittest.main()

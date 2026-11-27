@@ -3,6 +3,9 @@
 Apps use only the names below (``tests/test_layers.py`` keeps the other engine modules
 private to the engine and the routing layer):
 
+- ``Engine`` / ``SessionHandle`` (engine/api.py): sessions as objects with a live event
+  stream and answerable requests (approvals, questions, plan review); ``drive_ui`` shows a
+  session on any front end with NullUI's methods. ``crit serve`` puts this on HTTP.
 - ``run_agent`` / ``run_read_only_task``: one whole session (open the backend, set the
   session up, run the loop, save the transcript); ``AnswerContract`` for a read-only
   task whose final answer an app parses.
@@ -22,6 +25,7 @@ modules (Stage 3), used here and by ``crit sessions``.
 
 from __future__ import annotations
 
+from critique_bot.engine.api import BadReply, Engine, EngineError, RequestClosed, SessionHandle, drive_ui
 from critique_bot.engine.contracts import AnswerContract, run_read_only_task
 from critique_bot.engine.dispatch import READ_ONLY_TOOLS
 from critique_bot.engine.loop import run_agent_loop
@@ -33,6 +37,12 @@ from critique_bot.engine.ui import use_ui
 
 __all__ = [
     "AnswerContract",
+    "BadReply",
+    "Engine",
+    "EngineError",
+    "RequestClosed",
+    "SessionHandle",
+    "drive_ui",
     "READ_ONLY_TOOLS",
     "ToolCall",
     "activity",
