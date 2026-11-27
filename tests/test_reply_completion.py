@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The reply must not be cut short when the model merely pauses."""
 
 from __future__ import annotations

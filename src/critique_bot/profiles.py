@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Model profiles: what differs between model families, kept as data instead of code paths.
 
 A profile says how crit should talk to one family of models: native or prompted tool

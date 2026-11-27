@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """git in run_command: no editor can hang a command, and conflicts come back with the next step."""
 
 from __future__ import annotations

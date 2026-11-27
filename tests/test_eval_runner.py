@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """scripts/eval/run_eval.py (a wrapper for crit eval) with a fake crit: workspace, check, answer, stats, skip."""
 
 from __future__ import annotations

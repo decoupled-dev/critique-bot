@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Windowed reads of very large files: sparse line index, long-line clipping, read_files."""
 
 from __future__ import annotations

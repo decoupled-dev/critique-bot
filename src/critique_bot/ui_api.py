@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The engine's UI interface: how the agent loop shows progress and asks a person.
 
 The loop never imports a front end. It calls the object installed with

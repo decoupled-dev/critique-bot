@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A fake MCP server over stdio, for tests: two tools, one description that a test can change.
 
 Run as ``python fake_mcp_server.py [DESCRIPTION]``. ``echo`` returns its text (and, when the

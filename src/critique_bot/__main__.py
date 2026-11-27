@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Entry point of ``python -m critique_bot`` and of the standalone bundle (``crit``, ``crit.exe``).
 
 The program is crit: with no mode word it runs the coding agent; ``crit review`` reviews a

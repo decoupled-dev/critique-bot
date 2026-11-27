@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A throwaway git worktree for an agent that writes, so it never touches the user's files.
 
 The worktree starts at HEAD plus the workspace's uncommitted changes (tracked and new

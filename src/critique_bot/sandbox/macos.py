@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """macOS backend: ``sandbox-exec -p <profile>`` with a generated Seatbelt (SBPL) profile.
 
 The profile denies by default, then allows running programs, reading files (secret paths

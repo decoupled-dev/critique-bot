@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """One session's extensions: the tools, MCP servers and hooks that are active, decided once.
 
 :func:`load_session` reads every extension file at session start and returns an

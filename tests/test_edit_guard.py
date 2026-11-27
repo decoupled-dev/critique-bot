@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The guard after every write or edit: new syntax errors flagged or rejected, only new lint issues."""
 
 from __future__ import annotations

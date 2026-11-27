@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Shell execution for ``run_command``.
 
 Shells

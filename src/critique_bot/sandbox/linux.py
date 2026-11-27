@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Linux backend: bubblewrap (``bwrap``).
 
 The command runs in new user, mount, PID, IPC, UTS, cgroup and network namespaces:

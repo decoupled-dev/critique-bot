@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Local setup UI: pick selectors by clicking, then test a live round trip.
 
 Serves a small page on 127.0.0.1 using only the standard library. The hard part

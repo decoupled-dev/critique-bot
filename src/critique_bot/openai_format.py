@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The OpenAI Responses API format as the agent's tool-call protocol over a text chat.
 
 With ``"tool_format": "openai"`` the first message gives the model its tools as an OpenAI

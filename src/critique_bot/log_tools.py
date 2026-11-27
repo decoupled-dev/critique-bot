@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Log analysis for logs of millions of lines: summary, query, around, diff.
 
 The model asks one question ("what went wrong in this log?") and gets a short answer

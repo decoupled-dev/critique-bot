@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Stage 3: the session event log, its projection, resume after a hard kill, fork, redaction,
 the byte-stable prompt prefix, and the session commands."""
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The web-chat backend: a chat page in Edge behind the model layer's interface.
 
 :class:`BrowserProvider` opens Edge and hands out :class:`ChatSession` objects (one per

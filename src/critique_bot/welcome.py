@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """First-run terminal welcome: text style, the role for this project, then the Edge sign-in window.
 
 The screen is the same shape as a coding agent's first launch: a banner,

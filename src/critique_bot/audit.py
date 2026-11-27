@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The audit log: ``~/.crit/logs/audit.jsonl``, one JSON object per line.
 
 What crit did on this machine and why, for a person to check afterwards (``crit audit``):

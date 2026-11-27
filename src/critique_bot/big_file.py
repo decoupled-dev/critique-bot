@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Reading windows of very large text files (logs of millions of lines) without loading them.
 
 A sparse line index (the byte offset of every ``STEP``-th line) is built once per file

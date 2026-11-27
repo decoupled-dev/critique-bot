@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit install`` and ``crit uninstall``: put the downloaded program where every terminal
 finds it, and take everything away again.
 

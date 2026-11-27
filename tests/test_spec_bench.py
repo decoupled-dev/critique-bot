@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """scripts/eval/spec_bench.py: the tokens-per-second math, the on/off verdict, and a run
 against a fake OpenAI-compatible server with a scripted clock."""
 

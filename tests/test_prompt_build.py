@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Stage 3: memory files (hierarchical AGENTS.md and .crit/AGENT.md, the cap), the session context
 in the first turn, change notes, and llama.cpp slot pinning."""
 

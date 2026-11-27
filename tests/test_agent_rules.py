@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Saved permission rules: "allow" and "deny" in .crit/settings.json."""
 
 from __future__ import annotations

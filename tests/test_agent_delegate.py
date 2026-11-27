@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """delegate(agent=...): a file-defined agent's tools, steps, parallel cap and worktree isolation."""
 
 from __future__ import annotations

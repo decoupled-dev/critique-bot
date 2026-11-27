@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Strict egress (the default): crit reaches the chat host and allowed_hosts, nothing else."""
 
 from __future__ import annotations

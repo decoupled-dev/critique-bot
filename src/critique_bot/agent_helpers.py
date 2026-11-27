@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Helper chats: the coordinating session hands a self-contained brief to a short, fresh chat.
 
 A helper is a subagent. The main chat gives it one brief (an investigation, a

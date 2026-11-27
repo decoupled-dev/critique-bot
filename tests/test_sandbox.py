@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The OS sandbox: settings, policies, the backends' generated arguments, and real escape tests.
 
 The escape tests run for real wherever bubblewrap works (this machine, Linux CI) and are

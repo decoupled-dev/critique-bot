@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The program's entry point: always crit, and a double-click in Windows Explorer."""
 
 from __future__ import annotations

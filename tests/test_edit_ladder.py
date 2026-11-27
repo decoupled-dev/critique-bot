@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The edit match ladder (agent_edit.replace_span) and edit_file on top of it.
 
 Each ladder step has fixtures: exact, line endings / trailing whitespace, indentation

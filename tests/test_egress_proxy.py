@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The egress proxy: who may be reached, and that every request is logged."""
 
 from __future__ import annotations

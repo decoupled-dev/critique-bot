@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """No reply: resend, stall detection, retry in a new chat. Long sessions: rotate with a handoff note."""
 
 from __future__ import annotations

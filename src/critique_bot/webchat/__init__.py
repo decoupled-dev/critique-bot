@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The web-chat backend, as a removable module: crit driving a chat page in Edge.
 
 Nothing outside this package imports it. Core crit reaches it only through

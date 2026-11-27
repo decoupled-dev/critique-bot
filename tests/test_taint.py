@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Taint: untrusted content shrinks what auto mode may do, until /trust.
 
 The injection scenarios follow one pattern: untrusted text (a fetched page, an outside

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Manifest tools: a tool defined by one TOML (or JSON) file, run as one argv.
 
 ```toml

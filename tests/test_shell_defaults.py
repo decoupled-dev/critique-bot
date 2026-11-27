@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Shell defaults: the timeout from settings, explicit longer timeouts, convert-to-background
 on timeout (the job stays listed), and the environment snapshot."""
 

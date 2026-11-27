@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The config file: a shared file with url, selectors, and the rest, layered under the user's own.
 
 Every test runs with its own user folder, ProgramData, and system location (all temporary),

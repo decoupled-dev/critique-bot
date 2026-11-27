@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """First-run questions: a local model server or a Web UI, and the config they write."""
 
 from __future__ import annotations

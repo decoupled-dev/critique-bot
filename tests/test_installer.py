@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit install / crit uninstall: the program in the user's folders, launchers, PATH, and removing it all."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Edits and whole-file writes keep everything about a file except the edited text.
 
 CRLF, a BOM, no final newline, the executable bit and a Latin-1 file round-trip; a crash

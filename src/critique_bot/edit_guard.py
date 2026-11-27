@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The guard after every write or edit: a parse check, then a fast lint of the changed file.
 
 **Parse check.** tree-sitter when the optional ``index`` extra is installed (counting

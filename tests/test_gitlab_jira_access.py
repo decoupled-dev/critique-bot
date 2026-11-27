@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """GitLab projects decided by the token, git network commands to them, and read-only Jira.
 
 A local HTTP server plays GitLab and Jira, so nothing leaves this machine.

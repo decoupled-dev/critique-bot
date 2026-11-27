@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Where crit may connect: the egress policy from config.json ``"egress"``.
 
 ``"strict"`` (the default): the only machine crit talks to is the chat at ``url`` (its

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The local-model backend: config, the adapter, the OpenAI-compatible wire format, and the agent loop on it."""
 
 from __future__ import annotations

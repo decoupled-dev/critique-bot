@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A send that gets no reply message and no generating signal is reported as stalled, not waited on for 20 minutes."""
 
 from __future__ import annotations

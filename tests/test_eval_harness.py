@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit eval: metrics, grading, the grader audit, and runs with fake agents (no model needed)."""
 
 from __future__ import annotations

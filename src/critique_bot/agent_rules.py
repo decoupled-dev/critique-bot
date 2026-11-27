@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Saved permission rules: ``"allow"`` and ``"deny"`` in ``.crit/settings.json``.
 
 A rule is a command pattern (``"./gradlew test*"``, ``"git status*"``) or a tool with a

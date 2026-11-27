@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hardening from the offline security scans: token transport, private folders, profile location."""
 
 from __future__ import annotations

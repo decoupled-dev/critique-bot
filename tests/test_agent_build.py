@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Builds: long timeouts, summaries, hints, retries, artifacts, JDK/SDK discovery, hand-backs."""
 
 from __future__ import annotations

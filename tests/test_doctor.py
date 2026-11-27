@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit doctor model against fake servers: server detection, the 12-turn probe scoring
 (native, recovered by the fallback parser, failed), the cache, --write-profile, and the CLI."""
 

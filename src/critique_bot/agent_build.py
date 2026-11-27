@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Builds: which commands are builds, what their output means, and what to do when they fail.
 
 A build (Gradle, Maven, AOSP ``m``, CMake, npm) gets a long timeout, a short

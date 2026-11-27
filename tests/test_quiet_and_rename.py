@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Quiet sessions (the log file instead of the screen), the .bot -> .crit rename, and the
 CRITIQUE_* -> CRIT_* environment names."""
 

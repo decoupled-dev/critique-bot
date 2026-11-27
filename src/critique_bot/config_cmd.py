@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit config``: see and change crit's settings without editing JSON.
 
 ``crit config`` with no flags prints the settings in plain words. With flags it changes

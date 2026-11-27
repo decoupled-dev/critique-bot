@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The reply is read with its whitespace intact (innerText collapses indentation), and XML edits are checked."""
 
 from __future__ import annotations

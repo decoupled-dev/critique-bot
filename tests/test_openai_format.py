@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The OpenAI Responses format as the tool protocol: parsing, results, prompts, and the loop."""
 
 from __future__ import annotations

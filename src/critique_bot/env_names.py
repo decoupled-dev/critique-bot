@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit's environment variables: ``CRIT_*``, with the old ``CRITIQUE_*`` names still read.
 
 The new name wins. When only the old name is set, its value is used and the log file says so

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """agent_edit: byte-exact saves, permissions, symlinks, and undo checkpoints."""
 
 from __future__ import annotations

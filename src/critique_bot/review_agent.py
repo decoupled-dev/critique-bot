@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit review``: the review as a read-only agent task.
 
 The one-shot review (``crit review --quick``, and the CI worker) pastes the patch and

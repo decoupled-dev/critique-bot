@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit's settings without hand-editing JSON: the user config, ``crit config``, the first-run
 questions, and the questions asked later (blocked sites, the GitLab address)."""
 

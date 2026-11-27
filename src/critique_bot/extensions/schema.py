@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A JSON Schema subset: enough to check a tool's arguments before anything runs.
 
 Supported: ``type`` (object, string, integer, number, boolean, array, null, or a list of

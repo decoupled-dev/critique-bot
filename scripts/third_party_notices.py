@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Write THIRD_PARTY_NOTICES.md: the license of every third-party package crit ships.
 
 Offline: it reads the metadata of the packages installed in the Python environment that

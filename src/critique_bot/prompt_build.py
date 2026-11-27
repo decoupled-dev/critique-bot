@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The prompt a session starts with, in a fixed, byte-stable order, and the notes appended later.
 
 The first message of a conversation is the *prefix*. Within a session it never changes,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Build an MR diff from the local Git checkout and load changed file bodies.
 
 ``crit submit`` runs inside the GitLab job, so the app repo is already

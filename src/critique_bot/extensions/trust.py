@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Where extensions live, and which project files the user has approved.
 
 Two scopes, the same layout in each:

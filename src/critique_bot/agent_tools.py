@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tool handlers for the local agent and the per-task working memory.
 
 Every handler takes the parsed arguments and a :class:`ToolContext` and

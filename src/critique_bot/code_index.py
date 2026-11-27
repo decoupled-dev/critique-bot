@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Code catalog under ``.crit/cache/index.sqlite``.
 
 Stdlib only by default. ``tree_sitter`` plus a language wheel is used when it

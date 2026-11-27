@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Speed: one probe per reply poll, headless request trimming, and no throttling of a hidden window."""
 
 from __future__ import annotations

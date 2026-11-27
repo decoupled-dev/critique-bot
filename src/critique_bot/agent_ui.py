@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Terminal UI for ``crit``: a Claude-Code-style screen on top of rich and prompt_toolkit.
 
 One :class:`rich.console.Console` writes everything (stdout). A single live

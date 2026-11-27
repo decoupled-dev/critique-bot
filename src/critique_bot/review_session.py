@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Review turns on one ChatSession: one-shot when it fits, else prompt → files → patch.
 
 Web chat UIs have no system role we own. Recency wins, the middle of a long

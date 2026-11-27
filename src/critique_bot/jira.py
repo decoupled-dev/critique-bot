@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Read-only Jira: an issue, or a JQL search, as short text for the model.
 
 The instance and token come from :mod:`integrations` (``crit config --jira-url`` and

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The sign-in window is a plain browser; sandbox flags only where they are needed."""
 
 from __future__ import annotations

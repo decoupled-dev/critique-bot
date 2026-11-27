@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit's one folder (~/.crit, %USERPROFILE%\\.crit, CRIT_HOME): what goes in it, its
 permissions, the move from the old folders, and the browser profile's location."""
 

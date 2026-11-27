@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Native tool calling with a local server: the request, streamed tool_calls, the fallback
 parser, the history the server sees, and a whole task through the engine."""
 

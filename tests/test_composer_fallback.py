@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """When the configured prompt_input finds nothing, the composer is found by its shape."""
 
 from __future__ import annotations

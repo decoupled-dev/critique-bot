@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Soong (Android.bp) know-how for AOSP trees: which module builds a file, and the
 lunch targets a tree offers.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A model served on this PC or the network: llama.cpp, LM Studio, vLLM, or any OpenAI-compatible server.
 
 This is the second backend behind :mod:`critique_bot.provider`. It offers the same

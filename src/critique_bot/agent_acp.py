@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Agent Client Protocol front end for the agent: ``crit --acp``.
 
 Lets an ACP client (Android Studio's Bring Your Own Agent, other JetBrains

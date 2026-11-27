@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """agent_tools: permissions, ui summaries, forgiving arguments, and the new tools."""
 
 from __future__ import annotations

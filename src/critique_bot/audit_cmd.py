@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit audit``: print the audit log (``~/.crit/logs/audit.jsonl``).
 
     crit audit                      the last 50 records

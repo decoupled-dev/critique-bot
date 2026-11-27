@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """One task split across helper chat tabs: parallel briefs, file ownership, reports back to the coordinator."""
 
 from __future__ import annotations

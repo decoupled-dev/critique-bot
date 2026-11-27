@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The log tool: formats, events with their stacks, templates, query, around, diff."""
 
 from __future__ import annotations

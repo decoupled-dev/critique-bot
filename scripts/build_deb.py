@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Package a Linux bundle from scripts/build.py as a .deb (amd64 or arm64).
 
 Run on Linux after scripts/build.py, with dpkg-deb installed (Debian and Ubuntu have it):

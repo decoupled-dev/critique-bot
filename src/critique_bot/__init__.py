@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Browser chat client for AAOS system-app review and general prompts.
 
 Drives a web chat UI in headless Edge. Default mode is a specialized AAOS

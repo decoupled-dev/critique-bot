@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tool results sized to the context: head and tail kept, the whole text saved, never empty.
 
 Every built-in tool result passes through :func:`shape_output` (re-exported by

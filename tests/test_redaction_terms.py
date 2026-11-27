@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Company, customer, and project names from ``redact_terms`` never reach the chat."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A tiny reader for the YAML-like frontmatter of agent and command files.
 
 Only the subset those files need, so crit needs no YAML library:

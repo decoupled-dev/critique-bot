@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Stage 3: compaction by context pressure (mask, then summarize), on its own and in the engine."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit doctor model``: check a local model server before crit relies on it.
 
 1. The server answers and lists the model.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Counters for one crit run, saved with the transcript so ``crit eval`` can measure the harness.
 
 The engine and the model backends report here; nothing reads the counters while the run

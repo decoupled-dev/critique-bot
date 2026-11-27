@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Install crit from this checkout into a virtual environment and put `crit`
 # on PATH (Linux and macOS).
 #

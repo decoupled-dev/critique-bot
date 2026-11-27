@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Telemetry stays off: crit's environment, its dependency list, and its own imports."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Local coding agent driven through a web chat page.
 
 The chat model prints ``<tool_call>`` blocks. This module parses them, runs
