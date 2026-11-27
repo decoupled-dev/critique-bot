@@ -68,6 +68,12 @@ for profile_json in sorted((ROOT / "src" / "critique_bot" / "profiles").rglob("*
 # Built-in agents (one per former role): extensions.agent_files.builtin_dir().
 for agent_md in sorted((ROOT / "src" / "critique_bot" / "agents").glob("*.md")):
     datas.append((str(agent_md), "critique_bot/agents"))
+# Domain packs (aosp, ...): their manifest tools and agents (packs.folder()); the pack modules are
+# imported by name (packs.load), so PyInstaller has to be told about them.
+for pack_file in sorted((ROOT / "src" / "critique_bot" / "packs").glob("*/tools/*.json")) + sorted(
+        (ROOT / "src" / "critique_bot" / "packs").glob("*/agents/*.md")):
+    datas.append((str(pack_file), pack_file.parent.relative_to(ROOT / "src").as_posix()))
+hiddenimports += collect_submodules("critique_bot.packs")
 
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],

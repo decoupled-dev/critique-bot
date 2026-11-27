@@ -71,6 +71,8 @@ LAYERS: dict[str, int] = {
     "taint": TOOLS,
     # extensions/ (a package): manifest tools, MCP client, hooks, agent and command files, trust
     "extensions": TOOLS,
+    # packs/ (a package): domain packs (AOSP) loaded through extensions; handlers use the tools above
+    "packs": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
     "agent_helpers": ENGINE,

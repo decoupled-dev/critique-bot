@@ -1,0 +1,25 @@
+{
+  "name": "triage",
+  "description": "Triage a failure from its log in one call: crash (Java FATAL EXCEPTION), anr (ANR in ... with the traces), tombstone (native crash; symbolized with the tree's addr2line when there are symbols), selinux (avc denials: the blocking one, the minimal allow rule and the .te file), build (the first compiler, Soong or linker error). It maps the failing frame or line to source, the owning Soong module and suspect commits, and says plainly when nothing maps to this tree. Not for: browsing a log (log), a bug without a log (locate). Example: {\"action\": \"crash\", \"path\": \"logcat.txt\", \"package\": \"com.android.car\"}. Output: a short report: the failure, source lines, module, ranked suspect commits, a verdict and next steps.",
+  "read_only": true,
+  "timeout_s": 120,
+  "taint": "device",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {"type": "string", "enum": ["crash", "anr", "tombstone", "selinux", "build"]},
+      "path": {"type": "string", "description": "the log, tombstone, traces or build log (any size)"},
+      "text": {"type": "string", "description": "the lines themselves, instead of path"},
+      "package": {"type": "string", "description": "crash/anr: the app or process; selinux: the domain or process"},
+      "traces": {"type": "string", "description": "anr: the traces file (/data/anr/anr_* pulled into the workspace)"},
+      "nth": {"type": "integer", "minimum": 1, "maximum": 50, "description": "crash: the nth crash in the log"}
+    }
+  },
+  "actions": {
+    "crash": {"handler": "triage"},
+    "anr": {"handler": "triage"},
+    "tombstone": {"handler": "triage"},
+    "selinux": {"handler": "triage"},
+    "build": {"handler": "triage", "taint": "trusted"}
+  }
+}

@@ -10,7 +10,10 @@ Sources (each marks the session tainted, with an audit record and a notice):
 * ``web_fetch`` results;
 * files read from outside the workspace;
 * issue text from Jira (and GitLab, MCP tool output later);
-* device logs (the ``log`` tool on a device log, ``adb logcat``);
+* device logs (the ``log`` tool on a device log, ``adb logcat``, the AOSP pack's ``adb`` and
+  ``triage`` tools);
+* any tool result that carries ``"taint"`` (manifest tools with ``taint``, MCP tools; set by
+  ``extensions.untrusted.mark``), observed for extension tools by ``extensions.session``;
 * a workspace marked untrusted (``"untrusted_workspace": true`` in settings: a freshly
   cloned third-party repo), which taints from the start.
 
@@ -166,6 +169,14 @@ def observe(tool: str, args: dict[str, Any] | None, result: dict[str, Any] | Non
         outside = _outside_paths(args, workspace)
         if outside:
             source, detail = "outside_read", outside[0]
+    flagged = result.get("taint")
+    if not source and isinstance(flagged, str) and flagged:
+        # a result marked untrusted by its tool (extensions.untrusted.mark): "device:adb", "tool:x", "mcp:..."
+        kind = flagged.split(":", 1)[0]
+        source = {"device": "device_log", "mcp": "mcp"}.get(kind, "tool_output")
+        detail = flagged[:120]
+        if source == "device_log" and args.get("action"):
+            detail = f"{flagged} {args.get('action')}"[:120]
     if source:
         mark(source, detail)
     return source

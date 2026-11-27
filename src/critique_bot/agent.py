@@ -2428,7 +2428,7 @@ class _TaskRun:
             return True, ""
         mode = self._approve_mode()
         risky = self._risk(perm)
-        if risky and not self.confirm_risky and mode == "auto":
+        if risky and not self.confirm_risky and mode == "auto" and not str(getattr(perm, "key", "")).startswith("device:"):
             risky = ""
         if not risky:
             # A command inside the OS sandbox (perm.contained) cannot write outside the workspace or
