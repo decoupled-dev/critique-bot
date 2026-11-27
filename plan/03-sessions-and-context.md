@@ -87,7 +87,8 @@ Measure `used` from the last turn's `usage.prompt` + estimated pending.
 | Thinking-off profile (`masking_penalty: true`) | Prefer summarize over mask (Complexity Trap's Qwen3-32B finding) |
 
 Today's turn- and time-based triggers (`compact_after_turns`, `compact_after_minutes`)
-were for the web chat and are removed with it. Only context pressure triggers compaction.
+were for the web chat: they move into the web-chat provider (Stage 1), which can ask the
+engine to start a new conversation. For model APIs only context pressure triggers compaction.
 
 The todo list is re-stated at the end of every compaction summary, and after every
 `todo` call, as the last message (recitation).
@@ -109,7 +110,7 @@ per session (slot = hash(session id) mod server slots, read from `/props`).
 4. Memory files: hierarchical AGENTS.md + `.crit/AGENT.md` loading; the cap; docs that say
    "keep it short and human-written".
 5. `compaction.py`: masking, structured summary (one helper conversation), re-attach,
-   recitation; profile flags; delete the turn/time triggers.
+   recitation; profile flags; turn/time triggers only in the web-chat provider.
 6. Session commands in `cli.py` and the TUI; retention and prune.
 7. Cache metrics plumbing; `/status` shows the hit rate.
 8. Eval with long tasks (add 3 tasks needing > 60 turns) and record results in `plan/results/03/`.

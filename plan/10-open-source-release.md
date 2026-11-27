@@ -16,8 +16,10 @@ policy, and the launch.
    with company-specific defaults, internal hostnames and possibly config files. A fresh
    history (squashed initial commit) is safer unless a full secret and identity scan comes
    back clean.
-3. ~~The web-chat backend~~: **decided 2026-11-27, removed in Stage 1.** The public repo
-   ships local models only, with cloud providers planned for Stage 11.
+3. **The web-chat backend** is a removable module (`critique_bot/webchat/`, optional extra)
+   since Stage 1. Decide before launch whether the public repo ships it, ships it as a
+   separate package, or leaves it out (driving third-party web UIs can conflict with those
+   services' terms). Leaving it out is deleting the folder.
 4. **Company-specific integrations** (GitLab posting, the job queue, Jira): keep them as
    generic integrations (they are useful to everyone), with no company defaults.
 5. **Governance:** a single maintainer to start, CONTRIBUTING with a DCO sign-off, or a CLA.
@@ -31,7 +33,7 @@ policy, and the launch.
    up or choose a fresh history (decision 2).
 2. Remove or genericize: internal URLs in defaults, `config.studio.json`, `config.json*`
    in working directories (make sure they are gitignored), company AI-service and web-UI
-   wording in the README and docs (left over after the Stage 1 removal), internal test fixtures.
+   wording in the README and docs, internal test fixtures.
 3. `.gitignore` audit: `out/`, `build/`, `dist/`, `.crit/`, `research_notes/` if they shouldn't
    be public, `reports/`.
 4. License check: Apache-2.0 is in place; verify `NOTICE` and `THIRD_PARTY_NOTICES.md`

@@ -23,9 +23,11 @@ Every stage below says which findings it acts on.
 4. **Stay local-first and private by default.** Nothing leaves the machine unless config
    allows it. Redaction, egress policy and secret-file gating apply on every path, including
    new ones.
-5. **No web-chat backend.** It is removed in Stage 1. crit talks to models only through
-   APIs: local servers now, cloud APIs later (Stage 11). Nothing new may depend on a browser
-   or on parsing a web page.
+5. **Web chat is a removable module.** In Stage 1 the web-chat backend moves into its own
+   package (`critique_bot/webchat/`), found by core crit only through the provider registry,
+   with Playwright as an optional extra. Core crit must work, and its tests pass, with that
+   folder deleted. Everything new is designed for model APIs (local servers now, cloud APIs
+   in Stage 11); nothing new may depend on a browser or on parsing a web page.
 6. **Many local models, not one.** Model families (Qwen, DeepSeek, GLM, Mistral/Devstral,
    gpt-oss, Llama, Gemma, Kimi, MiniMax, …) and servers (llama.cpp, vLLM, SGLang, Ollama,
    LM Studio, TGI, MLX) differ through profiles and presets, never through code paths in the
@@ -39,7 +41,7 @@ Every stage below says which findings it acts on.
 | # | Stage | Main result | Depends on |
 |---|---|---|---|
 | 0 | [Baseline and evals](00-baseline-and-evals.md) | `crit eval` with pass@1/pass^3/tokens/errors; crit vs opencode baseline | — |
-| 1 | [Model protocol](01-model-protocol.md) | Web chat removed; structured turns, native tool calls, fallback parser; profiles for many local model families and servers | 0 |
+| 1 | [Model protocol](01-model-protocol.md) | Web chat isolated as a removable module; structured turns, native tool calls, fallback parser; profiles for many local model families and servers | 0 |
 | 2 | [Tool layer hardening](02-tool-hardening.md) | Edit match ladder, parse/lint guard, output caps, shell defaults | 1 |
 | 3 | [Sessions and context](03-sessions-and-context.md) | Event log, resume/fork, cache-aware prompts, compaction driven by context pressure | 1 |
 | 4 | [Sandbox and safety](04-sandbox-and-safety.md) | OS sandbox, egress proxy, taint tracking, audit log | 3 |

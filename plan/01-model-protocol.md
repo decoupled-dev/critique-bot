@@ -1,7 +1,8 @@
-# Stage 1: Model protocol (drop web chat, structured turns, native tool calls, many local models)
+# Stage 1: Model protocol (web chat as a removable module, structured turns, native tool calls, many local models)
 
 ## Goal
-Delete the web-chat backend completely. Replace the text-in/text-out model interface with
+Move the web-chat backend into a removable module that core crit never imports directly.
+Replace the text-in/text-out model interface with
 structured turns. Use the server's native tool calling, with a defensive fallback parser.
 Support many local model families (Qwen, DeepSeek, GLM, Mistral/Devstral, gpt-oss, Llama,
 Gemma, Kimi, MiniMax, Granite, Phi, …) on many local servers (llama.cpp, vLLM, SGLang,
@@ -22,7 +23,8 @@ changes.
 - Per-model profiles are what Aider, Factory and opencode all converge on.
 
 ## Scope
-- **Remove the web-chat backend** and everything that exists only for it (list below).
+- **Isolate the web-chat backend** in `critique_bot/webchat/` behind the provider registry,
+  so it can be deleted without touching anything else (list below).
 - New model-layer types and the `ModelSession` interface.
 - One adapter for now: OpenAI-compatible chat completions, which every local server
   speaks. Ollama's native `/api/chat` only if its OpenAI endpoint proves insufficient for
@@ -35,23 +37,31 @@ changes.
 - Engine loop switched to structured turns.
 
 Out of scope: cloud providers (Stage 11; the interface allows them), grammar-constrained
-decoding (a profile option in Stage 9, if evals justify it).
+decoding (a profile option in Stage 9, if evals justify it), deleting the web chat (it stays,
+isolated; deleting it later is removing one folder).
 
-### What the web-chat removal deletes
-| Remove | Lines (approx.) | Notes |
+### Web chat as a removable module
+Rule: **no module outside `critique_bot/webchat/` imports it.** Core crit finds it through a
+provider registry (`model_api.register_provider("browser", factory)`), which the package
+registers when it is importable. Everything web-only moves in, or behind a hook it provides:
+
+| Moves into `critique_bot/webchat/` | Lines (approx.) | Notes |
 |---|---|---|
-| `browser.py`, `chat_client.py`, `provider.py`, `setup_ui.py` | ~5,800 | Edge/Playwright driving, selectors, the click-to-pick setup page |
-| Web-UI parts of `setup_wizard.py`, `welcome.py`, `config.py`, `config_cmd.py`, `config_prompts.py` | — | url/selectors/model-dropdown fields, the "Local model or Web UI" first-run question, `crit setup` |
-| `egress.py` `page_network` / `filter_chat_page` / `cdp_url` | — | keep the strict/open policy and `allowed_hosts` for crit's own traffic |
-| Site/proxy sign-in (`site_login`, proxy-auth commits in 1.0.6/1.0.7) | — | only needed for the chat page |
-| Turn/time compaction triggers, `_hands_back` / `_stalls` / `_refuses` prose heuristics, `_cut_fabricated`, chrome stripping | — | web-page specific |
-| `playwright` dependency, `playwright install-deps` docs, the browser-profile folder in `~/.crit` | — | install size and CI drop sharply |
-| Tests for all of the above | — | delete with the code |
+| `browser.py`, `chat_client.py`, the browser half of `provider.py`, `setup_ui.py` | ~5,800 | Edge/Playwright driving, selectors, the click-to-pick setup page, `crit setup` |
+| Web-UI parts of `setup_wizard.py`, `welcome.py`, `config_cmd.py`, `config_prompts.py` | — | the "Web UI" first-run branch and its questions, registered as a wizard step by the package |
+| Web-only config fields (`selectors`, `model_dropdown*`, `cdp_url`, `filter_chat_page`, `page_network`) | — | parsed by a config section the package registers; core `config.py` keeps only shared fields |
+| Site/proxy sign-in for the chat page | — | inside the package |
+| Turn/time compaction triggers and the prose heuristics (`_hands_back`, `_stalls`, `_refuses`, `_cut_fabricated`, chrome stripping) | — | move to the web-chat provider (its `text_protocol` adapter), not the engine |
+| `playwright` dependency | — | optional extra `crit[webchat]`; the base install has no Playwright |
+| Tests for all of the above | — | move to `tests/webchat/`, skipped when the package or Playwright is missing |
 
-Keep: redaction (still needed for cloud later and for logs), `allowed_hosts`, the job
-queue, review mode, GitLab/Jira integrations. Config migration: a config with
-`backend: browser` gets a one-time message ("the web UI backend was removed in 2.0; set up
-a local model with `crit config --backend local ...`") and is not silently rewritten.
+Keep in core: redaction, `allowed_hosts` and the egress policy for crit's own traffic, the
+job queue and worker (on any provider), review mode, GitLab/Jira integrations.
+
+**Removability check:** `tests/test_webchat_removable.py` copies the package source to a temp
+dir without `webchat/`, imports every core module, and runs the core test suite against it.
+CI runs the same job. A config with `backend: browser` when the package is missing gets one
+clear message (install `crit[webchat]`, or switch to a local model) instead of an import error.
 
 ## Design
 
@@ -236,10 +246,11 @@ use them (`tool_mode: auto` = trust the probe).
   prompted mode keeps only a "no call and no final answer" check.
 
 ## Work items
-1. **Remove the web-chat backend** (table above) in its own commits: code, config fields,
-   first-run question, docs, tests, `playwright` dependency, packaging (`.deb`, Windows zip,
-   PyInstaller spec). Add the `backend: browser` migration message. The suite stays green
-   after each commit.
+1. **Isolate the web-chat backend** (table above) in its own commits: provider registry in
+   `model_api`; move the modules into `critique_bot/webchat/`; config section and wizard-step
+   hooks; move tests to `tests/webchat/`; `webchat` optional extra; layer test support for the
+   subpackage; the removability test and CI job; packaging keeps bundling it for the release
+   builds. The suite stays green after each commit.
 2. Add types to `model_api.py` and the `Provider` interface; add `tests/test_model_types.py`.
 3. `providers/openai_compat.py`: port `LocalModelClient`; streamed tool-call delta
    accumulation; reasoning fields per profile; usage; `id_slot` pinning (one slot per
@@ -278,12 +289,13 @@ use them (`tool_mode: auto` = trust the probe).
   `send` sessions).
 - **Provider contract tests** (`tests/provider_contract.py`): any adapter must pass them, so
   Stage 11 cloud adapters plug in by passing the same suite.
-- Removal check: no import of `playwright`, and no `browser`/`selectors` config keys left
-  (a test greps the package).
+- Removability: the core suite passes with `webchat/` deleted; no core module imports
+  `webchat` or `playwright` (a test parses every import).
 
 ## Completion targets
-- [ ] Web-chat backend fully removed: no Playwright dependency, install size reduced, the
-      `backend: browser` migration message tested
+- [ ] Web chat isolated: no core module imports `webchat` or `playwright`; core suite green
+      with the folder deleted (test + CI job); base install has no Playwright; the web-chat
+      tests pass with `crit[webchat]` installed
 - [ ] Engine has no code path that parses tool calls from text except through
       `prompted_tools` / `tool_parse`
 - [ ] `crit doctor model` passes 12/12 native probes for Qwen3.6-27B on vLLM
@@ -305,6 +317,6 @@ use them (`tool_mode: auto` = trust the probe).
   false` for models that misbehave.
 - **Server parser drift:** parsers change between llama.cpp/vLLM releases. The recorded
   fixtures carry the server version, and the model matrix is rerun at each release.
-- **Size of the engine migration:** `agent.py` is 4,100 lines. Removing the web-chat code
-  first makes it smaller. Do the turn migration behind a flag (`CRIT_TURNS=1`), switch the
+- **Size of the engine migration:** `agent.py` is 4,100 lines. Moving the web-only heuristics
+  into the web-chat provider first makes it smaller. Do the turn migration behind a flag (`CRIT_TURNS=1`), switch the
   default after the eval, and delete the old path in Stage 5.
