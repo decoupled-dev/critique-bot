@@ -41,6 +41,8 @@ from critique_bot.engine.setup import (
     _session_start_hook,
     _shell_preference,
     _tool_setup,
+    offers_patch,
+    without_tool_lines,
 )
 from critique_bot.engine.text import _int_setting
 from critique_bot.engine.ui import _ask_user, _print_status, _ui
@@ -83,10 +85,12 @@ def run_agent(
         return 1
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
     extensions = _load_extensions(home.root, settings)
-    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=model_api.native_tools_ok(config),
-                        extensions=extensions)
+    setup = _tool_setup(_loop_settings(config, settings), helpers=helpers, web=bool(_web_hosts(settings)),
+                        native_ok=model_api.native_tools_ok(config), extensions=extensions)
     try:
         instructions = load_agent_instructions(setup.tool_format)
+        if not offers_patch(_loop_settings(config, settings)):
+            instructions = without_tool_lines(instructions, ["apply_patch"])
     except OSError as exc:
         log.error(str(exc))
         log.notice(f"Problem: {exc}")

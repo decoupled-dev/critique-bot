@@ -82,6 +82,8 @@ def _tool_setup(
         names.remove("delegate")
     if not web and "web_fetch" in names:
         names.remove("web_fetch")
+    if only is None and not offers_patch(settings) and "apply_patch" in names:
+        names.remove("apply_patch")  # only for patch-trained models (profile or setting edit_format)
     registry = tool_api.builtin_registry().only(names) if (minimal or only is not None) else None
     block = ""
     native: list[dict[str, Any]] | None = None
@@ -132,20 +134,47 @@ def _model_label(config: BotConfig) -> str:
     return model_api.model_label(config)
 
 
+#: Profile fields that become loop settings (a value in .crit/settings.json wins).
+PROFILE_SETTINGS = ("tool_output_cap_tokens", "shell_timeout_s", "edit_format", "masking_penalty")
+#: edit_format values that offer apply_patch (the profile word, and the plan's short one).
+PATCH_FORMATS = frozenset({"apply_patch", "patch"})
+
+
+def _profile_settings(config: BotConfig) -> dict[str, Any]:
+    """The model profile's values for the loop (a local model; the web chat has no profile)."""
+    if not getattr(config, "is_local", False):
+        return {}
+    try:
+        profile = model_api.model_profile(config)
+    except Exception as exc:  # a profile helps; it must never stop a session
+        log.debug(f"model profile: {exc}")
+        return {}
+    values = {key: getattr(profile, key, None) for key in PROFILE_SETTINGS}
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def offers_patch(settings: dict[str, Any]) -> bool:
+    """apply_patch is offered only to models whose edit format is patches (profile or setting)."""
+    return str(settings.get("edit_format") or "").strip().lower() in PATCH_FORMATS
+
+
 def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any]:
-    """The settings the loop reads, with chat-size defaults that fit a local model's context window.
+    """The settings the loop reads: the model profile's values under the settings file's, and
+    chat-size defaults that fit a local model's context window.
 
     The browser defaults (a 300000-character chat, 40000-character tool results) assume a
     hosted model with a large context. A local model has ``local.num_ctx`` tokens; a chat
     bigger than that is silently truncated, so a new chat starts well before that.
     """
+    profile = _profile_settings(config)
     num_ctx = model_api.context_tokens(config)
-    if num_ctx is None:
+    if num_ctx is None and not profile:
         return settings
-    merged = dict(settings)
-    # about 3 characters per token of code; leave room for the reply and the instructions
-    merged.setdefault("compact_after_chars", max(10_000, int(num_ctx * 2)))
-    merged.setdefault("max_result_chars", max(4_000, min(DEFAULT_RESULT_CHARS, int(num_ctx / 2))))
+    merged = {**profile, **dict(settings)}
+    if num_ctx is not None:
+        # about 3 characters per token of code; leave room for the reply and the instructions
+        merged.setdefault("compact_after_chars", max(10_000, int(num_ctx * 2)))
+        merged.setdefault("max_result_chars", max(4_000, min(DEFAULT_RESULT_CHARS, int(num_ctx / 2))))
     return merged
 
 
@@ -238,3 +267,11 @@ def _remove_old_codegraph() -> None:
         log.info(f"removed the old CodeGraph copy at {folder}")
     except OSError as exc:
         log.debug(f"could not remove {folder}: {exc}")
+
+
+def without_tool_lines(instructions: str, hidden: Iterable[str]) -> str:
+    """The tag format's instructions without the lines that describe ``hidden`` tools."""
+    names = tuple(f"{name}:" for name in hidden)
+    if not names:
+        return instructions
+    return "\n".join(line for line in instructions.split("\n") if not line.startswith(names))

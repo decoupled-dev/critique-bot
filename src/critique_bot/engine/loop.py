@@ -269,6 +269,10 @@ def run_agent_loop(
         else:
             chat.prefix = _without_ready(seed)
     first_context = str(options.get("_first_turn_context") or "").strip() if not restored else ""
+    if first_context and options.get("environment_snapshot") is not False:
+        # The first user turn (never the prefix): OS, shell, cwd, git, languages, the test
+        # command, tools on PATH, and the background jobs already running.
+        first_context = (first_context + "\n\n" + _environment_note(workspace, chosen, session_shell, options)).strip()
     pending = first_task.strip()
     announced = False
     mode_told = _current_mode(approve_mode, ui_mode_at_start)
@@ -411,6 +415,11 @@ def run_agent_loop(
                 "The user interrupted the previous task. Stop working on it; "
                 "its last reply was not acted on. The new task follows."
             )
+        else:
+            if options.get("keep_background_jobs") is not True:
+                stopped = _stop_task_jobs(session_shell, run.jobs_before)
+                if stopped:
+                    _ui("note", "Stopped the background jobs this task left running: " + ", ".join(stopped))
         mode_told = run.mode_seen
         changed = list(task_state.edits)
         slog.write("task_finished", code=outcome_code, task=task, changed=changed or None)
@@ -504,6 +513,41 @@ def _task_skills(
     elif chosen:
         block = "SKILLS: " + ", ".join(item["name"] for item in chosen) + " (sent earlier in this chat; still apply)."
     return block
+
+
+def _environment_note(workspace: Path, shell: Any, session_shell: Any, options: dict[str, Any]) -> str:
+    """tool_api.environment_snapshot for the first turn; "" when it fails (it is a convenience)."""
+    try:
+        return tool_api.environment_snapshot(workspace, shell=shell, session=session_shell, settings=options)
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"environment snapshot failed: {exc}")
+        return ""
+
+
+def _stop_task_jobs(session_shell: Any, before: set[str]) -> list[str]:
+    """At task end: stop the background jobs this task started that still run. Their ids.
+
+    Jobs running before the task (an earlier task's server) are left alone. The model was
+    asked about running jobs before COMPLETED (JOBS_RUNNING); ``"keep_background_jobs":
+    true`` keeps them all.
+    """
+    if session_shell is None:
+        return []
+    try:
+        rows = list(session_shell.jobs())
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"listing background jobs failed: {exc}")
+        return []
+    stopped: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("running") or row.get("id") in before:
+            continue
+        try:
+            session_shell.kill_background(row.get("id"))
+            stopped.append(str(row.get("id")))
+        except Exception as exc:  # noqa: BLE001
+            log.debug(f"stopping background job {row.get('id')} failed: {exc}")
+    return stopped
 
 
 def _stop_background(session_shell: Any) -> None:

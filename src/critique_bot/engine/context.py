@@ -346,8 +346,10 @@ def _memory_notes(home: BotHome, settings: dict[str, Any]) -> str:
 
 def _session_settings(config: BotConfig, home: BotHome) -> dict[str, Any]:
     """Settings the loop takes from the run, not the settings file: the model API context window
-    (compaction by pressure) and the first turn's session context (date, git status)."""
-    values: dict[str, Any] = {"_first_turn_context": prompt_build.session_context(home.root)}
+    (compaction by pressure) and the first turn's session context (the date)."""
+    # The environment snapshot (engine/loop.py) has the git summary; SESSION keeps the date.
+    git = isinstance(home.settings, dict) and home.settings.get("environment_snapshot") is False
+    values: dict[str, Any] = {"_first_turn_context": prompt_build.session_context(home.root, git=git)}
     if config.is_local:
         window = model_api.context_tokens(config)
         if window:
