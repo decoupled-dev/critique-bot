@@ -5070,7 +5070,8 @@ def risky_command(command: str) -> str:
     if not text:
         return ""
     lowered = text.lower()
-    deleting = _broad_delete(text)
+    # Line breaks kept: each line is its own command, so "echo ok\nrm -rf ." deletes the tree.
+    deleting = _broad_delete(re.sub(r"[^\S\r\n]+", " ", str(command)))
     if deleting:
         return deleting
     for pattern, reason in _RISKY_PATTERNS:
@@ -5080,7 +5081,7 @@ def risky_command(command: str) -> str:
 
 
 def _broad_delete(command: str) -> str:
-    for segment in re.split(r"&&|\|\||[;|&\n]", command):
+    for segment in re.split(r"&&|\|\||[;|&\r\n]", command):
         try:
             tokens = shlex.split(segment, posix=False)
         except ValueError:

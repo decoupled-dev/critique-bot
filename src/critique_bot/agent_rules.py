@@ -50,6 +50,20 @@ _INTERPRETER_RE = re.compile(
 _EVAL_FLAGS = {"-c", "-e", "-m", "--eval", "--command", "-command", "/c", "-encodedcommand", "--exec"}
 _SCRIPT_RUNNERS = {"npm", "yarn", "pnpm", "bun"}
 _HARMLESS_REDIRECT = re.compile(r"(?<![^\s])(?:[12*]?>&[12]|[12*]?>\s*(?:/dev/null|nul|\$null))(?=\s|$)", re.I)
+# Where a deny rule looks for another command: every chain separator, and the inside of a
+# subexpression, a group, or a script block (``echo $(touch x)``, ``(rm -rf y)``).
+_DENY_SPLIT_RE = re.compile(r"&&|\|\||[;|&\r\n]|\$\(|[`(){}]")
+_DENY_PREFIXES = {"env", "time", "nice", "nohup", "timeout", "sudo", "doas", "xargs", "command", "exec", "stdbuf",
+                  "ionice", "builtin", "call", "&", "."}
+
+
+def _one_line_spaces(command: str) -> str:
+    """``command`` with runs of spaces and tabs folded to one space, and line breaks kept.
+
+    A shell runs each line as its own command, so a newline is a separator like ``;``.
+    Folding it into a space would let ``git status\nrm -rf src`` pass as one ``git status*`` part.
+    """
+    return re.sub(r"[^\S\r\n]+", " ", str(command or "")).strip()
 
 
 @dataclass(frozen=True)
@@ -138,7 +152,7 @@ def command_segments(command: str) -> list[str] | None:
     output filter after a pipe need no rule. A subexpression (``$(...)``, backticks), a
     script block, or a redirection into a file makes the command uncheckable: None.
     """
-    text = " ".join(str(command or "").split())
+    text = _one_line_spaces(command)
     if not text or "`" in text or "$(" in text:
         return None
     bare = _HARMLESS_REDIRECT.sub(" ", text)
@@ -193,14 +207,20 @@ def _command_matches(command: str, rule: Rule) -> bool:
 
 def _command_denied(command: str, rule: Rule) -> bool:
     glob = _command_glob(rule.pattern)
-    text = " ".join(str(command or "").split())
+    text = _one_line_spaces(command)
     if glob.match(text):
         return True
-    # Every piece of a chain is checked, whatever joins it: "cd x && rm -rf y" hits "rm -rf*".
-    for part in _SPLIT_RE.split(text)[::2]:
-        part = part.strip().lstrip("({").strip()
-        if part and glob.match(part):
-            return True
+    # Every piece of a chain is checked, whatever joins it: "cd x && rm -rf y" hits "rm -rf*",
+    # and so do a second line, a subexpression, and a wrapper in front ("echo $(touch x)", "env touch x").
+    for part in _DENY_SPLIT_RE.split(text):
+        part = part.strip()
+        while part:
+            if glob.match(part):
+                return True
+            head, _, rest = part.partition(" ")
+            if not (_ASSIGNMENT_RE.match(head) or head.lower() in _DENY_PREFIXES):
+                break
+            part = rest.strip()
     return False
 
 

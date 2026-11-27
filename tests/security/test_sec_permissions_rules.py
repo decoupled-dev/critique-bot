@@ -25,8 +25,7 @@ def tearDownModule() -> None:
 
 
 class AllowRuleTests(SecBase):
-    # SECURITY FINDING PM-1: a newline in run_command slips any command past a saved allow rule
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-1 (fixed): a newline in run_command slips any command past a saved allow rule
     def test_allow_rule_does_not_cover_a_second_line(self) -> None:
         # The user allowed "echo ok*". The model appends a second line: bash runs it as a new command.
         approvals = Approvals()
@@ -45,8 +44,7 @@ class AllowRuleTests(SecBase):
         self.assertFalse((self.root / "pwned-by-semicolon").exists())
         self.assertEqual(len(approvals.asked), 1)
 
-    # SECURITY FINDING PM-1: the rule matcher sees "echo ok touch x" (newline folded to a space)
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-1 (fixed): the rule matcher sees "echo ok touch x" (newline folded to a space)
     def test_command_segments_keeps_newline_as_separator(self) -> None:
         self.assertIsNone(
             agent_rules.allowed_by(
@@ -57,8 +55,7 @@ class AllowRuleTests(SecBase):
 
 
 class DenyRuleTests(SecBase):
-    # SECURITY FINDING PM-2: a newline slips a command past a deny rule ("any part of it matches")
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-2 (fixed): a newline slips a command past a deny rule ("any part of it matches")
     def test_deny_rule_covers_a_second_line(self) -> None:
         # Deny rules apply in every mode, whatever the user answers.
         approvals = Approvals(default="yes")
@@ -73,6 +70,21 @@ class DenyRuleTests(SecBase):
         with approvals.patch():
             self.loop(session, approve_mode="ask", settings={"deny": ["touch*"]})
         self.assertFalse((self.root / "denied-chain").exists())
+
+
+    def test_deny_rule_covers_subexpressions_wrappers_and_carriage_returns(self) -> None:
+        # Regression (PM-2): a deny rule matches a command hidden anywhere the shell would run one.
+        rules = agent_rules.load_rules({"deny": ["touch*"]})[0]
+        for command in ("echo $(touch x)", "echo `touch x`", "(touch x)", "FOO=1 env touch x", "echo hi\r\ntouch x"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(agent_rules.denied_by(rules, tool="run_command", perm_kind="command",
+                                                           command=command, paths=(), workspace=self.root))
+
+    def test_a_broad_delete_on_a_second_line_is_risky(self) -> None:
+        # Regression (PM-1): the risk check splits lines like the shell does.
+        from critique_bot import agent_tools
+
+        self.assertTrue(agent_tools.risky_command("echo ok\nrm -rf ."))
 
 
 class AlwaysAllowTests(SecBase):
