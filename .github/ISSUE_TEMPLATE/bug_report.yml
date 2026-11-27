@@ -1,0 +1,66 @@
+name: Bug report
+description: crit did something wrong, crashed, or a command failed.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security problems go to a private advisory instead**
+        (Security → Report a vulnerability; see SECURITY.md), not a public issue.
+        Remove secrets, internal host names and private code from everything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what crit did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest repository or command sequence that shows it.
+      placeholder: |
+        1. crit config --backend local --local-url http://127.0.0.1:8080 --model ...
+        2. crit "..."
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: crit version
+      description: "`pip show critique-bot` (Version line), the release file you installed, or the commit for a checkout."
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python
+      placeholder: Ubuntu 24.04, Python 3.12 / macOS 15, Python 3.13 / Windows 11, release zip
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and server
+      description: The model, its quantization, and the server with its version and launch flags.
+      placeholder: Qwen3.6-27B Q4_K_M on llama.cpp b6xxx, -c 32768 --jinja
+  - type: textarea
+    id: doctor-model
+    attributes:
+      label: crit doctor model
+      description: Output of `crit doctor model` (for anything involving the model or tool calls).
+      render: text
+  - type: textarea
+    id: doctor-sandbox
+    attributes:
+      label: crit doctor sandbox
+      description: Output of `crit doctor sandbox` (for anything involving commands, files or the network).
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: The relevant part of `~/.crit/logs/crit.log` (already redacted by crit; check it anyway).
+      render: text

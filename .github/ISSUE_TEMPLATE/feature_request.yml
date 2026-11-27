@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a new capability or a change to how crit works.
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The behaviour you want. Commands, config or output examples help.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or other designs you considered (a manifest tool, an MCP server, an agent file?).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Tools and edits
+        - Model protocol / profiles / servers
+        - Sandbox, egress, security
+        - Sessions and context
+        - Extensions (tools, MCP, agents, hooks)
+        - Review and CI
+        - Indexing and search
+        - Android / AOSP
+        - Eval harness
+        - Docs
+        - Other
+  - type: checkboxes
+    id: measure
+    attributes:
+      label: Measurement
+      options:
+        - label: This changes the agent's behaviour, and I can help measure it with `crit eval` on a fixed model.
