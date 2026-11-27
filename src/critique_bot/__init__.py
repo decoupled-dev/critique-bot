@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Browser chat client for AAOS system-app review and general prompts.
+"""crit: a local-first coding agent and code reviewer.
 
-Drives a web chat UI in headless Edge. Default mode is a specialized AAOS
-privileged-app reviewer; ``--mode general`` sends an arbitrary prompt and
-optional files; ``--mode chat`` is an interactive terminal session;
-``--mode agent`` (command ``crit``) edits a local checkout with tools. On a
-GitLab runner, ``worker`` keeps Edge open and ``submit`` enqueues reviews
-from CI jobs.
+``crit`` (the agent, the default) works in a local checkout with tools, through a model
+served on this PC or the network (llama.cpp, vLLM, Ollama, LM Studio, ...) with native
+tool calls, under an OS sandbox. ``crit review`` reviews a patch; ``crit eval`` measures
+the harness. The optional web chat (``critique_bot.webchat``) drives a chat page in Edge
+instead. See docs/architecture.md for the layers.
 """
 
 __version__ = "1.0.7"
