@@ -1,0 +1,58 @@
+# Docs site skeleton (plan/10, item 6). Build locally with mkdocs-material:
+#   pip install mkdocs-material && mkdocs serve
+# Not installed by constraints.txt yet: pin it there (exact version) before a CI job builds it.
+# TODO(decision: name): site_name, repo_url and site_url once the public name and org are set.
+site_name: crit
+site_description: A local-first coding agent for local models, with an OS sandbox and verified changes.
+docs_dir: docs
+# The public README draft lives in docs/ but is not a site page.
+exclude_docs: |
+  README.public.md
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: { icon: material/weather-sunny, name: Light mode }
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: install.md
+      - Local models and profiles: local-models.md
+      - Settings (config.json): config.json.md
+      - Shared config file (rollouts): config-file.md
+  - Using crit:
+      - The agent: agent.md
+      - Sessions, resume and context: sessions.md
+      - IDEs (ACP): acp.md
+      - Review in GitLab CI: gitlab-ci.md
+  - Extending:
+      - Tools, MCP, agents, commands, hooks: extending.md
+  - Security:
+      - Sandbox, egress and taint: security.md
+      - Locking down Windows: windows-lockdown.md
+  - Measuring:
+      - The eval harness: eval.md
+      - crit vs opencode: comparison.md
+  - Internals:
+      - Architecture: architecture.md
+      - Web chat (optional backend): headless-chat-performance.md
+  - Contributing: contributing.md
