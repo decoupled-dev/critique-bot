@@ -32,10 +32,10 @@ PROJECTS_DIR_NAME = "projects"
 HOME_PROJECT_NAME = "home"
 SETTINGS_NAME = "settings.json"
 NOTES_NAME = "AGENT.md"
-# Transcripts, the prompt history, and caches hold code and tasks: never committed.
+# Transcripts, project memory, the prompt history, and caches hold code and tasks: never committed.
 # settings.json is the user's own: a committed copy loses its permission keys (SECURITY_KEYS).
-_GITIGNORE_LINES = (".crit/cache/", ".crit/sessions/", ".crit/history", ".crit/settings.json")
-_LOCAL_GITIGNORE = "cache/\nsessions/\nhistory\nsettings.json\n"
+_GITIGNORE_LINES = (".crit/cache/", ".crit/sessions/", ".crit/memory/", ".crit/history", ".crit/settings.json")
+_LOCAL_GITIGNORE = "cache/\nsessions/\nmemory/\nhistory\nsettings.json\n"
 NOTES_TEMPLATE = """# Project notes for crit
 
 Lines below the marker are sent to the model at the start of every session,

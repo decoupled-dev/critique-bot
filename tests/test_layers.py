@@ -71,6 +71,8 @@ LAYERS: dict[str, int] = {
     "taint": TOOLS,
     # extensions/ (a package): manifest tools, MCP client, hooks, agent and command files, trust
     "extensions": TOOLS,
+    # project memory (Stage 8b, a package): store, cards, patterns, episodes, conventions, the memory tool
+    "memory": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
     "agent_helpers": ENGINE,
@@ -112,7 +114,7 @@ INTERFACES: dict[int, frozenset[str]] = {
     # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
     # services the engine drives directly are part of the interface.
     TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home",
-                       "gitlab_access", "jira", "sandbox", "taint", "extensions"}),
+                       "gitlab_access", "jira", "sandbox", "taint", "extensions", "memory"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when

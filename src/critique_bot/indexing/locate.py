@@ -6,7 +6,9 @@ Each retriever takes the parsed :class:`Query` and one database and returns rank
 time budget; whatever finishes in time is merged with weighted reciprocal rank fusion. Exact
 string and stack-frame matches weigh most, names least (plan 8, "Finding code with bad names").
 
-Later stages add retrievers to :data:`RETRIEVERS` (Stage 8b: file and module cards).
+Later stages add retrievers to :data:`RETRIEVERS` (Stage 8b: file cards and the learned
+glossary); the modules named in :data:`RETRIEVER_MODULES` are imported on the first search
+and register theirs.
 """
 
 from __future__ import annotations
@@ -526,6 +528,26 @@ RETRIEVERS: dict[str, tuple[Retriever, float]] = {
 }
 
 
+#: Modules that add retrievers when imported (a missing one is skipped).
+RETRIEVER_MODULES = ("critique_bot.memory.retrievers",)
+_loaded = False
+
+
+def load_retrievers() -> None:
+    """Import :data:`RETRIEVER_MODULES` once, so their retrievers join :data:`RETRIEVERS`."""
+    global _loaded
+    if _loaded:
+        return
+    _loaded = True
+    import importlib
+
+    for name in RETRIEVER_MODULES:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            continue
+
+
 @dataclass
 class Candidate:
     path: str
@@ -615,6 +637,7 @@ def locate(db_paths: list, description: str, evidence: str = "", *, budget: floa
            limit: int = 10, only: list[str] | None = None, workspace: str = "") -> Located:
     """Run every retriever on every database within ``budget`` seconds and fuse the results."""
     started = time.monotonic()
+    load_retrievers()
     first = store.connect(db_paths[0]) if db_paths else None
     try:
         query = parse_query(description, evidence, first)
@@ -662,7 +685,7 @@ def locate(db_paths: list, description: str, evidence: str = "", *, budget: floa
 
 def hypothesis(candidate: Candidate) -> str:
     """A one-line reason to look here, from the strongest evidence (the model refines it)."""
-    order = ["frames", "strings", "tests", "commits", "symbols", "paths", "lexical", "graph"]
+    order = ["frames", "strings", "tests", "commits", "glossary", "symbols", "cards", "paths", "lexical", "graph"]
     for name in order + list(candidate.why):
         if candidate.why.get(name):
             return candidate.why[name]
