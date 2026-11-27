@@ -1,0 +1,11 @@
+{
+  "name": "inverted-guard",
+  "task": "Fix: expired coupons are still accepted at checkout.",
+  "diff": "--- a/coupons.py\n+++ b/coupons.py\n@@ -8,7 +8,7 @@ class Coupon:\n \n     def usable(self, today):\n-        return self.active\n+        return self.active and self.expires < today\n \n     def apply(self, total):\n         return max(0, total - self.amount)\n",
+  "defect": {
+    "path": "coupons.py",
+    "line": 9,
+    "why": "the comparison is inverted: only expired coupons are usable now; it should be today <= self.expires"
+  },
+  "context": {}
+}

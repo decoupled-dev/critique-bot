@@ -1,0 +1,11 @@
+{
+  "name": "off-by-one-page",
+  "task": "Fix: the last page of search results is never shown.",
+  "diff": "--- a/pager.py\n+++ b/pager.py\n@@ -1,6 +1,6 @@\n def page_count(total, size):\n     if size <= 0:\n         raise ValueError(\"size must be positive\")\n-    return total // size\n+    return total // size + 1\n \n \n def page(items, number, size):\n",
+  "defect": {
+    "path": "pager.py",
+    "line": 4,
+    "why": "an exact multiple (total=20, size=10) now gives 3 pages instead of 2; use ceiling division (total + size - 1) // size"
+  },
+  "context": {}
+}

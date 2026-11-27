@@ -1,0 +1,11 @@
+{
+  "name": "swallowed-error",
+  "task": "Fix: the env file loader stops at a malformed line.",
+  "diff": "--- a/envfile.py\n+++ b/envfile.py\n@@ -10,8 +10,11 @@ def load(path):\n     values = {}\n     for number, line in enumerate(read_lines(path), start=1):\n-        key, value = line.split(\"=\", 1)\n-        values[key.strip()] = expand(value.strip(), values)\n+        try:\n+            key, value = line.split(\"=\", 1)\n+            values[key.strip()] = expand(value.strip(), values)\n+        except Exception:\n+            pass\n     return values\n",
+  "defect": {
+    "path": "envfile.py",
+    "line": 16,
+    "why": "every error in expand() (an undefined variable, a cycle) is now silently dropped, not only the malformed line; catch ValueError from the split only and report the line number"
+  },
+  "context": {}
+}

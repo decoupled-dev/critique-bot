@@ -1,0 +1,11 @@
+{
+  "name": "wrong-variable",
+  "task": "Fix: the transcript is written in the wrong encoding on Windows.",
+  "diff": "--- a/src/main/java/notes/TranscriptWriter.java\n+++ b/src/main/java/notes/TranscriptWriter.java\n@@ -14,7 +14,8 @@ public class TranscriptWriter {\n     public void write(Path target, String text) throws IOException {\n-        Files.writeString(target, text);\n+        Charset charset = StandardCharsets.UTF_8;\n+        Files.writeString(target, text, Charset.defaultCharset());\n     }\n }\n",
+  "defect": {
+    "path": "src/main/java/notes/TranscriptWriter.java",
+    "line": 16,
+    "why": "the UTF-8 charset is declared but the platform default is passed, so Windows still writes cp1252"
+  },
+  "context": {}
+}
