@@ -122,26 +122,41 @@ class ToolSpec:
 
 
 _PATH = _s("path relative to the workspace")
+_FORMAT = {"type": "string", "enum": ["concise", "detailed"],
+           "description": "concise (default) or detailed: more per file, file details"}
 
+# Every description follows one checklist (tests/test_tool_api.py checks the last three):
+# what the tool is for; when not to use it ("Not for:"); an argument example ("Example:",
+# valid JSON); what comes back ("Returns:"); and its limits ("Limits:").
 BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "list_files",
-        "List one folder, folders first with file counts. Generated trees (build, out, node_modules) are skipped.",
+        "List one folder: subfolders first with their file counts, then files. Generated trees (build, out, "
+        "node_modules, .git) are skipped. Not for: finding a file by name anywhere (find_files) or searching "
+        'contents (search_code). Example: {"path": "app/src", "depth": 2}. Returns: one entry per line, '
+        "folders ending in /. Limits: depth 1-4; 200 entries unless max_entries (at most 2,000).",
         _obj({"path": _PATH, "depth": _i("levels to list", 1, 4), "glob": _s("only names matching"),
               "max_entries": _i("cap on entries", 1)}),
         read_only=True,
     ),
     ToolSpec(
         "find_files",
-        "Find files by name at any depth, newest first. A glob without a slash matches the file name anywhere.",
+        "Find files by name at any depth, newest first. A glob without a slash matches the file name anywhere. "
+        'Not for: searching inside files (search_code). Example: {"glob": "**/*Service.java"}. Returns: one '
+        "workspace-relative path per line. Limits: 100 results unless limit (at most 500).",
         _obj({"glob": _s('for example "**/*Service.java" or "build.gradle*"'), "path": _PATH,
               "limit": _i("cap on results", 1)}, ["glob"]),
         read_only=True,
     ),
     ToolSpec(
         "read_files",
-        "Read up to 20 files. Lines come back as N|text; at most 400 lines per file per call. "
-        "Pass symbol to read one function or class.",
+        "Read files (several in one call) before changing them; lines come back as N|text (the N| is not part of "
+        "the file). A file of up to 300 lines comes back whole; a longer one in a 100-line window (\"lines 1-100 "
+        "of 2,431\") with an outline, and the result says the next offset. Pass symbol to read one function or "
+        "class. Not for: finding where something is (search_code). Example: {\"paths\": [\"src/app.py\", "
+        "{\"path\": \"src/big.py\", \"offset\": 200, \"limit\": 80}]}. Returns: a --- path (lines a-b of N) --- "
+        "header per file, then numbered lines; an unchanged span already read says so instead (force true "
+        "re-reads). Limits: 20 files, 400 lines per file per call; very long lines are clipped (col reads on).",
         _obj({
             "paths": {"type": "array", "maxItems": 20, "items": {"anyOf": [
                 _S, _obj({"path": _S, "offset": _I, "limit": _I, "symbol": _S}, ["path"])]}},
@@ -151,53 +166,95 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
             "symbol": _s("a class or function, e.g. OrderService.place"),
             "force": _b("read again even when unchanged since an earlier read"),
             "col": _i("start each line at this character (to read on in a very long, clipped line)", 0),
+            "response_format": _FORMAT,
         }),
         read_only=True,
     ),
     ToolSpec(
         "search_code",
-        "Search code with a regular expression. Definitions come first, then text hits, at most 5 per file.",
-        _obj({"pattern": _s("regular expression (or text with literal true)"), "path": _PATH,
-              "glob": _s("only files matching"), "head_limit": _i("cap on hits", 1),
+        "Search file contents with a regular expression. Put every variant you would try into one call with "
+        "patterns. Not for: file names (find_files). Example: {\"patterns\": [\"def apply_discount\", "
+        "\"apply_discount\\\\(\"], \"glob\": \"*.py\"}. Returns: \"N matches in M files\", the files with their "
+        "match counts, then definitions and path:line: text snippets (grouped per pattern); no match says how "
+        "many files were searched. Never paged: narrow with path or glob instead. Limits: 8 patterns; 50 "
+        "snippets (head_limit, at most 200), 5 per file (15 detailed); context at most 3 lines.",
+        _obj({"pattern": _s("regular expression (or text with literal true)"),
+              "patterns": {"type": "array", "maxItems": 8, "items": _S,
+                           "description": "several patterns searched in one call, results grouped per pattern"},
+              "path": _PATH, "glob": _s("only files matching"), "head_limit": _i("cap on snippets", 1, 200),
               "context": _i("lines around each hit", 0, 3), "literal": _b("match the text exactly"),
-              "case_insensitive": _b("ignore case")}, ["pattern"]),
+              "case_insensitive": _b("ignore case"), "response_format": _FORMAT}),
         read_only=True,
     ),
     ToolSpec(
         "write_files",
-        "Create or replace whole files; parent folders are created. Replacing a file not read in this task "
-        "needs overwrite true.",
+        "Create files, or replace a whole file when edit_file failed on it or the change touches most of it; "
+        "parent folders are created. Not for: changing part of an existing file (edit_file is cheaper and "
+        'safer). Example: {"files": [{"path": "src/util.py", "contents": "def f():\\n    return 1\\n"}]}. '
+        "Returns: created/replaced lines per file, the diff, a syntax check and new lint issues. Limits: "
+        "contents must be the complete file (no \"...\" placeholders); replacing a file not read in this task, "
+        "or shrinking a long file below 40%, needs overwrite true.",
         _obj({"files": {"type": "array", "items": _obj({"path": _S, "contents": _S}, ["path", "contents"])},
               "path": _PATH, "contents": _S, "overwrite": _b("replace a file not read in this task")}),
     ),
     ToolSpec(
         "edit_file",
-        "Replace text in one file. old_string must match one place (copy it without the N| prefix); "
-        "several changes go in edits and apply together.",
-        _obj({"path": _PATH, "old_string": _S, "new_string": _S, "replace_all": _B,
+        "Change part of a file: replace old_string with new_string. Copy old_string from read_files without "
+        "the N| prefix, with enough lines to match one place; small slips in whitespace or indentation are "
+        "matched and re-indented, and a near match is applied only when it is clearly the one (the result says "
+        "so). Several changes to one file go in edits and apply together or not at all. Not for: new files "
+        '(write_files). Example: {"path": "shop/pricing.py", "old_string": "    return price - percent", '
+        '"new_string": "    return price * (100 - percent) / 100"}. Returns: the changed line range, the diff, a '
+        "syntax check and new lint issues; a miss shows the closest text and the line that differs; several "
+        "matches list their line numbers. Limits: read the file first (it must not have changed since); after "
+        "2 failures on one file, use write_files with the full content.",
+        _obj({"path": _PATH, "old_string": _S, "new_string": _S, "replace_all": _b("change every match"),
               "edits": {"type": "array", "items": _obj({"old_string": _S, "new_string": _S, "replace_all": _B},
                                                         ["old_string", "new_string"])}}, ["path"]),
     ),
-    ToolSpec("delete_file", "Remove one file.", _obj({"path": _PATH}, ["path"])),
+    ToolSpec(
+        "delete_file",
+        "Remove one file (crit undo restores it). Not for: folders or symbolic links (run_command). "
+        'Example: {"path": "src/old_helper.py"}. Returns: the path deleted. Limits: one file per call.',
+        _obj({"path": _PATH}, ["path"]),
+    ),
     ToolSpec(
         "move_file",
-        "Move or rename one file; a folder destination keeps the name.",
+        "Move or rename one file; a folder destination keeps the name. Not for: folders (run_command, git mv). "
+        'Example: {"path": "src/a.py", "destination": "src/util/a.py"}. Returns: old -> new path. Limits: one '
+        "file; an existing destination needs overwrite true.",
         _obj({"path": _PATH, "destination": _PATH, "overwrite": _b("replace an existing destination")},
              ["path", "destination"]),
     ),
-    ToolSpec("apply_patch", "Apply one unified diff.", _obj({"patch": _s("unified diff")}, ["patch"])),
+    ToolSpec(
+        "apply_patch",
+        "Apply a unified diff or a V4A patch (*** Begin Patch / *** Update File: path / @@ / -old / +new / "
+        "*** End Patch) to one or more files. Line numbers are ignored: each hunk is found by its context "
+        "lines. Not for: models that edit with edit_file. Example: {\"patch\": \"--- a/app.py\\n+++ b/app.py\\n"
+        "@@ -1,2 +1,2 @@\\n def f():\\n-    return 1\\n+    return 2\\n\"}. Returns: the files changed with "
+        "their line ranges and diffs. Limits: every hunk must match exactly one place, else nothing is applied "
+        "and the result names the hunk.",
+        _obj({"patch": _s("unified diff or V4A patch")}, ["patch"]),
+    ),
     ToolSpec(
         "run_command",
-        "Run one command like a terminal; the working folder and environment carry over between calls. "
-        "background true starts a server or watcher and returns a job_id.",
+        "Run one command like a terminal (tests, builds, git, scripts); the working folder and environment "
+        "carry over between calls. Not for: reading or searching files (read_files, search_code). Example: "
+        "{\"command\": \"python -m pytest -q tests/test_pricing.py\", \"timeout\": 300}. Returns: exit code and "
+        "seconds, then stdout and stderr (long output keeps the start and end, the whole is saved to a file the "
+        "result names). Limits: 60 s by default, up to 1800 with timeout; a command still running then is not "
+        "killed but continues as a background job (its job_id is in the result). Use background true for "
+        "servers and watchers.",
         _obj({"command": _S, "timeout": _i("seconds", 1, 1800), "cwd": _PATH,
               "shell": {"type": "string", "enum": ["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash"]},
               "background": _b("run in the background")}, ["command"]),
     ),
     ToolSpec(
         "command_output",
-        "Output and status of a background command; omit job_id to list jobs. crit reports a job's end "
-        "on its own; until waits (no turns spent) for the job to exit or print a matching line.",
+        "Output and status of a background command; omit job_id to list every background job. crit reports a "
+        "job's end on its own; until waits without spending turns. Not for: starting commands (run_command). "
+        'Example: {"job_id": "job-1", "until": "BUILD (SUCCESSFUL|FAILED)", "wait": 600}. Returns: running or '
+        "exit code, then the new output. Limits: wait at most 1200 s.",
         _obj({"job_id": _S,
               "until": {"type": "string",
                         "description": '"exit", or a regular expression such as "BUILD (SUCCESSFUL|FAILED)|error:"'},
@@ -206,17 +263,27 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "command_input",
-        "Type one line into a background command (a shell, REPL, debugger, or device shell).",
+        "Type one line into a background command (a shell, REPL, debugger, or device shell). Not for: "
+        'commands that take flags such as --yes instead. Example: {"job_id": "job-2", "input": "bt"}. '
+        "Returns: what the command printed after it. Limits: one line per call; wait at most 30 s.",
         _obj({"job_id": _S, "input": _S, "enter": _b("press Enter after the input (default true)"),
               "wait": _i("seconds to wait for its answer", 0, 30), "close": _b("end its input, like Ctrl+D")},
              ["job_id"]),
     ),
-    ToolSpec("kill_command", "Stop a background command and its children.", _obj({"job_id": _S}, ["job_id"]),
-             read_only=True),
+    ToolSpec(
+        "kill_command",
+        "Stop a background command and its children. Not for: foreground commands (they end at their timeout). "
+        'Example: {"job_id": "job-1"}. Returns: stopped, or that it had already exited (and its exit code). Limits: one job '
+        "per call.",
+        _obj({"job_id": _S}, ["job_id"]),
+        read_only=True,
+    ),
     ToolSpec(
         "jira",
         "Read Jira (never changes it): one issue by key (summary, status, description, links, recent comments), "
-        "or issues matching a JQL search.",
+        "or issues matching a JQL search. Not for: anything when Jira is not set up (the result says so). "
+        'Example: {"issue": "CAR-123"}. Returns: the issue as text, or one line per issue. Limits: search '
+        "lists 20 issues unless limit (at most 50).",
         _obj({"issue": _s("an issue key such as CAR-123"), "jql": _s("a JQL search, e.g. project = CAR AND status = Open"),
               "limit": _i("search: issues to list", 1, 50)}),
         read_only=True,
@@ -225,47 +292,83 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
         "log",
         "Analyze a log of any size (logcat, dmesg, bugreport, build output). summary: crashes, ANRs, errors "
         "grouped with counts and line numbers. query: lines by level/tag/pid/package/pattern. around: lines "
-        "near a line. diff: what is new in a bad log (path) against a good one (good).",
+        "near a line. diff: what is new in a bad log (path) against a good one (good). Not for: source files "
+        '(read_files, search_code). Example: {"action": "query", "path": "logcat.txt", "level": "E", '
+        '"package": "com.example.app"}. Returns: the summary or the matching lines with line numbers. Limits: '
+        "query returns 100 lines (300 detailed, at most 400 with limit).",
         _obj({"action": {"type": "string", "enum": ["summary", "query", "around", "diff"]},
               "path": _PATH, "good": _s("diff: the good log"),
               "level": _s("query: lowest level, e.g. W or E"), "tag": _S, "pid": _S,
               "package": _s("query: an app package; its processes' lines"),
               "pattern": _s("query: a regular expression"), "line": _i("around: the line", 1),
-              "offset": _i("query: first line", 1), "limit": _i("query: lines to return", 1, 400)},
+              "offset": _i("query: first line", 1), "limit": _i("query: lines to return", 1, 400),
+              "response_format": _FORMAT},
              ["path"]),
         read_only=True,
     ),
-    ToolSpec("git_status", "The git status of the workspace.", _obj(), read_only=True),
-    ToolSpec("git_diff", "The git diff of the workspace.",
-             _obj({"path": _PATH, "staged": _B, "stat": _b("summary only")}), read_only=True),
-    ToolSpec("git_log", "Recent commits.", _obj({"limit": _i("commits", 1, 50), "path": _PATH}), read_only=True),
-    ToolSpec("git_show", "One commit, branch, or HEAD.",
-             _obj({"rev": _S, "path": _PATH, "patch": _b("include the diff")}), read_only=True),
+    ToolSpec(
+        "git_status",
+        "The git status of the workspace: branch and changed files. Not for: the changes themselves (git_diff). "
+        "Example: {}. Returns: git status --short --branch. Limits: the output budget of one result.",
+        _obj(), read_only=True),
+    ToolSpec(
+        "git_diff",
+        "The uncommitted changes (or staged ones). Not for: a commit's changes (git_show). Example: "
+        '{"path": "src", "stat": true}. Returns: a unified diff, or a per-file summary with stat. Limits: the '
+        "output budget of one result; narrow with path.",
+        _obj({"path": _PATH, "staged": _B, "stat": _b("summary only")}), read_only=True),
+    ToolSpec(
+        "git_log",
+        "Recent commits, optionally for one path. Not for: one commit's diff (git_show). Example: "
+        '{"path": "src/app.py", "limit": 10}. Returns: one commit per line (hash, date, subject). '
+        "Limits: 20 commits unless limit (at most 50).",
+        _obj({"limit": _i("commits", 1, 50), "path": _PATH}), read_only=True),
+    ToolSpec(
+        "git_show",
+        "One commit, branch, or HEAD; with patch true its diff. Not for: uncommitted changes (git_diff). "
+        'Example: {"rev": "HEAD~1", "patch": true}. Returns: the commit header and its file list or diff. '
+        "Limits: the output budget of one result; narrow with path.",
+        _obj({"rev": _S, "path": _PATH, "patch": _b("include the diff")}), read_only=True),
     ToolSpec(
         "todo",
-        "The task list for a job with several steps; omit todos to read it back. One item is in_progress.",
+        "The task list for a job with several steps; omit todos to read it back. Not for: a one-step task. "
+        'Example: {"todos": [{"content": "fix the parser", "status": "in_progress"}, {"content": "run the tests", '
+        '"status": "pending"}]}. Returns: the list. Limits: one item in_progress at a time.',
         _obj({"todos": {"type": "array", "items": _obj({
             "content": _S,
             "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]},
         }, ["content", "status"])}}),
         read_only=True,
     ),
-    ToolSpec("skill", "Load one SKILL.md; omit name to list the skills.", _obj({"name": _S}), read_only=True),
+    ToolSpec(
+        "skill",
+        "Load one SKILL.md (instructions for a kind of task in this project); omit name to list the skills. "
+        'Not for: project files (read_files). Example: {"name": "aosp"}. Returns: the skill text, or one skill '
+        "per line. Limits: about 7,000 characters of a skill.",
+        _obj({"name": _S}), read_only=True),
     ToolSpec(
         "web_fetch",
-        "Read one documentation page as text, only on the sites the environment allows.",
+        "Read one documentation page as text, only on the sites the environment allows. Not for: APIs, "
+        'downloads, or pages with a query string. Example: {"url": "https://developer.android.com/reference/'
+        'android/app/Activity"}. Returns: the page as plain text; offset reads on. Limits: 12,000 characters '
+        "unless max_chars; https only; allowed hosts only.",
         _obj({"url": _s("https URL with no query string"), "max_chars": _i("cap on text", 1),
               "offset": _i("characters to skip", 0)}, ["url"]),
     ),
     ToolSpec(
         "ask_user",
-        "Ask the user one question when the task cannot go on without their decision.",
+        "Ask the user one question when the task cannot go on without their decision. Not for: anything you "
+        'can find out with the other tools. Example: {"question": "Keep the old API?", "options": ["keep", '
+        '"remove"]}. Returns: the answer. Limits: one question per call.',
         _obj({"question": _S, "options": {"type": "array", "items": _S}}, ["question"]),
         read_only=True,
     ),
     ToolSpec(
         "delegate",
-        "Hand self-contained parts of the task to helper chats that report back; at most 6 briefs.",
+        "Hand self-contained parts of the task to helper chats that report back. Not for: one read or search, "
+        'or a part that needs a result you do not have yet. Example: {"tasks": [{"brief": "Find where orders '
+        'are priced and summarize the flow", "name": "pricing"}]}. Returns: each helper\'s report and the files '
+        "it changed. Limits: at most 6 briefs; helpers run read-only commands only.",
         _obj({"tasks": {"type": "array", "maxItems": 6, "items": _obj({
             "brief": _S, "files": {"type": "array", "items": _S}, "name": _S}, ["brief"])}}, ["tasks"]),
     ),

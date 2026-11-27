@@ -49,6 +49,25 @@ class SpecTests(unittest.TestCase):
                 json.dumps(schema)  # plain JSON, so any API can take it
                 self.assertTrue(spec.description.strip())
 
+    def test_every_description_follows_the_checklist(self) -> None:
+        """Purpose, when not to use it, an argument example, the output shape, and the limits."""
+        import re
+
+        for spec in BUILTIN_SPECS:
+            with self.subTest(spec.name):
+                text = spec.description
+                for marker in ("Not for:", "Example:", "Returns:", "Limits:"):
+                    self.assertIn(marker, text)
+                self.assertGreater(text.index("Not for:"), 20, "the purpose comes first")
+                found = re.search(r"Example: (\{.*?\})\. ", text)
+                self.assertIsNotNone(found, "the example is a JSON object followed by '. '")
+                example = json.loads(found.group(1))
+                properties = spec.parameters["properties"]
+                self.assertEqual([key for key in example if key not in properties], [], "example uses unknown arguments")
+                self.assertTrue(set(spec.parameters.get("required", [])) <= set(example), "example leaves out a required argument")
+                limits = text[text.index("Limits:"):]
+                self.assertRegex(limits, r"\d|one ", "the limit names a number")
+
     def test_openai_and_mcp_shapes(self) -> None:
         spec = tool_api.registry().spec("read_files")
         assert spec is not None
