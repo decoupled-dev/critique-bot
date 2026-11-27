@@ -4,6 +4,10 @@ Dated record of choices that change the plan. Newest first.
 
 | Date | Decision | Why | Stage |
 |---|---|---|---|
+| 2026-11-27 | Sandbox: our own small bwrap / sandbox-exec layer (`sandbox/`), not Anthropic's `sandbox-runtime` | sandbox-runtime is a Node.js package; embedding it from Python means shipping and spawning Node for every command. The parts crit needs (bwrap arguments, a seatbelt profile, an HTTP CONNECT proxy, a socket bridge) are a few hundred lines of stdlib Python with the same design | 4 |
+| 2026-11-27 | `taint.py` sits in the tools layer (interface), not the engine | The tools raise taint (web_fetch, outside reads, device logs) and the egress proxy reads it; the engine needs only one call, `taint.check(perm, mode, approve)`, around its permission decision | 4 |
+| 2026-11-27 | In auto mode a command inside the sandbox runs unasked (`Permission.contained`); risky commands, network commands, and outside paths still ask | The sandbox, not the command-line check, is the boundary; this is where the prompt reduction comes from | 4 |
+| 2026-11-27 | Strict egress keeps sandboxed commands offline (no proxy for web traffic); the proxy still runs to forward the adb port. With `egress: open` the proxy carries web traffic and logs it | Strict already meant "agent commands offline"; the sandbox must not loosen it | 4 |
 | 2026-11-27 | Profiles: an explicit `local.num_ctx` wins over a profile's `effective_context`; `generic` sets no `effective_context` (the plan said 16K) and no sampling; profile values are only those a model card states, and families not checked against a card (Qwen3.8, Gemma 4) get placeholders with `tool_mode` and edit format only | The person's own setting should not be silently overridden; a 16K cap on every unknown model would change chat sizes before the eval shows it helps; invented sampling values would be worse than the server's defaults | 1 |
 | 2026-11-27 | Eval models: day-to-day on this laptop with a small Qwen (qwen3:8b on the local Ollama, RTX 3060 6 GB) to check the protocol; representative runs on the user's 27B dense Qwen via OpenRouter (synthetic suite only, never private code); the real crit-vs-opencode baseline on the LAN machine, run from the other machine with `scripts/eval/baseline.sh` | The LAN machine is not reachable from this one; the laptop GPU cannot hold a 27B model | 0, 1 |
 | 2026-11-27 | Finding code: minimize search turns (multi-pattern search, counts first, index-backed AOSP search, parallel calls); handle bad names by fusing name-independent signals (string literals/log tags, runtime coverage and stack traces, commit history, plain-language cards, structure, tests, optional embeddings) in `locate`; an obfuscated-names eval set; optional small-model search helper (9.8) | On a local model, round trips cost more than scanning; experts find badly named code by behavior and evidence, not names | 2, 8, 8b, 9 |
@@ -15,6 +19,5 @@ Dated record of choices that change the plan. Newest first.
 
 ## Open decisions
 - Stage 1: keep `starlette`/`uvicorn` out of the base install? (decide in Stage 5)
-- Stage 4: reuse Anthropic `sandbox-runtime` or write our own bwrap/seatbelt layer
 - Stage 6: own MCP client vs the official `mcp` SDK as an extra
 - Stage 10: project name; publish history or a fresh one; DCO vs CLA

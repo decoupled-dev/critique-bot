@@ -8,6 +8,58 @@
 - **Every channel a page can use to send data** was tried against a separate tracker host with the optional page filter on (`filter_chat_page`): `fetch`, XHR, `sendBeacon`, image, script, tracking pixel, iframe, a form POSTed into an iframe, WebSocket, `window.open` popup, preconnect, and a WebRTC STUN request. **Nothing reached the tracker.** With the filter off, the same page reached it nine ways, which proves the channels are real. This runs as `tests/test_browser_egress.py` wherever Chrome or Edge is installed.
 - **Every program crit starts** (git, rg, the shell, PowerShell) was checked. In agent mode, none of them is pointed at another machine.
 
+## The sandbox
+
+The agent's commands (`run_command`, background jobs, builds, tests, the check command) run inside an OS sandbox. The sandbox is the boundary; the command-line checks further down only catch the obvious cases. `"sandbox"` in `.crit/settings.json` (or `config.json`, as a default) picks the mode:
+
+| Mode | Files the command may write | Network | What auto mode asks |
+| --- | --- | --- | --- |
+| `read-only` | nothing but a private `/tmp` | none | only escapes |
+| `workspace-write` (the default) | the project, `.crit/`, a private `/tmp`, build caches (`~/.gradle`, `~/.m2`, `~/.npm`, `~/.cache/pip`, ... when they exist), the `writable` folders you list, and the preset's | only through crit's egress proxy, which applies the `egress` allow-list | only escapes |
+| `full` | everything your user may write | as the `egress` policy allows | as before the sandbox: commands that are not read-only |
+
+In both sandboxed modes:
+
+- **Secrets read as empty or unreadable:** `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, `~/.pypirc`, `~/.pgpass`, `~/.vault-token`, `~/.password-store`, the GitHub/GitLab CLI logins, browser profiles, all of `~/.crit` (your `config.json`, keys, the signed-in browser profile), `/run/user/<uid>` (the ssh-agent and gpg-agent sockets), and the project's `.env`, `.env.*`, `*.env`, `.envrc` files (`"env_files": true` keeps those readable). `SSH_AUTH_SOCK` and similar variables are removed.
+- **crit's own rules cannot be rewritten:** `.crit/settings.json`, `.crit/skills/`, `.crit/AGENT.md`, `.git/config`, and `.git/hooks` stay read-only even though the project is writable, so a command cannot turn on auto mode or plant a hook or `core.fsmonitor` that runs later outside the sandbox. In a git worktree or submodule, the git folder outside the project is writable (commits work) except its `config` and `hooks`.
+- **Everything else is read-only.** A write elsewhere fails with `Read-only file system`.
+- **The network namespace is empty.** Direct connections and DNS lookups fail. Web traffic goes through `HTTP_PROXY`/`HTTPS_PROXY` (and the JVM's proxy properties) to the egress proxy below. Host loopback ports are reachable only when listed in `"ports"` (default: 5037, the adb server, so `adb` works against the server running on your PC; start it outside crit with `adb start-server`). With strict egress or `"offline": true` there is no proxy for web traffic at all: commands reach no host.
+- **Processes cannot outlive crit or reach its terminal:** the command runs in its own PID namespace, dies with crit (`--die-with-parent`), and gets a new session (no typing into crit's terminal).
+
+**Escapes.** When a sandboxed command fails because it wrote outside what it may, or the proxy refused a host, crit asks once, naming the exact folder or host: "Allow writes to /opt/sdk for the rest of this session?" A yes holds for this session and the command runs again. crit never offers the home folder itself, `/`, or a masked secret. Nothing is offered while the session is tainted in auto mode. To make it permanent, add the folder to `"sandbox": {"writable": [...]}` in your own settings, or the host to `allowed_hosts`.
+
+**Presets.** `"preset": "aosp"` adds `out/` (also when it is a symlink to another disk), `~/.ccache`, `~/.cache/ccache`, and `~/.cache/bazel`. `"preset": "android"` adds `~/.android/cache` and `~/.android/build-cache`. On Linux, workspace-write also exposes `/dev/bus/usb` so `adb` and `fastboot` see a connected device.
+
+**Platforms.**
+
+- **Linux:** bubblewrap (`bwrap`): `/` bound read-only, the writable folders bound over it, a private tmpfs for `/tmp` and `/dev/shm`, secret folders as empty read-only tmpfs mounts and secret files bound to `/dev/null`, all namespaces unshared (user, mount, PID, IPC, UTS, cgroup, network). A small bridge (`sandbox/bridge.py`, run by crit's own Python inside the sandbox) is the only way out: it listens on the proxy port inside and passes each connection over a unix socket to the proxy. Landlock as a second layer is not used yet.
+- **macOS:** `sandbox-exec` with a generated profile: deny by default; read files except the secrets; write only the writable folders and temp; network only to the proxy port and the forwarded ports on localhost. The profile is unit-tested; check it on your Mac with `crit doctor sandbox`.
+- **Windows:** no OS sandbox yet. Commands run as before, and auto mode keeps asking before commands that are not read-only. Use the outbound firewall rule in [windows-lockdown.md](windows-lockdown.md), or run crit in WSL2, where the Linux sandbox works.
+
+**When the sandbox is unavailable** (no `bwrap`, or user namespaces disabled, as on Ubuntu 24.04 with its AppArmor restriction), crit says so once per session and runs commands as before, with the permission prompts unchanged. `crit doctor sandbox` names the cause and the fix (install `bubblewrap`; allow it user namespaces with an AppArmor profile or `kernel.apparmor_restrict_unprivileged_userns=0`; `kernel.unprivileged_userns_clone=1` on older Debian), then runs four real checks: a write inside a throwaway project works, and a write to your home folder, a read of `~/.ssh`, and a direct connection all fail.
+
+**Costs.** A Gradle daemon started in one command ends with it (the PID namespace), so each Gradle command starts a fresh daemon. Tools that write to a cache that does not exist yet ask an escape the first time.
+
+## The egress proxy
+
+Sandboxed commands reach the network only through crit's proxy: an HTTP proxy (`CONNECT` tunnels and plain `http://` requests) on 127.0.0.1 in crit's own process. For each request it decides by host:
+
+- `"egress": "strict"`: the url's host and `allowed_hosts` (and their subdomains); `"open"`: any host. Hosts you allowed for this session (an escape) are added.
+- Only ports 443 and 80. Host loopback only on the forwarded `ports`; link-local addresses (cloud metadata) never; a name that resolves to loopback or link-local is refused (DNS rebinding).
+- A tainted session in auto mode reaches the model server only.
+
+A refused request gets `403` with the reason. Every request, allowed or refused, goes to the audit log with the host, port, method, bytes each way, and the reason. Only allowed hosts are ever resolved, so a refused name is not leaked through DNS either.
+
+## Taint
+
+Willison's "lethal trifecta" is private data, untrusted content, and a way to send data out. crit removes the third leg once the second appears, instead of trusting the model to ignore instructions planted in what it reads. These mark the session **tainted**: a `web_fetch` page, a file read from outside the project, a Jira issue, a device log (the `log` tool on a device, `adb logcat`), and, with `"untrusted_workspace": true`, the project itself (for a third-party repo you just cloned).
+
+While tainted **in auto mode**, crit refuses without asking: `web_fetch` and other network calls, network commands and `git push`, and writes or commands outside the project; the egress proxy lets sandboxed commands reach only the model server. In ask and edits modes nothing changes (you see each such step anyway). The status line shows `tainted · restricted`, and `/trust` lifts it. Raising and lifting are both in the audit log.
+
+## The audit log
+
+`~/.crit/logs/audit.jsonl` records, one JSON object per line: every command (the command line, folder, sandbox mode, exit code), every file the agent wrote, edited, moved, or deleted, every egress-proxy request, every permission decision (what, the mode, allowed or not, why), taint raised and lifted, the sandbox each session ran in, and the model endpoints contacted. Values are redacted like the log file; the file is owner-only and rotates at about 5 MB (three files). `crit audit` prints it: `--session ID`, `--since 2h` (or a date), `--kind command`, `--json`, `--sessions`.
+
 ## What goes to the service
 
 The service at `url` in `config.json` receives the instructions, your tasks, and what the model asks to see: file contents, search results, command output, and diffs. That is how the agent works. In review mode it receives the patch and the changed files. Before each message is sent, in every mode (agent, review, worker, interactive conversation, one-shot, the setup test), crit replaces known secret formats with `[REDACTED:kind]`:
@@ -61,7 +113,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
   - and a few others (see `DEFAULT_WEB_HOSTS`)
 
   The address must be a plain page address. No `?query` string, no user name or password, no port other than 443, no more than 300 characters, and no path that looks like encoded data or a secret. Redirects stay on the same host. Add sites with `"web_fetch_hosts": ["..."]`.
-- **In auto mode, commands still ask.** Edits and read-only commands (`ls`, `git log`, `grep x a.py`) run. "Read-only" is decided per option, not per program: an option that runs a program or writes a file (`rg --pre`, `sort --compress-program`, `git --output`, `find -fprintf`, `git --ext-diff`), a `VAR=` prefix, a `$` expansion, gradle, or a path outside the workspace makes the command ask. crit's own git calls switch off repository hooks, `core.fsmonitor`, external diff, and textconv, so a cloned repository's `.git/config` cannot run code. Any other command asks, or runs once you said "always allow" for its program, because a command line can hide a connection in ways no check sees. A command that runs a file this task wrote or changed asks in every mode, "always allow" or not.
+- **In auto mode, commands outside the sandbox still ask** (Windows, `"sandbox": "full"`, or no bubblewrap). Inside the sandbox they run, because the sandbox, not this check, is what limits them. Outside it: edits and read-only commands (`ls`, `git log`, `grep x a.py`) run. "Read-only" is decided per option, not per program: an option that runs a program or writes a file (`rg --pre`, `sort --compress-program`, `git --output`, `find -fprintf`, `git --ext-diff`), a `VAR=` prefix, a `$` expansion, gradle, or a path outside the workspace makes the command ask. crit's own git calls switch off repository hooks, `core.fsmonitor`, external diff, and textconv, so a cloned repository's `.git/config` cannot run code. Any other command asks, or runs once you said "always allow" for its program, because a command line can hide a connection in ways no check sees. A command that runs a file this task wrote or changed asks in every mode, "always allow" or not.
 - **Saved rules** (`"allow"` and `"deny"` in your own `.crit/settings.json`) let trusted commands and paths run without asking, or keep others from ever running. An allow rule never covers a network command, a risky command, a secret file, or a file the task just wrote, and a committed settings file's `allow` is ignored.
 - **Helper conversations never ask, so they only read.** They may not run builds, tests, or any command that is not read-only, may not fetch, and may not read secret files or files outside the workspace. The coordinator runs builds and tests after the reports.
 - **Commands that can send data out do not run.** That covers:
@@ -79,7 +131,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 
   A command that runs a script file is checked too: if the script uses network APIs (`requests`, `urllib`, `socket`, `fetch`, `Invoke-WebRequest`, ...), it does not run. `"network_commands": "ask"` turns the block into a yes/no question that is asked in every mode.
 
-  This list catches the obvious cases. It is not a boundary: the outbound firewall rule at the end of this page is.
+  This list catches the obvious cases. It is not a boundary: the sandbox is (or, where there is none, the outbound firewall rule at the end of this page).
 - **Builds and package managers may still download dependencies.** Gradle, Maven, npm, and pip fetch from their configured repositories. That is the one other traffic besides the conversation, and it carries dependency names and versions, not your code. `npm install` no longer uploads the dependency list for an audit (`npm_config_audit=false`).
 - **`"offline": true` stops that too.** Commands crit runs then reach no other machine:
   - web proxies point at a closed local port, which curl, pip, npm, git, and the JVM honor
@@ -97,7 +149,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 A cloned repository is untrusted input, so it cannot loosen crit's rules:
 
 - **A committed config is refused.** When `.crit/settings.json` names a `config` that git tracks in the project (or git cannot confirm it does not: no git, a timeout, or the project is a subfolder of a repository), crit stops with an error instead of using its `url`, `allowed_hosts`, or `cdp_url`. Use your own untracked copy, or `--config`.
-- **A committed `.crit/settings.json` loses its permission keys** (`permissions`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`). They count only in your own, untracked settings file. New projects git-ignore `.crit/settings.json`.
+- **A committed `.crit/settings.json` loses its permission keys** (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`). They count only in your own, untracked settings file. New projects git-ignore `.crit/settings.json`.
 - **The check command asks like any other command**, since it can come from `.crit/AGENT.md`.
 - **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, and the config file named there are refused.
 
@@ -107,7 +159,7 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 
 ## On disk
 
-Everything crit keeps for you is in one folder, `~/.crit` (`%USERPROFILE%\.crit` on Windows; `CRIT_HOME` moves it): `config.json` (your settings, 0600), `browser-profile/` (the signed-in browser, with its cookies), `msedge-user-data/` (only with `user_data_dir: "system"`), `cache/` (the saved copy of the config file), `logs/crit.log` (the log file), `projects/` (project data, such as the home folder's own), and the self-installed program in `app/<version>/` with its launcher in `bin/`. The folder is readable only by your user: 0700 on Linux and macOS and an owner-only ACL (icacls) on Windows. The browser profile is never taken from a shared config file. Files from 1.0.x (`~/.config/critique-bot`, `%APPDATA%\critique-bot`, `%LOCALAPPDATA%\critique-bot\msedge-user-data`) are moved in once. `crit uninstall` removes all of it except `projects/` ([install.md](install.md#uninstall)).
+Everything crit keeps for you is in one folder, `~/.crit` (`%USERPROFILE%\.crit` on Windows; `CRIT_HOME` moves it): `config.json` (your settings, 0600), `browser-profile/` (the signed-in browser, with its cookies), `msedge-user-data/` (only with `user_data_dir: "system"`), `cache/` (the saved copy of the config file), `logs/crit.log` (the log file), `logs/audit.jsonl` (the audit log), `projects/` (project data, such as the home folder's own), and the self-installed program in `app/<version>/` with its launcher in `bin/`. The folder is readable only by your user: 0700 on Linux and macOS and an owner-only ACL (icacls) on Windows. The browser profile is never taken from a shared config file. Files from 1.0.x (`~/.config/critique-bot`, `%APPDATA%\critique-bot`, `%LOCALAPPDATA%\critique-bot\msedge-user-data`) are moved in once. `crit uninstall` removes all of it except `projects/` ([install.md](install.md#uninstall)).
 
 The log file `~/.crit/logs/crit.log` is always written, owner-only, and rotated at about 2 MB (3 files kept). Every line is redacted the same way as outgoing messages. A local model server's API key (`local.api_key`) is never logged and is redacted from transcripts and the log file; it is sent only to the configured local server, and a shared config file cannot supply it.
 
@@ -130,9 +182,11 @@ These run offline and are clean on this repository:
 
 ## What this cannot guarantee
 
-These controls are checks in crit, not a sandbox. For a hard guarantee, add an outbound firewall rule (Windows Defender Firewall or your company's proxy) that allows only the url and your package repositories. Step-by-step for Windows: [windows-lockdown.md](windows-lockdown.md).
+On Linux and macOS the agent's commands run in the OS sandbox above; crit's own traffic (the model, `web_fetch`, GitLab) follows the egress policy. Without the sandbox (Windows, `"sandbox": "full"`, no bubblewrap) the controls are checks in crit; for a hard guarantee there, add an outbound firewall rule (Windows Defender Firewall or your company's proxy) that allows only the url and your package repositories. Step-by-step for Windows: [windows-lockdown.md](windows-lockdown.md).
 
-- **The project's own code runs.** A build, a test, or a Gradle plugin is code from the repository, and it can open connections that crit cannot see. A command-line check also cannot recognize every program that talks to the network.
+- **The project's own code runs.** A build, a test, or a Gradle plugin is code from the repository. Inside the sandbox it can write only the project and caches and reach only allowed hosts, but it can still change the project itself and send data to an allowed host (a package registry under open egress). Without the sandbox it can open connections that crit cannot see, and a command-line check cannot recognize every program that talks to the network.
+- **The sandbox has limits.** There is no limit yet on processes or memory (a fork bomb is not stopped), and no Landlock layer. The adb server you forward and a USB device are reachable on purpose. A writable cache (`~/.gradle`) is shared with your own builds, so a command could leave something there that a later build of yours reads.
+- **Taint is coarse.** It is per session and per source type, not per piece of text; a file inside the project counts as trusted unless `"untrusted_workspace": true`. It restricts auto mode only.
 - **The model reads untrusted text.** Files in the repo and fetched docs can contain instructions aimed at the model ("prompt injection"). The controls above limit what such text could make it do, but cannot stop the model from reading it.
 - **The page decides where its own traffic goes.** By default crit does not filter it, so whatever crit types into the page, the page's scripts can also hand to the services the site uses (its analytics or error reporting, for example). For a company-hosted AI service that is the company's own service. To limit the page anyway, set `"filter_chat_page": true` or use the outbound firewall rule above.
 - **The browser and the operating system have their own background services.** On Windows, Edge's own services (SmartScreen, diagnostic data, and secure DNS when it is set to a public DNS-over-HTTPS provider) follow Windows and Edge settings or company policy. The flags above turn most of them off but not every one; the Edge policies `SmartScreenEnabled`, `DiagnosticData`, and `DnsOverHttpsMode` turn off the rest.

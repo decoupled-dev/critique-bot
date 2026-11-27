@@ -107,11 +107,26 @@ model endpoints contacted. `crit audit [--session id] [--since]` prints them.
 
 ## Completion targets
 - [ ] `workspace-write` is the default on Linux and macOS; all escape tests fail closed
-- [ ] Suite pass@1 with the sandbox on is within 1 point of the sandbox off (no harm)
-- [ ] Permission prompts per task in `auto` drop ≥ 70% against Stage 3 (target 84%, per Anthropic)
-- [ ] Taint restrictions verified by the injection fixtures (≥ 5 scenarios)
-- [ ] Every command and egress request appears in the audit log
-- [ ] `crit doctor sandbox` explains every unsupported setup with a fix
+  (Linux: default, and `tests/test_sandbox.py` EscapeTests pass for real under bwrap 0.11.1:
+  write `~/x`, read a fake `~/.ssh` key, `.env`, crit's settings, direct connect, DNS, a
+  non-allowed host through the proxy, an unforwarded host port. macOS: the profile is
+  unit-tested only; not yet run on a Mac. Fork bomb: no process limit yet)
+- [ ] Suite pass@1 with the sandbox on is within 1 point of the sandbox off (no harm) (eval not run yet)
+- [ ] Permission prompts per task in `auto` drop ≥ 70% against Stage 3 (target 84%, per Anthropic) (eval not run yet;
+  the mechanism is in: contained commands run unasked in auto)
+- [x] Taint restrictions verified by the injection fixtures (≥ 5 scenarios) (`tests/test_taint.py`: curl | sh, git push,
+  outside write, web_fetch, outside cwd, proxy to a non-model host, plus an engine-level run)
+- [x] Every command and egress request appears in the audit log (ShellSession foreground and background commands,
+  proxy requests allowed and denied; the `runner=` fake path used only by tests is not)
+- [x] `crit doctor sandbox` explains every unsupported setup with a fix (no bwrap, user namespaces disabled /
+  AppArmor, Windows, macOS sandbox-exec missing or nested)
+
+## Status (2026-11-27)
+Done: work items 1 (sandbox package wired into ShellSession: foreground, background, check command, builds), 2 (bwrap
+backend, masking, doctor), 3 (egress proxy), 4 (macOS profile generator; Windows reported best effort, no restricted
+token yet), 5 (taint, auto-mode restrictions, `/trust`, toolbar marker), 6 (audit log, `crit audit`), 7 (settings,
+`SECURITY_KEYS`, docs). Left: 8 (eval sandbox on vs off), Landlock layer, process/memory limits, Windows restricted
+token + job object, a `/sandbox` status command, GitLab MR text and MCP output as taint sources (Stage 6).
 
 ## Risks
 - **AOSP builds touch many paths** (`out/`, ccache, `~/.cache/bazel`): ship an `aosp`

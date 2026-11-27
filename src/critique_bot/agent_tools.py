@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
 from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, soong
+from critique_bot import audit, sandbox, taint
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -227,6 +228,8 @@ class ToolContext:
     session: Any = None  # agent_shell.ShellSession
     on_output: Callable[[str], None] | None = None
     ask_user: Callable[[str], str] | None = None
+    #: Asks the person directly, in every mode (auto included): sandbox escapes. None when no one can answer.
+    confirm: Callable[[str], str] | None = None
     cancel: threading.Event | None = None
     #: Commands that can send data off this machine: "block" (the default) or "ask".
     network_commands: str = "block"
@@ -264,6 +267,9 @@ class Permission:
     paths: tuple[str, ...] = ()
     #: The allow rule a "don't ask again" answer saves for a command ("" when there is none).
     rule: str = ""
+    #: The command runs inside the OS sandbox (workspace writes only, network through the egress
+    #: proxy), so auto mode runs it without asking unless it is risky.
+    contained: bool = False
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -283,10 +289,22 @@ def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> di
         result = _HANDLERS[canonical](args, ctx)
     except Exception as exc:  # a tool bug must come back as a result, not end the task
         result = {"tool": canonical, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    _after_tool(canonical, args, result, ctx)
     result.setdefault("tool", canonical)
     if "ui" not in result:
         result["ui"] = _default_ui(canonical, result)
     return result
+
+
+def _after_tool(tool: str, args: dict[str, Any], result: dict[str, Any], ctx: ToolContext) -> None:
+    """Audit file writes, and taint the session when the result carries untrusted text."""
+    try:
+        if tool in MUTATING and result.get("ok"):
+            paths = [rel(ctx.workspace, item) for item in _paths_of(tool, args, ctx)]
+            audit.record("write", tool=tool, paths=paths[:50], workspace=str(ctx.workspace))
+        taint.observe(tool, args, result, ctx.workspace)
+    except Exception:  # noqa: BLE001 - bookkeeping never breaks a tool result
+        pass
 
 
 def _ui(summary: str, diff: str | None = None, lines: list[str] | None = None) -> dict[str, Any]:
@@ -2341,6 +2359,73 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return _run_in_session(args, ctx, command, timeout, wanted, bool(background), extra_env=extra_env)
 
 
+def _yes(answer: Any) -> bool:
+    """A person's clear yes ("y", "yes", "allow", "always", "ok"); anything else is no."""
+    words = str(answer or "").strip().lower().replace(",", " ").replace(".", " ").split()
+    return bool(words) and words[0] in {"y", "yes", "allow", "always", "ok"}
+
+
+def _sandbox_escapes(ctx: ToolContext, session: Any, result: Any, since: float) -> tuple[bool, str]:
+    """After a sandboxed command: ask once per folder or host the sandbox blocked; (run again?, note).
+
+    The answer holds for the rest of the session. Nothing is offered while the session is
+    tainted in auto mode, or when no one can answer (the note then says how to allow it in settings).
+    """
+    policy = session.sandbox
+    text = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}"
+    folders: list[Path] = []
+    for path in sandbox.blocked_paths(text):
+        target = sandbox.escape_target(path, policy)
+        if target is not None and target not in folders and not policy.can_write(target):
+            folders.append(target)
+    hosts: list[str] = []
+    if getattr(policy, "network", "none") == "proxy":
+        from critique_bot import egress_proxy
+
+        proxy = egress_proxy.current()
+        if proxy is not None:
+            hosts = [item.host for item in proxy.denied_since(since) if "loopback" not in item.reason
+                     and "never reachable" not in item.reason and not item.reason.startswith("port ")]
+    if not folders and not hosts:
+        return False, ""
+    blocked = ", ".join([str(item) for item in folders] + hosts)
+    if taint.restricted():
+        return False, (f"sandbox: blocked {blocked}; not offered to the user because the session is tainted "
+                       "(untrusted content was read) and in auto mode")
+    # The person decides an escape, also in auto mode (ask_user is answered by the model there).
+    ask = ctx.confirm or (ctx.ask_user if taint.state().mode != "auto" else None)
+    if ask is None:
+        return False, (f'sandbox: blocked {blocked}. To allow it, add the folder to "sandbox": {{"writable": [...]}} '
+                       'in .crit/settings.json (hosts: allowed_hosts in config.json)')
+    allowed: list[str] = []
+    for folder in folders:
+        try:
+            answer = ask(f"The sandbox stopped this command writing to {folder}. Allow writes to {folder} "
+                         "for the rest of this session (crit then runs the command again)? (yes/no)")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        audit.record("permission", tool="sandbox", perm_kind="escape", summary=f"write {folder}", allowed=_yes(answer))
+        if _yes(answer) and session.allow_write(folder):
+            allowed.append(str(folder))
+    for host in hosts:
+        try:
+            answer = ask(f"The sandbox stopped this command connecting to {host}. Allow {host} "
+                         "for the rest of this session (crit then runs the command again)? (yes/no)")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        audit.record("permission", tool="sandbox", perm_kind="escape", summary=f"connect {host}", allowed=_yes(answer))
+        if _yes(answer):
+            from critique_bot import egress_proxy
+
+            proxy = egress_proxy.current()
+            if proxy is not None:
+                proxy.allow_host(host)
+                allowed.append(host)
+    if allowed:
+        return True, f"sandbox: the user allowed {', '.join(allowed)} for this session; ran again"
+    return False, f"sandbox: blocked {blocked} (the user did not allow it)"
+
+
 def _aosp_defaults(ctx: ToolContext, command: str) -> tuple[str, dict[str, Any] | None]:
     """In an AOSP tree, make m, mm, mmm and atest just work.
 
@@ -2478,10 +2563,19 @@ def _run_in_session(
             **kwargs,
         )
 
+    escape_mark = time.monotonic()
     try:
         result = once()
     except ValueError as exc:
         return err("run_command", str(exc))
+    escape_note = ""
+    if getattr(session, "sandbox", None) is not None and not result.interrupted and not getattr(result, "job_id", None):
+        again, escape_note = _sandbox_escapes(ctx, session, result, escape_mark)
+        if again:
+            try:
+                result = once()
+            except ValueError as exc:
+                return err("run_command", str(exc))
     retried: list[str] = []
     for _attempt in range(max(0, int(ctx.command_retries or 0))):
         if result.exit_code in (0, None) or result.timed_out or result.interrupted:
@@ -2530,6 +2624,8 @@ def _run_in_session(
     head = [f"exit {code if code is not None else '-'} ({seconds:.1f}s)"]
     if wanted:
         head.append(f"shell: {shell.label}")
+    if escape_note:
+        head.append(escape_note)
     if retried:
         head.append("retried once: " + "; ".join(retried))
     moved = not _same_dir(session.cwd, before)
@@ -3816,6 +3912,9 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             from critique_bot.agent_rules import suggest_rule
 
             perm.rule = suggest_rule(str(normalized.get("command") or ""))
+        if perm.kind == "command" and tool in {"run_command", "command_input"}:
+            policy = getattr(ctx.session, "sandbox", None)
+            perm.contained = bool(policy is not None and getattr(policy, "sandboxed", False))
     return perm
 
 

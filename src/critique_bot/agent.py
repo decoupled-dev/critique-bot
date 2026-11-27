@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, integrations, log, roles
+from critique_bot import taint
 from critique_bot import run_stats
 from critique_bot.config import effective_theme
 from critique_bot import tool_api
@@ -2345,7 +2346,7 @@ class _TaskRun:
                 self.hooks.tool_done(call, result)
                 slots[index] = result
                 continue
-            allowed, reason = self._approved(perm)
+            allowed, reason = taint.check(perm, self._approve_mode(), self._approved)
             if not allowed:
                 denied = True
                 self.denials[key] = reason
@@ -2427,7 +2428,10 @@ class _TaskRun:
         if risky and not self.confirm_risky and mode == "auto":
             risky = ""
         if not risky:
-            if mode == "auto" and (kind != "command" or _read_only_command(str(getattr(perm, "detail", "") or ""))):
+            # A command inside the OS sandbox (perm.contained) cannot write outside the workspace or
+            # reach a host the egress allow-list does not allow, so auto mode runs it unasked.
+            if mode == "auto" and (kind != "command" or getattr(perm, "contained", False)
+                                   or _read_only_command(str(getattr(perm, "detail", "") or ""))):
                 return True, ""
             if mode == "edits" and kind == "edit":
                 return True, ""
@@ -2995,6 +2999,7 @@ def run_agent_loop(
         session=session_shell,
         on_output=_tool_output,
         ask_user=lambda question: ask(question) or "",
+        confirm=lambda question: ask_person(question) or "",
         build_timeout=float(build_timeout),
         command_retries=command_retries,
         network_commands=(
@@ -3462,6 +3467,8 @@ def run_agent(
     available = _available_shells()
     offline = settings.get("offline") is True
     session_shell = _open_shell_session(home.root, shell, available, offline=offline)
+    sandbox_note = agent_shell.use_sandbox(session_shell, settings, default=getattr(config, "sandbox", None), offline=offline)
+    taint.start_session(untrusted=settings.get("untrusted_workspace") is True, workspace=home.root)
     agent_ui.configure(
         workspace=home.root,
         model=_model_label(config),
@@ -3476,6 +3483,8 @@ def run_agent(
     )
     agent_ui.welcome_header()
     agent_ui.install_log_bridge()
+    if sandbox_note:
+        _ui("work", sandbox_note)
     try:
         skill_names = [item["name"] for item in agent_tools.discover_skills(home.root)]
     except Exception as exc:

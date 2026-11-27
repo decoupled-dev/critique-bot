@@ -67,6 +67,8 @@ SECURITY_KEYS = frozenset(
         "network_commands",
         "check_command",
         "auto_questions",
+        # the OS sandbox (mode, writable folders, preset, env_files, ports): a cloned repo cannot loosen it
+        "sandbox",
     }
 )
 
