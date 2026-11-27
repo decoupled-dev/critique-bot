@@ -3,7 +3,10 @@
 #   irm https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.ps1 | iex
 #
 # Downloads the latest release for Windows x64, checks it against the release's
-# SHA256SUMS.txt, and runs "crit.exe install", which puts crit in
+# SHA256SUMS.txt, verifies its build provenance with "gh attestation verify" when the GitHub
+# CLI is installed and signed in (a failed check stops the install; $env:CRIT_SKIP_ATTESTATION = "1"
+# overrides, $env:CRIT_REQUIRE_ATTESTATION = "1" refuses to install without the check), and
+# runs "crit.exe install", which puts crit in
 # %USERPROFILE%\.crit (app\<version> and bin; $env:CRIT_HOME moves it) and adds its bin
 # folder to your PATH. Settings are asked the first time crit needs them. Set $env:CRIT_VERSION = "1.0.7" for a given version (1.0.5 or later).
 # Set $env:CRIT_CONFIG_FILE = "\\server\share\crit.json" to also set the config file
@@ -36,6 +39,27 @@ try {
     $expected = ($expected -split "\s+")[0].ToLower()
     $actual = (Get-FileHash (Join-Path $work $zipName) -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected) { throw "Checksum mismatch for $zipName (expected $expected, got $actual). Nothing was installed." }
+
+    # The checksum file comes from the same release, so it only catches a damaged download.
+    # Build provenance shows the zip was built by this repository's release workflow.
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    $signedIn = $false
+    if ($gh) { & gh auth status *> $null; $signedIn = ($LASTEXITCODE -eq 0) }
+    if ($env:CRIT_SKIP_ATTESTATION -eq "1") {
+        Write-Warning "Build provenance NOT verified (CRIT_SKIP_ATTESTATION=1)."
+    } elseif ($signedIn) {
+        Write-Host "Verifying build provenance with gh attestation verify ..."
+        $report = & gh attestation verify (Join-Path $work $zipName) --repo $repo 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $report | Write-Host
+            throw "Build provenance check FAILED for ${zipName}: it was not built by $repo's release workflow. Nothing was installed. To install anyway (not recommended), set `$env:CRIT_SKIP_ATTESTATION = `"1`"."
+        }
+        Write-Host "Build provenance OK: built by $repo's release workflow."
+    } elseif ($env:CRIT_REQUIRE_ATTESTATION -eq "1") {
+        throw "CRIT_REQUIRE_ATTESTATION=1 but the GitHub CLI (gh) is not installed or not signed in (gh auth login). Nothing was installed."
+    } else {
+        Write-Warning "Build provenance was not verified (install the GitHub CLI and run gh auth login to have it checked, or check by hand: gh attestation verify $zipName --repo $repo). Only the checksum was checked."
+    }
 
     Expand-Archive (Join-Path $work $zipName) -DestinationPath $work -Force
     $exe = Get-ChildItem $work -Recurse -Filter "crit.exe" | Select-Object -First 1

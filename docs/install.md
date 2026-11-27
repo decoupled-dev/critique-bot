@@ -3,7 +3,8 @@
 ## Quick install (recommended)
 
 One line, no administrator rights. It downloads the latest release, checks it against the
-release's `SHA256SUMS.txt`, installs it for your user, and puts `crit` on your PATH:
+release's `SHA256SUMS.txt`, verifies its build provenance when the GitHub CLI (`gh`) is installed
+and signed in ([below](#check-the-download)), installs it for your user, and puts `crit` on your PATH:
 
 Windows 10/11 (PowerShell):
 
@@ -59,20 +60,33 @@ there), unless you use `"backend": "local"`.
 
 ## Check the download
 
+`SHA256SUMS.txt` comes from the same release as the files, so on its own it only catches a
+damaged download: someone who could replace a release file could replace the checksums too.
+What they cannot forge is the **build provenance**: the release workflow signs a statement
+(GitHub Actions, through Sigstore) naming the hash of every zip, .deb, wheel, installer, and
+of `SHA256SUMS.txt` itself. `gh attestation verify` checks it, so make it your step:
+
 Linux:
 
 ```bash
-sha256sum --check --ignore-missing SHA256SUMS.txt
-# optional, proves the file was built by this repository's release workflow:
 gh attestation verify crit_1.0.7_amd64.deb --repo decoupled-dev/critique-bot
+gh attestation verify SHA256SUMS.txt --repo decoupled-dev/critique-bot
+sha256sum --check --ignore-missing SHA256SUMS.txt
 ```
 
 Windows (PowerShell):
 
 ```powershell
+gh attestation verify .\crit-1.0.7-windows-x64.zip --repo decoupled-dev/critique-bot
 (Get-FileHash .\crit-1.0.7-windows-x64.zip -Algorithm SHA256).Hash
 # compare with the line for that file in SHA256SUMS.txt
 ```
+
+The one-line installers do this for you when `gh` is installed and signed in (`gh auth login`):
+a failed check stops the install. Without `gh` they say that only the checksum was checked.
+`CRIT_REQUIRE_ATTESTATION=1` makes them refuse to install without the check (for scripted
+installs on managed machines); `CRIT_SKIP_ATTESTATION=1` installs despite a failed check, and
+says so (only for a release you checked another way).
 
 ## Linux, .deb
 
