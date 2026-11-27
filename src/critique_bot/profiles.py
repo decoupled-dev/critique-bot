@@ -58,7 +58,7 @@ GENERIC = "generic"
 _INT_FIELDS = ("effective_context", "tool_output_cap_tokens", "shell_timeout_s", "max_tokens")
 _FIELDS = frozenset({
     "id", "extends", "match", "tool_mode", "sampling", "preserve_thinking", "edit_format", "edit_fallback",
-    *_INT_FIELDS, "parallel_tool_calls", "parsers", "notes", "source",
+    *_INT_FIELDS, "parallel_tool_calls", "masking_penalty", "parsers", "notes", "source",
 })
 
 
@@ -88,6 +88,9 @@ class Profile:
     max_tokens: int | None = None
     #: Sent as ``parallel_tool_calls`` with native tools when set; None sends nothing.
     parallel_tool_calls: bool | None = None
+    #: Masking old tool results costs this model more than a summary does (thinking-off models,
+    #: Complexity Trap): compaction prefers to summarize. None: crit's default.
+    masking_penalty: bool | None = None
     #: Server name -> (option, value) pairs for the launch line, e.g. vllm -> tool_call_parser.
     parsers: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     notes: str = ""
@@ -205,7 +208,7 @@ def _validate(raw: Any, where: str) -> dict[str, Any]:
             if key == "top_k":
                 checked[key] = int(value)
         out["sampling"] = checked
-    for key in ("preserve_thinking", "parallel_tool_calls"):
+    for key in ("preserve_thinking", "parallel_tool_calls", "masking_penalty"):
         if key in raw:
             if not isinstance(raw[key], bool):
                 raise ProfileError(f"{where}: {key} must be true or false")
@@ -267,6 +270,7 @@ def _freeze(fields: dict[str, Any], origin: str) -> Profile:
         shell_timeout_s=fields.get("shell_timeout_s"),
         max_tokens=fields.get("max_tokens"),
         parallel_tool_calls=fields.get("parallel_tool_calls"),
+        masking_penalty=fields.get("masking_penalty"),
         parsers=tuple(sorted((name, tuple(sorted(opts.items()))) for name, opts in parsers.items())),
         notes=fields.get("notes", ""),
         source=fields.get("source", ""),

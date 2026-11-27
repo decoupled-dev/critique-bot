@@ -246,7 +246,9 @@ class DeviceSafetyTests(_Isolated):
                 return self.replies.pop(0)
 
         scripted = Scripted()
-        with mock.patch.object(agent, "_approve_prompt", approve):
+        from critique_bot.engine import ui as engine_ui
+
+        with mock.patch.object(engine_ui, "_approve_prompt", approve):
             run_agent_loop(scripted, workspace=work, index_path=None, cache_dir=None, first_task="reboot it",
                            outcome=[], max_rounds=5, max_result_chars=8000, read_message=lambda: None,
                            emit=lambda _t: None, ask_user=lambda _q: None, approve_mode="auto",

@@ -70,6 +70,12 @@ EVENT_TYPES = frozenset(
         "compaction",
         "task_finished",
         "error",
+        # The Engine API (Stage 5): what a client sees and answers.
+        "request",
+        "request_answered",
+        "notice",
+        "assistant_text",
+        "session_closed",
     }
 )
 
@@ -127,6 +133,18 @@ class SessionLog:
         self.turn = 0
         self._dirty = False
         self._file: Any = None
+        #: Called with each event as written (the Engine's live event stream), in seq order.
+        self._listeners: list[Any] = []
+
+    def add_listener(self, callback: Any) -> None:
+        """Call ``callback(event)`` after every write from now on (under the writer's lock)."""
+        with self._lock:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback: Any) -> None:
+        with self._lock:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
 
     # ------------------------------------------------------------------ opening
 
@@ -220,6 +238,11 @@ class SessionLog:
                 self._dirty = True
             except OSError as exc:
                 log.warn(f"session log: could not write to {self.folder}: {exc}")
+            for callback in list(self._listeners):
+                try:
+                    callback(event)
+                except Exception as exc:  # noqa: BLE001 - a listener never breaks the log
+                    log.debug(f"session log listener failed: {exc}")
             return event
 
     def _handle(self) -> Any:
@@ -411,6 +434,12 @@ class NullLog:
 
     def load(self, value: Any) -> Any:
         return value
+
+    def add_listener(self, callback: Any) -> None:
+        return None
+
+    def remove_listener(self, callback: Any) -> None:
+        return None
 
 
 def _history(session: Any) -> list[dict[str, Any]] | None:

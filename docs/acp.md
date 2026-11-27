@@ -64,7 +64,7 @@ Slash commands in the prompt box: `/new` (fresh conversation with the model), `/
 ## Limits
 
 - **One folder per process.** A `session/new` for a different folder is refused. The IDE starts one crit per project, which is the usual case.
-- **No session restore** (`loadSession` is false). Closing the session ends it, though crit's own transcript is still saved under `.crit/`.
+- **Session restore** (`loadSession` is true). The ACP session id is the id of crit's session log (`crit sessions` lists them). `session/load` with that id continues the session: crit replays the conversation (your tasks, its answers, the tool calls) as `session/update` notifications, then answers the load. A first `session/load` starts crit on that log, as `crit resume` does; a later one switches to it at your next prompt. A model API backend gets its message list back; the web chat starts a new chat with a summary of the log.
 - **Text only.** Attached files come in as `@path`, or inline when the IDE sends their text. Images are left out with a note.
 - **crit's own tools run edits and commands.** crit does not route them through the IDE's `fs/*` or `terminal/*` methods. The MCP servers the IDE passes in `session/new` (stdio and HTTP) are connected like the ones in `~/.crit/mcp.json`: their tools appear as `mcp__<server>__<tool>`, pinned and with untrusted output (see [extending.md](extending.md)).
 

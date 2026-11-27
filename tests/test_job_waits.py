@@ -141,7 +141,7 @@ class EngineNoteTests(unittest.TestCase):
             call("run_command", command="sleep 2"),
             "COMPLETED",
         ])
-        with mock.patch.object(agent, "_approve_prompt", lambda *_a, **_k: ("yes", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda *_a, **_k: ("yes", "")):
             agent.run_agent_loop(
                 chat, workspace=root, index_path=None, cache_dir=None, first_task="build it",
                 max_rounds=None, max_result_chars=8000, read_message=lambda: None, emit=lambda _t: None,
@@ -175,7 +175,7 @@ class EngineNoteTests(unittest.TestCase):
         start = "<tool_call>\n" + json.dumps({"tool": "run_command", "arguments": {"command": "sleep 30", "background": True}}) + "\n</tool_call>"
         chat = Scripted([start, "COMPLETED", "COMPLETED"])
         outcome: list[str] = []
-        with mock.patch.object(agent, "_approve_prompt", lambda *_a, **_k: ("yes", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda *_a, **_k: ("yes", "")):
             agent.run_agent_loop(
                 chat, workspace=root, index_path=None, cache_dir=None, first_task="start the server",
                 max_rounds=None, max_result_chars=8000, read_message=lambda: None, emit=lambda _t: None,
