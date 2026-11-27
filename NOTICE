@@ -2,5 +2,7 @@ critique-bot
 Copyright 2026 Decoupled
 
 This product includes third-party software under their own licenses
-(Playwright, rich, prompt_toolkit and their dependencies). See
-THIRD_PARTY_NOTICES.md for each package, its license, and its license text.
+(Playwright, rich, prompt_toolkit and their dependencies; in the release bundles
+also the Python runtime, the PyInstaller bootloader and Node.js; with the optional
+[index] extra, tree-sitter and its grammars). See THIRD_PARTY_NOTICES.md for each
+package, its license, and its license text.
