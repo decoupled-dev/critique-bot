@@ -155,19 +155,56 @@ aliases already present).
 ## Completion targets
 - [ ] Edit failure rate on the suite ≤ 50% of the Stage 1 rate
 - [ ] No turn where the model received > profile cap tokens from one tool result
-- [ ] Every tool result is non-empty and says what happened
+      (enforced in code: `shape_output` on every built-in result, tested per cap in
+      `tests/test_tool_output.py`; still to confirm on eval transcripts)
+- [x] Every tool result is non-empty and says what happened (`shape_output` fills an empty
+      result; per-tool messages for commands and searches; `tests/test_tool_output.py`)
 - [ ] Guard catches 100% of the syntax-error fixtures; < 5% false "new error" reports on the
-      lint fixtures
+      lint fixtures (unit fixtures pass in `tests/test_edit_guard.py`; a lint fixture corpus
+      with real linters is still to build)
 - [ ] pass@1 ≥ Stage 1 + 2 points, or tokens per solved task −15% at equal pass@1
-- [ ] Tool descriptions pass the checklist test
+- [x] Tool descriptions pass the checklist test (`tests/test_tool_api.py`)
 - [ ] Edit success rate ≥ 95% of edit calls for Qwen3.6-27B on the suite (counting
       ladder-recovered edits as successes, and refusals of truly ambiguous edits as correct)
 - [ ] Median output tokens per successful edit ≤ 400; whole-file fallbacks ≤ 10% of edits
-- [ ] 0 edits applied to stale content (stale-read tests and eval transcripts)
-- [ ] `apply_patch` no longer calls `git`; per-profile format selection tested
+- [ ] 0 edits applied to stale content (stale-read tests pass: `tests/test_edit_ladder.py`,
+      `tests/test_agent_patch.py`; eval transcripts still to check)
+- [ ] `apply_patch` no longer calls `git`; per-profile format selection tested (no `git`: done
+      and tested; offering it only to `edit_format: patch` profiles waits for the Stage 1
+      profiles, so the tool stays registered for every model for now)
 
 ## Risks
 - **Fuzzy edits applied in the wrong place:** require uniqueness by a margin, show the
   diff, and keep `/undo` checkpoints (already there).
 - **Slow linters on big repos:** hard 5 s budget, changed files only; skip with a note when
   the budget is exceeded.
+
+## Status (2026-11-27, branch wip/s2-tools)
+
+Done without a model (unit tests in `tests/test_edit_ladder.py`, `test_atomic_writes.py`,
+`test_agent_patch.py`, `test_edit_guard.py`, `test_tool_output.py`, `test_shell_defaults.py`,
+`test_tool_api.py`):
+
+1. Match ladder in `agent_edit.replace_span` (exact, whitespace, indent, punctuation, fuzzy,
+   refusal with candidate and the differing line); results carry the diff, the new line range
+   and the step.
+2. Per-file failure counting in `TaskState.edit_failures` (tool layer, no engine change);
+   `edit_fail_limit` and `whole_file_max_lines` settings.
+2a. Stale-read protection with content digests (`TaskState.versions`). Deviation: an edit to a
+    never-read file applies when every edit matches exactly (see decisions.md).
+2b. Atomic batches and multi-file patches; durable atomic writes (fsync, same-folder temp).
+2c. `agent_patch`: unified + V4A parser, context-located hunks, atomic apply, no `git`.
+2d. `run_stats`: `edits[tool]["steps"]` per ladder step, `stale_edit_refusals`,
+    `unread_edit_refusals` (calls, ok, seconds and output tokens were already counted).
+3. `edit_guard.py` with `edit_guard` and `lint` / `lint_timeout_s` settings (`lint` is a
+   security key).
+4. `tool_output.shape_output` (re-exported by `tool_api`), `.crit/cache/out/`, keep 200.
+5. `read_files` windows, `search_code` `patterns` with counts first, empty-output messages,
+   `response_format` on read_files, search_code and log.
+6. Shell: `shell_timeout_s` (60 s), up to 1800 s, convert-to-background tested through the
+   tool, `tool_api.environment_snapshot` (Stage 3 places it in the first user turn).
+7. Description rewrite and the checklist test.
+
+Left: 8 (eval run and `plan/results/02/`), per-profile `edit_format` (needs Stage 1 profiles),
+listing background jobs in the engine's environment note and cleaning them at task end
+(engine side, Stage 3), the lint fixture corpus.
