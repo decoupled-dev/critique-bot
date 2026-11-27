@@ -55,7 +55,7 @@ class _Base(unittest.TestCase):
         agent_ui.set_console(Console(file=io.StringIO(), force_terminal=False, width=100, theme=agent_ui.rich_theme("dark")))
         self.root = Path(tempfile.mkdtemp())
         (self.root / "note.txt").write_text("one\n", encoding="utf-8")
-        self.sleeps = patch.object(agent, "_sleep", lambda _s: None)
+        self.sleeps = patch("critique_bot.engine.chat._sleep", lambda _s: None)
         self.sleeps.start()
 
     def tearDown(self) -> None:

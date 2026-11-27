@@ -1337,7 +1337,7 @@ class RobustLoopTests(unittest.TestCase):
             ["Something went wrong. If this issue persists please contact us.", "", ChatError("no assistant message appeared"), "2 + 2 is 4."]
         )
         outcome: list[str] = []
-        with mock.patch.object(agent, "_sleep", sleeps.append):
+        with mock.patch("critique_bot.engine.chat._sleep", sleeps.append):
             _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", outcome=outcome)
         self.assertEqual(outcome, ["COMPLETED"])
         self.assertEqual(len(set(session.sent)), 1)
@@ -1351,7 +1351,7 @@ class RobustLoopTests(unittest.TestCase):
 
         sleeps: list[float] = []
         session = _Raising([CloudflareBlocked("Cloudflare blocked the headless browser."), "2 + 2 is 4."])
-        with mock.patch.object(agent, "_sleep", sleeps.append):
+        with mock.patch("critique_bot.engine.chat._sleep", sleeps.append):
             with self.assertRaises(CloudflareBlocked):
                 _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?")
         # Straight up to the session, which reopens the browser as a visible window.
@@ -1366,7 +1366,7 @@ class RobustLoopTests(unittest.TestCase):
         tasks = ["what is 3 + 3?"]
         session = _Scripted(["Network error", "Network error", "6."])
         outcome: list[str] = []
-        with mock.patch.object(agent, "_sleep", lambda _s: None):
+        with mock.patch("critique_bot.engine.chat._sleep", lambda _s: None):
             _loop(
                 session,
                 Path(tempfile.mkdtemp()),
@@ -1700,7 +1700,7 @@ class RobustLoopTests(unittest.TestCase):
 
         session = Session([ChatError("timed out waiting for the assistant reply to finish streaming"), "4."])
         outcome: list[str] = []
-        with mock.patch.object(agent, "_sleep", lambda _s: None):
+        with mock.patch("critique_bot.engine.chat._sleep", lambda _s: None):
             _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", outcome=outcome)
         self.assertEqual(events, ["send", "stop", "send"])
         self.assertEqual(outcome, ["COMPLETED"])
