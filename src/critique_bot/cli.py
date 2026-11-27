@@ -1929,6 +1929,9 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
     if cwd is None:
         return 0
     args.repo_dir = str(cwd)
+    resume = agent_acp.resume_request()
+    if resume:
+        args.resume_session = resume  # session/load: continue that logged session
     try:
         os.chdir(cwd)
     except OSError as exc:

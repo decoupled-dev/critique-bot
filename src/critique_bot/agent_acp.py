@@ -118,6 +118,15 @@ class _State:
     session_id: str | None = None
     #: session/new requests waiting for the agent to finish starting.
     pending_new: list[Any] = field(default_factory=list)
+    #: session/load: the logged session the first load asked for (the agent resumes it), and
+    #: the load requests waiting for the agent to start, as (request id, session id).
+    resume_id: str | None = None
+    pending_load: list[tuple[Any, str]] = field(default_factory=list)
+    #: The session log the loop writes to (set_session): the ACP session id is its id.
+    sessions_dir: Path | None = None
+    log_id: str = ""
+    #: A /resume-style switch for the loop (take_session_change) after a later session/load.
+    session_change: dict[str, str] | None = None
     #: The JSON-RPC id of the session/prompt in flight.
     prompt_id: Any = None
     #: True until the agent takes that prompt's text from the inbox. A turn that ends
@@ -295,7 +304,7 @@ def _initialize(request_id: Any, params: dict[str, Any]) -> None:
         {
             "protocolVersion": PROTOCOL_VERSION,
             "agentCapabilities": {
-                "loadSession": False,
+                "loadSession": True,
                 "promptCapabilities": {"image": False, "audio": False, "embeddedContext": True},
                 "mcpCapabilities": {"http": True, "sse": False},
             },
@@ -393,10 +402,114 @@ def _set_mode_request(request_id: Any, params: dict[str, Any]) -> None:
     _respond(request_id, {})
 
 
+def _load_session(request_id: Any, params: dict[str, Any]) -> None:
+    """session/load: continue a logged crit session; its conversation is replayed first.
+
+    The ACP session id is the crit session log's id (``crit sessions`` lists them). The first
+    load starts the agent on that log (resume); a later one switches the loop to it at the
+    next prompt, as /resume does.
+    """
+    raw = str(params.get("cwd") or "").strip()
+    cwd = Path(raw) if raw else Path.cwd()
+    wanted = str(params.get("sessionId") or "").strip()
+    if not cwd.is_absolute() or not cwd.is_dir():
+        _fail(request_id, INVALID_PARAMS, f"cwd must be an existing absolute folder, got {raw!r}")
+        return
+    cwd = cwd.resolve()
+    folder = _find_logged(cwd, wanted)
+    if folder is None:
+        _fail(request_id, INVALID_PARAMS, f"no logged crit session {wanted!r} in {cwd}")
+        return
+    from critique_bot import extensions
+
+    extensions.offer_client_servers(params.get("mcpServers"))
+    with _lock:
+        _state.client["mcpServers"] = redact_servers(params.get("mcpServers"))
+        if _state.requested_cwd is None:
+            _state.requested_cwd = cwd
+            _state.resume_id = folder.name
+            _state.pending_load.append((request_id, folder.name))
+            _session_asked.set()
+            return
+        if not (_same_folder(cwd, _state.requested_cwd) or (_state.ready and _same_folder(cwd, _state.workspace))):
+            _fail(request_id, INVALID_PARAMS,
+                  f"this crit process serves {_state.requested_cwd}; start another one for a different folder")
+            return
+        if not _state.ready:
+            _state.pending_load.append((request_id, folder.name))
+            return
+        if folder.name != _state.session_id:
+            _state.session_change = {"folder": str(folder)}
+            _state.session_id = folder.name
+    _replay(folder)
+    _respond(request_id, _session_result(folder.name))
+    _send_commands()
+
+
+def _find_logged(cwd: Path, wanted: str) -> Path | None:
+    from critique_bot import session_log
+    from critique_bot.project_home import find_bot_home
+
+    home = find_bot_home(cwd)
+    if home is None or not wanted:
+        return None
+    try:
+        folder = session_log.find_session(home.sessions_dir, wanted)
+    except session_log.SessionNotFound:
+        return None
+    return folder if folder.name == wanted else None
+
+
+def _replay(folder: Path) -> None:
+    """The logged conversation as session/update notifications: the tasks, the answers, the tool calls."""
+    from critique_bot import session_log
+    from critique_bot.engine import hide_tool_markup
+
+    events = session_log.read_events(folder)
+    shown_text = any(event.get("type") == "assistant_text" for event in events)
+    for event in events:
+        kind = event.get("type")
+        if kind == "user_message" and event.get("task"):
+            text = str(session_log.resolve(folder, event.get("text")) or "")
+            _update({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": text}})
+        elif kind == "assistant_text" or (kind == "assistant_turn" and not shown_text):
+            text = hide_tool_markup(str(session_log.resolve(folder, event.get("text")) or "")).strip()
+            if text:
+                _update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}})
+        elif kind == "tool_result":
+            _update({
+                "sessionUpdate": "tool_call",
+                "toolCallId": f"replay-{event.get('seq')}",
+                "title": str(event.get("summary") or event.get("tool") or "tool"),
+                "kind": "other",
+                "status": "completed" if event.get("ok") else "failed",
+            })
+
+
+def resume_request() -> str | None:
+    """The logged session the client's first session/load asked to continue, or None."""
+    with _lock:
+        return _state.resume_id
+
+
+def set_session(sessions_dir: Path | None, session_id: str) -> None:
+    """The loop's session log: its id becomes the ACP session id."""
+    with _lock:
+        _state.sessions_dir = Path(sessions_dir) if sessions_dir is not None else None
+        _state.log_id = session_id
+
+
+def take_session_change() -> dict[str, str] | None:
+    with _lock:
+        change, _state.session_change = _state.session_change, None
+    return change
+
+
 _REQUESTS = {
     "initialize": _initialize,
     "authenticate": _authenticate,
     "session/new": _new_session,
+    "session/load": _load_session,
     "session/prompt": _prompt,
     "session/set_mode": _set_mode_request,
 }
@@ -412,8 +525,9 @@ def _same_folder(a: Path, b: Path | None) -> bool:
 
 
 def _open_session() -> str:
-    session = f"crit-{uuid.uuid4().hex[:12]}"
+    """The ACP session id: the crit session log's id when there is one (session/load takes it)."""
     with _lock:
+        session = _state.log_id or f"crit-{uuid.uuid4().hex[:12]}"
         _state.session_id = session
     return session
 
@@ -820,10 +934,15 @@ def read_message(**_ignored: Any) -> str | None:
         if first:
             _state.ready = True
             waiting_new, _state.pending_new = list(_state.pending_new), []
+            waiting_load, _state.pending_load = list(_state.pending_load), []
     if first:
         session = _open_session()
         _record_client()
         for request_id in waiting_new:
+            _respond(request_id, _session_result(session))
+        for request_id, _wanted in waiting_load:
+            if _state.sessions_dir is not None:
+                _replay(_state.sessions_dir / session)
             _respond(request_id, _session_result(session))
         _send_commands()
     inbox = _inbox
