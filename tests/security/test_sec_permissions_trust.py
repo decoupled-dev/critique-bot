@@ -59,8 +59,7 @@ class ProjectSettingsTests(SecBase):
 
 
 class EvalTests(SecBase):
-    # SECURITY FINDING PM-10: crit eval writes allow ["*"] + confirm_risky false into a task's real workspace and leaves it
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-10 (fixed): crit eval writes allow ["*"] + confirm_risky false into a task's real workspace and leaves it
     def test_eval_leaves_no_allow_everything_in_a_real_workspace(self) -> None:
         from critique_bot import eval_harness
 
@@ -75,6 +74,27 @@ class EvalTests(SecBase):
         left = json.loads(settings.read_text(encoding="utf-8")) if settings.is_file() else {}
         self.assertNotIn("*", left.get("allow") or [], "the real project now allows every command")
         self.assertNotEqual(left.get("confirm_risky"), False)
+
+    def test_eval_passes_its_settings_to_the_crit_process_only(self) -> None:
+        from critique_bot import eval_harness
+
+        real = self._tmp / "real-project"
+        real.mkdir()
+        suite = self._tmp / "suite" / "t1"
+        suite.mkdir(parents=True)
+        task = eval_harness.Task("t1", suite, {"prompt": "say hi", "workspace": str(real), "answer": "hi"})
+        with mock.patch.object(eval_harness, "_run_process", return_value=(0, "")) as run:
+            eval_harness.run_trial(task, 1, eval_harness.CritRunner(packs=("aosp",)), self._tmp / "out")
+        env = run.call_args.args[2]
+        self.assertEqual(json.loads(env[project_home.ENV_EVAL_SETTINGS]),
+                         {"allow": ["*"], "confirm_risky": False, "packs": ["aosp"]})
+        self.assertEqual(list(real.iterdir()), [], "crit eval left files in the real workspace")
+        # crit reads them from its environment, on top of the project's settings, without a file.
+        (real / ".crit").mkdir()
+        (real / ".crit" / "settings.json").write_text("{}", encoding="utf-8")
+        with mock.patch.dict(os.environ, {project_home.ENV_EVAL_SETTINGS: env[project_home.ENV_EVAL_SETTINGS]}):
+            self.assertEqual(project_home.find_bot_home(real).settings["allow"], ["*"])
+        self.assertNotIn("allow", project_home.find_bot_home(real).settings)
 
 
 class TaintSourceTests(SecBase):
