@@ -111,10 +111,14 @@ def _helper_run_class():
             agent_name: str = "",
             anywhere: bool = False,
             last_step: bool = False,
+            coordinator_mode: str = "ask",
             **kwargs: Any,
         ) -> None:
             super().__init__(*args, **kwargs)
             self.allowed = allowed
+            #: The coordinator's approval mode when the brief was handed out. Helpers ask no one,
+            #: so they run read-only commands only where the coordinator would run them unasked (auto).
+            self.coordinator_mode = coordinator_mode
             #: May run builds and tests: only the single helper of a delegate call.
             self.commands = commands
             #: A file-defined agent's tools (a ToolRegistry from .only), or None for every tool.
@@ -176,6 +180,13 @@ def _helper_run_class():
             if kind in {"network", "outside"} or getattr(perm, "risk", ""):
                 why = getattr(perm, "risk", "") or "it needs the user's yes"
                 return False, f"not done in a helper: {why}. Put it in your report for the coordinator"
+            if name == "run_command" and self.coordinator_mode != "auto":
+                # In ask, edits, and plan mode every command waits for the user's yes. A helper
+                # cannot ask, so it refuses rather than run one nobody approved.
+                return False, (
+                    f"not run in a helper: the session is in {self.coordinator_mode} mode, where commands wait "
+                    "for the user's yes. Read the files instead, or put the command in your report for the coordinator"
+                )
             if name == "run_command":
                 command = str((call.arguments or {}).get("command") or "")
                 judged = getattr(perm, "read_only", None)
@@ -412,13 +423,15 @@ class HelperPool:
         state = TaskState(task=brief["brief"])
         context = dict(context or {})
         commands = bool(context.pop("commands", False))
+        coordinator_mode = str(context.pop("coordinator_mode", "") or "ask")
         fields = {key: value for key, value in self.base.items() if key not in {"session", "on_output", "ask_user", "delegate"}}
         fields.update(context)
         profile = _AgentRun.start(brief, fields)
         if profile.error:
             return Report(name, "FAILED", "", error=profile.error, agent=str(brief.get("agent") or ""))
         try:
-            return self._run_brief(chat, brief, profile, fields, state, commands, started, cancel, progress)
+            return self._run_brief(chat, brief, profile, fields, state, commands, started, cancel, progress,
+                                   coordinator_mode=coordinator_mode)
         finally:
             profile.finish()
 
@@ -433,6 +446,8 @@ class HelperPool:
         started: float,
         cancel: threading.Event | None,
         progress: Callable[[str], None] | None,
+        *,
+        coordinator_mode: str = "ask",
     ) -> Report:
         name = brief["name"]
         files = list(brief.get("files") or [])
@@ -462,6 +477,7 @@ class HelperPool:
             agent_name=profile.name,
             anywhere=profile.worktree is not None,
             last_step=profile.definition is not None,
+            coordinator_mode=coordinator_mode,
         )
         if profile.worktree is not None:
             may_change = "any file in your own copy of the project (a git worktree); your changes go back as a patch"
@@ -476,6 +492,9 @@ class HelperPool:
                 "You may run builds and tests with run_command; report their result, not their whole output."
                 if commands
                 else "Do not run builds or tests (other helpers work at the same time); read-only commands are fine."
+                if coordinator_mode == "auto"
+                else "Do not run commands: the user approves each one, and no one can approve them here. "
+                "Read and search the files instead."
             ),
         )
         status = run.run(task_message(message))
@@ -727,9 +746,13 @@ class SessionHelpers:
         self.pool: Any = None
 
     def for_task(
-        self, cancel: threading.Event, checkpoints: Any, state: TaskState
+        self, cancel: threading.Event, checkpoints: Any, state: TaskState, mode: Callable[[], str] | None = None,
     ) -> Callable[[list[dict[str, Any]]], dict[str, Any]] | None:
-        """The delegate tool's runner for one task, or None when the session has no helpers."""
+        """The delegate tool's runner for one task, or None when the session has no helpers.
+
+        ``mode`` gives the coordinator's approval mode at the time of the call; helpers run
+        commands only in auto mode (with no ``mode``, they run none).
+        """
         if self.factory is None or self.count < 1:
             return None
         show = ui.current()
@@ -756,7 +779,7 @@ class SessionHelpers:
                     briefs,
                     cancel=cancel,
                     progress=lambda line: show.tool_output(line + "\n"),
-                    context={"checkpoints": checkpoints},
+                    context={"checkpoints": checkpoints, "coordinator_mode": mode() if mode is not None else "ask"},
                 )
             finally:
                 if callable(setter):

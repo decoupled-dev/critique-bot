@@ -86,7 +86,9 @@ class RepoConfigHardeningTests(_FsmonitorRepo):
         self.assertFalse(self.marker.exists())
 
 
-class HelperTests(_FsmonitorRepo):
+class _HelperBase(_FsmonitorRepo):
+    """A coordinator with one fake helper tab whose script runs git status."""
+
     def loop_with_helpers(self, coordinator: Scripted, mode: str) -> None:
         from test_agent_helpers import _HelperTab
 
@@ -108,6 +110,8 @@ class HelperTests(_FsmonitorRepo):
 
         return any("On branch" in prompt for tab in _HelperTab.instances for prompt in tab.sent)
 
+
+class HelperTests(_HelperBase):
     def test_ask_mode_asks_before_a_read_only_command(self) -> None:
         # Control: in ask mode the coordinator's own read-only command waits for the user.
         approvals = Approvals()
@@ -117,8 +121,7 @@ class HelperTests(_FsmonitorRepo):
         self.assertEqual(len(approvals.asked), 1)
         self.assertFalse(self.marker.exists())
 
-    # SECURITY FINDING PM-7: delegate with no files is a "read" step, so in ask mode helpers run commands nobody approved
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-7 (fixed): delegate with no files is a "read" step, so in ask mode helpers run commands nobody approved
     def test_ask_mode_delegate_does_not_run_commands_unasked(self) -> None:
         approvals = Approvals()
         delegate = call("delegate", tasks=[{"name": "status", "brief": "Run git status and report what it says."}])
@@ -127,8 +130,7 @@ class HelperTests(_FsmonitorRepo):
         self.assertFalse(self.marker.exists(), "a helper ran a command in ask mode with no approval")
         self.assertFalse(self.helper_ran_git_status(), "the helper's git status ran with no approval")
 
-    # SECURITY FINDING PM-7: the same in plan mode, which promises that nothing runs until the plan is approved
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-7 (fixed): the same in plan mode, which promises that nothing runs until the plan is approved
     def test_plan_mode_delegate_does_not_run_commands_unasked(self) -> None:
         approvals = Approvals()
         delegate = call("delegate", tasks=[{"name": "status", "brief": "Run git status and report what it says."}])
@@ -136,6 +138,26 @@ class HelperTests(_FsmonitorRepo):
             self.loop_with_helpers(Scripted([delegate, "COMPLETED"]), "plan")
         self.assertFalse(self.marker.exists(), "a helper ran a command in plan mode with no approval")
         self.assertFalse(self.helper_ran_git_status(), "the helper's git status ran with no approval")
+
+
+class HelperModeTests(_HelperBase):
+    """Regression tests for PM-7: helpers follow the coordinator's mode for commands."""
+
+    def test_auto_mode_helpers_still_run_read_only_commands(self) -> None:
+        delegate = call("delegate", tasks=[{"name": "status", "brief": "Run git status and report what it says."}])
+        with Approvals().patch():
+            self.loop_with_helpers(Scripted([delegate, "COMPLETED"]), "auto")
+        self.assertTrue(self.helper_ran_git_status())
+        self.assertFalse(self.marker.exists())  # PM-6: still with fsmonitor off
+
+    def test_edits_mode_helpers_refuse_commands(self) -> None:
+        from test_agent_helpers import _HelperTab
+
+        delegate = call("delegate", tasks=[{"name": "status", "brief": "Run git status and report what it says."}])
+        with Approvals().patch():
+            self.loop_with_helpers(Scripted([delegate, "COMPLETED"]), "edits")
+        self.assertFalse(self.helper_ran_git_status())
+        self.assertTrue(any("not run in a helper" in prompt for tab in _HelperTab.instances for prompt in tab.sent))
 
 
 class AdbTests(SecBase):
