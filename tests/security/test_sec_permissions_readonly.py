@@ -171,14 +171,12 @@ class AdbTests(SecBase):
         "adb shell settings get global x '>' /data/local/tmp/y",
     )
 
-    # SECURITY FINDING PM-8: adb commands that change the device are classed read-only (prefix match, device-side redirects)
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-8 (fixed): adb commands that change the device are classed read-only (prefix match, device-side redirects)
     def test_device_changing_adb_commands_are_not_read_only(self) -> None:
         wrongly = [command for command in self.DEVICE_CHANGES if agent_tools.read_only_command(command)]
         self.assertEqual(wrongly, [])
 
-    # SECURITY FINDING PM-8: so auto mode (and every helper chat) runs them without asking
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-8 (fixed): so auto mode (and every helper chat) runs them without asking
     def test_auto_mode_asks_before_changing_the_device(self) -> None:
         approvals = Approvals()
         # A fake runner: no real adb is started.
@@ -192,6 +190,48 @@ class AdbTests(SecBase):
     def test_plain_device_reads_stay_read_only(self) -> None:
         for command in ("adb devices", "adb shell getprop ro.build.fingerprint", "adb logcat -d"):
             self.assertTrue(agent_tools.read_only_command(command), command)
+
+
+class AdbFormTests(SecBase):
+    """Regression tests for PM-8: the adb read-only list, and which commands count as device changes."""
+
+    def test_common_device_reads_stay_read_only(self) -> None:
+        for command in (
+            "adb shell dumpsys activity activities",
+            "adb shell dumpsys meminfo com.example.app",
+            "adb -s emulator-5554 logcat -d -v threadtime *:E",
+            "adb shell settings get global airplane_mode_on",
+            "adb shell pm list packages -3",
+            "adb shell wm size",
+            "adb devices -l",
+        ):
+            self.assertTrue(agent_tools.read_only_command(command), command)
+
+    def test_changes_and_device_shell_tricks_are_not_read_only(self) -> None:
+        for command in (
+            "adb shell wm size 100x100",
+            "adb shell settings put global x 1",
+            'adb shell "dumpsys battery"',
+            "adb shell dumpsys deviceidle whitelist +com.x",
+            "adb logcat -G 16M -d",
+            "adb logcat -d -f /sdcard/x",
+            "adb shell",
+            "adb -H evil.example shell getprop",
+            "adb shell getprop x\\;reboot",
+        ):
+            self.assertFalse(agent_tools.read_only_command(command), command)
+
+    def test_device_change_risk(self) -> None:
+        self.assertTrue(agent_tools.adb_device_change("adb install app.apk"))
+        self.assertTrue(agent_tools.adb_device_change("adb logcat -c"))
+        self.assertTrue(agent_tools.adb_device_change("adb shell dumpsys battery set level 1"))
+        self.assertEqual(agent_tools.adb_device_change("adb pull /sdcard/x out/x"), "")
+        self.assertEqual(agent_tools.adb_device_change("adb logcat"), "")
+        self.assertEqual(agent_tools.adb_device_change("adb shell getprop"), "")
+        ctx = agent_tools.ToolContext(workspace=self.root)
+        perm = agent_tools.permission_for("run_command", {"command": "adb install app.apk"}, ctx)
+        self.assertEqual(perm.key, "device:adb")
+        self.assertTrue(perm.risk)
 
 
 class GitSecretTests(SecBase):

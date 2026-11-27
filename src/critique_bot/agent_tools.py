@@ -4561,6 +4561,10 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
             far = _command_outside_paths(command, ctx, base)
             if far:
                 return Permission("outside", f"{label} (it reads {far[0]}, outside the workspace)", "", command, risk=OUTSIDE_READ_RISK)
+        device = adb_device_change(command)
+        if device:
+            # Never "always"-able, never covered by a rule, asked even with "confirm_risky": false.
+            return Permission("command", label, "device:adb", command, risk=device)
         written = _command_runs_written(command, ctx)
         if written:
             program = command_key(command)
@@ -5529,6 +5533,124 @@ def _git_read_only(args: list[str]) -> bool:
     return False
 
 
+# adb joins the words after ``shell`` and the device's shell parses them again, so a quote,
+# a backslash, or a shell character the host shell let through (``ls '>' /sdcard/x``) redirects,
+# chains, or expands on the device. A read-only adb command holds none of them.
+_ADB_UNSAFE_CHARS = re.compile(r"[;&|<>$`'\"\\(){}!\r\n]")
+_ADB_WORD = re.compile(r"^[\w.:/,@%=+*?~-]+$")
+# Words after a dumpsys service that make it change state (``battery set``, ``deviceidle force-idle``).
+_DUMPSYS_CHANGES = (
+    "set", "reset", "unplug", "force", "unforce", "enable", "disable", "step", "whitelist", "tempwhitelist",
+    "except-idle-whitelist", "sys-whitelist", "put", "delete", "remove", "clear", "kill", "start", "stop",
+    "restart", "reload", "write", "trim", "suspend", "unsuspend", "run", "schedule", "override", "toggle",
+    "inject", "dump-heap", "add", "update", "apply", "grant", "revoke",
+)
+_LOGCAT_FLAGS = {"-d", "-s", "-D", "--dividers"}
+_LOGCAT_VALUE = {"-v", "-b", "-t", "-T", "-e", "-m", "--pid", "--uid", "--format", "--buffer", "--regex", "--max-count"}
+_LOGCAT_FILTER = re.compile(r"^[\w.*-]+(?::[VDIWEFS*])?$")
+
+
+def _adb_read_only(args: list[str], segment: str = "") -> bool:
+    """True for an adb command from a fixed list of forms that only read the device.
+
+    ``devices``, ``get-state``, ``logcat -d`` (no ``-c``, ``-G``, ``-P``, ``-f``), and
+    ``shell`` with ``getprop``, ``dumpsys <service>`` (nothing like ``set``/``reset``/``force-idle``),
+    ``pm list``/``path``/``dump``, ``cmd package list``, ``ls``, ``cat``, ``ps``, ``df``, ``id``,
+    ``uname``, ``wm size``/``density`` with no value, ``settings get``/``list``, ``service list``.
+    Anything else changes or may change the device, and asks.
+    """
+    if _ADB_UNSAFE_CHARS.search(segment) or any(_ADB_UNSAFE_CHARS.search(arg) for arg in args):
+        return False
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] in {"-d", "-e"}:
+            index += 1
+        elif args[index] in {"-s", "-t"} and index + 1 < len(args):
+            index += 2
+        else:
+            return False  # -H, -P, -L: another adb server
+    if index >= len(args):
+        return False
+    command, rest = args[index].lower(), args[index + 1 :]
+    if command == "devices":
+        return all(arg == "-l" for arg in rest)
+    if command in {"get-state", "get-serialno", "get-devpath", "version"}:
+        return not rest
+    if command == "logcat":
+        return _logcat_read_only(rest)
+    if command != "shell" or not rest or not all(_ADB_WORD.match(arg) for arg in rest):
+        return False
+    tool, words = rest[0].lower(), [arg.lower() for arg in rest[1:]]
+    if tool == "getprop":
+        return len(words) <= 1
+    if tool == "dumpsys":
+        return not any(
+            word.lstrip("-") == change or word.lstrip("-").startswith(change + "-") or word.startswith("+")
+            for word in words[1:]
+            for change in _DUMPSYS_CHANGES
+        )
+    if tool == "pm":
+        return bool(words) and words[0] in {"list", "path", "dump"}
+    if tool == "cmd":
+        return words[:2] == ["package", "list"]
+    if tool in {"ls", "cat", "ps", "df", "id", "uname", "whoami"}:
+        return True
+    if tool == "wm":
+        return words in (["size"], ["density"])
+    if tool == "settings":
+        return (len(words) == 3 and words[0] == "get") or (len(words) == 2 and words[0] == "list")
+    if tool == "service":
+        return words == ["list"] or (len(words) == 2 and words[0] == "check")
+    return False
+
+
+def _logcat_read_only(args: list[str]) -> bool:
+    """``logcat -d`` dumps and exits; ``-c`` clears the log, ``-G``/``-P`` change buffers, ``-f`` writes a file."""
+    if "-d" not in args:
+        return False  # without -d it streams until stopped
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        name = arg.split("=", 1)[0]
+        if arg in _LOGCAT_FLAGS:
+            continue
+        if name in _LOGCAT_VALUE:
+            skip = "=" not in arg
+            continue
+        if arg.startswith("-") or not _LOGCAT_FILTER.match(arg):
+            return False
+    return True
+
+
+#: adb commands that only touch this PC (a file pulled into the workspace, a report): asked like any command.
+_ADB_HOST_SIDE = {"pull", "bugreport", "wait-for-device", "start-server", "kill-server", "help", "version",
+                  "devices", "get-state", "get-serialno", "get-devpath"}
+#: logcat options that clear the log, resize or prune buffers, or write files on the device.
+_LOGCAT_CHANGES = {"-c", "--clear", "-G", "--buffer-size", "-P", "--prune", "-f", "--file", "-r", "--rotate-kbytes",
+                   "-n", "--rotate-count"}
+
+
+def adb_device_change(command: str) -> str:
+    """Why ``command`` may change a connected device through adb, or "" when every adb part only reads.
+
+    Such a command asks every time, in every mode, like the AOSP pack's device actions.
+    """
+    for segment in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command or "")))[::2]:
+        program, args = _split_program(segment)
+        if program != "adb" or _adb_read_only(args, segment):
+            continue
+        words = [arg.lower() for arg in args if not arg.startswith("-")]
+        if words and words[0] == "logcat":
+            if not any(arg.split("=", 1)[0] in _LOGCAT_CHANGES for arg in args):
+                continue  # streams or filters the log; it changes nothing on the device
+        elif words and words[0] in _ADB_HOST_SIDE:
+            continue
+        return "may change the connected device (adb), which always asks"
+    return ""
+
+
 def _dumps_environment(program: str, args: list[str]) -> bool:
     """True for commands that print environment variables: ``printenv``, ``gci env:``, ``jq -n env``, ``/proc/*/environ``."""
     lowered = [arg.lower() for arg in args]
@@ -5558,10 +5680,7 @@ def _segment_read_only(program: str, args: list[str], segment: str = "") -> bool
             arg == "-o" or arg.startswith("--output") for arg in args
         )
     if program == "adb":
-        joined = " ".join(arg.lower() for arg in args)
-        return bool(
-            re.match(r"^(?:-s \S+ )?(?:devices|get-state|get-serialno|logcat -d\b|shell (?:getprop|dumpsys|pm list|cmd package list|ls|cat|ps|df|id|uname|wm size|wm density|settings get))", joined)
-        )
+        return _adb_read_only(args, segment)
     if program not in _LOOK_PROGRAMS:
         return False
     return _segment_options_ok(program, args)

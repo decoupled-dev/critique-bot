@@ -56,7 +56,7 @@ Willison's "lethal trifecta" is private data, untrusted content, and a way to se
 
 While tainted **in auto mode**, crit refuses without asking: `web_fetch` and other network calls, network commands and `git push`, and writes or commands outside the project; the egress proxy lets sandboxed commands reach only the model server. In ask and edits modes nothing changes (you see each such step anyway). The status line shows `tainted · restricted`, and `/trust` lifts it. Raising and lifting are both in the audit log.
 
-**Devices.** A tool action that changes a connected device (the AOSP pack's `adb` push, install, uninstall, reboot, settings_put and fastboot flash) asks every time, in every mode, auto included. It asks even with `"confirm_risky": false`, and a saved allow rule cannot cover it.
+**Devices.** A tool action that changes a connected device (the AOSP pack's `adb` push, install, uninstall, reboot, settings_put and fastboot flash) asks every time, in every mode, auto included. It asks even with `"confirm_risky": false`, and a saved allow rule cannot cover it. The same holds for `adb` through `run_command`: only a fixed list of forms counts as read-only (`devices`, `logcat -d` without `-c`/`-G`/`-P`/`-f`, and `shell` with `getprop`, `dumpsys <service>` without `set`/`reset`/`force-idle`-style words, `pm list`, `settings get`, `ls`, `cat`, `ps`, `wm size`/`density` with no value, ...), and none with a quote, backslash, or shell character the device's shell would act on. Any other adb command that reaches the device (`install`, `push`, `shell am ...`, `logcat -c`) asks every time like a device action; `pull`, `bugreport`, and a streaming `logcat` ask like any command.
 
 ## The audit log
 
