@@ -44,14 +44,46 @@ class RepoConfigTests(_FsmonitorRepo):
             self.loop(session, approve_mode="auto")
         self.assertFalse(self.marker.exists())
 
-    # SECURITY FINDING PM-6: "git status" via run_command is read-only, so auto mode runs the repo's fsmonitor unasked
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-6 (fixed): "git status" via run_command is read-only, so auto mode runs the repo's fsmonitor unasked
     def test_auto_mode_git_status_command_does_not_run_repo_config_programs(self) -> None:
         approvals = Approvals()
         session = Scripted([call("run_command", command="git status"), "COMPLETED"])
         with approvals.patch():
             self.loop(session, approve_mode="auto")
         self.assertFalse(self.marker.exists(), "a read-only git command ran a program named in .git/config")
+
+
+class RepoConfigHardeningTests(_FsmonitorRepo):
+    """Regression tests for PM-6: what run_command's read-only git still meets in .git/config."""
+
+    def test_pager_external_diff_and_hooks_are_switched_off(self) -> None:
+        git(self.root, "config", "diff.external", "touch pwned-by-ext-diff; false")
+        git(self.root, "config", "core.pager", "touch pwned-by-pager; cat")
+        (self.root / "a.txt").write_text("b\n", encoding="utf-8")
+        session = Scripted([call("run_command", command="git diff"), call("run_command", command="git log -1 -p"),
+                            "COMPLETED"])
+        with Approvals().patch():
+            self.loop(session, approve_mode="auto")
+        for name in ("pwned-by-ext-diff", "pwned-by-pager", "pwned-by-fsmonitor"):
+            self.assertFalse((self.root / name).exists(), name)
+
+    def test_a_filter_or_diff_driver_in_the_repo_config_is_not_read_only(self) -> None:
+        self.assertTrue(agent_tools.read_only_command("git status", cwd=self.root))
+        git(self.root, "config", "filter.x.clean", "touch pwned-by-filter; cat")
+        self.assertFalse(agent_tools.read_only_command("git status", cwd=self.root))
+        self.assertTrue(agent_tools.read_only_command("git status"))  # the text alone cannot tell
+
+    def test_a_cd_before_git_is_not_read_only_with_a_folder(self) -> None:
+        self.assertFalse(agent_tools.read_only_command("cd sub && git log", cwd=self.root))
+        self.assertTrue(agent_tools.read_only_command("cd sub && ls", cwd=self.root))
+
+    def test_git_command_env_overrides_the_repo(self) -> None:
+        import os
+        import subprocess
+
+        env = {**os.environ, **agent_tools.git_command_env()}
+        subprocess.run(["git", "status"], cwd=self.root, env=env, capture_output=True, check=True)
+        self.assertFalse(self.marker.exists())
 
 
 class HelperTests(_FsmonitorRepo):
@@ -68,6 +100,13 @@ class HelperTests(_FsmonitorRepo):
         _HelperTab.threads = set()
         _HelperTab.instances = []
         _HelperTab.opened = 0
+
+    @staticmethod
+    def helper_ran_git_status() -> bool:
+        """True when a helper got git status output back (the fsmonitor marker alone also depends on PM-6)."""
+        from test_agent_helpers import _HelperTab
+
+        return any("On branch" in prompt for tab in _HelperTab.instances for prompt in tab.sent)
 
     def test_ask_mode_asks_before_a_read_only_command(self) -> None:
         # Control: in ask mode the coordinator's own read-only command waits for the user.
@@ -86,6 +125,7 @@ class HelperTests(_FsmonitorRepo):
         with approvals.patch():
             self.loop_with_helpers(Scripted([delegate, "COMPLETED"]), "ask")
         self.assertFalse(self.marker.exists(), "a helper ran a command in ask mode with no approval")
+        self.assertFalse(self.helper_ran_git_status(), "the helper's git status ran with no approval")
 
     # SECURITY FINDING PM-7: the same in plan mode, which promises that nothing runs until the plan is approved
     @unittest.expectedFailure
@@ -95,6 +135,7 @@ class HelperTests(_FsmonitorRepo):
         with approvals.patch(), mock.patch("critique_bot.engine.ui._review_plan", lambda: ("no", "")):
             self.loop_with_helpers(Scripted([delegate, "COMPLETED"]), "plan")
         self.assertFalse(self.marker.exists(), "a helper ran a command in plan mode with no approval")
+        self.assertFalse(self.helper_ran_git_status(), "the helper's git status ran with no approval")
 
 
 class AdbTests(SecBase):

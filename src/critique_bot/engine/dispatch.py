@@ -191,6 +191,14 @@ def _save_allow_rule(ctx: Any, rule: str) -> None:
         log.warn(f"could not save the rule {rule!r}: {exc}")
 
 
+def _perm_read_only(perm: Any) -> bool:
+    """Whether a command step only reads: as permission_for judged it with its folder, else by its text."""
+    judged = getattr(perm, "read_only", None)
+    if isinstance(judged, bool):
+        return judged
+    return _read_only_command(str(getattr(perm, "detail", "") or ""))
+
+
 def _read_only_command(command: str) -> bool:
     check = getattr(agent_tools, "read_only_command", None)
     try:
@@ -427,7 +435,7 @@ class Dispatch:
             # A command inside the OS sandbox (perm.contained) cannot write outside the workspace or
             # reach a host the egress allow-list does not allow, so auto mode runs it unasked.
             if mode == "auto" and (kind != "command" or getattr(perm, "contained", False)
-                                   or _read_only_command(str(getattr(perm, "detail", "") or ""))):
+                                   or _perm_read_only(perm)):
                 return True, ""
             if mode == "edits" and kind == "edit":
                 return True, ""

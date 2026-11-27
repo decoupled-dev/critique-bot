@@ -323,6 +323,9 @@ class Permission:
     #: The command runs code from the project (a test runner, a build, a package script, an
     #: interpreter, a script by path): after the task changes files it asks again, rule or not.
     runs_code: bool = False
+    #: For a command: whether it only reads, judged with its folder (a git command in a repository
+    #: whose config names a program is not). None: not judged; callers check the command text.
+    read_only: bool | None = None
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -2879,8 +2882,14 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             f"{gitlab_note}. git clone, fetch, pull, and push work for the projects your GitLab token can reach. "
             "Read documentation with web_fetch; builds may still download their dependencies",
         )
+    if not reach and read_only_command(command) and "git" in {
+        _program_of(part) for part in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", command))[::2]
+    }:
+        # A read-only git command runs unasked in auto mode and in helpers: the repository's
+        # config must not make it run a program (fsmonitor, pager, external diff, hooks).
+        extra_env = {**git_command_env(), **(extra_env or {})}
     if ctx.session is None:
-        return _run_plain(args, ctx, command, timeout, wanted, bool(background))
+        return _run_plain(args, ctx, command, timeout, wanted, bool(background), extra_env=extra_env)
     command, refused = _aosp_defaults(ctx, command)
     if refused is not None:
         return refused
@@ -3321,7 +3330,8 @@ def _same_dir(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool) -> dict[str, Any]:
+def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool,
+               *, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """One process per call (no ShellSession): the runner= fakes and old callers."""
     shell = ctx.shell or agent_shell.detect_shell()
     if wanted and not _same_shell(wanted, shell):
@@ -3343,7 +3353,9 @@ def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: fl
         cwd = resolve(ctx.workspace, raw_cwd)
         if not cwd.is_dir():
             return err("run_command", f"cwd is not a folder: {raw_cwd}" + _path_hint(ctx, raw_cwd))
-    extra = {} if ctx.runner is not None else {"on_output": ctx.on_output, "cancel": ctx.cancel}
+    extra: dict[str, Any] = {} if ctx.runner is not None else {"on_output": ctx.on_output, "cancel": ctx.cancel}
+    if extra_env and ctx.runner is None:
+        extra["extra_env"] = extra_env
     code, stdout, stderr, seconds = agent_shell.run(
         command, cwd=cwd, timeout=timeout, shell=shell, runner=ctx.runner, **extra
     )
@@ -4457,9 +4469,13 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
                 # "Don't ask again" remembers the rule the prompt shows. With no rule to show, it is
                 # not offered: a whole program (every git or adb command) is wider than what was asked.
                 perm.key = ""
-        if perm.kind == "command" and tool == "run_command":
+        if tool == "run_command":
             command = str(normalized.get("command") or "")
-            perm.runs_code = not read_only_command(command) and runs_project_code(command)
+            started = _paths_of(tool, normalized, ctx)
+            folder = _command_cwd(ctx, started[0] if started else None)
+            perm.read_only = read_only_command(command, cwd=folder)
+            if perm.kind == "command":
+                perm.runs_code = not perm.read_only and runs_project_code(command)
         if perm.kind == "command" and tool in {"run_command", "command_input"}:
             policy = getattr(ctx.session, "sandbox", None)
             perm.contained = bool(policy is not None and getattr(policy, "sandboxed", False))
@@ -5551,7 +5567,7 @@ def _segment_read_only(program: str, args: list[str], segment: str = "") -> bool
     return _segment_options_ok(program, args)
 
 
-def read_only_command(command: str) -> bool:
+def read_only_command(command: str, *, cwd: Path | None = None) -> bool:
     """True when ``command`` only reads: ``ls``, ``git log``, ``grep x a.py``, ``Get-Content a.txt``, ``x --version``.
 
     Every part of a chain is checked, filters after a pipe included, and each program's
@@ -5559,7 +5575,72 @@ def read_only_command(command: str) -> bool:
     variable in front (``PATH=x ls``) are not read-only. A recursive search (``grep -r``,
     ``rg`` on a folder) is not either: it would read secret files too. Paths are not
     checked here; :func:`permission_for` asks for ones outside the workspace or secret.
+
+    With ``cwd`` (the folder it runs in), a git command is read-only only when that
+    repository's own config names no program that :func:`git_command_env` cannot switch
+    off (a ``filter`` or ``diff`` driver), and when no ``cd`` moves it to another one.
     """
+    if not _read_only_text(command):
+        return False
+    if cwd is None:
+        return True
+    programs = [_program_of(part) for part in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command)))[::2]]
+    if "git" not in programs:
+        return True
+    if any(program in _CD_PROGRAMS for program in programs):
+        return False  # the repository it reads cannot be told here
+    return not git_repo_runs_code(Path(cwd))
+
+
+#: Settings crit sets for a git command run_command runs as read-only, so a repository's
+#: ``.git/config`` (or an included file) cannot make it run a program: the same switches
+#: as crit's own git calls (:func:`git_argv`). They win over every config file.
+_GIT_READ_SETTINGS = (
+    ("core.fsmonitor", ""),
+    ("core.hooksPath", "NUL" if sys.platform == "win32" else "/dev/null"),
+    ("diff.external", ""),
+    ("core.pager", "cat"),
+    ("log.showSignature", "false"),
+)
+# Config a repository can carry that runs a program on a plain read and that no setting
+# above switches off: clean/smudge filters (git status, git diff) and diff drivers.
+_GIT_PROGRAM_KEY_RE = re.compile(r"^(?:filter\..+\.(?:clean|smudge|process)|diff\..+\.(?:textconv|command)|merge\..+\.driver)$", re.I)
+
+
+def git_command_env() -> dict[str, str]:
+    """Environment for a read-only git command run through run_command (see :data:`_GIT_READ_SETTINGS`)."""
+    params = " ".join("'" + f"{key}={value}".replace("'", "'\\''") + "'" for key, value in _GIT_READ_SETTINGS)
+    return {
+        "GIT_CONFIG_PARAMETERS": params,
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_PAGER": "cat",
+    }
+
+
+def git_repo_runs_code(folder: Path) -> bool:
+    """True when the repository at ``folder`` has its own config (not the user's) naming a
+    filter or diff driver program, or when that cannot be checked."""
+    try:
+        proc = subprocess.run(
+            git_argv(Path(folder), ["config", "--list", "--show-scope", "--includes"]),
+            capture_output=True, check=False, timeout=10, env=_git_environment(), stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False  # no git: the command will not run git's config either
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if proc.returncode != 0:
+        return False  # not a repository: there is no repository config
+    for line in agent_shell.decode(proc.stdout).splitlines():
+        scope, _, entry = line.partition("\t")
+        if scope in {"local", "worktree"} and _GIT_PROGRAM_KEY_RE.match(entry.split("=", 1)[0]):
+            return True
+    return False
+
+
+def _read_only_text(command: str) -> bool:
+    """:func:`read_only_command` on the command text alone."""
     text = str(command or "").strip()
     if not text or risky_command(text):
         return False

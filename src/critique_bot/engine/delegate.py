@@ -178,7 +178,8 @@ def _helper_run_class():
                 return False, f"not done in a helper: {why}. Put it in your report for the coordinator"
             if name == "run_command":
                 command = str((call.arguments or {}).get("command") or "")
-                if agent_tools.read_only_command(command):
+                judged = getattr(perm, "read_only", None)
+                if judged if isinstance(judged, bool) else agent_tools.read_only_command(command):
                     return True, ""
                 risky = agent_tools.risky_command(command)
                 if risky:
