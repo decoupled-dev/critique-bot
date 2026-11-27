@@ -656,6 +656,9 @@ def locate(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
             where = f"{candidate.path}:{candidate.line}" if candidate.line else candidate.path
             symbol = f" {candidate.symbol}" if candidate.symbol else ""
             lines.append(f"{number}. {where}{symbol}  [{', '.join(candidate.retrievers)}]")
+            others = candidate.top_symbols(3)[1:]
+            if others:
+                lines.append(f"   also: {', '.join(others)}")
             lines.append(f"   why: {_locate.hypothesis(candidate)}")
         terms = [t for t, w, why in found.query.terms if w < 1.0][:8]
         footer = f"({found.seconds}s; retrievers: {', '.join(found.ran)}"

@@ -465,6 +465,13 @@ class Candidate:
     score: float = 0.0
     #: retriever -> its reason for this file, in the order the retrievers found it
     why: dict[str, str] = field(default_factory=dict)
+    #: symbol -> (fused score, line): the functions in this file the evidence points at
+    symbols: dict[str, tuple[float, int]] = field(default_factory=dict)
+    best_gain: dict[str, float] = field(default_factory=dict)
+
+    def top_symbols(self, count: int = 3) -> list[str]:
+        ranked = sorted(self.symbols.items(), key=lambda item: (-item[1][0], item[1][1], item[0]))
+        return [name for name, _ in ranked[:count]]
 
     @property
     def retrievers(self) -> list[str]:
@@ -483,7 +490,18 @@ def fuse(results: dict[str, list[Hit]], weights: dict[str, float]) -> list[Candi
         weight = weights.get(name, 1.0)
         seen: set[str] = set()
         rank = 0
+        symbol_rank = 0
         for hit in hits:
+            if hit.symbol:
+                symbol_rank += 1
+                candidate = by_file.setdefault(hit.path, Candidate(hit.path))
+                score, line = candidate.symbols.get(hit.symbol, (0.0, 0))
+                gain = weight / (RRF_K + symbol_rank)
+                best = candidate.best_gain.get(hit.symbol, 0.0)
+                if hit.line and (gain > best or not line):
+                    line = hit.line
+                    candidate.best_gain[hit.symbol] = max(gain, best)
+                candidate.symbols[hit.symbol] = (score + gain, line)
             if hit.path in seen:
                 continue
             seen.add(hit.path)
@@ -494,8 +512,12 @@ def fuse(results: dict[str, list[Hit]], weights: dict[str, float]) -> list[Candi
             candidate.why.setdefault(name, hit.reason)
             if (hit.symbol or hit.line) and gain > best_rank.get(hit.path, 0.0):
                 best_rank[hit.path] = gain
-                candidate.symbol = hit.symbol or candidate.symbol
                 candidate.line = hit.line or candidate.line
+    for candidate in by_file.values():
+        if candidate.symbols:
+            best = candidate.top_symbols(1)[0]
+            candidate.symbol = best
+            candidate.line = candidate.symbols[best][1] or candidate.line
     return sorted(by_file.values(), key=lambda c: (-c.score, c.path))
 
 

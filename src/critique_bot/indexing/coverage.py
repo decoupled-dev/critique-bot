@@ -72,8 +72,13 @@ def _rel(name: str, workspace: Path, known: set[str]) -> str:
     name = name.replace("\\", "/").lstrip("./")
     if name in known:
         return name
-    matches = [item for item in known if item.endswith("/" + name)]
-    return min(matches, key=len) if matches else name
+    parts = name.split("/")
+    for start in range(len(parts)):  # /build/native/fan.c -> native/fan.c -> fan.c
+        tail = "/".join(parts[start:])
+        matches = [item for item in known if item == tail or item.endswith("/" + tail)]
+        if matches:
+            return min(matches, key=len)
+    return name
 
 
 def _jacoco(text: str, known: set[str]) -> Lines:
