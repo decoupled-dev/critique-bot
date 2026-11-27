@@ -81,6 +81,7 @@ LAYERS: dict[str, int] = {
     "session_log": ENGINE,
     "compaction": ENGINE,
     "prompt_build": ENGINE,
+    "memory_recall": ENGINE,
     # apps: things built on the engine and the models
     "review_agent": APPS,
     "review_session": APPS,
