@@ -279,7 +279,7 @@ class RunReviewSessionTests(unittest.TestCase):
         self.assertEqual(called, [])
 
     def test_file_turn_chat_error_still_sends_patch(self) -> None:
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         class BoomSession:
             def __init__(self) -> None:

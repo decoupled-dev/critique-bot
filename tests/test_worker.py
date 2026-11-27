@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot.browser import BrowserError
+from critique_bot.model_api import BackendError as BrowserError  # any backend failure
+from webchat_support import needs_webchat
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.provider import ChatProvider, ChatSession
+from critique_bot.model_api import ChatProvider, ChatSession
 from critique_bot.queue import FileQueue, Job, RateLimiter
 from critique_bot.worker import (
     _browser_provider_loop,
@@ -172,7 +173,7 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertIn("empty", status.error or "")
 
     def test_chat_error_fails_without_raising(self) -> None:
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         job = self._job()
         _execute_job(
@@ -215,6 +216,7 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
         self.assertFalse((self.queue.processing / f"{job.id}.json").exists())
 
+    @needs_webchat
     def test_closed_context_is_requeued_as_browser_error(self) -> None:
         job = self._job()
         with self.assertRaises(BrowserError) as ctx:
@@ -233,8 +235,9 @@ class ExecuteJobTests(unittest.TestCase):
         self.assertIsNone(self.queue.read_status(job.id))
         self.assertTrue((self.queue.inbox / f"{job.id}.json").is_file())
 
+    @needs_webchat
     def test_chat_closed_page_is_requeued(self) -> None:
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         job = self._job()
         with self.assertRaises(BrowserError):

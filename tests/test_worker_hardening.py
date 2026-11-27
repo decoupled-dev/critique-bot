@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot.browser import BrowserError
+from critique_bot.model_api import BackendError as BrowserError  # any backend failure
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED
-from critique_bot.provider import ChatProvider, ChatSession
+from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED
+from critique_bot.model_api import ChatProvider, ChatSession
 from critique_bot.queue import FileQueue, Job
 from critique_bot.worker import _execute_job, _JobWatchdog
 

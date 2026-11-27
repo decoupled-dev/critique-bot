@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: python -m pip install -c constraints.txt -e .
+        run: python -m pip install -c constraints.txt -e ".[webchat]"
       - name: Unit tests
         env:
           PYTHONUTF8: "1"
@@ -43,6 +43,11 @@ jobs:
       - name: Eval grader audit (every check fails untouched and passes with its reference)
         if: runner.os == 'Linux'
         run: python -m critique_bot.eval_harness audit
+      - name: Core crit works without the web chat (critique_bot/webchat/ deleted)
+        if: runner.os == 'Linux'
+        env:
+          PYTHONUTF8: "1"
+        run: python scripts/check_webchat_removable.py
 
   audit:
     runs-on: ubuntu-22.04

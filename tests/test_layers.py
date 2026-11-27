@@ -36,11 +36,9 @@ LAYERS: dict[str, int] = {
     "run_stats": CORE,
     # models: the model behind crit; model_api is its interface
     "model_api": MODELS,
-    "provider": MODELS,
-    "browser": MODELS,
-    "chat_client": MODELS,
     "local_model": MODELS,
-    "setup_ui": MODELS,
+    # the web chat: a removable package (critique_bot/webchat/), reached only via model_api
+    "webchat": MODELS,
     # tools: what the agent can do on this machine; tool_api is its interface
     "tool_api": TOOLS,
     "agent_tools": TOOLS,
@@ -123,13 +121,21 @@ def _imports(path: Path) -> set[str]:
     return found
 
 
+def modules() -> dict[str, list[Path]]:
+    """Each module name and its files: a top-level .py file, or a subpackage as one module."""
+    found = {path.stem: [path] for path in sorted(PACKAGE.glob("*.py"))}
+    for folder in sorted(PACKAGE.iterdir()):
+        if folder.is_dir() and (folder / "__init__.py").is_file():
+            found[folder.name] = sorted(folder.rglob("*.py"))
+    return found
+
+
 def crossings() -> set[tuple[str, str, str]]:
     """Every (importer, imported, why) that breaks the layering."""
     bad: set[tuple[str, str, str]] = set()
-    for path in sorted(PACKAGE.glob("*.py")):
-        name = path.stem
+    for name, paths in modules().items():
         mine = LAYERS[name]
-        for dep in _imports(path):
+        for dep in set().union(*(_imports(path) for path in paths)):
             if dep == name or dep not in LAYERS:
                 continue
             theirs = LAYERS[dep]
@@ -142,10 +148,29 @@ def crossings() -> set[tuple[str, str, str]]:
 
 class LayerTests(unittest.TestCase):
     def test_every_module_has_a_layer(self) -> None:
-        missing = sorted(path.stem for path in PACKAGE.glob("*.py") if path.stem not in LAYERS)
+        found = modules()
+        missing = sorted(name for name in found if name not in LAYERS)
         self.assertEqual(missing, [], "add new modules to LAYERS in tests/test_layers.py")
-        gone = sorted(name for name in LAYERS if not (PACKAGE / f"{name}.py").is_file())
+        # The web chat is optional: a crit without critique_bot/webchat/ is still whole.
+        gone = sorted(name for name in LAYERS if name not in found and name != "webchat")
         self.assertEqual(gone, [], "remove deleted modules from LAYERS")
+
+    def test_nothing_outside_the_web_chat_imports_it_or_playwright(self) -> None:
+        """The web chat is removable: core crit reaches it only through model_api's registry."""
+        offenders = []
+        for name, paths in modules().items():
+            if name == "webchat":
+                continue
+            for path in paths:
+                if "webchat" in _imports(path):
+                    offenders.append(f"{path.name} imports critique_bot.webchat")
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    mods = [a.name for a in node.names] if isinstance(node, ast.Import) else (
+                        [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+                    if any(m == "playwright" or m.startswith("playwright.") for m in mods):
+                        offenders.append(f"{path.name} imports playwright")
+        self.assertEqual(offenders, [])
 
     def test_imports_follow_the_layers(self) -> None:
         found = crossings()

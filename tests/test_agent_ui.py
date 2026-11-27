@@ -640,7 +640,7 @@ class RunAgentTests(_Base):
     def _run(self, loop, **kwargs):
         from critique_bot import agent
 
-        with patch("critique_bot.provider.open_provider", return_value=_Provider()), patch.object(
+        with patch("critique_bot.model_api.open_provider", return_value=_Provider()), patch.object(
             agent, "run_agent_loop", loop
         ), patch.object(agent, "_remove_old_codegraph"), patch.object(agent, "_open_shell_session", return_value=None):
             return agent.run_agent(

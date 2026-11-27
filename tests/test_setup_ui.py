@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from critique_bot.redaction import set_custom_terms
-from critique_bot.setup_ui import (
+from critique_bot.webchat.setup_ui import (
     PICK_FIELDS,
     BrowserBridge,
     SetupState,
@@ -295,7 +295,7 @@ class BrowserBridgeTests(unittest.TestCase):
         BrowserBridge().stop()
 
     def test_start_surfaces_a_launch_failure(self) -> None:
-        from critique_bot.browser import BrowserError
+        from critique_bot.webchat.browser import BrowserError
         from critique_bot.config import BotConfig, Selectors
 
         config = BotConfig(
@@ -304,9 +304,9 @@ class BrowserBridgeTests(unittest.TestCase):
         )
         # No saved sign-in here, so without the needs_visible_login patch a real sign-in window would open first.
         with patch(
-            "critique_bot.browser.launch_edge",
+            "critique_bot.webchat.browser.launch_edge",
             side_effect=BrowserError("no Edge here"),
-        ), patch("critique_bot.browser.needs_visible_login", return_value=False):
+        ), patch("critique_bot.webchat.browser.needs_visible_login", return_value=False):
             with self.assertRaises(RuntimeError) as ctx:
                 BrowserBridge().start(config)
         self.assertIn("no Edge here", str(ctx.exception))
@@ -335,7 +335,7 @@ class BlockedSitesTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from critique_bot import browser, setup_ui
+        from critique_bot.webchat import browser, setup_ui
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"

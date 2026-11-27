@@ -8,8 +8,8 @@ version = "1.0.7"
 description = "crit: coding agent and code reviewer that drives a web chat UI in Microsoft Edge or a local model."
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+# The web-chat backend (critique_bot.webchat) needs Playwright: the [webchat] extra.
 dependencies = [
-    "playwright>=1.49.0",
     "rich>=13.7",
     "prompt_toolkit>=3.0.43",
 ]
@@ -24,7 +24,8 @@ critique-bot = "critique_bot.cli:main"
 bot-agent = "critique_bot.agent_cli:main"
 
 [project.optional-dependencies]
-packaging = ["pyinstaller>=6.11"]
+webchat = ["playwright>=1.49.0"]
+packaging = ["pyinstaller>=6.11", "playwright>=1.49.0"]
 index = [
     "tree-sitter>=0.23",
     "tree-sitter-python",

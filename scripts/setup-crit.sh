@@ -229,12 +229,13 @@ else
             die "pip is missing in $venv; delete that folder and re-run after fixing the above"
         fi
     fi
+    # [webchat]: the web UI backend (Playwright); [index]: tree-sitter code index.
     if [ "$with_index" = 1 ]; then
-        target="${repo}[index]"
-        say "Installing crit with the [index] extra (pip install -e)"
+        target="${repo}[webchat,index]"
+        say "Installing crit with the [webchat,index] extras (pip install -e)"
     else
-        target=$repo
-        say "Installing crit (pip install -e)"
+        target="${repo}[webchat]"
+        say "Installing crit with the [webchat] extra (pip install -e)"
     fi
     # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
     pins=""

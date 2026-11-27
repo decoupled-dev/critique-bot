@@ -11,7 +11,9 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot import browser, egress
+from critique_bot import egress
+
+from critique_bot.webchat import browser
 from critique_bot.config import ConfigError, load_config
 
 _SELECTORS = {"prompt_input": "textarea", "assistant_messages": ".msg"}

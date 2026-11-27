@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from critique_bot.browser import save_page_failure as save_failure
 from critique_bot.output import isoformat, write_output, write_review
+from webchat_support import needs_webchat
 
 
 class WriteOutputTests(unittest.TestCase):
@@ -59,6 +59,13 @@ class IsoformatTests(unittest.TestCase):
         self.assertRegex(text, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
 
+def save_failure(*args, **kwargs):
+    from critique_bot.webchat.browser import save_page_failure
+
+    return save_page_failure(*args, **kwargs)
+
+
+@needs_webchat
 class SaveFailureTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -71,7 +78,7 @@ class SaveFailureTests(unittest.TestCase):
         page = MagicMock()
         page.screenshot = MagicMock()
         page.content = MagicMock(return_value="<html>ok</html>")
-        with patch("critique_bot.browser.describe_page", return_value="url='x'"):
+        with patch("critique_bot.webchat.browser.describe_page", return_value="url='x'"):
             save_failure(page, self.folder)
         page.screenshot.assert_called_once()
         html = (self.folder / "page.html").read_text(encoding="utf-8")
@@ -99,7 +106,7 @@ class SaveFailureTests(unittest.TestCase):
         page.screenshot = MagicMock()
         page.content = MagicMock(return_value="<p/>")
         with patch(
-            "critique_bot.browser.describe_page",
+            "critique_bot.webchat.browser.describe_page",
             side_effect=RuntimeError("boom"),
         ):
             save_failure(page, self.folder)

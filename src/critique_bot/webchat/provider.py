@@ -1,11 +1,9 @@
-"""The model behind crit: a web chat page in Edge, or a model served on this PC.
+"""The web-chat backend: a chat page in Edge behind the model layer's interface.
 
-Prompt composition, the agent loop, the job queue, and output writing stay above
-this layer. They see one interface: :class:`ChatProvider` opens the backend and
-hands out :class:`ChatSession` objects, and a session is ``send(prompt) -> reply``
-plus ``new_chat`` and ``stop_generation``. :func:`open_provider` picks the backend
-from ``backend`` in ``config.json``: ``browser`` (this module) or ``local``
-(:mod:`critique_bot.local_model`: llama.cpp, LM Studio, vLLM, ...).
+:class:`BrowserProvider` opens Edge and hands out :class:`ChatSession` objects (one per
+tab); a session is ``send(prompt) -> reply`` plus ``new_chat`` and ``stop_generation``.
+The package registers :func:`open_browser_provider` with :mod:`critique_bot.model_api`
+as the ``browser`` backend; nothing outside :mod:`critique_bot.webchat` imports this.
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from dataclasses import replace
 from typing import Any
 
 from critique_bot import log
-from critique_bot.config import BACKEND_LOCAL, BotConfig
+from critique_bot.config import BotConfig
 from critique_bot.model_api import ChatProvider, ChatSession  # noqa: F401 (re-exported)
 
 #: How long the first-login window stays open. Longer than a normal turn so
@@ -27,13 +25,14 @@ _LOGIN_WINDOW_MS = 600_000
 
 
 def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
-    """The backend ``config.backend`` names, not started yet (use it as a context manager)."""
-    if config.backend == BACKEND_LOCAL:
-        from critique_bot.local_model import LocalModelProvider
+    """Same as :func:`critique_bot.model_api.open_provider` (kept for older imports)."""
+    from critique_bot.model_api import open_provider as _open
 
-        if headed:
-            log.info("--headed does nothing with a local model: there is no browser")
-        return LocalModelProvider(config)
+    return _open(config, headed=headed)
+
+
+def open_browser_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
+    """The web-chat backend, registered with the model layer as ``browser``."""
     return BrowserProvider(config, headed=headed)
 
 
@@ -43,7 +42,7 @@ def login_in_edge(config: BotConfig) -> None:
     The headless run that follows reuses the same profile. A run with
     ``storage_state`` or ``cdp_url`` has its own login and never gets here.
     """
-    from critique_bot.browser import login_profile_dir, sign_in_with_plain_browser
+    from critique_bot.webchat.browser import login_profile_dir, sign_in_with_plain_browser
 
     log.info("no saved login; opening a browser window to sign in, then this run continues headless")
     sign_in_with_plain_browser(
@@ -99,7 +98,7 @@ def _open_new_chat(page: Any, config: BotConfig) -> bool:
 def _stop_page_generation(page: Any, config: BotConfig) -> bool:
     if page is None:
         return False
-    from critique_bot.chat_client import stop_generation
+    from critique_bot.webchat.chat_client import stop_generation
 
     return stop_generation(page, config.selectors)
 
@@ -114,7 +113,7 @@ class BrowserProvider(ChatProvider):
         self.can_parallelize = False
 
     def __enter__(self) -> BrowserProvider:
-        from critique_bot.browser import launch_edge, needs_visible_login, set_allowed_hosts, set_page_filter
+        from critique_bot.webchat.browser import launch_edge, needs_visible_login, set_allowed_hosts, set_page_filter
 
         set_allowed_hosts(self._config.allowed_hosts)
         set_page_filter(self._config.filter_chat_page)
@@ -162,7 +161,7 @@ class BrowserProvider(ChatProvider):
         model: str | None = None,
     ) -> ChatSession:
         cfg = _job_config(self._config, model)
-        from critique_bot.browser import BrowserError, as_browser_error
+        from critique_bot.webchat.browser import BrowserError, as_browser_error
 
         if isolated:
             if not self._cdp_url:
@@ -195,7 +194,7 @@ class _PageFailure:
     def save_failure(self, output_dir: Path) -> None:
         if self.page is None:
             return
-        from critique_bot.browser import save_page_failure
+        from critique_bot.webchat.browser import save_page_failure
 
         save_page_failure(self.page, output_dir)
 
@@ -209,7 +208,7 @@ class PageBrowserSession(_PageFailure, ChatSession):
         self.last_detail: dict[str, Any] | None = None
 
     def send(self, prompt: str) -> str:
-        from critique_bot.chat_client import prepare_chat, send_turn
+        from critique_bot.webchat.chat_client import prepare_chat, send_turn
 
         if not self._prepared:
             prepare_chat(self.page, self._config)
@@ -251,7 +250,7 @@ class CdpBrowserSession(_PageFailure, ChatSession):
         self.last_detail: dict[str, Any] | None = None
 
     def __enter__(self) -> CdpBrowserSession:
-        from critique_bot.browser import connect_job_page
+        from critique_bot.webchat.browser import connect_job_page
 
         self._cm = connect_job_page(self._cdp_url)
         self.page = self._cm.__enter__()
@@ -276,10 +275,10 @@ class CdpBrowserSession(_PageFailure, ChatSession):
         return _stop_page_generation(self.page, self._config)
 
     def send(self, prompt: str) -> str:
-        from critique_bot.chat_client import prepare_chat, send_turn
+        from critique_bot.webchat.chat_client import prepare_chat, send_turn
 
         if self.page is None:
-            from critique_bot.browser import BrowserError
+            from critique_bot.webchat.browser import BrowserError
 
             raise BrowserError("browser session is not started")
         if not self._prepared:

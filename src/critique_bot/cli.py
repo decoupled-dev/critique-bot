@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from critique_bot import config_prompts, env_names, log, privacy
+from critique_bot import config_prompts, env_names, log, model_api, privacy
 from critique_bot.config import (
     BotConfig,
     ConfigError,
@@ -1061,9 +1061,10 @@ def _agent_confirm(question: str) -> bool:
 
 def _blocked_hosts() -> list[str]:
     """Sites the chat page was blocked from (only when the browser was used in this process)."""
-    browser = sys.modules.get("critique_bot.browser")
-    drain = getattr(browser, "drain_blocked_hosts", None)
-    return list(drain()) if callable(drain) else []
+    if "critique_bot.webchat" not in sys.modules:
+        return []
+    hooks = model_api.backend_hooks("browser")
+    return hooks.drain_blocked_hosts() if hooks is not None else []
 
 
 def _enable_prompts(args: argparse.Namespace, config_path: str | Path, *, agent_ui: bool = False) -> None:
@@ -1240,7 +1241,12 @@ def _main_submit(argv: list[str]) -> int:
 
 
 def _main_setup(argv: list[str]) -> int:
-    from critique_bot.setup_ui import DEFAULT_PORT, run_setup
+    hooks = model_api.backend_hooks("browser")
+    if hooks is None:
+        print("crit setup configures the web UI backend, which is not installed in this crit. "
+              "Install it with: pip install 'critique-bot[webchat]'", file=sys.stderr)
+        return 2
+    run_setup, DEFAULT_PORT = hooks.setup_command()
 
     parser = argparse.ArgumentParser(
         prog="crit setup",
@@ -1679,9 +1685,12 @@ def _agent_mode(args: argparse.Namespace) -> str | None:
 
 def _welcome_login(config: BotConfig) -> bool:
     """Ask to sign in, then open Edge. False means stop before the session."""
-    from critique_bot.browser import BrowserError, needs_visible_login
-    from critique_bot.provider import login_in_edge
     from critique_bot.welcome import ask_login
+
+    hooks = model_api.backend_hooks("browser")
+    if hooks is None:
+        log.notice("Problem: the web UI backend is not installed. Install it with: pip install 'critique-bot[webchat]'")
+        return False
 
     if not ask_login():
         print(
@@ -1689,10 +1698,10 @@ def _welcome_login(config: BotConfig) -> bool:
             file=sys.stderr,
         )
         return False
-    if needs_visible_login(config.user_data_dir, config.storage_state):
+    if hooks.needs_visible_login(config.user_data_dir, config.storage_state):
         try:
-            login_in_edge(config)
-        except BrowserError as exc:
+            hooks.login(config)
+        except model_api.BackendError as exc:
             log.notice(f"Problem: {exc}")
             return False
         return True
@@ -1855,9 +1864,7 @@ def _main_run(argv: list[str]) -> int:
         return _config_error(exc)
 
     prompt = payload.prompt
-    from critique_bot.browser import BrowserError
-    from critique_bot.chat_client import COMPLETION_IDLE, ChatError
-    from critique_bot.provider import open_provider
+    from critique_bot.model_api import COMPLETION_IDLE, BackendError, ChatError, open_provider
 
     started = datetime.now(timezone.utc)
     turns: list[dict[str, str]] = []
@@ -1891,7 +1898,7 @@ def _main_run(argv: list[str]) -> int:
                     save_failure(session, output_dir)
                     raise
         config_prompts.offer_blocked_hosts()
-    except (BrowserError, ChatError) as exc:
+    except (BackendError, ChatError) as exc:
         log.error(str(exc))
         log.notice(f"Problem: {exc}")
         config_prompts.offer_blocked_hosts()

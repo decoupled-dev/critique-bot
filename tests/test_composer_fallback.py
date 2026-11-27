@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from critique_bot import chat_client
+from critique_bot.webchat import chat_client
 from critique_bot.config import Selectors
 from critique_bot.model_api import ChatError
 
@@ -48,7 +48,7 @@ class FindComposerTests(unittest.TestCase):
                 raise PlaywrightTimeoutError("timeout")
 
         with patch.object(chat_client, "_wait_for_sliced", side_effect=wait), patch(
-            "critique_bot.browser.page_block_hint", return_value=""
+            "critique_bot.webchat.browser.page_block_hint", return_value=""
         ):
             chat_client._find_composer(page, _selectors(), 30_000)
 

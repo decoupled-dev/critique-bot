@@ -663,7 +663,7 @@ def _wait_visible(locator: Locator, timeout_ms: int, what: str) -> None:
     except PlaywrightTimeoutError as exc:
         hint = ""
         try:
-            from critique_bot.browser import page_block_hint
+            from critique_bot.webchat.browser import page_block_hint
 
             hint = page_block_hint(locator.page)
         except Exception:
@@ -719,7 +719,7 @@ def _page_on_chat_site(page: Page, chat_url: str) -> str | None:
     """
     from urllib.parse import urlsplit
 
-    from critique_bot.browser import chat_site
+    from critique_bot.webchat.browser import chat_site
 
     want = (urlsplit(chat_url).hostname or "").lower().rstrip(".")
     try:
@@ -2188,7 +2188,7 @@ def _raise_if_cloudflare(page: Page, prompt_selector: str) -> None:
     """
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-    from critique_bot.browser import launched_headless, page_block_hint
+    from critique_bot.webchat.browser import launched_headless, page_block_hint
 
     hint = page_block_hint(page)
     if "Cloudflare" not in hint:
@@ -2229,7 +2229,7 @@ def _warn_if_signed_out(page: Page) -> None:
 
 
 def prepare_chat(page: Page, config: BotConfig) -> None:
-    from critique_bot.browser import BrowserError, describe_page, navigate, warn_if_login_page
+    from critique_bot.webchat.browser import BrowserError, describe_page, navigate, warn_if_login_page
 
     selectors = config.selectors
     timeout_ms = config.timeout_ms

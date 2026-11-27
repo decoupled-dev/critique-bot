@@ -522,12 +522,13 @@ function Invoke-Setup {
                 Write-Info "this venv has no pip; using uv pip instead"
             }
         }
-        $target = $repo
+        # [webchat]: the web UI backend (Playwright); [index]: tree-sitter code index.
+        $target = "$repo[webchat]"
         if ($WithIndex) {
-            $target = "$repo[index]"
-            Write-Step "Installing crit with the [index] extra (pip install -e)"
+            $target = "$repo[webchat,index]"
+            Write-Step "Installing crit with the [webchat,index] extras (pip install -e)"
         } else {
-            Write-Step "Installing crit (pip install -e)"
+            Write-Step "Installing crit with the [webchat] extra (pip install -e)"
         }
         # Exact dependency versions (constraints.txt), so nothing unreviewed is installed.
         $pins = @()

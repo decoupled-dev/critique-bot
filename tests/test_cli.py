@@ -449,7 +449,7 @@ class MainDispatchTests(unittest.TestCase):
                 return None
 
         buf = io.StringIO()
-        with patch("critique_bot.provider.open_provider", return_value=Provider()):
+        with patch("critique_bot.model_api.open_provider", return_value=Provider()):
             with redirect_stdout(buf), redirect_stderr(io.StringIO()):
                 code = main(
                     [
@@ -494,7 +494,7 @@ class MainDispatchTests(unittest.TestCase):
                 return None
 
         err = io.StringIO()
-        with patch("critique_bot.provider.open_provider", return_value=Provider()):
+        with patch("critique_bot.model_api.open_provider", return_value=Provider()):
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
                 code = main(
                     [
@@ -512,7 +512,7 @@ class MainDispatchTests(unittest.TestCase):
         self.assertIn("empty", err.getvalue().lower())
 
     def test_chat_error_returns_one(self) -> None:
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         class Provider:
             def __enter__(self) -> Provider:
@@ -522,7 +522,7 @@ class MainDispatchTests(unittest.TestCase):
                 return None
 
         err = io.StringIO()
-        with patch("critique_bot.provider.open_provider", return_value=Provider()):
+        with patch("critique_bot.model_api.open_provider", return_value=Provider()):
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
                 code = main(
                     [

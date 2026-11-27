@@ -17,7 +17,7 @@ from rich.console import Console
 
 from critique_bot import agent_ui
 from critique_bot.agent import _loop_settings, _model_label, run_agent_loop
-from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError
+from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError
 from critique_bot.config import BotConfig, ConfigError, LocalConfig, load_config
 from critique_bot.local_model import (
     DEFAULT_NUM_CTX,
@@ -27,7 +27,8 @@ from critique_bot.local_model import (
     server_label,
     strip_thinking,
 )
-from critique_bot.provider import BrowserProvider, open_provider
+from critique_bot.model_api import open_provider
+from webchat_support import needs_webchat
 
 
 class _FakeServer:
@@ -210,7 +211,10 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             self._load({"backend": "local", "local": "openai"})
 
+    @needs_webchat
     def test_browser_config_is_unchanged(self) -> None:
+        from critique_bot.webchat.provider import BrowserProvider
+
         config = self._load({"url": "https://chat.example/", "selectors": {"prompt_input": "t", "assistant_messages": ".a"}})
         self.assertEqual(config.backend, "browser")
         self.assertFalse(config.is_local)

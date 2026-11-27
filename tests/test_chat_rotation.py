@@ -11,9 +11,11 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from critique_bot import agent, agent_ui, chat_client
+from critique_bot import agent, agent_ui
+
+from critique_bot.webchat import chat_client
 from critique_bot.agent import run_agent_loop
-from critique_bot.chat_client import ChatError, ReplyNotStarted, ReplyStalled
+from critique_bot.model_api import ChatError, ReplyNotStarted, ReplyStalled
 from critique_bot.config import BotConfig, Selectors
 
 SELECTORS = Selectors(prompt_input="#p", assistant_messages=".a", stop_button="button.stop", send_button="button.send")

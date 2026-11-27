@@ -248,7 +248,7 @@ class BrowserBridge:
             self.pick = None
 
     def _run(self, config: Any) -> None:
-        from critique_bot.browser import (
+        from critique_bot.webchat.browser import (
             launch_edge,
             login_profile_dir,
             needs_visible_login,
@@ -329,7 +329,7 @@ class SetupState:
 
     def blocked_hosts(self) -> list[str]:
         """Newly blocked sites added to the list shown on the page (allowed ones drop off)."""
-        from critique_bot.browser import drain_blocked_hosts
+        from critique_bot.webchat.browser import drain_blocked_hosts
 
         allowed = set(self.raw_config().get("allowed_hosts") or [])
         with self.lock:
@@ -614,7 +614,7 @@ def _validate(state: SetupState) -> dict[str, Any]:
     config = state.load()
 
     def run(page: Any) -> list[dict[str, str]]:
-        from critique_bot.browser import page_block_hint
+        from critique_bot.webchat.browser import page_block_hint
 
         checks: list[dict[str, str]] = []
         hint = page_block_hint(page)
@@ -705,7 +705,7 @@ def _round_trip(state: SetupState, prompt: str) -> dict[str, Any]:
     text = prompt.strip() or _PROBE_PROMPT
 
     def run(page: Any) -> dict[str, Any]:
-        from critique_bot.chat_client import ChatError, prepare_chat, send_turn
+        from critique_bot.webchat.chat_client import ChatError, prepare_chat, send_turn
 
         try:
             prepare_chat(page, config)

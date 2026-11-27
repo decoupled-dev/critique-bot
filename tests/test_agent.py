@@ -20,7 +20,8 @@ from critique_bot.agent import (
 )
 from critique_bot.agent_shell import Shell, command_argv as shell_command_argv, tool_hints
 from critique_bot.agent_tools import TaskState, canonical_tool
-from critique_bot.chat_client import COMPLETION_IDLE
+from critique_bot.model_api import COMPLETION_IDLE
+from webchat_support import needs_webchat
 
 # Fails until the file "flag" says good; runs the same in bash and PowerShell (no grep on Windows).
 _PY_CHECK_FLAG = f'"{sys.executable}" -c "import sys; sys.exit(0 if open(\'flag\').read().startswith(\'good\') else 1)"'
@@ -1328,7 +1329,7 @@ class RobustLoopTests(unittest.TestCase):
         from unittest import mock
 
         import critique_bot.agent as agent
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         sleeps: list[float] = []
         session = _Raising(
@@ -1345,7 +1346,7 @@ class RobustLoopTests(unittest.TestCase):
         from unittest import mock
 
         import critique_bot.agent as agent
-        from critique_bot.chat_client import CloudflareBlocked
+        from critique_bot.model_api import CloudflareBlocked
 
         sleeps: list[float] = []
         session = _Raising([CloudflareBlocked("Cloudflare blocked the headless browser."), "2 + 2 is 4."])
@@ -1683,7 +1684,7 @@ class RobustLoopTests(unittest.TestCase):
         from unittest import mock
 
         import critique_bot.agent as agent
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         events: list[str] = []
 
@@ -1712,10 +1713,13 @@ class RobustLoopTests(unittest.TestCase):
         _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", read_message=reader, outcome=outcome)
         self.assertEqual(outcome, ["COMPLETED"])
 
+    @needs_webchat
     def test_browser_session_opens_a_new_chat(self) -> None:
         from types import SimpleNamespace
 
-        from critique_bot.provider import ChatSession, PageBrowserSession
+        from critique_bot.model_api import ChatSession
+
+        from critique_bot.webchat.provider import PageBrowserSession
 
         visits: list[str] = []
         page = SimpleNamespace(goto=lambda url, **_kw: visits.append(url))
@@ -1726,10 +1730,11 @@ class RobustLoopTests(unittest.TestCase):
         self.assertFalse(session._prepared)
         self.assertFalse(ChatSession().new_chat())
 
+    @needs_webchat
     def test_new_chat_never_reopens_a_saved_conversation(self) -> None:
         from types import SimpleNamespace
 
-        from critique_bot.provider import PageBrowserSession, fresh_chat_url
+        from critique_bot.webchat.provider import PageBrowserSession, fresh_chat_url
 
         for url, fresh in (
             ("https://chat.company.example/c/68e1-abc", "https://chat.company.example/"),

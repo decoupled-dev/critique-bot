@@ -10,6 +10,7 @@ from critique_bot.agent_cli import main as agent_main
 from critique_bot.cli import main
 from critique_bot.config import ConfigError
 from critique_bot.cli import _resolve_mode
+from webchat_support import needs_webchat
 import argparse
 
 
@@ -123,6 +124,7 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertTrue((Path(tmp) / ".crit" / "settings.json").is_file())
 
+    @needs_webchat
     def test_first_run_inits_then_asks_before_opening_edge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -136,8 +138,8 @@ class AgentCliTests(unittest.TestCase):
                         "critique_bot.welcome.pick_role", return_value="aosp-expert"
                     ):
                         with patch("critique_bot.welcome.ask_login", return_value=True):
-                            with patch("critique_bot.browser.needs_visible_login", return_value=True):
-                                with patch("critique_bot.provider.login_in_edge") as login:
+                            with patch("critique_bot.webchat.browser.needs_visible_login", return_value=True):
+                                with patch("critique_bot.webchat.provider.login_in_edge") as login:
                                     with patch("critique_bot.agent.run_agent", return_value=0) as run:
                                         code = agent_main(["--repo-dir", str(root), "--config", str(config)])
             self.assertEqual(code, 0)
@@ -153,6 +155,7 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[2], "")
             self.assertIsNone(run.call_args.kwargs["role"])
 
+    @needs_webchat
     def test_declining_login_does_not_open_edge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -166,7 +169,7 @@ class AgentCliTests(unittest.TestCase):
                         "critique_bot.welcome.pick_role", return_value=None
                     ):
                         with patch("critique_bot.welcome.ask_login", return_value=False):
-                            with patch("critique_bot.provider.login_in_edge") as login:
+                            with patch("critique_bot.webchat.provider.login_in_edge") as login:
                                 with patch("critique_bot.agent.run_agent", return_value=0) as run:
                                     code = agent_main(["--repo-dir", str(root)])
             self.assertEqual(code, 0)
@@ -229,6 +232,7 @@ class AgentCliTests(unittest.TestCase):
             run.assert_called_once()
             self.assertEqual(run.call_args.args[0].url, "https://ai.corp.example/")
 
+    @needs_webchat
     def test_theme_is_asked_once_per_user(self) -> None:
         with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
             for root in (Path(one), Path(two)):
@@ -237,7 +241,7 @@ class AgentCliTests(unittest.TestCase):
                 "critique_bot.welcome.stdio_is_tty", return_value=True
             ), patch("critique_bot.welcome.pick_theme", return_value=("light", True)) as pick, patch(
                 "critique_bot.welcome.ask_login", return_value=True
-            ), patch("critique_bot.browser.needs_visible_login", return_value=False), patch(
+            ), patch("critique_bot.webchat.browser.needs_visible_login", return_value=False), patch(
                 "critique_bot.agent.run_agent", return_value=0
             ):
                 self.assertEqual(agent_main(["--repo-dir", one, "fix it"]), 0)

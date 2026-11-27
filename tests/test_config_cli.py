@@ -12,7 +12,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from critique_bot import browser, config_prompts, egress, redaction
+from critique_bot import config_prompts, egress, redaction
+
+from critique_bot.webchat import browser
 from critique_bot.agent_cli import main as crit_main
 from critique_bot.cli import main as bot_main
 from critique_bot.config import load_config, user_config_path
@@ -337,9 +339,9 @@ class FirstRunTests(_Isolated):
         ), patch("critique_bot.welcome.pick_theme", return_value=("dark", True)), patch(
             "critique_bot.welcome.pick_role", return_value="generic"
         ), patch("critique_bot.welcome.ask_login", return_value=True), patch(
-            "critique_bot.browser.needs_visible_login", return_value=False
+            "critique_bot.webchat.browser.needs_visible_login", return_value=False
         ), patch("builtins.input", side_effect=answers), patch(
-            "critique_bot.setup_ui.run_setup", return_value=0
+            "critique_bot.webchat.setup_ui.run_setup", return_value=0
         ) as setup, patch("critique_bot.agent.run_agent", return_value=0) as run:
             code, out, err = _capture(crit_main, ["--repo-dir", str(self.project), "fix the build"])
         return code, (run, setup), out + err
@@ -381,7 +383,7 @@ class FirstRunTests(_Isolated):
 
     def test_setup_without_config_flag_uses_the_user_config(self) -> None:
         self.assertEqual(self.config("--url", "https://chat.corp.example/")[0], 0)
-        with patch("critique_bot.setup_ui.run_setup", return_value=0) as run:
+        with patch("critique_bot.webchat.setup_ui.run_setup", return_value=0) as run:
             code, _, _ = _capture(bot_main, ["setup", "--no-open"])
         self.assertEqual(code, 0)
         self.assertEqual(Path(run.call_args.args[0]), self.user)

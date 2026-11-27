@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from critique_bot import agent_edit, agent_tools, chat_client
+from critique_bot import agent_edit, agent_tools
+
+from critique_bot.webchat import chat_client
 
 
 def _chrome() -> str:

@@ -15,8 +15,9 @@ wires the concrete pieces together.
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
-1  models    model_api (interface), provider + browser + chat_client (web page in Edge),
-             local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM), setup_ui
+1  models    model_api (interface and backend registry),
+             local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
+             webchat/ (optional: the web page in Edge; browser, chat_client, provider, setup_ui)
 0  core      config, log, patch (input limits), redaction, output, roles
 ```
 
@@ -32,6 +33,18 @@ its `LAYERS` table.
 | tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
 | engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |
+
+## The web chat is a removable module
+
+`critique_bot/webchat/` holds everything for driving a chat page in Edge. Nothing outside
+it imports it (`tests/test_layers.py` checks, and that nothing outside imports Playwright).
+Importing the package registers the `browser` backend with `model_api.register_backend`,
+plus the hooks the command line uses (sign-in, `crit setup`, blocked-site reports), which
+it reaches through `model_api.backend_hooks("browser")`. Playwright is the `[webchat]`
+extra. With the folder deleted, crit works with local models and a `backend: browser`
+config gets one message saying how to install it; `scripts/check_webchat_removable.py`
+runs the core test suite on such a copy (CI does too). Web-chat tests inside core test
+modules carry `@needs_webchat` (`tests/webchat_support.py`).
 
 Defaults are safe and headless: with no UI installed the engine uses `NullUI`, which
 approves nothing and asks nothing, and with no registry installed it uses the built-in

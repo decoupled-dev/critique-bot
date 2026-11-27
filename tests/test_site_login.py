@@ -12,7 +12,9 @@ import os
 import unittest
 from unittest import mock
 
-from critique_bot import browser, integrations
+from critique_bot import integrations
+
+from critique_bot.webchat import browser
 from critique_bot.config import load_config
 
 from test_config_cli import _Isolated

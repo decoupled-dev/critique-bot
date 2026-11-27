@@ -5,8 +5,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from critique_bot import browser, chat_client
-from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED, _wait_for_reply
+from critique_bot.webchat import browser, chat_client
+from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED
+from critique_bot.webchat.chat_client import _wait_for_reply
 from critique_bot.config import Selectors
 
 SELECTORS = Selectors(prompt_input="#p", assistant_messages=".a", stop_button="button.stop")

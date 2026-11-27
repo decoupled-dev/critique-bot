@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from critique_bot import privacy
+from webchat_support import HAVE_WEBCHAT, needs_webchat
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "critique_bot"
@@ -112,11 +113,13 @@ class OwnCodeTest(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+@needs_webchat
 class BrowserQuietTest(unittest.TestCase):
     """The browser's own services (sync, Safe Browsing, sign-in, time, updates) stay quiet."""
 
     def test_service_hosts_are_blocked_unless_on_the_chat_site(self) -> None:
-        from critique_bot import browser, egress
+        from critique_bot import egress
+        from critique_bot.webchat import browser
 
         saved = egress.policy()
         self.addCleanup(setattr, egress, "_policy", saved)
@@ -133,7 +136,7 @@ class BrowserQuietTest(unittest.TestCase):
         self.assertIn("edge.microsoft.com", gemini_rules)
 
     def test_disable_features_keeps_playwrights_list(self) -> None:
-        from critique_bot import browser
+        from critique_bot.webchat import browser
 
         flag = next(a for a in browser.BROWSER_QUIET_ARGS if a.startswith("--disable-features="))
         features = set(flag.split("=", 1)[1].split(","))
@@ -157,7 +160,7 @@ class BrowserQuietTest(unittest.TestCase):
         import json
         import tempfile
 
-        from critique_bot import browser
+        from critique_bot.webchat import browser
 
         with tempfile.TemporaryDirectory() as tmp:
             profile = Path(tmp)

@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 from critique_bot.config import BotConfig, Selectors
-from critique_bot.provider import (
+from critique_bot.webchat.provider import (
     BrowserProvider,
     ChatSession,
     open_provider,
@@ -26,7 +26,7 @@ def _config(**overrides: object) -> BotConfig:
 
 class BrowserProviderTests(unittest.TestCase):
     def test_job_config_replace(self) -> None:
-        from critique_bot.provider import _job_config
+        from critique_bot.webchat.provider import _job_config
 
         cfg = _config(model="GPT-5.1")
         self.assertEqual(_job_config(cfg, None).model, "GPT-5.1")
@@ -41,7 +41,7 @@ class BrowserProviderTests(unittest.TestCase):
         self.assertIsInstance(provider, BrowserProvider)
 
     def test_browser_session_requires_start(self) -> None:
-        from critique_bot.browser import BrowserError
+        from critique_bot.webchat.browser import BrowserError
 
         provider = BrowserProvider(_config(), headed=False)
         with self.assertRaises(BrowserError):
@@ -50,7 +50,7 @@ class BrowserProviderTests(unittest.TestCase):
             provider.session(isolated=True)
 
     def test_new_page_closed_context_is_browser_error(self) -> None:
-        from critique_bot.browser import BrowserError
+        from critique_bot.webchat.browser import BrowserError
 
         class Context:
             def new_page(self) -> None:
@@ -71,7 +71,7 @@ class BrowserProviderTests(unittest.TestCase):
         self.assertIn("closed", str(ctx.exception).lower())
 
     def test_closed_home_tab_is_browser_error(self) -> None:
-        from critique_bot.browser import BrowserError
+        from critique_bot.webchat.browser import BrowserError
 
         class Home:
             context = object()
@@ -93,9 +93,9 @@ class BrowserProviderTests(unittest.TestCase):
             launches.append(kwargs)
             yield object()
 
-        with patch("critique_bot.browser.needs_visible_login", return_value=True):
-            with patch("critique_bot.browser.launch_edge", fake_launch):
-                with patch("critique_bot.browser.sign_in_with_plain_browser") as sign_in:
+        with patch("critique_bot.webchat.browser.needs_visible_login", return_value=True):
+            with patch("critique_bot.webchat.browser.launch_edge", fake_launch):
+                with patch("critique_bot.webchat.browser.sign_in_with_plain_browser") as sign_in:
                     provider = BrowserProvider(_config(), headed=False)
                     with provider:
                         self.assertIsNotNone(provider._home)
@@ -112,16 +112,16 @@ class BrowserProviderTests(unittest.TestCase):
             launches.append(kwargs["headed"])
             yield object()
 
-        with patch("critique_bot.browser.needs_visible_login", return_value=False):
-            with patch("critique_bot.browser.launch_edge", fake_launch):
-                with patch("critique_bot.browser.wait_until_signed_in") as wait:
+        with patch("critique_bot.webchat.browser.needs_visible_login", return_value=False):
+            with patch("critique_bot.webchat.browser.launch_edge", fake_launch):
+                with patch("critique_bot.webchat.browser.wait_until_signed_in") as wait:
                     with BrowserProvider(_config(), headed=False):
                         pass
         self.assertEqual(launches, [False])
         wait.assert_not_called()
 
     def test_chat_error_is_runtime_error(self) -> None:
-        from critique_bot.chat_client import ChatError
+        from critique_bot.model_api import ChatError
 
         self.assertIsInstance(ChatError("boom"), RuntimeError)
 

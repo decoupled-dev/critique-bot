@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from critique_bot.browser import (
+from critique_bot.webchat.browser import (
     BrowserError,
     _cdp_version_urls,
     _chat_box_ready,
@@ -32,7 +32,7 @@ from critique_bot.browser import (
     wait_until_signed_in,
     warn_if_login_page,
 )
-from critique_bot.chat_client import (
+from critique_bot.webchat.chat_client import (
     ChatError,
     _click_timeout,
     _has_pinned_opener,
@@ -82,7 +82,7 @@ class UnfilteredByDefaultTests(unittest.TestCase):
     def test_page_runs_unfiltered_unless_configured(self) -> None:
         from unittest.mock import MagicMock
 
-        from critique_bot import browser
+        from critique_bot.webchat import browser
 
         browser.set_page_filter(False)
         page = MagicMock()
@@ -129,7 +129,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
     CHAT = "https://chat.company.example/"
 
     def setUp(self) -> None:
-        from critique_bot import browser
+        from critique_bot.webchat import browser
 
         browser.set_page_filter(True)
         self.addCleanup(browser.set_page_filter, False)
@@ -156,7 +156,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
             self.assertFalse(request_is_allowed(url, self.CHAT), url)
 
     def test_allowed_hosts_open_exactly_what_they_list(self) -> None:
-        from critique_bot import browser
+        from critique_bot.webchat import browser
 
         browser.set_allowed_hosts(["company-static.example", "challenges.cloudflare.com"])
         try:
@@ -204,7 +204,7 @@ class ChatNetworkGuardTests(unittest.TestCase):
         self.assertFalse(request_is_allowed("https://corp.example.evil.com/", chat))
 
     def test_chat_site(self) -> None:
-        from critique_bot.browser import chat_site
+        from critique_bot.webchat.browser import chat_site
 
         self.assertEqual(chat_site("chat.corp.example"), "corp.example")
         self.assertEqual(chat_site("ai.internal.corp.example"), "corp.example")
@@ -327,8 +327,9 @@ class PageHintTests(unittest.TestCase):
     def test_a_challenge_that_stays_up_is_final_only_when_headless(self) -> None:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        import critique_bot.browser as browser
-        from critique_bot.chat_client import ChatError, CloudflareBlocked, _raise_if_cloudflare
+        import critique_bot.webchat.browser as browser
+        from critique_bot.model_api import ChatError, CloudflareBlocked
+        from critique_bot.webchat.chat_client import _raise_if_cloudflare
 
         page = MagicMock()
         page.url = "https://x/__cf_chl_tk=1"
@@ -487,14 +488,14 @@ class ProfileAndTailTests(unittest.TestCase):
 
     def test_wait_until_signed_in_when_chat_box_appears(self) -> None:
         page = _LoginPage()
-        with patch("critique_bot.browser._LOGIN_POLL_MS", 0):
+        with patch("critique_bot.webchat.browser._LOGIN_POLL_MS", 0):
             wait_until_signed_in(page, prompt_selector="#prompt", timeout_ms=5_000)
         self.assertGreaterEqual(page.polls, 1)
         self.assertTrue(_chat_box_ready(page, "#prompt"))
 
     def test_wait_until_signed_in_times_out(self) -> None:
         page = _LoginPage(become_ready=False)
-        with patch("critique_bot.browser._LOGIN_POLL_MS", 0):
+        with patch("critique_bot.webchat.browser._LOGIN_POLL_MS", 0):
             with self.assertRaises(BrowserError) as ctx:
                 wait_until_signed_in(page, prompt_selector="#prompt", timeout_ms=1)
         self.assertIn("sign in", str(ctx.exception).lower())
@@ -673,20 +674,20 @@ class WaitForReplyTests(unittest.TestCase):
 
 class ResolveBrowserTests(unittest.TestCase):
     def test_no_browser_raises(self) -> None:
-        from critique_bot.browser import resolve_browser
+        from critique_bot.webchat.browser import resolve_browser
 
-        with patch("critique_bot.browser._find_edge_executable", return_value=None):
-            with patch("critique_bot.browser._find_chrome_executable", return_value=None):
+        with patch("critique_bot.webchat.browser._find_edge_executable", return_value=None):
+            with patch("critique_bot.webchat.browser._find_chrome_executable", return_value=None):
                 with self.assertRaises(BrowserError) as ctx:
                     resolve_browser()
         self.assertIn("No Chromium", str(ctx.exception))
 
     def test_falls_back_to_chrome(self) -> None:
-        from critique_bot.browser import resolve_browser
+        from critique_bot.webchat.browser import resolve_browser
 
-        with patch("critique_bot.browser._find_edge_executable", return_value=None):
+        with patch("critique_bot.webchat.browser._find_edge_executable", return_value=None):
             with patch(
-                "critique_bot.browser._find_chrome_executable",
+                "critique_bot.webchat.browser._find_chrome_executable",
                 return_value="/usr/bin/google-chrome",
             ):
                 executable, channel = resolve_browser()

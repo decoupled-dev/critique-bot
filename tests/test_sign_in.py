@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from critique_bot import browser
+from critique_bot.webchat import browser
 
 
 class SandboxFlagTests(unittest.TestCase):

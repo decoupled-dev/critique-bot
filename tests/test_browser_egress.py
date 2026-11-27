@@ -15,7 +15,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from critique_bot import browser
+from critique_bot.webchat import browser
 
 
 def _chrome() -> str:

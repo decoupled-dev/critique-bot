@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from critique_bot.cli import SUBCOMMANDS, main
+from webchat_support import HAVE_WEBCHAT, needs_webchat
 
 
 class _CliCase(unittest.TestCase):
@@ -45,6 +46,11 @@ class _CliCase(unittest.TestCase):
 class SubcommandRoutingTests(_CliCase):
     def test_every_advertised_subcommand_has_a_handler(self) -> None:
         for name in SUBCOMMANDS:
+            if name == "setup" and not HAVE_WEBCHAT:
+                code, _out, err = self.run_cli([name, "--help"])  # explains how to install the web chat
+                self.assertEqual(code, 2)
+                self.assertIn("critique-bot[webchat]", err)
+                continue
             with self.assertRaises(SystemExit) as ctx:
                 self.run_cli([name, "--help"])
             self.assertEqual(ctx.exception.code, 0, name)
@@ -107,6 +113,7 @@ class QueueStatusTests(_CliCase):
         self.assertIn("invalid JSON", err)
 
 
+@needs_webchat
 class SetupCommandTests(_CliCase):
     def test_missing_config_is_reported(self) -> None:
         code, out, _ = self.run_cli(
@@ -115,8 +122,9 @@ class SetupCommandTests(_CliCase):
         self.assertEqual(code, 1)
         self.assertIn("config file not found", out)
 
+    @needs_webchat
     def test_serves_and_passes_through_options(self) -> None:
-        with patch("critique_bot.setup_ui.run_setup", return_value=0) as run:
+        with patch("critique_bot.webchat.setup_ui.run_setup", return_value=0) as run:
             code, _, _ = self.run_cli(
                 ["setup", "--config", str(self.config), "--port", "1234", "--no-open"]
             )

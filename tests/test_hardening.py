@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from critique_bot import gitlab
-from critique_bot.browser import BrowserError, _open_cdp_version
+from critique_bot.webchat.browser import BrowserError, _open_cdp_version
 from critique_bot.config import default_browser_profile, load_config
 from critique_bot.output import private_dir
 from critique_bot.queue import FileQueue

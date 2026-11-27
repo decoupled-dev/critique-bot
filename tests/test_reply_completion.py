@@ -5,10 +5,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from critique_bot import chat_client
-from critique_bot.chat_client import ChatError, _settle_ms, _stream_state, _wait_for_reply
+from critique_bot.webchat import chat_client
+from critique_bot.model_api import ChatError
+from critique_bot.webchat.chat_client import _settle_ms, _stream_state, _wait_for_reply
 from critique_bot.config import Selectors
-from critique_bot.chat_client import COMPLETION_IDLE, COMPLETION_STOPPED
+from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED
 
 SELECTORS = Selectors(
     prompt_input="#p",

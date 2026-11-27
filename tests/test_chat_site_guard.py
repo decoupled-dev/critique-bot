@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from critique_bot import chat_client
+from critique_bot.webchat import chat_client
 from critique_bot.config import BotConfig, Selectors
 from critique_bot.model_api import ChatError
 

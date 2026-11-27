@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from critique_bot import chat_client
+from critique_bot.webchat import chat_client
 from critique_bot.model_api import ReplyStalled
 
 
@@ -18,7 +18,7 @@ class NoReplyTests(unittest.TestCase):
     def test_no_message_and_no_signal_stalls(self) -> None:
         clock = iter(range(0, 10_000, 5))
         with patch.object(chat_client, "_reply_state", return_value={"count": 3, "generating": False}), patch(
-            "critique_bot.chat_client.time.monotonic", side_effect=lambda: next(clock)
+            "critique_bot.webchat.chat_client.time.monotonic", side_effect=lambda: next(clock)
         ):
             with self.assertRaises(ReplyStalled):
                 chat_client._wait_for_reply(
@@ -37,7 +37,7 @@ class NoReplyTests(unittest.TestCase):
             return states[calls["n"] - 1]
 
         with patch.object(chat_client, "_reply_state", side_effect=state), patch(
-            "critique_bot.chat_client.time.monotonic", side_effect=lambda: next(clock)
+            "critique_bot.webchat.chat_client.time.monotonic", side_effect=lambda: next(clock)
         ):
             with self.assertRaises(RuntimeError):  # reached the reply, no ReplyStalled on the way
                 chat_client._wait_for_reply(

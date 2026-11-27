@@ -1,20 +1,23 @@
 """The model layer's interface: everything above it talks to a model through this module.
 
-A backend (the web chat page in Edge, or a model served on this PC) implements
+A backend (a model served on this PC, or the optional web chat page in Edge) implements
 :class:`ChatProvider` and :class:`ChatSession`. The engine, the review apps, and the CI
 worker depend only on these types, the errors, and the helpers below, so a backend can
 change, or a new one be added, without touching them, and they can be tested with a fake
 session (any object with ``send``; the rest is optional).
 
-Concrete backends live in :mod:`critique_bot.provider` (browser) and
-:mod:`critique_bot.local_model` (local server); :func:`open_provider` picks one from
-``backend`` in ``config.json``.
+The local server backend is :mod:`critique_bot.local_model`. Other backends register
+themselves with :func:`register_backend`: the web chat in :mod:`critique_bot.webchat`, a
+removable package that nothing else imports. :func:`open_provider` picks one from
+``backend`` in ``config.json``; :func:`backend_hooks` hands the command line a backend's
+extra hooks (sign-in, setup) or None when that backend is not installed.
 """
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from critique_bot.config import BotConfig
@@ -31,6 +34,8 @@ __all__ = [
     "ReplyNotStarted",
     "ReplyStalled",
     "backend_error",
+    "backend_hooks",
+    "register_backend",
     "context_tokens",
     "list_models",
     "model_label",
@@ -131,22 +136,68 @@ class ChatProvider:
         self.close()
 
 
+#: Backends other than the local server, by ``config.backend`` name: (factory, hooks).
+_BACKENDS: dict[str, tuple[Callable[..., ChatProvider], Any]] = {}
+#: Optional packages that register a backend when imported, by backend name.
+_OPTIONAL_BACKENDS = {"browser": "critique_bot.webchat"}
+_MISSING_HINT = {
+    "browser": (
+        "the web UI backend is not installed in this crit (critique_bot.webchat is missing). "
+        "Install it with: pip install 'critique-bot[webchat]', or use a local model: "
+        "crit config --backend local --local-url http://127.0.0.1:8080"
+    ),
+}
+
+
+def register_backend(name: str, factory: Callable[..., ChatProvider], *, hooks: Any = None) -> None:
+    """Make ``backend: <name>`` open ``factory(config, headed=...)``. Called by optional packages."""
+    _BACKENDS[name] = (factory, hooks)
+
+
+def _load_backend(name: str) -> tuple[Callable[..., ChatProvider], Any] | None:
+    if name not in _BACKENDS and name in _OPTIONAL_BACKENDS:
+        try:
+            importlib.import_module(_OPTIONAL_BACKENDS[name])
+        except ImportError:
+            return None
+    return _BACKENDS.get(name)
+
+
+def backend_hooks(name: str = "browser") -> Any:
+    """The extra hooks a backend offers the command line, or None when it is not installed."""
+    found = _load_backend(name)
+    return found[1] if found else None
+
+
 def open_provider(config: BotConfig, *, headed: bool = False) -> ChatProvider:
     """The backend ``config.backend`` names, not started yet (use it as a context manager)."""
-    from critique_bot.provider import open_provider as _open
+    if config.is_local:
+        from critique_bot import log
+        from critique_bot.local_model import LocalModelProvider
 
-    return _open(config, headed=headed)
+        if headed:
+            log.info("--headed does nothing with a local model: there is no browser")
+        return LocalModelProvider(config)
+    found = _load_backend(config.backend)
+    if found is None:
+        raise BackendError(_MISSING_HINT.get(config.backend, f"unknown backend {config.backend!r}"))
+    return found[0](config, headed=headed)
 
 
 def backend_error(exc: BaseException) -> BackendError | None:
     """``exc`` as a BackendError when it means the backend is gone (a closed browser), else None."""
     if isinstance(exc, BackendError):
         return exc
-    try:
-        from critique_bot.browser import as_browser_error
-    except Exception:  # noqa: BLE001 - no browser support installed: nothing to map
-        return None
-    return as_browser_error(exc)
+    for _, hooks in list(_BACKENDS.values()):
+        mapper = getattr(hooks, "as_backend_error", None)
+        if callable(mapper):
+            try:
+                mapped = mapper(exc)
+            except Exception:  # noqa: BLE001 - a broken mapper must not hide the real error
+                continue
+            if mapped is not None:
+                return mapped
+    return None
 
 
 def save_failure(session: Any, output_dir: Path) -> None:

@@ -6,8 +6,9 @@ import unittest
 from collections.abc import Callable
 from unittest.mock import patch
 
-from critique_bot import chat_client
-from critique_bot.chat_client import ChatError, send_turn, stop_generation
+from critique_bot.webchat import chat_client
+from critique_bot.model_api import ChatError
+from critique_bot.webchat.chat_client import send_turn, stop_generation
 from critique_bot.config import BotConfig, Selectors
 
 SELECTORS = Selectors(
@@ -315,7 +316,8 @@ class InterruptibleWaitTests(unittest.TestCase):
 
 class ProviderSessionTests(unittest.TestCase):
     def test_page_session_stops_its_page(self) -> None:
-        from critique_bot.provider import ChatSession, PageBrowserSession
+        from critique_bot.model_api import ChatSession
+        from critique_bot.webchat.provider import PageBrowserSession
 
         page = _Page(_Clock())
         page.generating = True
