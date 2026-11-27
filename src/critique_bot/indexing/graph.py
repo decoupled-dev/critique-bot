@@ -220,7 +220,7 @@ def resolve_imports(conn: sqlite3.Connection, *, sources: list[str] | None = Non
             chunk = sources[start : start + 500]
             marks = ",".join("?" * len(chunk))
             rows += conn.execute(
-                f"SELECT rowid, src_path, dst_name FROM edges WHERE +kind = 'imports' AND src_path IN ({marks})", chunk
+                f"SELECT rowid, src_path, dst_name FROM edges WHERE +kind = 'imports' AND src_path IN ({marks})", chunk  # nosec B608: marks is "?,?..."
             ).fetchall()
     updates = []
     resolved = 0
@@ -262,7 +262,7 @@ def imported_by(conn: sqlite3.Connection, path: str, *, limit: int = 200) -> lis
     marks = ",".join("?" * len(targets))
     rows = conn.execute(
         "SELECT src_path, src_symbol, kind, dst_name, dst_path, line FROM edges "
-        f"WHERE +kind = 'imports' AND dst_path IN ({marks}) ORDER BY src_path, line LIMIT ?",
+        f"WHERE +kind = 'imports' AND dst_path IN ({marks}) ORDER BY src_path, line LIMIT ?",  # nosec B608: marks is "?,?..."
         (*targets, limit),
     ).fetchall()
     return [Edge(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4] or ""), int(r[5])) for r in rows]

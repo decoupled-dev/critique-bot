@@ -83,7 +83,11 @@ def _rel(name: str, workspace: Path, known: set[str]) -> str:
 
 def _jacoco(text: str, known: set[str]) -> Lines:
     out: Lines = {}
-    root = ET.fromstring(re.sub(r"<!DOCTYPE[^>]*>", "", text))
+    if re.search(r"<!(?:DOCTYPE|ENTITY)", text, re.I):  # no entity expansion: drop the DTD JaCoCo writes
+        text = re.sub(r"<!DOCTYPE[^>]*>", "", text)
+        if re.search(r"<!ENTITY", text, re.I):
+            raise ValueError("coverage report declares XML entities; refusing to parse it")
+    root = ET.fromstring(text)  # nosec B314: DTD removed and entities refused above
     for package in root.iter("package"):
         folder = package.get("name", "")
         for source in package.iter("sourcefile"):
