@@ -1,0 +1,11 @@
+{
+  "name": "resource-leak",
+  "task": "Fix: the stock sync leaks a connection on every failed batch.",
+  "diff": "--- a/stocksync/sync.py\n+++ b/stocksync/sync.py\n@@ -20,9 +20,10 @@ def sync_batch(pool, rows):\n     conn = pool.acquire()\n-    for row in rows:\n-        conn.execute(UPSERT, row)\n-    pool.release(conn)\n+    try:\n+        for row in rows:\n+            conn.execute(UPSERT, row)\n+    except DatabaseError:\n+        return False\n+    pool.release(conn)\n     return True\n",
+  "defect": {
+    "path": "stocksync/sync.py",
+    "line": 26,
+    "why": "the except branch returns before pool.release(conn), so a failed batch still leaks the connection; release in finally"
+  },
+  "context": {}
+}

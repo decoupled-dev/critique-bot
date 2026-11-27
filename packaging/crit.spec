@@ -51,6 +51,9 @@ except ImportError:
 # prompts only from its own bundle, so a missing one is a broken release.
 for packaged_prompt in sorted((ROOT / "src" / "critique_bot" / "prompts").glob("*.txt")):
     datas.append((str(packaged_prompt), "critique_bot/prompts"))
+# The flows' prompts (prompts/flows/verified.txt, Stage 7).
+for packaged_prompt in sorted((ROOT / "src" / "critique_bot" / "prompts" / "flows").glob("*.txt")):
+    datas.append((str(packaged_prompt), "critique_bot/prompts/flows"))
 
 # This product's license and the notices of the third-party code it bundles.
 for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):

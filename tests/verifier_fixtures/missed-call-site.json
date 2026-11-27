@@ -1,0 +1,13 @@
+{
+  "name": "missed-call-site",
+  "task": "Add a currency argument to format_price and use it in the invoice.",
+  "diff": "--- a/shop/money.py\n+++ b/shop/money.py\n@@ -1,3 +1,3 @@\n-def format_price(amount):\n-    return f\"{amount:.2f} EUR\"\n+def format_price(amount, currency):\n+    return f\"{amount:.2f} {currency}\"\n--- a/shop/invoice.py\n+++ b/shop/invoice.py\n@@ -5,4 +5,4 @@ def invoice_line(item):\n-    return f\"{item.name}: {format_price(item.price)}\"\n+    return f\"{item.name}: {format_price(item.price, item.currency)}\"\n",
+  "context": {
+    "shop/cart.py": "from shop.money import format_price\n\n\ndef cart_total_text(cart):\n    return 'Total: ' + format_price(cart.total())\n"
+  },
+  "defect": {
+    "path": "shop/money.py",
+    "line": 1,
+    "why": "shop/cart.py:5 still calls format_price(cart.total()) with one argument and now raises TypeError; give currency a default or update the caller"
+  }
+}

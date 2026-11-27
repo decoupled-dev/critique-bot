@@ -39,10 +39,15 @@ Each event has `seq` (1, 2, ...), `ts` (UTC), `turn` (model replies so far) and 
 | `permission_decision` | an approval asked or applied: kind, what, allowed, reason, mode |
 | `tool_started`, `tool_result` | tool, call id, arguments, ok, a one-line summary, the full result |
 | `checkpoint` | the undo checkpoint of a task |
-| `mode_changed`, `role_changed` | a switch mid-session (old, new) |
+| `mode_changed`, `role_changed` | a switch mid-session (old, new); a plan trigger adds `trigger` and `accepted` |
 | `compaction` | `new_chat`, `mask` or `summarize`, with tokens before and after |
 | `memory_recall` | the project-memory hunch added to a task: its likely files with confidences, the source ids, its tokens and budget ([memory.md](memory.md)) |
 | `task_finished` | the finish code (COMPLETED, FAILED, INTERRUPTED, ...) and the files changed |
+| `task_finished` | the finish code (COMPLETED, FAILED, INTERRUPTED, ...), the files changed, and the verified flow's `evidence` when it ran |
+| `flow_state` | the verified flow entered a state (REPRODUCE, FIX, TEST, REVIEW, DONE, STOPPED), with the task class at the start and the evidence at the end ([verified-changes.md](verified-changes.md)) |
+| `repro_result` | the repro run: before (command, expected failure, exit, accepted, why) or after (passed) |
+| `test_run` | the selected tests, before and after: per target ok and failing count |
+| `review_result` | the reviewer's risk, findings and blocking count, or why the review was skipped |
 | `error` | a reply that failed (it is retried) |
 | `notice`, `assistant_text` | what the terminal would show: a note (`kind`, `text`) and the model's words (written by Engine API sessions, [server.md](server.md)) |
 | `request`, `request_answered` | an approval, a question or a plan review asked of a client (`id`, `kind`), and its answer (`reply`, `by`) |

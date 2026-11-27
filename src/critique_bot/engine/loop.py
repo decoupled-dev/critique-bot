@@ -19,6 +19,7 @@ from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, log, prompt_build, roles
 from critique_bot import memory_recall
+from critique_bot import run_stats
 from critique_bot import session_log as session_log_mod
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
@@ -43,6 +44,7 @@ from critique_bot.engine.context import (
 )
 from critique_bot.engine.contracts import AnswerContract
 from critique_bot.engine.dispatch import _PARALLEL_SAFE, _tool_context
+from critique_bot.engine.flows.start import start_flow
 from critique_bot.engine.modes import _MODE_NOTES, _current_mode
 from critique_bot.engine.parse import (
     ToolCall,
@@ -138,6 +140,7 @@ def run_agent_loop(
     session_log: Any = None,
     resume: bool = False,
     side_factory: Callable[[], Any] | None = None,
+    reviewer_factory: Callable[[], Any] | None = None,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
@@ -158,7 +161,8 @@ def run_agent_loop(
     ``session_log`` (a :class:`session_log.SessionLog`) records every event of the session;
     with ``resume`` it already holds an earlier run, and the conversation is rebuilt from
     it first. ``side_factory`` opens a second session on the same model for one-off
-    requests (the compaction summary). A model API session (``_context_window`` in
+    requests (the compaction summary); ``reviewer_factory`` opens the verified flow's
+    reviewer chat (Stage 7; the ``verifier_model`` when one is set). A model API session (``_context_window`` in
     settings, a session with ``replace_history``) is compacted by context pressure
     (:mod:`compaction`) instead of moving to a new chat by size, turns, and time.
     """
@@ -381,6 +385,10 @@ def run_agent_loop(
         if read_only or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes
+        flow_text = start_flow(run, task, options, role=role_now, workspace=workspace, index_path=index_path,
+                                chat=chat, seed=lambda: chat.seed or seed or "",
+                                review_session=reviewer_factory or side_factory or helper_factory,
+                                side_factory=side_factory, mode=mode_now)
         tickets = tool_api.jira_context(task)
         message = task_message(
             task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"], tickets=tickets,
@@ -401,6 +409,8 @@ def run_agent_loop(
             run.hooks = _LoggedHooks(run.hooks, slog)
         if prompt_hook is not None and prompt_hook.append_context:
             message += "\n\nCONTEXT FROM A HOOK\n" + prompt_hook.append_context
+        if flow_text:
+            message += "\n\n" + flow_text
         try:
             outcome_code = run.run(message)
         except KeyboardInterrupt:
@@ -428,7 +438,17 @@ def run_agent_loop(
                     _ui("note", "Stopped the background jobs this task left running: " + ", ".join(stopped))
         mode_told = run.mode_seen
         changed = list(task_state.edits)
-        slog.write("task_finished", code=outcome_code, task=task, changed=changed or None)
+        evidence = None
+        if run.flow is not None:
+            try:
+                evidence = run.flow.finish()
+                # For crit eval (agent.json stats): did a claimed fix still fail its own checks?
+                run_stats.set_value("flow", {key: evidence.get(key) for key in (
+                    "task_class", "repro", "failing_before", "failing_after", "regressions", "attempts",
+                    "repair_rounds", "stop_reason")} | {"review_blocking": (evidence.get("review") or {}).get("blocking")})
+            except Exception as exc:  # noqa: BLE001 - the evidence is a report; the task is over
+                log.debug(f"flow evidence failed: {exc}")
+        slog.write("task_finished", code=outcome_code, task=task, changed=changed or None, evidence=evidence)
         memory_recall.end_task(workspace, index_path, task, outcome_code, changed, list(task_state.reads), options, slog,
                                side_factory=side_factory)  # Stage 8b: episode, cards, patterns
         _update_session_meta(slog)

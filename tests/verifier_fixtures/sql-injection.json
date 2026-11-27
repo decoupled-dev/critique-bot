@@ -1,0 +1,11 @@
+{
+  "name": "sql-injection",
+  "task": "Add a search by customer name to the orders API.",
+  "diff": "--- a/orders/repo.py\n+++ b/orders/repo.py\n@@ -30,3 +30,8 @@ class OrderRepo:\n     def by_id(self, order_id):\n         return self.db.query(\"SELECT * FROM orders WHERE id = ?\", (order_id,))\n+\n+    def by_customer(self, name):\n+        return self.db.query(\n+            \"SELECT * FROM orders WHERE customer LIKE '%\" + name + \"%'\"\n+        )\n",
+  "defect": {
+    "path": "orders/repo.py",
+    "line": 36,
+    "why": "the name is concatenated into SQL: a name like x' OR '1'='1 returns every order; use a parameter"
+  },
+  "context": {}
+}

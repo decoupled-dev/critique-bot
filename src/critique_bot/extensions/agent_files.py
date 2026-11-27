@@ -14,7 +14,8 @@ max_depth: 0                    # may it delegate (helpers never do today)
 max_parallel: 2                 # how many copies one delegate call may start
 isolation: none                 # none | worktree (forced for agents that write)
 output: summary                 # summary | review | json:<schema-file>
-budget: {tokens: 200000, minutes: 20}
+budget: {tokens: 200000, minutes: 20}   # and per flow state: {reproduce: 40000, fix: 400000, review: 80000}
+flow: auto                      # verified | plain | auto (the verified flow for bug fixes, Stage 7)
 ---
 You are a careful reviewer ... (the agent's instructions)
 ```
@@ -25,8 +26,11 @@ Where they come from, later ones winning on a name clash: crit's built-in agents
 project's ``.crit/agents/*.md``. A project agent is a prompt, so it loads without
 approval, but until ``crit trust`` approves it its ``mode`` cannot be looser than ``ask``.
 
-``model``, ``budget``, ``sandbox`` and ``flow`` are read and kept for the engine (Stage 5)
-and sandbox (Stage 4); today a delegated agent runs on the session's model.
+``flow`` picks the verified flow for the tasks this agent runs (engine/flows, Stage 7), and
+``budget``'s ``reproduce`` / ``fix`` / ``review`` keys are its per-state token budgets.
+``model`` of the ``verifier`` agent is the reviewer's model; ``model``, ``sandbox`` and the rest
+of ``budget`` are kept for the engine and sandbox; today a delegated agent runs on the
+session's model.
 """
 
 from __future__ import annotations
@@ -44,6 +48,8 @@ MODES = ("ask", "edits", "auto", "plan", "read-only")
 #: Modes a project agent may use before the user approves its file.
 SAFE_MODES = frozenset({"ask", "plan", "read-only"})
 ISOLATIONS = ("none", "worktree")
+#: ``flow:`` (Stage 7): verified (repro -> fix -> test -> review), plain, or auto (by task class).
+FLOWS = ("verified", "plain", "auto")
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 #: Tools that change files or run arbitrary commands: an agent with any of them writes.
 WRITING_TOOLS = frozenset({"write_files", "edit_file", "delete_file", "move_file", "apply_patch", "run_command",
@@ -168,6 +174,9 @@ def parse_agent(text: str, *, path: Path | None = None, scope: str = "user", tru
     output = str(data.get("output") or "summary")
     if output not in {"summary", "review"} and not output.startswith("json:"):
         raise AgentError(f"{where}: output must be summary, review, or json:<schema-file>")
+    flow = str(data.get("flow") or "").strip().lower()
+    if flow and flow not in FLOWS:
+        raise AgentError(f"{where}: flow must be one of {', '.join(FLOWS)}")
     budget = data.get("budget") or {}
     if not isinstance(budget, dict):
         raise AgentError(f"{where}: budget must be a map like {{tokens: 400000, minutes: 45}}")
@@ -188,7 +197,7 @@ def parse_agent(text: str, *, path: Path | None = None, scope: str = "user", tru
         model=str(data.get("model") or ""),
         budget=dict(budget),
         sandbox=str(data.get("sandbox") or ""),
-        flow=str(data.get("flow") or ""),
+        flow=flow,
         role=str(data.get("role") or ""),
         scope=scope,
         path=path,

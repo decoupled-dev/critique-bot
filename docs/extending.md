@@ -249,8 +249,15 @@ Use an agent in two ways:
   uncommitted changes. Its changes come back as a patch, and the main agent reviews the
   patch and applies it with `apply_patch`. Two agents never write to the same files.
 
-Not applied yet: `model` (an agent runs on the session's model), `budget`, `sandbox`,
-`flow`. crit reads these fields now so that the engine and sandbox stages can use them.
+`flow: verified | plain | auto` picks the verified flow for the tasks the agent runs as the
+main agent (it wins over the `flow` setting; `--flow` wins over it), and `budget`'s
+`reproduce`, `fix` and `review` keys are the flow's per-state token budgets
+([verified-changes.md](verified-changes.md)). The built-in `verifier` agent is the flow's
+reviewer; its `model:` is the reviewer's model.
+
+Not applied yet: `model` for other agents (an agent runs on the session's model), the
+`tokens` / `minutes` of `budget`, `sandbox`. crit reads these fields now so that the engine
+and sandbox stages can use them.
 Helpers cannot delegate, so a delegated agent's depth is always 1.
 
 ## Slash commands

@@ -43,6 +43,7 @@ nav:
       - The agent: agent.md
       - Sessions, resume and context: sessions.md
       - Project memory: memory.md
+      - Verified changes: verified-changes.md
       - IDEs (ACP): acp.md
       - Review in GitLab CI: gitlab-ci.md
   - Extending:

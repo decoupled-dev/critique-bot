@@ -1,0 +1,11 @@
+{
+  "name": "missing-null-check",
+  "task": "Fix: the thumbnail name crashes for files without an extension.",
+  "diff": "--- a/src/main/kotlin/thumbs/Thumbnail.kt\n+++ b/src/main/kotlin/thumbs/Thumbnail.kt\n@@ -3,6 +3,7 @@ package thumbs\n fun thumbName(name: String?): String {\n-    val base = name!!.substringBeforeLast('.')\n+    val dot = name!!.lastIndexOf('.')\n+    val base = if (dot > 0) name.substring(0, dot) else name\n     return \"${base}_thumb.png\"\n }\n",
+  "defect": {
+    "path": "src/main/kotlin/thumbs/Thumbnail.kt",
+    "line": 4,
+    "why": "a null name still crashes with the !! operator, which the task's crash report shows; handle null before using it"
+  },
+  "context": {}
+}

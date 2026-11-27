@@ -77,6 +77,11 @@ EVENT_TYPES = frozenset(
         "notice",
         "assistant_text",
         "session_closed",
+        # The verified flow (Stage 7): its states, the repro, the selected tests, the review.
+        "flow_state",
+        "repro_result",
+        "test_run",
+        "review_result",
     }
 )
 

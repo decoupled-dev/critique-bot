@@ -195,6 +195,8 @@ def run_agent(
                 "turns": turns,
                 "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
                              "_native_tools": setup.native_tools, "_extensions": extensions, **_session_settings(config, home),
+                             # crit's sessions classify tasks and verify bug fixes unless "flow" says otherwise.
+                             "_flow_default": "auto",
                              **({"_registry": setup.registry} if shared_process else {})},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
@@ -273,6 +275,11 @@ def _run_session(
                 if config.is_local and "side_factory" in _loop_kwargs({"side_factory": None}):
                     # One-off requests on the same model (the compaction summary): another session.
                     kwargs["side_factory"] = lambda: provider.session()
+                # The verified flow's reviewer (Stage 7): a fresh session, on the verifier model when set.
+                if "reviewer_factory" in _loop_kwargs({"reviewer_factory": None}):
+                    reviewer_model = _verifier_model(kwargs.get("settings"), home)
+                    parallel = bool(getattr(provider, "can_parallelize", False))
+                    kwargs["reviewer_factory"] = lambda: provider.session(isolated=parallel, model=reviewer_model)
                 try:
                     result = loop.run_agent_loop(session, first_task=task, **kwargs)
                     if "turns" not in kwargs and result is not turns:
@@ -301,6 +308,21 @@ def _run_session(
         log.notice(f"crit stopped: {exc}. {log.details_hint()}")
         return 1
     return 0
+
+
+def _verifier_model(settings: Any, home: BotHome) -> str | None:
+    """The reviewer's model: ``verifier_model`` in the settings, else the ``verifier`` agent file's ``model:``."""
+    chosen = str((settings or {}).get("verifier_model") or "").strip() if isinstance(settings, dict) else ""
+    if chosen:
+        return chosen
+    try:
+        from critique_bot.extensions import agent_files
+
+        agent = agent_files.find_agent("verifier", home.root)
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"verifier agent: {exc}")
+        return None
+    return (agent.model or None) if agent is not None else None
 
 
 def _save_transcript(

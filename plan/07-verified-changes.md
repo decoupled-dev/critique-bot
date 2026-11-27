@@ -112,12 +112,64 @@ reviewer verdict. `crit run --json` includes it in the final object.
 - [ ] Bugfix subset: **precision** (claimed fixes that pass hidden tests) ≥ 1.5× plain mode
 - [ ] Bugfix subset: pass@1 ≥ plain mode (verification must not cost solves)
 - [ ] Tokens per solved bugfix ≤ 1.6× plain mode
-- [ ] 0 tasks where crit says "fixed" while its own repro or selected tests fail
+- [ ] 0 tasks where crit says "fixed" while its own repro or selected tests fail (by
+  construction the flow reaches DONE only after the repro passes and no selected test
+  regressed, and the scripted tests cover both; `verified_eval.py` counts `false_claims`
+  on the model runs)
 - [ ] Reviewer catches ≥ 50% of the seeded-defect fixtures (diffs with a planted bug)
-- [ ] Plan triggers fire on ≥ 80% of the multi-module tasks and on ≤ 10% of the single-file ones
+- [x] Plan triggers fire on ≥ 80% of the multi-module tasks and on ≤ 10% of the single-file ones
+  (2026-11-27: 10 of 10 and 0 of 10 on the task lists in `tests/test_verified_flow.py`,
+  `PlanTriggerTest`; recheck on the suite's multi-module tasks with the model runs)
 
 ## Risks
 - **Slow test suites (AOSP):** test selection with a time budget; `atest` targets per module
   in the AOSP pack (Stage 9).
 - **The reviewer rubber-stamps:** seeded-defect fixtures measure it; allow a different
   model for the reviewer.
+
+## Status (2026-11-27)
+
+Done (branch `wip/s7-verified`; every item below has scripted-session or unit tests in
+`tests/test_verified_flow.py` and `tests/test_verified_eval.py`, no model needed):
+- **Task classes** (item 1): `engine/task_class.py` (started per task by `engine/flows/start.py`), keyword rules first, then one short
+  question to a fresh session (model API backends) only when the rules are unclear; the
+  classifier is pluggable (`_task_classifier` in the loop settings). `--flow
+  verified|plain|auto` on `crit` and `crit run`, `flow:` in agent files (validated), the
+  `flow` setting; precedence flag > agent > setting > default (`auto` in crit's sessions,
+  plain for a bare `run_agent_loop`).
+- **The flow** (items 2, 3, 5): `engine/flows/verified.py` on the one writer: sub-goal
+  messages from `prompts/flows/verified.txt`, the REPRODUCE permission profile (only the
+  test tree and `.crit/repro/` can be written), the expected-failure statement and the
+  run-and-compare verdict (`engine/flows/checks.py`; an ImportError for an expected
+  ValueError is "the wrong reason"), k=2 then untrusted, ≤3 repair rounds per attempt, 2
+  attempts, rejected patches (diff + why) shown to the next attempt. Hooks in `task.py`
+  (turn counting, limits, REPRODUCE replies), `dispatch.py` (profile, impact, progress) and
+  `stop_rules._finish` (a COMPLETED claim runs the checks).
+- **Test selection + regression** (item 4): the check command, tests named after the
+  changed files, the index's `imported_by` through `code_nav`; before (pre-task copies
+  swapped in) and after; Python and Go run per file/package, other languages through the
+  check command (their test files are a caveat).
+- **Stop rules** (item 6): `ProgressWatch` (12 turns without a change in the failing-test
+  count) and `StateBudgets` (estimated tokens per state) in `stop_rules.py`.
+- **Reviewer** (item 7): `agents/verifier.md` (read-only), `engine/flows/review.py`: a fresh chat from the run's
+  `reviewer_factory` (`verifier_model` / the agent's `model:`), task + diff + evidence only,
+  the review JSON contract (`risk`, `comments[].severity`), blocking → FIX once.
+- **Plan triggers, impact list** (item 8): `modes.plan_trigger` / `estimate_files` /
+  `Modes._suggest_plan` (auto mode enters plan mode and approves the plan itself; other
+  modes ask); `engine/impact.py` (signature lines before/after from `code_index` symbols,
+  call sites from `code_nav` or a word search, todos, unchecked ones in the evidence).
+- **Evidence**: checklist lines in the TUI and as `notice` events; `flow_state`,
+  `repro_result`, `test_run`, `review_result` events; `evidence` on `task_finished`; the
+  final object of `crit run --json`; `flow` in the run stats for `crit eval`.
+- **Eval support** (item 9, without the runs): `scripts/eval/verified_eval.py` (`run`,
+  `reviewer`, `report`), 8 seeded-defect fixtures in `tests/verifier_fixtures/`.
+
+Left:
+- The model runs: `verified_eval.py run --runs 3` and `reviewer` on the eval machines, into
+  `plan/results/07/`; then the first five completion targets.
+- Test selection for JVM / JS / C++ test files (Gradle, npm, ctest targets per file) and
+  AOSP `atest` targets (Stage 9); a time budget for slow suites.
+- `--flow` over `crit run --url` / `POST /v1/sessions` (set `flow` in the server project's
+  settings meanwhile).
+- The impact list's "checked" rule is a heuristic (the todo completed, or every file
+  read or edited after); tree-sitter signatures span one line (the definition line).

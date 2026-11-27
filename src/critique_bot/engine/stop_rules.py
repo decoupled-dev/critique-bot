@@ -42,6 +42,72 @@ MAX_USER_QUESTIONS = 2
 DEFAULT_CHECK_TIMEOUT = 600
 
 
+class ProgressWatch:
+    """The no-progress stop (Stage 7): model turns since the failing-test count last changed.
+
+    The count is what the test runs show (the model's own and the harness's). Until a first
+    count is seen, nothing stalls: the state's token budget is the limit then.
+    """
+
+    DEFAULT_TURNS = 12
+
+    def __init__(self, limit: int = DEFAULT_TURNS) -> None:
+        self.limit = max(1, int(limit))
+        self.failing: int | None = None
+        self.turns = 0
+
+    def seen(self, failing: int) -> None:
+        if failing != self.failing:
+            self.failing = failing
+            self.turns = 0
+
+    def turn(self) -> None:
+        if self.failing is not None:
+            self.turns += 1
+
+    def stalled(self) -> bool:
+        return self.failing is not None and self.failing > 0 and self.turns >= self.limit
+
+    def reset(self) -> None:
+        self.turns = 0
+
+
+class StateBudgets:
+    """Estimated tokens (characters / 4) per flow state, and the limit of each.
+
+    Defaults below; ``"flow_budgets": {"reproduce": 40000, "fix": 400000, "review": 80000}``
+    in the settings, or the agent file's ``budget:`` with the same keys, change them.
+    """
+
+    DEFAULTS = {"REPRODUCE": 40_000, "FIX": 400_000, "REVIEW": 80_000}
+
+    def __init__(self, limits: dict[str, int] | None = None) -> None:
+        self.limits = dict(self.DEFAULTS)
+        for key, value in (limits or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                self.limits[str(key).upper()] = value
+        self.used: dict[str, int] = {}
+
+    @classmethod
+    def from_settings(cls, settings: dict[str, Any], *, extra: dict[str, int] | None = None) -> "StateBudgets":
+        raw = settings.get("flow_budgets") if isinstance(settings, dict) else None
+        merged: dict[str, int] = dict(raw) if isinstance(raw, dict) else {}
+        merged.update({key: value for key, value in (extra or {}).items() if str(key).upper() in cls.DEFAULTS})
+        return cls(merged)
+
+    def spend(self, state: str, tokens: int) -> None:
+        self.used[state] = self.used.get(state, 0) + max(0, int(tokens))
+
+    def limit(self, state: str) -> int | None:
+        return self.limits.get(state)
+
+    def over(self, state: str) -> int | None:
+        """The tokens used when ``state`` is past its limit, else None."""
+        limit = self.limits.get(state)
+        used = self.used.get(state, 0)
+        return used if limit is not None and used > limit else None
+
+
 class StopRules:
     """Finishing a task run (mixed into _TaskRun)."""
 
@@ -90,6 +156,13 @@ class StopRules:
                 self.sections = {**self.sections, "JOBS_RUNNING": template}
                 self._send_message("JOBS_RUNNING", jobs="\n".join(running))
                 return None
+        flow = getattr(self, "flow", None)
+        if status in _STATUS_OK and flow is not None:
+            from critique_bot.engine.flows import PASS
+
+            verdict = flow.on_complete()
+            if verdict is not PASS:
+                return verdict
         if status in _STATUS_OK:
             changed = self._files_changed()
             if changed and self.check_command and not self.check_passed:
@@ -135,17 +208,25 @@ class StopRules:
         It goes through the same approval as any command: the check command can come from
         a file in the repository (``.crit/AGENT.md``), so it is not trusted on its own.
         """
-        self.hooks.ui("work", f"Checking with {_one_line(self.check_command or '', 60)}")
+        return self._run_harness_command(self.check_command or "", label="")
+
+    def _run_harness_command(self, command: str, *, label: str) -> dict[str, Any]:
+        """A command crit runs itself (the check, a repro, a test target), in the workspace, approved
+        like any command, with the check's long timeout. The model's shell cwd is left as it was."""
+        self.hooks.ui("work", f"Checking with {_one_line(command, 60)}" if not label
+                      else f"Running {label}: {_one_line(command, 60)}")
         call = ToolCall(
             "run_command",
-            {"command": self.check_command, "timeout": self.check_timeout, "cwd": str(self.ctx.workspace)},
+            {"command": command, "timeout": self.check_timeout, "cwd": str(self.ctx.workspace)},
         )
         approved, reason = self._approved(self._permission(call))
         if not approved:
             result = {
                 "tool": "run_command",
                 "ok": False,
-                "error": "the user did not approve the check command" + (f": {reason}" if reason else ""),
+                "error": f"the user did not approve {'the check command' if not label else label}"
+                + (f": {reason}" if reason else ""),
+                "denied": True,
             }
             self.last_output = result["error"]
             return result

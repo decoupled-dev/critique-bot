@@ -248,6 +248,9 @@ class EngineApiTest(unittest.TestCase):
         from critique_bot.config import Selectors
 
         self.tmp = tempfile.TemporaryDirectory()
+        # Cleanups run last-in first-out: the folder goes only after the engine has closed
+        # (its sessions' threads may still be writing memory and logs into it).
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / "note.txt").write_text("one\n", encoding="utf-8")
         self.home = _engine_home(self.root)
@@ -266,7 +269,6 @@ class EngineApiTest(unittest.TestCase):
             self.addCleanup(item.stop)
         self.engine = engine_api.Engine(self.config, self.home)
         self.addCleanup(self.engine.close)
-        self.addCleanup(self.tmp.cleanup)
 
     def _until(self, handle, kind: str, since: int = 0) -> dict:
         for event in handle.events(since, idle_timeout=10):
