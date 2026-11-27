@@ -49,7 +49,8 @@ from critique_bot.tool_api import (
 )
 from critique_bot.tool_api import execute as _execute
 from critique_bot.project_home import BotHome, resolve_check_command
-from critique_bot import model_api
+from critique_bot import model_api, ui_api
+from critique_bot.engine import runtime, ui
 from critique_bot.model_api import COMPLETION_IDLE, ChatError, CloudflareBlocked, ReplyStalled
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
@@ -162,6 +163,56 @@ from critique_bot.engine.text import (  # noqa: F401
     _one_line,
 )
 
+from critique_bot.engine.prompts import (  # noqa: F401
+    DEFAULT_TOOL_FORMAT,
+    MAX_SKILL_CHARS,
+    TOOL_FORMATS,
+    TOOL_FORMAT_NATIVE,
+    TOOL_FORMAT_OPENAI,
+    TOOL_FORMAT_TAGS,
+    _FALLBACKS,
+    _RESPONSES_WIRE,
+    _SECTION_RE,
+    _agent_prompt_path,
+    _file_agent,
+    _read_sections,
+    _setting_list,
+    _web_hosts,
+    load_agent_instructions,
+    load_prompt_sections,
+    load_role_instructions,
+    skills_block,
+    task_message,
+    tool_format_of,
+)
+
+from critique_bot.engine.ui import (  # noqa: F401
+    _REVIEW_LINES,
+    _activity,
+    _approve_prompt,
+    _ask_user,
+    _call_paths,
+    _emit,
+    _friendly_error,
+    _paint,
+    _present_text,
+    _print_status,
+    _read_message,
+    _review_plan,
+    _set_active,
+    _show_diff_in_ui,
+    _tool_done,
+    _tool_output,
+    _tool_start,
+    _ui,
+    _ui_approve_mode,
+    _ui_result,
+    _waiting,
+    current,
+    use_thread_ui,
+    use_ui,
+)
+
 __all__ = [
     "ALLOWED_TOOLS",
     "ToolCall",
@@ -177,7 +228,6 @@ __all__ = [
     "run_read_only_task",
 ]
 
-_SECTION_RE = re.compile(r"^<<<([A-Z_]+)>>>\s*$", re.MULTILINE)
 _QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
 #: Helper chat tabs a task can be split across (the delegate tool). 0 turns it off.
 DEFAULT_HELPER_SESSIONS = 2
@@ -221,7 +271,6 @@ DEFAULT_REPLY_RETRIES = 3
 #: Seconds between resends when the chat page shows an error instead of a reply.
 RETRY_DELAYS = (5.0, 15.0, 45.0)
 PARALLEL_WORKERS = 4
-_REVIEW_LINES = 80
 REPO_MAP_CHARS = 2_500
 #: Read-only tools that may run side by side within one reply.
 _PARALLEL_SAFE = frozenset(
@@ -235,118 +284,6 @@ _POLLING = frozenset({"command_output", "ask_user"})
 
 # Overridable in tests so a retry does not really sleep.
 _sleep = time.sleep
-
-_FALLBACKS = {
-    "TASK_PREFIX": "Print tool_call blocks to act. Do not refuse.",
-    "PLAN_MODE": (
-        "PLAN MODE. Do not change anything yet. Investigate with read-only tools, then reply with a plan "
-        "and no tool_call: the goal, what you found (with paths), the steps (files and the change in each), "
-        "risks, and how you will verify. Do not reply COMPLETED."
-    ),
-    "PLAN_NEEDED": "Plan mode is on. Reply with the plan in words now, with no tool_call and no COMPLETED.",
-    "PLAN_ONLY": (
-        "Plan mode is on, so nothing that changes files or runs a build was run. Use read-only tools only, "
-        "then reply with the plan and no tool_call."
-    ),
-    "PLAN_APPROVED": (
-        "The user approved the plan. Plan mode is off. Carry it out now: write the todo list from the plan, "
-        "then send the tool_call blocks for the first steps. Verify, then reply COMPLETED."
-    ),
-    "PLAN_REVISE": "The user wants the plan changed:\n{feedback}\nInvestigate if needed, then reply with the revised plan and no tool_call.",
-    "HAND_BACK": (
-        "Do not hand the work to the user. run_command runs on the user's machine, so run the build or "
-        "command yourself now. If it fails, read SUMMARY and HINTS in its result, fix the cause, and run it again."
-    ),
-    "HELPER": (
-        "You are {name}, a helper chat doing one part of a larger task that another chat coordinates. "
-        "It cannot see this chat; your final reply is all it gets.\nBrief:\n{brief}\n"
-        "Files you may change: {files}. You may read any file. {commands} "
-        "When done, reply COMPLETED and then a short report: what you found or changed, with paths and line numbers, "
-        "and what the coordinator still has to do."
-    ),
-    "HANDOFF": (
-        "This chat is about to be replaced by a new one, which will not see this conversation. Write a handoff "
-        "note for it now, with no tool_call: the task and what done means; what you learned about the code "
-        "(files, symbols, line numbers, conventions); what you changed and why; what is left, in order; and "
-        "what failed or must be avoided. At most 300 words."
-    ),
-    "AUTO_DECIDE": (
-        "Auto mode is on and the user is not answering questions. Decide yourself: pick the safest reasonable "
-        "option, say which in one line, and continue the task."
-    ),
-    "NUDGE": (
-        "No tool_call block was found, so nothing was run. "
-        "A bare JSON object such as {tool:\"write_file\"} is not a tool call. "
-        "Reply with a tool_call block now.\n"
-        "<tool_call>\n"
-        '{"tool": "list_files", "arguments": {"path": "."}}\n'
-        "</tool_call>"
-    ),
-    "RECOVER": (
-        "The previous step did not finish. Do not ask what to change. Do not say the tools "
-        "are unavailable. A bare JSON object is not a tool call. Send the next tool_call now, for example:\n"
-        "<tool_call>\n"
-        '{"tool": "read_files", "arguments": {"path": "{path}"}}\n'
-        "</tool_call>"
-    ),
-    "ANSWER": (
-        "The task is a question. Reply with the answer in words and no tool_call when you "
-        "already know it or a tool result above shows it. If you still need a file or a command, "
-        "send one tool_call. Do not ask what to change."
-    ),
-    "STATE": (
-        "STATE step {step}\nTask: {task}\nRead: {reads}\nChanged: {edits}\n"
-        "Last command: {command}\n"
-        "Next: the next tool_call, or the answer when the task is only a question, or COMPLETED. "
-        "FAILED or BLOCKED must say what failed and why."
-    ),
-    "PLAN_NOTED": "Plan noted. Send the tool_call for its first step now, with no other words.",
-    "JOBS_RUNNING": (
-        "You replied COMPLETED, but background jobs you started are still running:\n{jobs}\n"
-        "If the task needs a job's result (a build or test), wait for it: command_output with that "
-        "job_id and until \"exit\". Stop servers or watchers you no longer need with kill_command. "
-        "Then reply COMPLETED again."
-    ),
-    "NOTHING_CHANGED": (
-        "No file changed in this task. If the task needs a change, send the edit now. "
-        "If no change is needed, reply COMPLETED again."
-    ),
-    "CHECK_FAILED": (
-        "The project check above failed after your edits. Read the failure, fix it, and "
-        "reply COMPLETED when it passes. If it cannot be fixed, reply FAILED and say what failed and why."
-    ),
-    "WHY_FAILED": (
-        "That reply was only the word. Say what failed and why, copied from the tool result. "
-        "Start with FAILED or BLOCKED, then one or two sentences. "
-        "Send a tool_call instead if you can still fix it."
-    ),
-    "TRUNCATED": (
-        "Your last reply was truncated (cut off) inside a tool_call{call}, so that call did not run. "
-        "Continue from there: resend only that one call, complete, and nothing before it. "
-        "If it writes a long file, split it: write_files with the first part, then edit_file to add the rest."
-    ),
-    "FABRICATED": (
-        "Your reply contained a tool_result. Only the program writes tool_result blocks; you never do. "
-        "Everything from that point on was ignored. The real results of the calls before it are above."
-    ),
-    "LOOP": (
-        "You sent the same tool calls {count} times in a row. They were not run again: the results are above. "
-        "Use them and take a different next step, or finish."
-    ),
-    "VERIFY": (
-        "You changed files but ran nothing to check them. Run the relevant tests or build with run_command now. "
-        "If there is truly nothing to run, reply COMPLETED again."
-    ),
-    "DENIED": (
-        "The user denied that call, so it did not run. Do not send it again unchanged. "
-        "Change the approach, or use ask_user if you need the user's decision."
-    ),
-    "USER_ANSWER": "The user answered your question:\n{answer}\nContinue the task.",
-    "RESUME": (
-        "CONTINUING IN A NEW CHAT. The previous chat grew long, so this is a fresh one. "
-        "The rules above apply. Summary of the work so far:"
-    ),
-}
 
 
 def command_argv(command: str, *, platform_name: str | None = None, cwd: Path | None = None) -> list[str]:
@@ -387,205 +324,6 @@ def execute_tool(
 # --------------------------------------------------------------------------- prompt file
 
 
-TOOL_FORMAT_TAGS = "tags"
-TOOL_FORMAT_OPENAI = "openai"
-#: Native tool calling: the server's ``tools`` / ``tool_calls`` (a local model). The session
-#: translates to and from the Responses format, so the engine parses replies and sends
-#: results as with TOOL_FORMAT_OPENAI; only the prompts differ (prompts/agent_native.txt).
-TOOL_FORMAT_NATIVE = "native"
-TOOL_FORMATS = (TOOL_FORMAT_TAGS, TOOL_FORMAT_OPENAI, TOOL_FORMAT_NATIVE)
-#: Formats whose replies and results use the Responses wire shape inside the engine.
-_RESPONSES_WIRE = (TOOL_FORMAT_OPENAI, TOOL_FORMAT_NATIVE)
-#: The tools every chat of the running task gets natively (main and helper chats), or None.
-_NATIVE_TOOLS: list[dict[str, Any]] | None = None
-
-
-#: What crit uses when ``"tool_format"`` is not set: the OpenAI Responses format.
-DEFAULT_TOOL_FORMAT = TOOL_FORMAT_OPENAI
-
-
-def tool_format_of(settings: dict[str, Any] | None, default: str = TOOL_FORMAT_TAGS) -> str:
-    """``"openai"`` or ``"tags"`` from the ``"tool_format"`` setting, else ``default``.
-
-    crit's sessions pass DEFAULT_TOOL_FORMAT (openai). The engine called directly with no
-    setting keeps tags, the format its own tests are written in.
-    """
-    raw = str((settings or {}).get("tool_format") or "").strip().lower()
-    if raw in {"native", "tools", "function-calling"}:
-        return TOOL_FORMAT_NATIVE
-    if raw in {"openai", "responses", "openai-responses", "json"}:
-        return TOOL_FORMAT_OPENAI
-    if raw in {"tags", "tag", "tool_call", "xml", "legacy"}:
-        return TOOL_FORMAT_TAGS
-    return default if default in TOOL_FORMATS else TOOL_FORMAT_TAGS
-
-
-def _read_sections(path: Path) -> dict[str, str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise OSError(f"could not read agent instructions {path}: {exc}") from exc
-    if not text.strip():
-        raise OSError(f"agent instructions are empty: {path}")
-    parts = _SECTION_RE.split(text)
-    sections: dict[str, str] = {}
-    if len(parts) >= 3:
-        for index in range(1, len(parts), 2):
-            sections[parts[index]] = parts[index + 1].strip()
-    if "SYSTEM" not in sections:
-        sections["SYSTEM"] = text.strip()
-    return sections
-
-
-def load_prompt_sections(tool_format: str = TOOL_FORMAT_TAGS) -> dict[str, str]:
-    """Read prompts/agent.txt. Model-facing text lives only in the prompts folder.
-
-    With the OpenAI format, prompts/agent_openai.txt replaces the sections that describe
-    how to call tools; every other section is shared. ``sections["_FORMAT"]`` records the
-    format, so a task (and its helper chats) parse replies and send results to match.
-    """
-    sections = _read_sections(_agent_prompt_path())
-    if tool_format == TOOL_FORMAT_OPENAI:
-        from critique_bot import openai_format
-
-        overlay = _read_sections(_agent_prompt_path("agent_openai.txt"))
-        if "SYSTEM" in overlay:
-            overlay["SYSTEM"] = overlay["SYSTEM"].replace("{format}", openai_format.INSTRUCTION)
-        sections.update(overlay)
-    elif tool_format == TOOL_FORMAT_NATIVE:
-        sections.update(_read_sections(_agent_prompt_path("agent_native.txt")))
-    for key, value in _FALLBACKS.items():
-        sections.setdefault(key, value)
-    sections["_FORMAT"] = tool_format if tool_format in TOOL_FORMATS else TOOL_FORMAT_TAGS
-    return sections
-
-
-def load_agent_instructions(tool_format: str = TOOL_FORMAT_TAGS) -> str:
-    return load_prompt_sections(tool_format)["SYSTEM"]
-
-
-def load_role_instructions(role_id: object, root: Path | None = None) -> str:
-    """The ``ROLE_...`` section of prompts/agent.txt for a role; "" for Generic or a role without one.
-
-    A name that is no role but a file-defined agent (``.crit/agents/<name>.md``, ``/agent``)
-    gives that agent's instructions.
-    """
-    if roles.normalize_role(role_id) is None and str(role_id or "").strip():
-        found = _file_agent(role_id, root)
-        if found is not None:
-            return found.body
-    return load_prompt_sections().get(roles.section_key(role_id), "").strip()
-
-
-def _file_agent(name: object, root: Path | None) -> Any:
-    """The file-defined agent called ``name`` (extensions.agent_files), or None."""
-    from critique_bot.extensions import agent_files
-
-    try:
-        return agent_files.find_agent(str(name), Path(root) if root is not None else Path.cwd())
-    except Exception as exc:  # a broken agent file must not stop the session
-        log.warn(f"agent {name}: {exc}")
-        return None
-
-
-#: The session's extensions (extensions.ExtensionSession) while run_agent_loop runs, for the hooks.
-_EXTENSIONS: Any = None
-
-
-def _hook(event: str, payload: dict[str, Any]) -> Any:
-    """Run the session's hooks for ``event``; None when there are none (see extensions/hooks.py)."""
-    ext = _EXTENSIONS
-    if ext is None:
-        return None
-    try:
-        return ext.run_hook(event, payload)
-    except Exception as exc:  # a hook problem is reported, never a crash
-        log.warn(f"{event} hook failed: {exc}")
-        return None
-
-
-def task_message(
-    task: str, *, repo_map: str = "", skills: str = "", mode_note: str = "", prefix: str | None = None,
-    tickets: str = "",
-) -> str:
-    """The task with the short protocol reminder, the repo map, skills, and the mode note."""
-    body = task.strip()
-    prefix = (prefix if prefix is not None else load_prompt_sections()["TASK_PREFIX"]).rstrip()
-    if body.startswith(prefix.splitlines()[0]):
-        return body
-    parts = [prefix]
-    if mode_note.strip():
-        parts.append(mode_note.strip())
-    if skills.strip():
-        parts.append(skills.strip())
-    if repo_map.strip():
-        parts.append(
-            "REPO MAP (files ranked for this task; numbers are definition lines; "
-            "read before editing)\n" + repo_map.strip()
-        )
-    if tickets.strip():
-        parts.append("JIRA (issues the task names, read by crit; read more with the jira tool)\n" + tickets.strip())
-    parts.append("Task:\n" + body)
-    return "\n\n".join(parts)
-
-
-MAX_SKILL_CHARS = 14_000
-
-
-def skills_block(items: list[dict[str, Any]], *, max_chars: int = MAX_SKILL_CHARS) -> str:
-    """The SKILLS part of a task message: the body of each chosen skill, within ``max_chars``."""
-    text_of = getattr(agent_tools, "skill_text", None)
-    if not items or not callable(text_of):
-        return ""
-    parts: list[str] = []
-    room = max_chars
-    for item in items:
-        body = text_of(item, max_chars=min(7_000, room))
-        if not body:
-            continue
-        chunk = f"=== skill: {item['name']} ===\n{body}"
-        if len(chunk) > room:
-            break
-        parts.append(chunk)
-        room -= len(chunk)
-    if not parts:
-        return ""
-    return (
-        "SKILLS (expert guidance for this task's domain; apply it unless the task or PROJECT NOTES say otherwise)\n"
-        + "\n\n".join(parts)
-    )
-
-
-def _web_hosts(settings: dict[str, Any]) -> tuple[str, ...]:
-    """web_fetch's sites, or none. Off unless "web_fetch": true: even a read tells a site what is being looked at.
-
-    With it on: the documentation defaults plus web_fetch_hosts. "offline": true keeps it off.
-    """
-    if settings.get("web_fetch") is not True or settings.get("offline") is True:
-        return ()
-    extra = [host.lower().strip().strip(".") for host in _setting_list(settings, "web_fetch_hosts")]
-    return tuple(dict.fromkeys([*agent_tools.DEFAULT_WEB_HOSTS, *[host for host in extra if host]]))
-
-
-def _setting_list(settings: dict[str, Any], key: str) -> list[str]:
-    raw = settings.get(key)
-    if isinstance(raw, str):
-        raw = [raw]
-    return [str(item).strip() for item in raw or [] if str(item).strip()] if isinstance(raw, list) else []
-
-
-def _agent_prompt_path(name: str = "agent.txt") -> Path:
-    # Only crit's own copy: a prompts/ folder in the project (or next to some Python) must
-    # never replace crit's instructions, since the project is untrusted input.
-    package_dir = Path(__file__).resolve().parent
-    candidates = [package_dir / "prompts" / name]
-    frozen = getattr(sys, "_MEIPASS", None)
-    if frozen:
-        candidates += [Path(frozen) / "critique_bot" / "prompts" / name, Path(frozen) / "prompts" / name]
-    for path in candidates:
-        if path.is_file():
-            return path
-    raise OSError(f"agent instructions not found (prompts/{name})")
 
 
 # --------------------------------------------------------------------------- the loop
@@ -626,17 +364,6 @@ _MODE_NOTES = {
     "auto": "auto. Edits and commands run without asking; risky commands still ask.",
     "plan": "plan. Read only now, then reply with a plan; nothing changes until the user approves it.",
 }
-
-
-def _ui_approve_mode() -> str:
-    """The approval mode the terminal UI holds now, or "" when there is no UI."""
-    getter = getattr(globals().get("agent_ui"), "approve_mode", None)
-    if not callable(getter):
-        return ""
-    try:
-        return str(getter() or "")
-    except Exception:
-        return ""
 
 
 def _read_only_tools() -> frozenset[str]:
@@ -703,8 +430,9 @@ class _Chat:
         compact_minutes: int = DEFAULT_COMPACT_AFTER_MINUTES,
     ) -> None:
         self.session = session
-        if _NATIVE_TOOLS is not None and callable(getattr(session, "use_tools", None)):
-            session.use_tools(_NATIVE_TOOLS)
+        native = runtime.native_tools()
+        if native is not None and callable(getattr(session, "use_tools", None)):
+            session.use_tools(native)
         #: A helper tab's chat: no spinner and no notes in the terminal.
         self.quiet = quiet
         self.seed = (seed or "").strip()
@@ -1039,7 +767,7 @@ class _TaskRun:
                 reason = self.chat.rotation_reason() or "the chat grew long"
                 # A chat that is merely long still works: ask it for a handoff note first.
                 note = self._handoff_note() if self.chat.too_long() and self.handoff else ""
-                _hook("pre_compact", {"reason": reason, "task": self.task})
+                runtime.hook("pre_compact", {"reason": reason, "task": self.task})
                 if self.chat.restart(reason):
                     self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
@@ -1680,7 +1408,7 @@ class _TaskRun:
 
     def _note_shell_change(self) -> None:
         """After /shell, use the new shell and tell the model in the next message."""
-        take = getattr(globals().get("agent_ui"), "take_shell_change", None)
+        take = getattr(ui.current(), "take_shell_change", None)
         chosen = take() if callable(take) else None
         if chosen is None:
             return
@@ -1963,13 +1691,13 @@ def run_agent_loop(
     show = emit or _emit
     ask_person = ask_user or (lambda question: _ask_user(question, None))
     sections = load_prompt_sections(tool_format_of(settings if isinstance(settings, dict) else None))
-    global _NATIVE_TOOLS, _EXTENSIONS
-    _NATIVE_TOOLS = None
-    _EXTENSIONS = (settings or {}).get("_extensions") if isinstance(settings, dict) else None
+    native: list[dict[str, Any]] | None = None
     if sections.get("_FORMAT") == TOOL_FORMAT_NATIVE:
         found = (settings or {}).get("_native_tools") if isinstance(settings, dict) else None
-        _NATIVE_TOOLS = list(found) if found else sorted(
+        native = list(found) if found else sorted(
             tool_api.registry().openai_tools(), key=lambda tool: str((tool.get("function") or {}).get("name")))
+    runtime.start(native=native, extensions_=(settings or {}).get("_extensions") if isinstance(settings, dict) else None)
+    _NATIVE_TOOLS = native
 
     def ask(question: str) -> str | None:
         # Auto mode does not stop for questions: the model decides and says what it chose.
@@ -2121,7 +1849,7 @@ def run_agent_loop(
         task = pending.strip()
         pending = ""
         if task.lower() == "/theme":
-            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            handler = getattr(ui.current(), "handle_command", None)
             if callable(handler):
                 handler("/theme", "")
             continue
@@ -2131,13 +1859,13 @@ def run_agent_loop(
             continue
         if task.lower().split(None, 1)[0] in {"/role", "/agent"}:
             # A reader without the slash-command layer: handle it here rather than send it as a task.
-            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            handler = getattr(ui.current(), "handle_command", None)
             if callable(handler):
                 handler("/role", task.split(None, 1)[1] if " " in task.strip() else "")
             continue
         if task.lower().split(None, 1)[0] in {"/resume", "/fork", "/sessions"}:
             # A reader without the slash-command layer: the UI records the request; the next task uses it.
-            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            handler = getattr(ui.current(), "handle_command", None)
             if callable(handler):
                 handler(task.lower().split(None, 1)[0], task.split(None, 1)[1] if " " in task.strip() else "")
             continue
@@ -2149,7 +1877,7 @@ def run_agent_loop(
         if changed_role:
             slog.write("role_changed", old=role_now, new=changed_role)
         role_now = changed_role or role_now
-        prompt_hook = _hook("user_prompt", {"prompt": task})
+        prompt_hook = runtime.hook("user_prompt", {"prompt": task})
         if prompt_hook is not None and prompt_hook.denied:
             _ui("bad", "A hook stopped this task" + (f": {prompt_hook.message}" if prompt_hook.message else "."))
             continue
@@ -2246,7 +1974,7 @@ def run_agent_loop(
         changed = list(task_state.edits)
         slog.write("task_finished", code=outcome_code, task=task, changed=changed or None)
         _update_session_meta(slog)
-        _hook("task_finished", {"task": task, "status": outcome_code, "changed": changed})
+        runtime.hook("task_finished", {"task": task, "status": outcome_code, "changed": changed})
         chat.history.append(
             f"{_one_line(task, 100)} -> {outcome_code}"
             + (f" (changed {', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})" if changed else "")
@@ -2256,7 +1984,7 @@ def run_agent_loop(
             pool.close()
         except Exception as exc:  # the session is over; a stuck tab must not hang the exit
             log.debug(f"closing helper tabs failed: {exc}")
-    _EXTENSIONS = None
+    runtime.finish()
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns
@@ -2272,7 +2000,7 @@ def _current_mode(default: str, at_start: str | None = None) -> str:
 
 def _apply_role_change(chat: Any, reseed: Callable[[str], str] | None) -> str | None:
     """After ``/role``, the next task goes to a new chat seeded for that role. Returns the new role id."""
-    taker = getattr(globals().get("agent_ui"), "take_role_change", None)
+    taker = getattr(ui.current(), "take_role_change", None)
     if not callable(taker):
         return None
     try:
@@ -2416,8 +2144,9 @@ def _side_summarizer(chat: _Chat) -> Callable[[list[dict[str, Any]], str], str] 
         enter = getattr(handle, "__enter__", None)
         side = enter() if callable(enter) and not hasattr(handle, "send") else handle
         try:
-            if _NATIVE_TOOLS and callable(getattr(side, "use_tools", None)):
-                side.use_tools(_NATIVE_TOOLS)
+            native = runtime.native_tools()
+            if native and callable(getattr(side, "use_tools", None)):
+                side.use_tools(native)
             _pin_slot(side, chat.log.id if chat.log.enabled else "", None)
             replace = getattr(side, "replace_history", None)
             if callable(replace):
@@ -2528,7 +2257,7 @@ def _take_session_change(chat: _Chat, slog: Any) -> tuple[Any, str] | None:
 
     Returns (the new log, a note for the next message), or None when nothing was asked.
     """
-    taker = getattr(globals().get("agent_ui"), "take_session_change", None)
+    taker = getattr(ui.current(), "take_session_change", None)
     if not callable(taker):
         return None
     try:
@@ -2558,7 +2287,7 @@ def _take_session_change(chat: _Chat, slog: Any) -> tuple[Any, str] | None:
 
 
 def _announce_session(slog: Any) -> None:
-    setter = getattr(globals().get("agent_ui"), "set_session", None)
+    setter = getattr(ui.current(), "set_session", None)
     if callable(setter) and slog.enabled:
         try:
             setter(slog.folder.parent, slog.id)
@@ -2675,7 +2404,7 @@ def _task_skills(
         return ""
     pinned = _setting_list(settings, "skills")
     pinned += [name for name in roles.role_skills(role if role is not None else settings.get("role")) if name not in pinned]
-    getter = getattr(globals().get("agent_ui"), "pinned_skills", None)
+    getter = getattr(ui.current(), "pinned_skills", None)
     if callable(getter):
         try:
             pinned += [name for name in getter() if name not in pinned]
@@ -2702,44 +2431,6 @@ def _task_skills(
     elif chosen:
         block = "SKILLS: " + ", ".join(item["name"] for item in chosen) + " (sent earlier in this chat; still apply)."
     return block
-
-
-def _show_diff_in_ui(diff: str) -> bool:
-    """Print the diff through the terminal UI's colored renderer. False when that is not available."""
-    ui = globals().get("agent_ui")
-    show = getattr(ui, "show_diff", None)
-    if callable(show):
-        return bool(show(diff))
-    render = getattr(ui, "render_diff", None)
-    printer = getattr(ui, "_print", None)
-    if not callable(render) or not callable(printer):
-        return False
-    chunks: list[tuple[str, list[str]]] = []
-    lines = diff.splitlines()
-    for number, line in enumerate(lines):
-        if line.startswith("--- ") and number + 1 < len(lines) and lines[number + 1].startswith("+++ "):
-            name = re.sub(r"^\+\+\+ (?:b/)?", "", lines[number + 1]).strip()
-            if name == "/dev/null":
-                name = re.sub(r"^--- (?:a/)?", "", line).strip()
-            chunks.append((name, []))
-        if not chunks:
-            chunks.append(("", []))
-        chunks[-1][1].append(line)
-    try:
-        budget = _REVIEW_LINES
-        for name, body in chunks:
-            if budget <= 0:
-                break
-            rows = render("\n".join(body), max_lines=min(budget, 40))
-            if name:
-                _ui("good", name)
-            if rows:
-                printer(*rows, sep="\n")
-            budget -= len(rows) or 1
-    except Exception as exc:
-        log.debug(f"colored diff failed: {exc}")
-        return False
-    return True
 
 
 def _stop_background(session_shell: Any) -> None:
@@ -2925,7 +2616,7 @@ def run_agent(
     session_shell = _open_shell_session(home.root, shell, available, offline=offline)
     sandbox_note = agent_shell.use_sandbox(session_shell, settings, default=getattr(config, "sandbox", None), offline=offline)
     taint.start_session(untrusted=settings.get("untrusted_workspace") is True, workspace=home.root)
-    agent_ui.configure(
+    ui.current().configure(
         workspace=home.root,
         model=_model_label(config),
         shell=shell,
@@ -2937,13 +2628,13 @@ def run_agent(
         tools=setup.names or (setup.registry.names() if setup.registry is not None else ALLOWED_TOOLS),
         role=role_id,
     )
-    agent_ui.welcome_header()
+    ui.current().welcome_header()
     for line in (extensions.notes if extensions is not None else []):
         _ui("note", line)
     started_hook = _session_start_hook(extensions, setup)
     if started_hook:
         notes = (notes + "\n\n" + started_hook).strip()
-    agent_ui.install_log_bridge()
+    ui.current().install_log_bridge()
     if sandbox_note:
         _ui("work", sandbox_note)
     _announce_session(slog)
@@ -3004,7 +2695,7 @@ def run_agent(
         )
     except KeyboardInterrupt:
         outcome[:] = ["INTERRUPTED"]
-        agent_ui.shutdown()
+        ui.current().shutdown()
         _print_status("INTERRUPTED")
         code = 130
     finally:
@@ -3012,7 +2703,7 @@ def run_agent(
             tool_api.use_registry(previous_registry)
         if extensions is not None:
             extensions.close()
-        agent_ui.shutdown()
+        ui.current().shutdown()
         if session_shell is not None:
             try:
                 session_shell.close()
@@ -3165,7 +2856,7 @@ def run_read_only_task(
     if settings.get("seed_instructions") is False:
         instructions = ""
     shell = agent_shell.detect_shell(preference=_shell_preference(settings))
-    agent_ui.configure(
+    ui.current().configure(
         workspace=home.root,
         model=_model_label(config),
         shell=shell,
@@ -3175,7 +2866,7 @@ def run_read_only_task(
         tools=sorted(READ_ONLY_TOOLS),
         role=role,
     )
-    agent_ui.install_log_bridge()
+    ui.current().install_log_bridge()
     seed = seed_message(
         home.root,
         instructions,
@@ -3222,7 +2913,7 @@ def run_read_only_task(
         _print_status("INTERRUPTED")
         code = 130
     finally:
-        agent_ui.shutdown()
+        ui.current().shutdown()
         _save_transcript(config, home, turns, started=started, output_dir=None, folder=slog.folder if slog.enabled else None)
         _close_session_log(slog, outcome[-1])
     if code == 0 and outcome[-1] not in _STATUS_OK:
@@ -3375,19 +3066,19 @@ def _run_session(
             _ui("note", "The headless window was blocked. Opening a visible browser.")
             return _run_session(config, home, task, headed=True, loop_kwargs=loop_kwargs, turns=turns)
         log.error(str(exc))
-        agent_ui.shutdown()
+        ui.current().shutdown()
         log.notice(f"Problem: {exc}")
         return 1
     except ModelError as exc:
         log.error(str(exc))
-        agent_ui.shutdown()
+        ui.current().shutdown()
         log.notice(f"Problem: {exc}")
         return 1
     except KeyboardInterrupt:
         raise
     except Exception as exc:
         log.exception(f"unexpected failure: {exc}")
-        agent_ui.shutdown()
+        ui.current().shutdown()
         log.notice(f"crit stopped: {exc}. {log.details_hint()}")
         return 1
     return 0
@@ -3453,153 +3144,7 @@ def format_transcript(turns: list[dict[str, str]]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-# --------------------------------------------------------------------------- terminal output
-
-from critique_bot import ui_api  # noqa: E402
-
-#: The installed UI (see ui_api). The engine imports no front end: the caller installs one
-#: with use_ui, and until then the loop runs headless on NullUI.
-agent_ui: Any = ui_api.NullUI()
-
-
-def use_ui(module: Any) -> None:
-    """Install the UI: ``agent_ui`` for the terminal, ``agent_acp`` for an IDE over ACP.
-
-    Every hook below looks ``agent_ui`` up at call time, so this one assignment moves
-    all output, approvals, and questions to ``module``. ``None`` goes back to NullUI.
-    """
-    globals()["agent_ui"] = module if module is not None else ui_api.NullUI()
-
-
-def _paint(text: str, color: str) -> str:
-    return log.paint(text, color, file=sys.stderr)
-
-
-def _present_text(text: str) -> str:
-    return _hide_tool_markup(text)
-
-
-def _ui(kind: str, message: str) -> None:
-    message = _present_text(message)
-    if not message:
-        return
-    agent_ui.note(kind, _one_line(message, 160))
-
-
-def _print_status(code: str) -> None:
-    agent_ui.final_status(code, ok=code in _STATUS_OK)
-
-
-def _call_paths(call: ToolCall) -> str:
-    args = call.arguments
-    path = args.get("path")
-    paths = args.get("paths")
-    if not path and isinstance(paths, list) and paths:
-        path = ", ".join(str(item) for item in paths[:3])
-    files = args.get("files")
-    if not path and isinstance(files, list) and files and isinstance(files[0], dict):
-        path = files[0].get("path", "")
-    if not path and args.get("symbol"):
-        path = str(args.get("symbol"))
-    text = str(path or "").strip()
-    return "the project" if text in {"", "."} else text
-
-
-def _activity(call: ToolCall) -> str:
-    args = call.arguments
-    where = _call_paths(call)
-    name = canonical_tool(call.tool) or call.tool
-    messages = {
-        "list_files": f"Looking through {where}",
-        "find_files": f"Finding files matching {_one_line(str(args.get('glob') or args.get('pattern') or ''), 40)}",
-        "read_files": f"Reading {where}",
-        "search_code": f"Searching for {_one_line(str(args.get('pattern') or 'the code'), 40)}",
-        "write_files": f"Writing {where}",
-        "edit_file": f"Updating {where}",
-        "delete_file": f"Removing {where}",
-        "run_command": f"Running {_one_line(str(args.get('command') or 'a command'), 60)}",
-        "git_status": "Checking what changed",
-        "git_diff": "Reviewing the changes",
-        "git_log": "Reading recent commits",
-        "git_show": f"Showing {_one_line(str(args.get('rev') or args.get('commit') or 'HEAD'), 40)}",
-        "apply_patch": "Applying the changes",
-        "todo": "Updating the task list",
-        "skill": f"Loading {_one_line(str(args.get('name') or args.get('skill') or 'skills'), 40)}",
-    }
-    return messages.get(name, "Working on the next step")
-
-
-def _friendly_error(error: str) -> str:
-    text = error.lower()
-    if "denied" in text:
-        return "You denied that step."
-    if "invalid tool json" in text or "delimiter" in text or "tool call" in text:
-        return "That step wasn't readable. Trying again."
-    if "same text" in text:
-        return "That change was already in the file."
-    if "syntax" in text and "not applied" in text:
-        return "That edit would break the file, so it was not applied."
-    if "old_string" in text:
-        return "Couldn't find the exact text to change."
-    if "task is read-only" in text:
-        return "This task only reads; that step was skipped."
-    if "not run:" in text:
-        return "That command used the wrong shell syntax."
-    if "unknown tool" in text:
-        return "That step isn't available."
-    if "timed out" in text:
-        return "That took too long and was stopped."
-    if "command failed" in text:
-        return "That command didn't succeed."
-    if "not found" in text:
-        return "Couldn't find that file."
-    if "directory" in text or "folder" in text:
-        return "That path is a folder, not a file."
-    return "That step didn't work. Trying another way."
-
-
-def _ui_result(result: dict[str, Any]) -> None:
-    if result.get("ok"):
-        return
-    _ui("bad", _friendly_error(str(result.get("error") or "failed")))
-
-
-def _emit(text: str) -> None:
-    visible = _present_text(text)
-    if not visible:
-        return
-    agent_ui.assistant(visible)
-
-
-def _read_message() -> str | None:
-    """The next task. ``None`` exits; ``"/new"`` (agent_ui.NEW_CHAT) asks for a fresh chat."""
-    return agent_ui.read_message()
-
-
-def _tool_start(call: ToolCall) -> None:
-    name = canonical_tool(call.tool) or call.tool
-    agent_ui.tool_start(name, call.arguments)
-
-
-def _tool_done(call: ToolCall, result: dict[str, Any]) -> None:
-    name = canonical_tool(call.tool) or call.tool
-    friendly = "" if result.get("ok") else _friendly_error(str(result.get("error") or "failed"))
-    agent_ui.tool_done(name, call.arguments, result, friendly=friendly)
-
-
-def _tool_output(text: str) -> None:
-    agent_ui.tool_output(text)
-
-
-def _set_active(name: str, count: int) -> None:
-    setter = getattr(agent_ui, "set_active", None)
-    if callable(setter):
-        setter(name, count)
-
-
-def _waiting(active: bool, label: str = "Thinking") -> None:
-    agent_ui.waiting(active, label)
-
+# --------------------------------------------------------------------------- permission rules
 
 def _rule_denied(ctx: Any, perm: Any) -> str:
     """Why a saved deny rule refuses this step, or ""."""
@@ -3675,14 +3220,8 @@ def _read_only_command(command: str) -> bool:
         return False
 
 
-def _approve_prompt(permission: Any, *, risky: str = "") -> tuple[str, str]:
-    return agent_ui.approve(permission, risky=risky)
-
-
-def _review_plan() -> tuple[str, str]:
-    return agent_ui.review_plan()
-
-
-def _ask_user(question: str, options: list[str] | None = None) -> str | None:
-    """Ask the person a question from the model. None when there is no terminal."""
-    return agent_ui.ask_question(_present_text(question), options)
+def __getattr__(name: str) -> Any:
+    # ``agent.agent_ui``: the UI installed now (engine.ui.current()).
+    if name == "agent_ui":
+        return ui.current()
+    raise AttributeError(name)
