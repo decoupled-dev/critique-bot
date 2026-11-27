@@ -261,8 +261,11 @@ class CritRunner(Runner):
 
     name = "crit"
 
-    def __init__(self, command: str = "", config: str = "", keep_home: bool = False, ask_commands: bool = False) -> None:
+    def __init__(self, command: str = "", config: str = "", keep_home: bool = False, ask_commands: bool = False,
+                 packs: tuple[str, ...] = ()) -> None:
         self.command = command or f"{shlex.quote(sys.executable)} -m critique_bot --as-crit"
+        #: Domain packs turned on in every trial's workspace (``--packs aosp``), for with/without comparisons.
+        self.packs = tuple(packs)
         self.config = config
         self.keep_home = keep_home
         #: False (the default): the throwaway workspace allows every command, so nothing waits
@@ -291,6 +294,8 @@ class CritRunner(Runner):
         command.append(task.spec["prompt"])
         if not self.ask_commands:
             _allow_everything(work)
+        if self.packs:
+            _merge_settings(work, {"packs": list(self.packs)})
         code, output = _run_process(command, work, env, timeout)
         if not self.keep_home:
             shutil.rmtree(env["CRIT_HOME"], ignore_errors=True)
@@ -301,6 +306,10 @@ class CritRunner(Runner):
 def _allow_everything(work: Path) -> None:
     """Let crit run any command in this disposable workspace without asking (an eval has no
     terminal to answer). The file is untracked, so crit treats it as the user's own setting."""
+    _merge_settings(work, {"allow": ["*"], "confirm_risky": False})
+
+
+def _merge_settings(work: Path, values: dict[str, Any]) -> None:
     settings = work / ".crit" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     current: dict[str, Any] = {}
@@ -309,7 +318,7 @@ def _allow_everything(work: Path) -> None:
             current = json.loads(settings.read_text(encoding="utf-8")) or {}
         except ValueError:
             current = {}
-    current.update({"allow": ["*"], "confirm_risky": False})
+    current.update(values)
     settings.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
 
 
@@ -727,6 +736,8 @@ def _meta(runner: Runner, args: argparse.Namespace) -> dict[str, Any]:
         meta["model"] = args.model
     if getattr(args, "config", ""):
         meta["config"] = str(args.config)
+    if getattr(args, "packs", ""):
+        meta["packs"] = args.packs
     gpu = shutil.which("nvidia-smi")
     if gpu:
         try:
@@ -765,6 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ask-commands", action="store_true",
                      help="crit: keep asking before commands (default: the throwaway workspace allows them all)")
     run.add_argument("--note", default="", help="free text saved in meta.json (server, quant, flags)")
+    run.add_argument("--packs", default="", help="crit: domain packs to turn on in each trial, e.g. aosp")
 
     listing = sub.add_parser("list", help="list the tasks and whether they can run here")
     suite_args(listing)
@@ -815,7 +827,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.runner == "opencode":
         runner = OpencodeRunner(args.opencode, args.model)
     else:
-        runner = CritRunner(args.crit, args.config, args.keep_home, args.ask_commands)
+        runner = CritRunner(args.crit, args.config, args.keep_home, args.ask_commands,
+                            tuple(item.strip() for item in args.packs.split(",") if item.strip()))
     out_root = args.out or (Path.cwd() / ".crit" / "eval" / time.strftime("%Y%m%d-%H%M%S"))
     out_root.mkdir(parents=True, exist_ok=True)
     meta = _meta(runner, args)

@@ -1,0 +1,22 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "build",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "The build stopped in Soong after today's sync; build.log has the output. Fix it without undoing anything upstream changed on purpose. There is no Soong here, so do not run m.",
+  "setup": "python3 make_history.py",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 check_bp.py",
+  "requires": [
+    "python3",
+    "git"
+  ],
+  "tags": [
+    "aosp",
+    "build",
+    "soong",
+    "git"
+  ]
+}

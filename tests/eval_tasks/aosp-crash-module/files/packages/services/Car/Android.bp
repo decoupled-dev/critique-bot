@@ -1,0 +1,11 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+android_app {
+    name: "CarServiceUpdatable",
+    srcs: [":car-service-srcs"],
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    static_libs: ["car-service-common-util-static-lib"],
+}

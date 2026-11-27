@@ -1,0 +1,21 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "build",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "libcarfanhal stopped compiling after the FanControl API change; build.log has the error. Fix the caller (the header change is intended). There is no Soong here; you can check your fix with g++ -std=c++17 -fsyntax-only -Ihardware/google/car/fan hardware/google/car/fan/fan_hal.cpp.",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh check_cpp.sh",
+  "requires": [
+    "sh",
+    "g++"
+  ],
+  "tags": [
+    "aosp",
+    "build",
+    "cpp",
+    "quick"
+  ]
+}

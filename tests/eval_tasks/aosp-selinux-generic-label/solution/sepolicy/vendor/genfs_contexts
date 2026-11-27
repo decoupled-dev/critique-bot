@@ -1,0 +1,2 @@
+genfscon sysfs /devices/platform/cabin-temp/temp u:object_r:sysfs_cabin_temp:s0
+genfscon sysfs /devices/platform/fan-hwmon u:object_r:sysfs_fan_hwmon:s0

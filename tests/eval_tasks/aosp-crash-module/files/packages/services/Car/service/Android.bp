@@ -1,0 +1,12 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+filegroup {
+    name: "car-service-srcs",
+    srcs: ["src/**/*.java"],
+}
+
+java_library {
+    name: "car-service-common-util-static-lib",
+    srcs: ["common/**/*.java"],
+}

@@ -1,0 +1,20 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "build",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "m CarHvacApp fails; build.log is the output. Fix the build. There is no Soong here, so do not run m; change only what the error needs.",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 check_bp.py",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "build",
+    "soong",
+    "quick"
+  ]
+}

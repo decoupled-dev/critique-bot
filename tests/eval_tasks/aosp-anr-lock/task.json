@@ -1,0 +1,19 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "The radio app on our head unit freezes and shows 'isn't responding'. logcat.txt is the device log and anr/ holds the ANR traces file pulled from /data/anr. Which method holds the lock the main thread is waiting for, at which file and line, and what is it doing while it holds it? Answer in two lines. Do not change any file.",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*scanBand)(?=.*TunerSession\\.java:9[56])(?=.*sleep)",
+  "reference_answer": "Thread 18 \"TunerWorker\" holds the lock <0x0a1b2c3d> in TunerSession.scanBand (TunerSession.java:95, synchronized at line 91).\nIt sleeps 250 ms per frequency (Thread.sleep) while holding mLock, so getCurrentStation on the main thread blocks.",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "anr"
+  ]
+}

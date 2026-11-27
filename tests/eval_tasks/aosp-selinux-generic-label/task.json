@@ -1,0 +1,20 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "hard",
+  "source": "synthetic",
+  "prompt": "vendor.fan_ctl cannot read the fan speed on our head unit; dmesg.txt has the denials. A colleague suggests adding `allow vendor_fan_ctl sysfs:file { open read };`. Fix the policy in sepolicy/vendor the right way instead, so fan_ctl can read only the fan's hwmon node, and explain in one line why the suggestion is wrong.",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 check_label.py",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "selinux",
+    "sepolicy"
+  ]
+}

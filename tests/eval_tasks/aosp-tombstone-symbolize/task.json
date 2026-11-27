@@ -1,0 +1,23 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "Our vehicle HAL service keeps crashing on the emulator; tombstone_03 is the tombstone pulled from the device. The tree has been built, so out/ has the unstripped libraries. Symbolize the top frame and tell me the source file, line and function where it crashes, and why. Do not change any file.",
+  "setup": "python3 make_symbols.py",
+  "answer": "(?=.*VhalClient\\.cpp:26)(?=.*getValue)",
+  "reference_answer": "Frame #00 symbolizes to VhalClient::getValue at hardware/interfaces/automotive/vehicle/aidl/impl/client/VhalClient.cpp:26: `found->value` dereferences a null PropValue when the property is not in the cache.",
+  "requires": [
+    "python3",
+    "g++",
+    "nm",
+    "addr2line"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "native",
+    "tombstone"
+  ]
+}

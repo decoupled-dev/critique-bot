@@ -1,0 +1,20 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "logcat.txt is from an Android Automotive emulator: the HVAC app crashes as soon as it opens. Find the root cause: the exception that really failed and the source file and line in this tree that throws it. Answer in one line. Do not change any file.",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*IllegalStateException)(?=.*HvacController\\.java:88)",
+  "reference_answer": "The root cause is java.lang.IllegalStateException: fan level too high: 8, thrown at packages/apps/Hvac/src/com/android/car/hvac/HvacController.java:88 (setFanLevel), called from HvacActivity.onCreate.",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "crash",
+    "quick"
+  ]
+}
