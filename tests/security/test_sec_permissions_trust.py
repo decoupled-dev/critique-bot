@@ -135,12 +135,22 @@ class TaintSourceTests(SecBase):
 
 
 class SecretNameTests(unittest.TestCase):
-    # SECURITY FINDING PM-14: common credential files are not treated as secret files
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-14 (fixed): common credential files are not treated as secret files
     def test_common_credential_files_are_sensitive(self) -> None:
         names = [".config/gh/hosts.yml", ".s3cfg", ".boto", ".cargo/credentials.toml", ".terraformrc",
                  "application_default_credentials.json", ".config/hub"]
         self.assertEqual([name for name in names if not sensitive_file(name)], [])
+
+    def test_the_sandbox_list_and_the_secret_files_agree(self) -> None:
+        from critique_bot.secret_paths import HOME_CREDENTIALS
+
+        for entry in HOME_CREDENTIALS:
+            self.assertTrue(sensitive_file(entry.replace("~", "/home/me")), entry)
+        for name in (".npmrc", ".pypirc", ".netrc", ".git-credentials", ".docker/config.json", ".kube/config",
+                     ".m2/settings.xml", ".gem/credentials", ".config/glab-cli/config.yml"):
+            self.assertTrue(sensitive_file(name), name)
+        for name in ("settings.xml", "src/hub.py", ".config/app.json", "docs/credentials-guide.md"):
+            self.assertFalse(sensitive_file(name), name)
 
 
 class ProjectSkillTests(SecBase):

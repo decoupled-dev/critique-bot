@@ -204,6 +204,8 @@ _SENSITIVE_NAMES = re.compile(
     r".+\.tfvars(?:\.json)?|.+\.tfstate(?:\.backup)?|"
     r"(?:keystore|signing|secrets?|release-signing|local|gradle)\.properties|secrets?\.(?:json|ya?ml|toml|xml)|service-account.*\.json|"
     r"serviceaccountkey.*\.json|firebase-adminsdk.*\.json|client_secret.*\.json|"
+    r"application_default_credentials\.json|credentials\.(?:toml|tfrc\.json)|\.s3cfg|\.boto|\.terraformrc|terraform\.rc|"
+    r"\.databrickscfg|\.my\.cnf|"
     r"google-services\.json|googleservice-info\.plist|\.(?:bash|zsh|python|psql|mysql|node_repl)_history|consolehost_history\.txt|"
     r"cookies|login data|web data|storage_state\.json)$"
 )
@@ -220,6 +222,35 @@ def _normalize_part(part: str) -> str:
     return part.rstrip(". ").lower()
 
 
+def _credential_sequences() -> tuple[tuple[str, ...], ...]:
+    """``secret_paths.HOME_CREDENTIALS`` (the list the sandbox masks) as normalized part sequences."""
+    from critique_bot.secret_paths import HOME_CREDENTIALS
+
+    out = []
+    for entry in HOME_CREDENTIALS:
+        parts = tuple(_normalize_part(part) for part in re.split(r"[\\/]+", entry.removeprefix("~/")) if part)
+        if parts:
+            out.append(parts)
+    return tuple(out)
+
+
+_CREDENTIAL_SEQUENCES: tuple[tuple[str, ...], ...] | None = None
+
+
+def _in_credential_place(parts: list[str]) -> bool:
+    """``parts`` names a HOME_CREDENTIALS file or something inside one of its folders, at any depth
+    (``~/.config/gh/hosts.yml``, a copy of ``.cargo/credentials.toml`` in a project)."""
+    global _CREDENTIAL_SEQUENCES
+    if _CREDENTIAL_SEQUENCES is None:
+        _CREDENTIAL_SEQUENCES = _credential_sequences()
+    for sequence in _CREDENTIAL_SEQUENCES:
+        size = len(sequence)
+        for start in range(len(parts) - size + 1):
+            if tuple(parts[start:start + size]) == sequence:
+                return True
+    return False
+
+
 def sensitive_file(path: Path | str) -> bool:
     """True for a file that usually holds credentials: .env, keys and keystores, .netrc, signing properties.
 
@@ -231,6 +262,8 @@ def sensitive_file(path: Path | str) -> bool:
     if not parts:
         return False
     if any(part in _SENSITIVE_DIRS for part in parts):
+        return True
+    if _in_credential_place(parts):
         return True
     return bool(_SENSITIVE_NAMES.match(parts[-1]))
 

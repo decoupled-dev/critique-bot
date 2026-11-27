@@ -91,6 +91,7 @@ Files that usually hold secrets need your yes before they are read or edited (mo
 - `keystore.properties`, `gradle.properties`, `local.properties`, `google-services.json`
 - shell histories, and the browser profile's `Cookies` and `Login Data`
 - anything under `.ssh`, `.aws`, `.docker`, `.kube`, `.gnupg`, or the browser profile folder
+- every credential file and folder the sandbox masks (`HOME_CREDENTIALS` in `src/critique_bot/secret_paths.py`), wherever it appears in a path: the GitHub/GitLab/hub CLI logins (`.config/gh/hosts.yml`, `.config/hub`), `.s3cfg`, `.boto`, `.cargo/credentials.toml`, `.terraformrc`, `.m2/settings.xml`, `.config/gcloud` (and any `application_default_credentials.json`), and the rest of that list
 
 A workspace-wide search leaves those files out of its results. Review mode never attaches them whole; their diff hunks still go, redacted.
 
