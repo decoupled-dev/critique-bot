@@ -9,6 +9,7 @@ wires the concrete pieces together.
              parse arguments, load config, open a backend, install a UI, call an app
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
+             eval_harness, doctor                             (measuring, checking the model server)
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
@@ -17,6 +18,7 @@ wires the concrete pieces together.
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
+             tool_parse (fallback tool-call parser), profiles (model profiles, server presets),
              webchat/ (optional: the web page in Edge; browser, chat_client, provider, setup_ui)
 0  core      config, log, patch (input limits), redaction, output, roles
 ```
@@ -29,7 +31,7 @@ its `LAYERS` table.
 
 | Layer | Interface | What goes through it |
 | --- | --- | --- |
-| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens` |
+| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens`, `model_profile` / `tool_mode` / `native_tools_ok` (the model profile and native vs prompted tool calls), `server_info` / `probe_tool_turn` / `record_probe` (for `crit doctor model`) |
 | tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
 | engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |

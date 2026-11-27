@@ -310,6 +310,29 @@ use them (`tool_mode: auto` = trust the probe).
 - [ ] Speculation benchmark recorded; presets enable it only where whole-file rewrites get
       ≥ 1.5× faster and normal turns slow down by ≤ 5%
 
+**Progress 2026-11-27 (profiles, doctor, presets; no model server was available, so all of
+this is tested against fake servers only):**
+- Done: work item 6 except `crit config --profile` (profiles.py, 22 built-in profiles for every
+  family in the table plus Qwen3.8/Gemma 4 placeholders, user overrides in `~/.crit/profiles`,
+  `extends` for size overrides, `local.profile`, validation); the profile applied in the model
+  layer (sampling, `max_tokens`, `parallel_tool_calls`, `preserve_thinking` in native history,
+  `effective_context` in `context_tokens`, `tool_mode` native/prompted/auto via one hook in
+  `agent._tool_setup`'s callers); work item 8 (`crit doctor model` with server detection, KV
+  cache and template warnings, the 12-turn probe, the cache for `tool_mode: auto`,
+  `--write-profile`, launch lines; `docs/local-models.md`); server presets for llama.cpp, vLLM,
+  SGLang, Ollama, LM Studio, TGI, MLX-LM, OpenRouter; `scripts/eval/spec_bench.py` (work item 12's
+  script, not its results).
+- Left: every box above still needs real runs: the doctor probe on Qwen3.6-27B (vLLM and
+  llama.cpp), each built-in profile verified with `crit doctor model` before it counts as
+  shipped (none is yet; `tested_version` is null in every preset), the model matrix
+  (`plan/results/01/models.md`), speculation results (`plan/results/01/speculation.md`) and
+  then enabling speculation in presets that earn it. Also left: `crit config --profile`;
+  prompted mode still uses the engine's Responses text format rather than per-family prompt
+  formats (`providers/prompted_tools.py`, work item 5); `edit_format`, `tool_output_cap_tokens`
+  and `shell_timeout_s` are stored in profiles but not read until Stage 2; the plan's 16K
+  `effective_context` for `generic` is not set (it would shrink every unknown model's chats
+  before the eval shows it helps).
+
 ## Risks
 - **Thinking models and history:** some servers reject `reasoning` echoed back, and R1-style
   models should not get it back. Profile flag `preserve_thinking` decides; test both.
