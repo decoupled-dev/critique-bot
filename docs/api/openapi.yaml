@@ -1,0 +1,635 @@
+openapi: 3.1.0
+info:
+  title: crit Engine API
+  version: "1"
+  description: >-
+    The HTTP and server-sent-event API of crit serve (src/critique_bot/server.py) over the
+    Engine API (src/critique_bot/engine/api.py). One server hosts the sessions of one
+    project. Every request needs the bearer token crit serve wrote to ~/.crit/server.token.
+    Approvals, questions and plan review arrive as request events; answer them with
+    POST /v1/sessions/{id}/requests/{rid}. tests/test_server.py checks the server against
+    this file. See docs/server.md.
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "0"
+        description: The port crit serve chose (see ~/.crit/server.json).
+security:
+  - bearer: []
+paths:
+  /v1/health:
+    get:
+      operationId: health
+      summary: The server is up; its version and project.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/sessions:
+    get:
+      operationId: listSessions
+      summary: The project's logged sessions, newest first; live ones with their state.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createSession
+      summary: A new session; with message, its first task starts at once.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSession"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSession
+      summary: One session (live or logged).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/sessions/{id}/fork:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: forkSession
+      summary: Copy a session up to an event (all of it without at_seq) and open the copy.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Fork"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/sessions/{id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: sendMessage
+      summary: Start a task, or queue it after the running one. A logged session not open here is resumed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Message"
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/sessions/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: cancel
+      summary: Stop the running task (it ends as INTERRUPTED); open requests are refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cancelled"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/sessions/{id}/mode:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    put:
+      operationId: setMode
+      summary: Switch the permission mode; the running task picks it up at its next step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Mode"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mode"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/sessions/{id}/undo:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: undo
+      summary: Restore the files the last task changed (while no task runs).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Undone"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/sessions/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: since
+        in: query
+        required: false
+        description: Only events after this seq. Last-Event-ID works the same.
+        schema:
+          type: integer
+          minimum: 0
+      - name: follow
+        in: query
+        required: false
+        description: 0 gives the events there are and ends; by default the stream follows a live session until it closes.
+        schema:
+          type: string
+          enum: ["0", "1", "false", "true", "no", "yes"]
+    get:
+      operationId: events
+      summary: The session's events as server-sent events (id is the seq, event the type, data the JSON Event).
+      responses:
+        "200":
+          description: A text/event-stream of Event objects.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/sessions/{id}/requests/{rid}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: rid
+        in: path
+        required: true
+        description: The id of the request event.
+        schema:
+          type: string
+          pattern: "^[0-9a-f]{1,64}$"
+    post:
+      operationId: answerRequest
+      summary: Answer an approval, a question or a plan review. Only the first answer counts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Answer"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Answered"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/agents:
+    get:
+      operationId: listAgents
+      summary: The file-defined agents (built-in, ~/.crit/agents, .crit/agents).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/agents/{name}/runs:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+    post:
+      operationId: runAgent
+      summary: Run one task headless with a file-defined agent as the role; the session closes after it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentRun"
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tools:
+    get:
+      operationId: listTools
+      summary: The installed tools with their JSON Schema arguments.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: The model this server's sessions use by default.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: The token in ~/.crit/server.token, made anew at every start.
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: A session id (a unique prefix works where the session is logged).
+      schema:
+        type: string
+        pattern: "^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$"
+  responses:
+    Unauthorized:
+      description: No token, or the wrong one.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: The body or a parameter is not valid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such session, agent or route.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: The request was answered already, or the session cannot take this now.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    Health:
+      type: object
+      required: [ok, version, project, sessions]
+      properties:
+        ok:
+          type: boolean
+        version:
+          type: string
+        project:
+          type: string
+        sessions:
+          type: integer
+    PendingRequest:
+      type: object
+      required: [id, kind, seq]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [permission, question, plan_review]
+        seq:
+          type: integer
+    SessionInfo:
+      type: object
+      required: [id, state, live]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        state:
+          type: string
+          enum: [idle, running, waiting, closed]
+        live:
+          type: boolean
+        mode:
+          type: string
+          enum: [ask, edits, auto, plan]
+        agent:
+          type: string
+        status:
+          type: string
+        created:
+          type: string
+        updated:
+          type: string
+        parent:
+          type: string
+        last_seq:
+          type: integer
+        turns:
+          type: integer
+        tokens:
+          type: integer
+        pending:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingRequest"
+    SessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionInfo"
+    CreateSession:
+      type: object
+      properties:
+        cwd:
+          type: string
+          description: Must be the server's project (or left out).
+        agent:
+          type: string
+          description: A role or a file-defined agent.
+        model:
+          type: string
+        mode:
+          type: string
+          enum: [ask, edits, auto, plan]
+        title:
+          type: string
+        message:
+          type: string
+          description: The first task.
+        close_after:
+          type: boolean
+          description: End the session when the first task is done.
+        unattended:
+          type: boolean
+          description: Requests are refused at once (as with no one there) instead of waiting.
+    Fork:
+      type: object
+      properties:
+        at_seq:
+          type: integer
+          minimum: 1
+        mode:
+          type: string
+          enum: [ask, edits, auto, plan]
+    Message:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        close_after:
+          type: boolean
+    MessageAccepted:
+      type: object
+      required: [accepted, session]
+      properties:
+        accepted:
+          type: boolean
+        session:
+          $ref: "#/components/schemas/SessionInfo"
+    Cancelled:
+      type: object
+      required: [cancelled]
+      properties:
+        cancelled:
+          type: boolean
+    Mode:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+    Undone:
+      type: object
+      required: [restored]
+      properties:
+        restored:
+          type: array
+          items:
+            type: string
+    Answer:
+      type: object
+      required: [reply]
+      properties:
+        reply:
+          description: >-
+            permission: {"decision": "yes" | "always" | "no", "reason": "..."};
+            question: {"text": "..."}; plan_review: {"decision": "auto" | "edits" | "ask" |
+            "no" | "none", "feedback": "..."} (no with feedback asks for a revised plan, none stops).
+          type: object
+    Answered:
+      type: object
+      required: [answered]
+      properties:
+        answered:
+          type: boolean
+    Event:
+      type: object
+      description: >-
+        One session log event (docs/sessions.md). The types a client needs most: notice (kind,
+        text), assistant_text, tool_started, tool_result, request (id, kind, and for a permission
+        perm_kind, summary, detail, risky, options), request_answered (id, reply, by),
+        task_finished (code), session_closed.
+      required: [seq, ts, turn, type]
+      properties:
+        seq:
+          type: integer
+        ts:
+          type: string
+        turn:
+          type: integer
+        type:
+          type: string
+    Agent:
+      type: object
+      required: [name, description, mode, scope, trusted]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        mode:
+          type: string
+        scope:
+          type: string
+        trusted:
+          type: boolean
+        model:
+          type: [string, "null"]
+    AgentList:
+      type: object
+      required: [agents, problems]
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agent"
+        problems:
+          type: array
+          items:
+            type: string
+    AgentRun:
+      type: object
+      required: [task]
+      properties:
+        task:
+          type: string
+        mode:
+          type: string
+          enum: [ask, edits, auto, plan]
+        unattended:
+          type: boolean
+          description: True by default for a headless run.
+    Tool:
+      type: object
+      required: [name, description, read_only, parameters]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        read_only:
+          type: boolean
+        parameters:
+          type: object
+    ToolList:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tool"
+    Model:
+      type: object
+      required: [id, backend, label, default]
+      properties:
+        id:
+          type: string
+        backend:
+          type: string
+        label:
+          type: string
+        default:
+          type: boolean
+    ModelList:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/Model"

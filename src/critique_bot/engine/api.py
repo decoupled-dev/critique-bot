@@ -398,7 +398,8 @@ class SessionHandle:
             "parent": str(meta.get("parent") or ""),
             "last_seq": self.last_seq(),
             "live": True,
-            "pending": [event.get("id") for event in self.pending_requests()],
+            "pending": [{"id": event.get("id"), "kind": event.get("kind"), "seq": event.get("seq")}
+                        for event in self.pending_requests()],
         }
 
     # ------------------------------------------------------------------ the worker
@@ -476,6 +477,8 @@ class Engine:
         self.home = home
         self.headed = headed
         self._lock = threading.Lock()
+        #: Held while a logged session is opened, so two clients cannot open it twice.
+        self._open_lock = threading.RLock()
         self._sessions: dict[str, SessionHandle] = {}
 
     # ------------------------------------------------------------------ sessions
@@ -508,6 +511,10 @@ class Engine:
 
     def open_session(self, session_id: str, *, mode: str | None = None, unattended: bool = False) -> SessionHandle:
         """A logged session to continue (resume): the live one, or the log reopened."""
+        with self._open_lock:
+            return self._open(session_id, mode=mode, unattended=unattended)
+
+    def _open(self, session_id: str, *, mode: str | None, unattended: bool) -> SessionHandle:
         from critique_bot.engine.context import _open_session_log
         from critique_bot.engine.loop import effective_settings
 
@@ -518,6 +525,9 @@ class Engine:
             folder = session_log_mod.find_session(self.home.sessions_dir, session_id)
         except session_log_mod.SessionNotFound as exc:
             raise EngineError(str(exc)) from exc
+        live = self.session(folder.name)  # session_id was a prefix of a live one
+        if live is not None:
+            return live
         settings = effective_settings(self.home.settings)
         meta = session_log_mod.read_meta(folder)
         pid = meta.get("pid")
@@ -553,6 +563,19 @@ class Engine:
     def session(self, session_id: str) -> SessionHandle | None:
         with self._lock:
             return self._sessions.get(session_id)
+
+    def list_live(self) -> list[SessionHandle]:
+        with self._lock:
+            return list(self._sessions.values())
+
+    def find(self, session_id: str) -> str:
+        """The full id of a live or logged session (a unique prefix works), or EngineError."""
+        if self.session(session_id) is not None:
+            return session_id
+        try:
+            return session_log_mod.find_session(self.home.sessions_dir, session_id).name
+        except session_log_mod.SessionNotFound as exc:
+            raise EngineError(str(exc)) from exc
 
     def events(self, session_id: str, since_seq: int = 0, *, follow: bool = True,
                stop: threading.Event | None = None) -> Iterator[dict[str, Any]]:
