@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 from critique_bot import agent_tools as _impl
+from critique_bot import tool_output as _output
 
 # --------------------------------------------------------------------------- shared types
 # The engine's view of the tool layer. Everything here is defined in agent_tools.
@@ -54,6 +55,10 @@ redact_secrets = _impl.redact_secrets
 rel = _impl.rel
 resolve = _impl.resolve
 _paths_of = _impl._paths_of
+#: Every built-in tool result goes through this (agent_tools.execute applies it): head and
+#: tail within the budget, the whole text under .crit/cache/out, never an empty result.
+shape_output = _output.shape_output
+output_budget = _output.budget_chars
 
 
 # --------------------------------------------------------------------------- specs

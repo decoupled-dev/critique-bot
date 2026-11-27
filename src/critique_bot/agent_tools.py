@@ -37,6 +37,7 @@ from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_patch, agent_shell, code_index
 from critique_bot import big_file, edit_guard, file_catalog, gitlab_access, integrations, log_tools, run_stats, soong
+from critique_bot import tool_output
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -92,10 +93,14 @@ SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
 DEFAULT_TOOL_CHARS = 16_000
 DEFAULT_COMMAND_TIMEOUT = 120
 MAX_COMMAND_TIMEOUT = 600
-DEFAULT_READ_LINES = 200
+#: A file this short is read whole when no range is given...
+WHOLE_READ_LINES = 300
+#: ...a longer one in a window of this many lines ("lines 1-100 of 2,431").
+DEFAULT_READ_LINES = 100
 MAX_READ_LINES = 400
 MAX_READ_CHARS = 12_000
-OUTLINE_MIN_LINES = 400
+OUTLINE_MIN_LINES = WHOLE_READ_LINES
+RESPONSE_FORMATS = ("concise", "detailed")
 MAX_LIST_ENTRIES = 2_000
 SNIPPET_CHARS = 200
 HITS_PER_FILE = 5
@@ -306,7 +311,15 @@ def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> di
     result.setdefault("tool", canonical)
     if "ui" not in result:
         result["ui"] = _default_ui(canonical, result)
-    return result
+    return shape(result, ctx)
+
+
+def shape(result: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """``result`` within this context's output budget (tool_output.shape_output), never empty."""
+    budget = tool_output.budget_chars(getattr(ctx, "max_chars", None), getattr(ctx, "settings", None))
+    return tool_output.shape_output(
+        result, budget, cache_dir=getattr(ctx, "cache_dir", None), workspace=getattr(ctx, "workspace", None)
+    )
 
 
 def _ui(summary: str, diff: str | None = None, lines: list[str] | None = None) -> dict[str, Any]:
@@ -429,7 +442,7 @@ _NUMBER_KEYS = frozenset(
         "head_limit", "context", "timeout", "max_chars", "wait", "lines",
     }
 )
-_JSON_KEYS = frozenset({"paths", "files", "edits", "todos", "items", "options", "arguments", "args"})
+_JSON_KEYS = frozenset({"paths", "files", "edits", "todos", "items", "options", "arguments", "args", "patterns"})
 _TRUE = {"true", "yes", "y", "1", "on"}
 _FALSE = {"false", "no", "n", "0", "off", "none", "null", ""}
 
@@ -835,6 +848,11 @@ def walk_files(workspace: Path, root: Path) -> list[str]:
 # --------------------------------------------------------------------------- results
 
 
+#: A result is held in memory up to this size; execute() then shapes it to the context budget
+#: (head and tail, the whole text saved under .crit/cache/out).
+_HARD_CAP = 4_000_000
+
+
 def _cap(text: str, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
@@ -843,7 +861,7 @@ def _cap(text: str, limit: int) -> str:
 
 
 def ok(name: str, output: str, ctx: ToolContext, ui: dict[str, Any] | None = None) -> dict[str, Any]:
-    result: dict[str, Any] = {"tool": name, "ok": True, "output": _cap(output, ctx.max_chars)}
+    result: dict[str, Any] = {"tool": name, "ok": True, "output": _cap(output, _HARD_CAP)}
     if ui is not None:
         result["ui"] = ui
     return result
@@ -859,7 +877,7 @@ def err(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"tool": name, "ok": False, "error": error}
     if output:
-        result["output"] = _cap(output, ctx.max_chars) if ctx else output
+        result["output"] = _cap(output, _HARD_CAP)
     if ui is not None:
         result["ui"] = ui
     return result
@@ -1058,6 +1076,9 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if limit is not None and limit < 1:
         return err("read_files", "limit must be at least 1")
     force = bool(args.get("force"))
+    detailed, problem = _response_format(args)
+    if problem:
+        return err("read_files", problem)
     wanted = paths[:MAX_READ_PATHS]
     budget = max(800, min(MAX_READ_CHARS, (ctx.max_chars - 200) // max(len(wanted), 1)))
     parts: list[str] = []
@@ -1076,7 +1097,8 @@ def _read_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             raw = raw.get("path") or raw.get("file") or raw.get("filePath")
         if not isinstance(raw, str) or not raw.strip():
             return err("read_files", "each path must be a string")
-        parts.append(_read_one(raw, item_start, item_limit, item_explicit, budget, force, ctx, column=column))
+        parts.append(_read_one(raw, item_start, item_limit, item_explicit, budget, force, ctx, column=column,
+                               detailed=detailed))
     if len(paths) > MAX_READ_PATHS:
         parts.append(f"... {len(paths) - MAX_READ_PATHS} more paths not read; read at most {MAX_READ_PATHS} per call")
     output = "\n".join(parts)
@@ -1150,8 +1172,28 @@ def _redacted_file_lines(path: Path) -> list[str] | None:
         return None
 
 
+def _response_format(args: dict[str, Any]) -> tuple[bool, str]:
+    """(detailed, problem) from a ``response_format`` argument; concise when it is left out."""
+    raw = args.get("response_format")
+    if raw is None or raw == "":
+        return False, ""
+    value = str(raw).strip().lower()
+    if value not in RESPONSE_FORMATS:
+        return False, 'response_format is "concise" (the default) or "detailed"'
+    return value == "detailed", ""
+
+
+def _window(limit: int | None, total: int) -> int:
+    """Lines to show from ``start``: the limit asked for (at most 400), else the whole of a short
+    file, else the default window."""
+    if limit is not None:
+        return min(limit, MAX_READ_LINES)
+    return max(1, total) if total <= WHOLE_READ_LINES else DEFAULT_READ_LINES
+
+
 def _read_one(
-    raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext, *, column: int = 0
+    raw: str, start: int, limit: int | None, explicit: bool, budget: int, force: bool, ctx: ToolContext, *,
+    column: int = 0, detailed: bool = False,
 ) -> str:
     path = resolve(ctx.workspace, raw)
     name = rel(ctx.workspace, path)
@@ -1172,14 +1214,14 @@ def _read_one(
     if looks_binary_path(str(path)) or looks_binary_bytes(head):
         return f"--- {name} ---\n{_binary_note(path, head)}"
     if big_file.is_large(path) or column:
-        return _read_window(path, name, start, limit, budget, force, ctx, column)
+        return _read_window(path, name, start, limit, budget, force, ctx, column, detailed=detailed)
     loaded = agent_edit.load_text(path)
     lines = _redact_lines(loaded.text.split("\n"))
     if lines and lines[-1] == "":
         lines = lines[:-1]
     total = len(lines)
     version = agent_edit.file_version(path)
-    window = min(limit if limit is not None else DEFAULT_READ_LINES, MAX_READ_LINES)
+    window = _window(limit, total)
     capped_note = ""
     if limit is not None and limit > MAX_READ_LINES:
         capped_note = f" (limit capped at {MAX_READ_LINES})"
@@ -1193,7 +1235,10 @@ def _read_one(
                 "use that text. Pass force true if you no longer have it."
             )
     eol = "crlf" if loaded.eol == "\r\n" else "lf"
-    header = f"--- {name} (lines {start}-{end} of {total}, eol {eol}, version {version}) ---"
+    if detailed:
+        header = f"--- {name} (lines {start}-{end} of {total:,}, eol {eol}, version {version}) ---"
+    else:
+        header = f"--- {name} (lines {start}-{end} of {total:,}{', crlf' if eol == 'crlf' else ''}) ---"
     out: list[str] = [header]
     if not explicit and total > OUTLINE_MIN_LINES and ctx.index_path is not None:
         items = code_index.outline(ctx.index_path, name, limit=80)
@@ -1222,7 +1267,7 @@ def _read_one(
         state.versions[name] = agent_edit.content_digest(path)
     if numbered and shown_end < total:
         out.append(
-            f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}{capped_note}. "
+            f"... {total:,} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}{capped_note}. "
             "Do not edit a span you have not seen."
         )
     return "\n".join(out)
@@ -1234,7 +1279,8 @@ _REDACT_MARGIN = 60
 
 
 def _read_window(
-    path: Path, name: str, start: int, limit: int | None, budget: int, force: bool, ctx: ToolContext, column: int
+    path: Path, name: str, start: int, limit: int | None, budget: int, force: bool, ctx: ToolContext, column: int,
+    *, detailed: bool = False,
 ) -> str:
     """A window of a very large file: read by seeking, not loading; long lines clipped."""
     try:
@@ -1242,7 +1288,7 @@ def _read_window(
     except OSError as exc:
         return f"--- {name} ---\n{exc}"
     total = index.total
-    window = min(limit if limit is not None else DEFAULT_READ_LINES, MAX_READ_LINES)
+    window = _window(limit, total)
     end = min(total, start + window - 1)
     version = agent_edit.file_version(path)
     state = ctx.state
@@ -1254,10 +1300,13 @@ def _read_window(
                 "use that text. Pass force true if you no longer have it."
             )
     size = os.path.getsize(path)
-    header = (
-        f"--- {name} (lines {start}-{end} of {total}, {agent_build.size_text(size)}, "
-        f"eol {'crlf' if index.crlf else 'lf'}, version {version}) ---"
-    )
+    if detailed:
+        header = (
+            f"--- {name} (lines {start}-{end} of {total:,}, {agent_build.size_text(size)}, "
+            f"eol {'crlf' if index.crlf else 'lf'}, version {version}) ---"
+        )
+    else:
+        header = f"--- {name} (lines {start}-{end} of {total:,}, {agent_build.size_text(size)}) ---"
     if start > total:
         return f"{header}\noffset {start} is past the end; the file has {total} lines"
     lead = min(_REDACT_MARGIN, start - 1)
@@ -1284,7 +1333,7 @@ def _read_window(
         state.note_read(name, version, start, shown_end)
         state.versions[name] = agent_edit.content_digest(path)
     if numbered and shown_end < total:
-        out.append(f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}.")
+        out.append(f"... {total:,} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}.")
     return "\n".join(out)
 
 
@@ -1351,11 +1400,15 @@ def _log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     path, problem = _log_path(ctx, args.get("path"))
     if problem:
         return err("log", problem)
+    detailed, problem = _response_format(args)
+    if problem:
+        return err("log", problem)
     name = rel(ctx.workspace, path)
     try:
         if action == "summary":
             summary = log_tools.summarize(path, cancel=ctx.cancel)
-            body = log_tools.render_summary(summary, max_chars=max(2_000, ctx.max_chars - 400), name=name)
+            room = max(2_000, ctx.max_chars - 400) if detailed else max(2_000, min(6_000, ctx.max_chars - 400))
+            body = log_tools.render_summary(summary, max_chars=room, name=name)
             body += '\nNext: log action "around" with line N for the context of an event, or "query" with level, tag, pid, package or pattern.'
             return ok("log", redact_secrets(body)[0], ctx, _ui(f"Summarized {name}", lines=body.split("\n")[1:4]))
         if action == "around":
@@ -1395,7 +1448,7 @@ def _log(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         try:
             start = max(1, int(args.get("offset") or args.get("start") or 1))
             end = int(args["end"]) if args.get("end") else None
-            limit = min(max(int(args.get("limit") or 100), 1), 400)
+            limit = min(max(int(args.get("limit") or (300 if detailed else 100)), 1), 400)
         except (TypeError, ValueError):
             return err("log", "offset, end and limit must be integers")
         rows, matched, resume = log_tools.query(
@@ -1447,24 +1500,81 @@ def _read_symbol(symbol: str, raw_path: Any, args: dict[str, Any], ctx: ToolCont
 # --------------------------------------------------------------------------- search
 
 
+#: Patterns one search_code call takes (each is searched, results grouped by pattern).
+MAX_SEARCH_PATTERNS = 8
+#: Files listed with their match counts before the snippets.
+SEARCH_FILE_COUNTS = 15
+#: Snippets per file with response_format "detailed" (concise keeps HITS_PER_FILE).
+DETAILED_HITS_PER_FILE = 15
+
+
 def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    pattern = args.get("pattern") or args.get("query")
-    if not isinstance(pattern, str) or not pattern:
-        return err("search_code", "pattern is required")
+    raw_patterns = args.get("patterns")
+    if isinstance(raw_patterns, str):
+        raw_patterns = [raw_patterns]
+    patterns = [item for item in raw_patterns if isinstance(item, str) and item] if isinstance(raw_patterns, list) else []
+    single = args.get("pattern") or args.get("query")
+    if isinstance(single, str) and single and single not in patterns:
+        patterns.insert(0, single)
+    if not patterns:
+        return err("search_code", 'pattern is required (or patterns: ["a", "b"] to search several at once)')
+    dropped = patterns[MAX_SEARCH_PATTERNS:]
+    patterns = list(dict.fromkeys(patterns[:MAX_SEARCH_PATTERNS]))
     raw_path = args.get("path") or "."
     if not isinstance(raw_path, str):
         return err("search_code", "path must be a string")
     root = resolve(ctx.workspace, raw_path)
     if not root.exists():
-        return err("search_code", f"not found: {raw_path}")
+        return err("search_code", f"not found: {raw_path}{_path_hint(ctx, raw_path)}")
     glob = args.get("glob")
     if glob is not None and not isinstance(glob, str):
         return err("search_code", "glob must be a string")
+    detailed, problem = _response_format(args)
+    if problem:
+        return err("search_code", problem)
     try:
-        limit = min(max(int(args.get("head_limit") or args.get("limit") or 50), 1), 200)
+        default_limit = 150 if detailed else 50
+        limit = min(max(int(args.get("head_limit") or args.get("limit") or default_limit), 1), 200)
         context = min(max(int(args.get("context") or 0), 0), 3)
     except (TypeError, ValueError):
         return err("search_code", "head_limit and context must be integers")
+    if len(patterns) == 1:
+        found = _search_one(patterns[0], args, ctx, root, raw_path, glob, limit, context, detailed)
+        body = found["text"]
+        if dropped:
+            body += f"\nonly {MAX_SEARCH_PATTERNS} patterns are searched per call"
+        return ok("search_code", body, ctx, found["ui"])
+    share = max(10, limit // len(patterns))
+    sections: list[str] = []
+    summary: list[str] = []
+    totals = 0
+    preview: list[str] = []
+    for pattern in patterns:
+        found = _search_one(pattern, args, ctx, root, raw_path, glob, share, context, detailed)
+        totals += found["total"]
+        count, files = found["total"], found["files"]
+        summary.append(f"  {pattern!r}: " + (
+            f"{count} {'match' if count == 1 else 'matches'} in {files} {'file' if files == 1 else 'files'}"
+            if count else "no matches"))
+        sections.append(f"== {pattern!r} ==\n{found['text']}")
+        preview += [line for line in found["lines"] if not line.startswith("    ")][:2]
+    head = f"{len(patterns)} patterns searched:\n" + "\n".join(summary)
+    if dropped:
+        head += f"\n  (only {MAX_SEARCH_PATTERNS} patterns per call; left out: {', '.join(map(repr, dropped))})"
+    return ok(
+        "search_code",
+        head + "\n\n" + "\n\n".join(sections),
+        ctx,
+        _ui(f"Found {totals} matches for {len(patterns)} patterns" if totals else f"No matches for {len(patterns)} patterns",
+            lines=preview[:5] or None),
+    )
+
+
+def _search_one(
+    pattern: str, args: dict[str, Any], ctx: ToolContext, root: Path, raw_path: str, glob: str | None,
+    limit: int, context: int, detailed: bool,
+) -> dict[str, Any]:
+    """One pattern: files and match counts first, then definitions and snippets."""
     literal = bool(args.get("literal") or args.get("fixed_strings"))
     notes: list[str] = []
     source = re.escape(pattern) if literal else pattern
@@ -1489,15 +1599,18 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             signature = _one_line(item.signature, SNIPPET_CHARS)
             lines.append(f"{item.path}:{item.line}: {item.kind} {item.qualified} (lines {item.line}-{item.end_line}) {signature}".rstrip())
             seen.add((item.path, item.line))
-    hits, total, files_hit = _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes)
+    per_file_cap = DETAILED_HITS_PER_FILE if detailed else HITS_PER_FILE
+    stats: dict[str, Any] = {"keep": per_file_cap}
+    hits, total, files_hit = _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes,
+                                        stats)
     touched = set(ctx.state.reads) | set(ctx.state.edits) if ctx.state else set()
     order = sorted(hits, key=lambda item: (item not in touched, item.count("/"), item))
     shown = 0
     for path in order:
         # Hit lines come from the file after redaction, so a hit inside a key shows no part of it.
-        wanted = [line_no for line_no, _text in hits[path][:HITS_PER_FILE]]
+        wanted = [line_no for line_no, _text in hits[path][:per_file_cap]]
         full = _redacted_hit_lines(ctx.workspace / path, wanted, context)
-        for line_no, text in hits[path][:HITS_PER_FILE]:
+        for line_no, text in hits[path][:per_file_cap]:
             if (path, line_no) in seen:
                 continue
             if len(lines) >= limit:
@@ -1510,17 +1623,35 @@ def _search_code(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                 lines.extend(_context_lines(line_no, context, full))
     remaining = total - shown
     if remaining > 0:
-        notes.append(f"{remaining} more hits in {files_hit} files; narrow with path, glob, or a longer pattern")
-    body = "\n".join(lines) if lines else "(no matches)"
-    if notes:
-        body += "\n" + "\n".join(notes)
+        notes.append(f"{remaining} more hits in {files_hit} files are not shown; narrow with path, glob, or a longer pattern")
+    out: list[str] = []
+    if total or seen:
+        counts = stats.get("per_file") or {}
+        head = f"{total} {'match' if total == 1 else 'matches'} in {files_hit} {'file' if files_hit == 1 else 'files'}"
+        if seen:
+            head += f", {len(seen)} {'definition' if len(seen) == 1 else 'definitions'} (listed first)"
+        out.append(head + ":" if files_hit > 1 else head)
+        if files_hit > 1:
+            listed = sorted(order, key=lambda item: -counts.get(item, len(hits[item])))[:SEARCH_FILE_COUNTS]
+            out.extend(f"  {item} ({counts.get(item, len(hits[item]))})" for item in listed)
+            if files_hit > len(listed):
+                out.append(f"  ... {files_hit - len(listed)} more files")
+        out.extend(lines)
+    else:
+        searched = stats.get("searched")
+        where = "" if root == ctx.workspace else f" under {rel(ctx.workspace, root)}"
+        scope = f" in {searched:,} files{where}" if isinstance(searched, int) else where
+        out.append(f"no matches for {pattern!r}{scope}" + (f" (glob {glob})" if glob else ""))
+    body = "\n".join(out + notes)
     found = sum(1 for line in lines if not line.startswith("    "))
-    return ok(
-        "search_code",
-        body,
-        ctx,
-        _ui(f"Found {total + len(seen)} matches" if total or seen else "No matches", lines=lines[:5] if found else None),
-    )
+    return {
+        "text": body,
+        "total": total + len(seen),
+        "files": files_hit,
+        "lines": lines,
+        "ui": _ui(f"Found {total + len(seen)} matches" if total or seen else "No matches",
+                  lines=lines[:5] if found else None),
+    }
 
 
 # A group that repeats something which itself repeats, e.g. (a+)+ or (\w*\s?)*:
@@ -1565,7 +1696,7 @@ def _redacted_hit_lines(path: Path, line_numbers: list[int], context: int) -> di
     return out
 
 
-def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes=None):
+def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes=None, stats=None):
     """``{path: [(line, text)]}``, total hit count, and number of files hit.
 
     ripgrep when it is installed. The Python fallback searches long lines only
@@ -1574,7 +1705,7 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
     engine cannot be interrupted once it starts backtracking.
     """
     notes = notes if notes is not None else []
-    found = _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes)
+    found = _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes, stats)
     if sensitive_file(root):
         return found  # the user said yes to searching this one file
     hits, total, _count = found
@@ -1583,6 +1714,8 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
         return found
     for item in hidden:
         total -= len(hits.pop(item))
+        if stats is not None:
+            stats.setdefault("per_file", {}).pop(item, None)
     notes.append(
         f"left out matches in {len(hidden)} file(s) that usually hold secrets ({', '.join(hidden[:3])}); "
         "search that file by its path to ask the user"
@@ -1590,8 +1723,12 @@ def _text_hits(ctx, root, prefix, source, matcher, ignore_case, glob, literal, p
     return hits, max(total, 0), len(hits)
 
 
-def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes):
-    via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes)
+def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, literal, pattern, notes, stats=None):
+    """Like :func:`_text_hits`; ``stats`` (when given) gets "searched" (files looked at) and
+    "per_file" (matches per file, beyond the few kept as snippets)."""
+    stats = stats if stats is not None else {}
+    per_file = stats.setdefault("per_file", {})
+    via_rg = _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes, stats)
     if via_rg is not None:
         return via_rg
     if not literal and risky_regex(source):
@@ -1607,6 +1744,7 @@ def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, litera
         files = walk_files(ctx.workspace, root)
     hits: dict[str, list[tuple[int, str]]] = {}
     total = 0
+    searched = 0
     for item in files:
         if glob and not glob_match(item, glob):
             continue
@@ -1623,6 +1761,7 @@ def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, litera
             continue
         if looks_binary_bytes(head):
             continue
+        searched += 1
         if time.monotonic() > deadline:
             notes.append(f"search stopped after {_SCAN_SECONDS:.0f}s; narrow with path or glob")
             break
@@ -1633,11 +1772,13 @@ def _text_hits_all(ctx, root, prefix, source, matcher, ignore_case, glob, litera
             if matcher.search(line[:_SCAN_LINE_CHARS]) is None:
                 continue
             total += 1
+            per_file[item] = per_file.get(item, 0) + 1
             bucket = hits.setdefault(item, [])
-            if len(bucket) < HITS_PER_FILE:
+            if len(bucket) < stats.get("keep", HITS_PER_FILE):
                 bucket.append((number, line.strip()))
         if total > 5_000:
             break
+    stats["searched"] = searched
     return hits, total, len(hits)
 
 
@@ -1669,7 +1810,7 @@ def _rg_skips(ctx: ToolContext) -> list[str]:
     return [arg for name in sorted(SKIP_DIR_NAMES) for arg in ("-g", f"!{name}/")]
 
 
-def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes=None):
+def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes=None, stats=None):
     exe = shutil.which("rg")
     if exe is None or ctx.runner is not None:
         return None
@@ -1697,7 +1838,15 @@ def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes=None)
     deadline = time.monotonic() + RG_SECONDS
     try:
         assert proc.stdout is not None
+        stats = stats if stats is not None else {}
+        per_file = stats.setdefault("per_file", {})
         for raw in proc.stdout:
+            if raw.rstrip().endswith(b'"type":"summary"}'):
+                try:
+                    stats["searched"] = int(json.loads(raw)["data"]["stats"]["searches"])
+                except (ValueError, KeyError, TypeError):
+                    pass
+                continue
             if b'"type":"match"' not in raw[:40]:
                 continue
             try:
@@ -1711,8 +1860,9 @@ def _rg_hits(ctx, root, source, ignore_case, glob, literal, pattern, notes=None)
             item = rel(ctx.workspace, ctx.workspace / path_text)
             text = (data.get("lines") or {}).get("text", "")
             total += 1
+            per_file[item] = per_file.get(item, 0) + 1
             bucket = hits.setdefault(item, [])
-            if len(bucket) < HITS_PER_FILE:
+            if len(bucket) < stats.get("keep", HITS_PER_FILE):
                 bucket.append((int(data.get("line_number") or 0), text.strip()))
             if total >= RG_MAX_MATCHES:
                 stopped = f"stopped after {total} matches"
@@ -2566,9 +2716,8 @@ def patched_paths(patch: str) -> list[str]:
 # --------------------------------------------------------------------------- commands and git
 
 
-#: Full outputs kept in .crit/cache/output; older ones are removed.
-KEEP_OUTPUTS = 40
-_OUTPUT_LOCK = threading.Lock()
+#: Full outputs kept in .crit/cache/out; older ones are removed.
+KEEP_OUTPUTS = tool_output.KEEP_FILES
 
 
 def _clip_output(body: str, ctx: ToolContext, full_log: str | None = None) -> str:
@@ -2578,7 +2727,7 @@ def _clip_output(body: str, ctx: ToolContext, full_log: str | None = None) -> st
     ``full_log`` is a complete log the shell already kept (its captured text dropped lines);
     the result then points there, since ``body`` itself is missing the middle.
     """
-    clipped = agent_shell.head_tail(body, max_chars=ctx.max_chars)
+    clipped = agent_shell.head_tail(body, max_chars=tool_output.budget_chars(ctx.max_chars, ctx.settings) - 300)
     if full_log:
         shown = rel(ctx.workspace, Path(full_log)) if inside(ctx.workspace, Path(full_log)) else full_log
         return (
@@ -2598,22 +2747,7 @@ def _clip_output(body: str, ctx: ToolContext, full_log: str | None = None) -> st
 
 
 def _save_output(body: str, ctx: ToolContext) -> str:
-    folder = Path(ctx.cache_dir) / "output"
-    try:
-        with _OUTPUT_LOCK:
-            folder.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            index = 1
-            while (folder / f"{stamp}-{index}.log").exists():
-                index += 1
-            path = folder / f"{stamp}-{index}.log"
-            path.write_text(body, encoding="utf-8", errors="replace")
-            old = sorted(folder.glob("*.log"), key=lambda item: item.stat().st_mtime)
-            for stale in old[:-KEEP_OUTPUTS]:
-                stale.unlink(missing_ok=True)
-    except OSError:
-        return ""  # the clipped text still goes back
-    return rel(ctx.workspace, path) if inside(ctx.workspace, path) else str(path)
+    return tool_output.save_full(body, ctx.cache_dir, ctx.workspace)
 
 
 def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -2934,7 +3068,7 @@ def _run_in_session(
     if errs:
         parts.append(errs)
     if not out and not errs:
-        parts.append("(no output)")
+        parts.append(f"(no output; exit {code})")
     body = _clip_output("\n".join(parts), ctx, getattr(result, "full_log", None))
     summary = f"exit {code} · {_duration(seconds)} · {shell_name}" + (f" · cwd {rel(ctx.workspace, session.cwd)}" if moved else "")
     if retried:
@@ -3071,6 +3205,8 @@ def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: fl
         parts.append(out)
     if errs:
         parts.append(errs)
+    if not out and not errs:
+        parts.append(f"(no output; exit {code})")
     body = _clip_output("\n".join(parts), ctx)
     ui = _ui(f"exit {code} · {seconds:.1f}s", lines=_preview(out + "\n" + errs, tail=True))
     if code == 0:

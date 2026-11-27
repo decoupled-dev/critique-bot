@@ -47,6 +47,7 @@ LAYERS: dict[str, int] = {
     "agent_edit": TOOLS,
     "agent_patch": TOOLS,
     "edit_guard": TOOLS,
+    "tool_output": TOOLS,
     "agent_build": TOOLS,
     "agent_rules": TOOLS,
     "code_index": TOOLS,
