@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import os
 import shlex
 import tempfile
@@ -227,6 +228,8 @@ def _strings_in(value: object) -> Iterable[str]:
 def _parse(data: bytes, name: str) -> object:
     text = data.decode("utf-8", errors="replace")
     if name.endswith(".toml"):
+        if sys.version_info < (3, 11):
+            return None  # no tomllib before 3.11 (TOML extensions need 3.11+, as hooks.py says)
         import tomllib
 
         try:

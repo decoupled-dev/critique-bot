@@ -65,6 +65,7 @@ class ObfuscateTests(unittest.TestCase):
         self.assertIn("src/shop/CouponValidator.java", info["files"])
         self.assertEqual(self.ob.check_tree(self.out / "java"), [])
 
+    @unittest.skipIf(sys.version_info < (3, 12), "the obfuscator needs Python 3.12+ (names inside f-strings)")
     def test_generated_tasks_match_their_source(self) -> None:
         """The committed -obf tasks are what the script produces now (regenerate when it changes)."""
         for task in sorted(TASKS.glob("loc-*-obf")):

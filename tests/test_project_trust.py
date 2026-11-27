@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import os
 import tempfile
 import unittest
@@ -211,7 +212,8 @@ class TrustCoversWhatRunsTests(_Isolated):
         old = {"files": {str(path): {"sha256": trust.file_hash(path), "kind": "hooks"} for path in (hooks, plain)}}
         trust.trust_path().write_text(json.dumps(old), encoding="utf-8")
         self.assertFalse(trust.is_trusted(hooks))  # approved before approvals covered check.py
-        self.assertTrue(trust.is_trusted(plain))  # runs no project file: still fine
+        if sys.version_info >= (3, 11):  # TOML extensions need tomllib (Python 3.11+)
+            self.assertTrue(trust.is_trusted(plain))  # runs no project file: still fine
 
     def test_crit_trust_shows_what_it_covers(self) -> None:
         from critique_bot.extensions_cmd import main_trust

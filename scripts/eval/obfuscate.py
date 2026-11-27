@@ -557,7 +557,17 @@ def _android_stubs(folder: Path) -> None:
         target.write_text(text, encoding="utf-8")
 
 
+#: Python's tokenizer sees names inside f-strings only from 3.12 (PEP 701); before that an
+#: f-string is one STRING token, so its names would stay unrenamed and the generated tasks
+#: would differ by Python version.
+MIN_PYTHON = (3, 12)
+
+
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < MIN_PYTHON:
+        print("obfuscate.py needs Python 3.12 or newer (names inside f-strings); run it with python3.12",
+              file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--tree", nargs=2, metavar=("SRC", "DEST"))
     parser.add_argument("--task", nargs=2, metavar=("TASK", "DEST"))

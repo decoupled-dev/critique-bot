@@ -43,6 +43,13 @@ def hashes(name: str, version: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    # pip applies --python-version to wheel tags only; environment markers such as
+    # python_version < "3.13" are evaluated against the interpreter running pip. Run this
+    # with the CI's Python, or dependencies behind such markers go missing (typing_extensions).
+    if sys.version_info[:2] != (3, 12):
+        print("run this with Python 3.12 (the version CI installs the tools with): python3.12 scripts/hash_pins.py ...",
+              file=sys.stderr)
+        return 2
     if len(argv) < 2:
         print(__doc__)
         return 2
