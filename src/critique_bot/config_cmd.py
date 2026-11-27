@@ -318,8 +318,58 @@ def _read_api_key(value: str, prompt: str = "API key: ") -> str | None:
 
 
 def set_api_key(value: str) -> int:
-    """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it."""
-    return set_user_secret("local", "api_key", value, "API key")
+    """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it.
+
+    The key is saved together with the server it is for (``local.api_key_url``: the url in the
+    user config, or the default local server). A config from a project or ``--config`` that
+    names another server does not get it; ``--api-key-url`` binds it to another server.
+    """
+    code = set_user_secret("local", "api_key", value, "API key")
+    if code == 0:
+        code = bind_api_key(None, quiet=True)
+    return code
+
+
+def bind_api_key(url: str | None, *, quiet: bool = False) -> int:
+    """``crit config --api-key-url URL``: the server the saved API key may be sent to.
+
+    None: the url in the user config (or the default local server). The key is removed:
+    the binding goes with it.
+    """
+    from critique_bot.config import DEFAULT_LOCAL_URL, url_origin
+
+    path = user_config_path()
+    try:
+        data = read_config_dict(path) if path.is_file() else {}
+    except ConfigError as exc:
+        print(f"Not saved: {exc}", file=sys.stderr)
+        return 2
+    block = data.get("local") if isinstance(data.get("local"), dict) else {}
+    if not _api_key_in(data):
+        if block.pop("api_key_url", None) is None:
+            if not quiet:
+                print("Not saved: no API key is saved (crit config --api-key sets one).", file=sys.stderr)
+                return 2
+            return 0
+    else:
+        target = (url or "").strip() or str(data.get("url") or "").strip() or DEFAULT_LOCAL_URL
+        if not url_origin(target):
+            print(f"Not saved: {target!r} is not a server address (http://host:port).", file=sys.stderr)
+            return 2
+        block["api_key_url"] = target
+    if block:
+        data["local"] = block
+    else:
+        data.pop("local", None)
+    try:
+        write_config_file(path, data)
+    except OSError as exc:
+        print(f"Not saved: could not write {path}: {exc}", file=sys.stderr)
+        return 1
+    if block.get("api_key_url") and not quiet:
+        print(f"Saved {path}: the API key is sent only to {url_origin(block['api_key_url'])} "
+              "(and the server in your own settings).")
+    return 0
 
 
 def set_user_secret(section: str, key: str, value: str, label: str) -> int:
@@ -397,6 +447,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="the model server's API key, kept in your user settings: no value asks for it (nothing is shown), "
         "- reads it from stdin, none removes it. CRIT_API_KEY overrides it",
     )
+    parser.add_argument(
+        "--api-key-url", metavar="URL",
+        help="the model server your saved API key is for (default: the url in your user settings). "
+        "A project config or --config that names another server does not get the key",
+    )
     parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the page may reach (repeatable)")
     parser.add_argument("--remove-host", action="append", default=[], metavar="HOST", help="stop allowing a site (repeatable)")
     parser.add_argument("--redact", action="append", default=[], metavar="NAME", help="names to hide, comma-separated or repeated")
@@ -460,6 +515,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
             args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
             args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
+            getattr(args, "api_key_url", None),
             getattr(args, "gitlab_token", None), getattr(args, "jira_url", None), getattr(args, "jira_email", None),
             getattr(args, "jira_token", None), getattr(args, "site_user", None), getattr(args, "site_password", None),
             getattr(args, "site_login_host", None), getattr(args, "proxy_user", None), getattr(args, "proxy_password", None),
@@ -761,6 +817,11 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
     if args.api_key is not None:
         code = set_api_key(args.api_key)
         args.api_key = None
+        if code or not _changes_requested(args):
+            return code
+    if getattr(args, "api_key_url", None) is not None:
+        code = bind_api_key(args.api_key_url)
+        args.api_key_url = None
         if code or not _changes_requested(args):
             return code
     for attr, section, key, label in (

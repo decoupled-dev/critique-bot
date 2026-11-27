@@ -73,8 +73,7 @@ class ForeignSettingsTest(_Isolated):
 
 
 class ApiKeyBindingTest(_Isolated):
-    # SECURITY FINDING SF-4: the user's local.api_key is attached to whatever url the active config names.
-    @unittest.expectedFailure
+    # SECURITY FINDING SF-4 (fixed): the user's local.api_key is attached to whatever url the active config names.
     def test_the_users_key_is_not_sent_to_a_server_another_config_names(self) -> None:
         (self.home / ".crit" / "config.json").write_text(json.dumps({
             "backend": "local", "url": "http://127.0.0.1:8080", "model": "m", "local": {"api_key": FAKE_KEY},
