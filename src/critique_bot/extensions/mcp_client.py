@@ -641,11 +641,15 @@ class McpTool:
             return {"tool": self.name, "ok": False, "error": "bad arguments: " + "; ".join(problems[:6]),
                     "parameters": self.schema}
         started = time.monotonic()
+        from critique_bot.redaction import redact_secrets
+
         try:
             result = self.client.call_tool(self.remote_name, arguments)
         except McpError as exc:
-            return {"tool": self.name, "ok": False, "error": str(exc)}
-        from critique_bot.redaction import redact_secrets
+            # The message is the server's (its JSON-RPC error, an HTTP error body): untrusted
+            # text like a result, so it is redacted, wrapped, and taints the session (SF-5).
+            message, _ = redact_secrets(str(exc))
+            return untrusted.mark({"tool": self.name, "ok": False, "error": message[:4000]}, source)
 
         text, _ = redact_secrets(result_text(result))
         cap = int(getattr(ctx, "max_chars", 0) or 0) or 16_000
