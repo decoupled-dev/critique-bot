@@ -19,7 +19,7 @@ from critique_bot.local_model import LocalModelClient, LocalModelSession
 from critique_bot.session_log import SessionLog, history_from_events, read_events
 from test_native_tools import _call_chunks, _config, _Server
 
-SECRET = "sk-live-abcdefghijklmnopqrstuvwxyz0123456789"
+SECRET = "sk-live-abcdefghijklmnopqrstuvwxyz0123456789"  # gitleaks:allow (fake token)
 
 
 def _text(content: str) -> list[dict]:

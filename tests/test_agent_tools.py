@@ -855,14 +855,14 @@ class OutboundTests(unittest.TestCase):
         from critique_bot.agent_tools import redact_secrets
 
         text, count = redact_secrets(
-            "storePassword=Abc12345!\nval key = BuildConfig.API_KEY\nurl=https://bob:hunter22@git.example/x.git\n"
-            "<string name=\"maps_api_key\">AIzaSyA1234567890abcdefghijklmnopqrstuv</string>\n"
+            "storePassword=Abc12345!\nval key = BuildConfig.API_KEY\nurl=https://bob:hunter22@git.example/x.git\n"  # gitleaks:allow (fake token)
+            "<string name=\"maps_api_key\">AIzaSyA1234567890abcdefghijklmnopqrstuv</string>\n"  # gitleaks:allow (fake token)
             "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"  # gitleaks:allow (a stub key the redaction must catch)
         )
         self.assertEqual(count, 4)
         self.assertNotIn("Abc12345", text)
         self.assertNotIn("hunter22", text)
-        self.assertNotIn("AIzaSy", text)
+        self.assertNotIn("AIzaSy", text)  # gitleaks:allow (fake token)
         self.assertNotIn("MIIE", text)
         self.assertIn("BuildConfig.API_KEY", text)
         root = Path(tempfile.mkdtemp())
