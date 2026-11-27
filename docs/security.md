@@ -93,7 +93,7 @@ Files that usually hold secrets need your yes before they are read or edited (mo
 - anything under `.ssh`, `.aws`, `.docker`, `.kube`, `.gnupg`, or the browser profile folder
 - every credential file and folder the sandbox masks (`HOME_CREDENTIALS` in `src/critique_bot/secret_paths.py`), wherever it appears in a path: the GitHub/GitLab/hub CLI logins (`.config/gh/hosts.yml`, `.config/hub`), `.s3cfg`, `.boto`, `.cargo/credentials.toml`, `.terraformrc`, `.m2/settings.xml`, `.config/gcloud` (and any `application_default_credentials.json`), and the rest of that list
 
-A workspace-wide search leaves those files out of its results. Review mode never attaches them whole; their diff hunks still go, redacted.
+A workspace-wide search leaves those files out of its results. The strings index behind `find_strings` and `locate` does not store the literals of those files, nor a literal that looks secret by its format or by the name it is assigned to (`DB_PASSWORD = "..."`), because those tools show a literal without the line around it that redaction would recognize; hits from an index built before this are filtered the same way. Review mode never attaches them whole; their diff hunks still go, redacted.
 
 Anything outside the workspace (a read, a write, or a command run there) also needs your yes in every mode.
 

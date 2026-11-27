@@ -22,6 +22,7 @@ import re
 import warnings
 from dataclasses import dataclass, field
 
+from critique_bot import redaction
 from critique_bot.indexing import symbols as _symbols
 from critique_bot.indexing.symbols import CONTAINER_KINDS, Symbol
 
@@ -491,7 +492,44 @@ def _config_strings(text: str, language: str, rel: str) -> list[tuple[int, str, 
 
 
 def parse_text(text: str, language: str, rel: str = "") -> Facts:
-    """Everything the index stores for one file."""
+    """Everything the index stores for one file. String literals that look secret are left out."""
+    facts = _parse_text(text, language, rel)
+    if facts.strings:
+        facts.strings = scrub_strings(facts.strings, text, rel)
+    return facts
+
+
+def secret_literal(value: str, line: str = "") -> bool:
+    """True when ``value`` looks like a secret: redaction hides it by its format, or hides it in
+    ``line`` (the source line it was assigned on: ``DB_PASSWORD = "..."``)."""
+    if not value:
+        return False
+    if redaction.redact_secrets(value)[0] != value:
+        return True
+    if line and value in line:
+        return value not in redaction.redact_secrets(line)[0]
+    return False
+
+
+def scrub_strings(strings: list, text: str, rel: str = "") -> list:
+    """``strings`` without the literals of a secret file, and without secret-looking literals.
+
+    find_strings and locate hand literals to the model without the key they were assigned to,
+    so the redaction that read_files applies to the whole line would miss them (SF-6).
+    """
+    if rel and redaction.sensitive_file(rel):
+        return []
+    lines = text.split("\n")
+    out = []
+    for item in strings:
+        line_no, value = item[0], item[2]
+        row = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+        if not secret_literal(value, row):
+            out.append(item)
+    return out
+
+
+def _parse_text(text: str, language: str, rel: str = "") -> Facts:
     facts = Facts(language)
     if language == "python":
         try:

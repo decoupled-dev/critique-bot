@@ -646,12 +646,33 @@ def find_strings(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
             if (hit.path, hit.line) in seen:
                 continue
             seen.add((hit.path, hit.line))
+            if _assigned_secret(ctx, hit):
+                continue
             extra = f" tag={hit.tag}" if hit.tag and hit.tag != hit.value else ""
             where = f" in {hit.container}" if hit.container else ""
             lines.append(f"{hit.path}:{hit.line} {hit.kind}{extra}{where}: \"{hit.value[:100]}\" ({int(hit.score * 100)}%)")
             if len(lines) >= limit:
                 break
-        return _out(dbs, lines, ctx, f"no string, log message, tag or key like {text[:60]!r} in the index")
+        # The query is not echoed: it may be the secret a hit was withheld for.
+        return _out(dbs, lines, ctx, "no string, log message, tag or key like that in the index")
+
+
+def _assigned_secret(ctx: Any, hit: Any) -> bool:
+    """The literal is assigned to a secret-looking name on its line now (``DB_PASSWORD = "..."``).
+
+    Checked against the file as it is, for an index built before such literals were left out.
+    """
+    from critique_bot.indexing.facts import secret_literal
+
+    try:
+        path = (Path(ctx.workspace) / hit.path).resolve()
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for number, row in enumerate(handle, start=1):
+                if number == hit.line:
+                    return secret_literal(hit.value, row)
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def locate(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
