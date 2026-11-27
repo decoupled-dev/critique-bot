@@ -36,7 +36,8 @@ import json
 import os
 import queue
 import re
-import subprocess  # nosec B404 - starting the MCP servers the user configured; argv only
+# Starting the MCP servers the user configured; argv only.
+import subprocess  # nosec B404
 import tempfile
 import threading
 import time
@@ -77,10 +78,10 @@ class McpServer:
     #: "stdio" or "http".
     transport: str
     command: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict, repr=False)
     cwd: str = ""
     url: str = ""
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
     timeout_s: float = DEFAULT_TIMEOUT_S
     read_only_tools: tuple[str, ...] = ()
     scope: str = "user"
@@ -173,7 +174,8 @@ class _StdioTransport:
         if not cwd.is_absolute():
             cwd = workspace / cwd
         try:
-            self.proc = subprocess.Popen(  # nosec B603 - argv list, shell=False; a server the user configured
+            # Argv list, shell=False; a server the user configured.
+            self.proc = subprocess.Popen(  # nosec B603
                 server.command,
                 cwd=str(cwd),
                 env=runner.argv_env(server.env),

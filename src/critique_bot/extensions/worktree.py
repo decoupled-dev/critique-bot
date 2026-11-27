@@ -8,7 +8,6 @@ it changed on top of that base, as a patch the coordinating agent applies (or no
 from __future__ import annotations
 
 import shutil
-import subprocess  # nosec B404 - fixed git argv lists
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,11 +79,3 @@ def create(workspace: Path, parent: Path) -> Worktree:
         raise
     return Worktree(top, path, base)
 
-
-def is_git_repo(path: Path) -> bool:
-    try:
-        return subprocess.run(  # nosec B603 B607 - fixed argv
-            ["git", "rev-parse", "--is-inside-work-tree"], cwd=str(path), capture_output=True, text=True, timeout=10
-        ).stdout.strip() == "true"
-    except (OSError, subprocess.SubprocessError):
-        return False

@@ -1798,11 +1798,20 @@ def _guard_target(ctx: ToolContext, path: Path, raw: str) -> str:
 
 
 def _protected_paths(ctx: ToolContext) -> list[Path]:
-    """crit's settings, skills, and the config file named in them: the model may not rewrite its own rules."""
+    """crit's settings, skills, extension files, and the config file named in them: the model may not
+    rewrite its own rules."""
     from critique_bot.project_home import legacy_project_dir, project_dir
+
+    from critique_bot.config import crit_home
 
     own = project_dir(ctx.workspace, migrate=False)
     out = [own / "settings.json", own / "skills"]
+    # Extension files (tools, agents, commands, hooks, MCP servers) and the approvals of them,
+    # in the project and in ~/.crit: a model that wrote one could give itself a new power.
+    extension_names = ("tools", "agents", "commands", "hooks.toml", "hooks.json", "mcp.json")
+    out += [own / name for name in extension_names]
+    user = crit_home()
+    out += [user / name for name in (*extension_names, "trust.json", "mcp-lock.json")]
     # A leftover .bot folder from 1.0.x is protected the same way.
     legacy = legacy_project_dir(ctx.workspace)
     out += [legacy / "settings.json", legacy / "skills"]

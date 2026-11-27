@@ -125,6 +125,16 @@ class TrustTests(TempProject):
         self.assertFalse(found.hooks)
         self.assertEqual(sum("crit trust" in note for note in found.notes), 2)
 
+    def test_the_model_cannot_write_extension_files(self) -> None:
+        from critique_bot import agent_tools
+
+        context = tool_api.ToolContext(workspace=self.root, state=tool_api.TaskState())
+        for target in (".crit/tools/x.json", ".crit/hooks.json", ".crit/mcp.json", ".crit/agents/a.md",
+                       ".crit/commands/c.md", "../crit-home/tools/y.json", "../crit-home/trust.json"):
+            result = agent_tools.execute("write_files", {"path": target, "contents": "{}"}, context)
+            self.assertFalse(result["ok"], target)
+            self.assertIn("crit's own settings", result["error"])
+
     def test_trust_command(self) -> None:
         from critique_bot import extensions_cmd
 

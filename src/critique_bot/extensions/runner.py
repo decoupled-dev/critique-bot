@@ -10,7 +10,8 @@ bounded output, and the whole process tree killed on timeout or cancel.
 from __future__ import annotations
 
 import os
-import subprocess  # nosec B404 - running the user's tool is the point; argv only, never a shell
+# Running the user's tool is the point; argv only, never a shell.
+import subprocess  # nosec B404
 import threading
 import time
 from dataclasses import dataclass
@@ -84,7 +85,8 @@ def _default_run(
 ) -> ArgvResult:
     started = time.monotonic()
     try:
-        proc = subprocess.Popen(  # nosec B603 - argv list, shell=False; a manifest the user approved
+        # Argv list, shell=False; a manifest the user approved.
+        proc = subprocess.Popen(  # nosec B603
             argv,
             cwd=str(cwd),
             env=env,
