@@ -1,0 +1,13 @@
+{
+  "prompt": "Our API client is supposed to cache responses for 60 seconds, but the metrics show a cache miss and a new network request for nearly every call, even when the same URL is requested twice within a second. Find the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*ttl\\.js)(?=.*isFresh)",
+  "reference_answer": "lib/ttl.js, isFresh: it compares elapsed milliseconds with a ttl in seconds, so entries go stale after 60 ms; it should compare with ttl * 1000.",
+  "fault": {"file": "lib/ttl.js", "function": "isFresh"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "javascript", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

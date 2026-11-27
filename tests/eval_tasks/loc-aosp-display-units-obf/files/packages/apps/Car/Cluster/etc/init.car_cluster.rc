@@ -1,0 +1,6 @@
+# Units follow the market of the vehicle: imperial for US builds.
+on property:ro.boot.vehicle.market=us
+    setprop persist.vendor.car.display_units imperial
+
+on property:ro.boot.vehicle.market=eu
+    setprop persist.vendor.car.display_units metric

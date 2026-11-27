@@ -1,0 +1,13 @@
+{
+  "prompt": "On US builds the instrument cluster keeps showing km/h and km. The init script sets the unit property as intended: adb shell getprop persist.vendor.car.display_units prints imperial, and the cluster log says\nI ClusterUnits: display units from property: metric\nFind the fault in packages/apps/Car/Cluster. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*DisplayUnitsReader\\.java)(?=.*(?:readUnits|KEY_UNITS|display_unit\\b))",
+  "reference_answer": "packages/apps/Car/Cluster/src/com/android/car/cluster/DisplayUnitsReader.java, readUnits: it reads persist.vendor.car.display_unit (KEY_UNITS) without the final s, while the init script sets persist.vendor.car.display_units, so it always gets the default metric.",
+  "fault": {"file": "packages/apps/Car/Cluster/src/com/android/car/cluster/DisplayUnitsReader.java", "function": "readUnits"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "aosp", "java", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

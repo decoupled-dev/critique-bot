@@ -1,0 +1,13 @@
+{
+  "prompt": "tablecat shows a CSV row like 1,\"Smith, John\",42 as four columns (1 | \"Smith | John\" | 42) instead of three (1 | Smith, John | 42). Rows without quoted commas render correctly. Find the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*parse\\.rs)(?=.*split_fields)",
+  "reference_answer": "src/parse.rs, split_fields: it splits on every comma, including commas inside double quotes, before unquoting.",
+  "fault": {"file": "src/parse.rs", "function": "split_fields"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "rust", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

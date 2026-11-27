@@ -1,0 +1,13 @@
+{
+  "prompt": "On the climate bar, choosing the highest seat-heater setting (level 3) for the driver seat only heats at level 2. Levels 1 and 2 work. The log shows:\nI SeatHeatVM: seat heat request level=3 zone=DRIVER\nD SeatProp: write SEAT_HEAT level=2 zone=1\nFind the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*SeatHeatController\\.kt)(?=.*clampLevel)",
+  "reference_answer": "app/src/main/java/com/example/seat/SeatHeatController.kt, clampLevel: it clamps to MAX_LEVEL - 1 (2) instead of MAX_LEVEL (3).",
+  "fault": {"file": "app/src/main/java/com/example/seat/SeatHeatController.kt", "function": "clampLevel"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "kotlin", "android", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

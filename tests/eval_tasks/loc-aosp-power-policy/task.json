@@ -1,0 +1,22 @@
+{
+  "prompt": "After an OTA update, CarService crashes right after boot on head units that have a Wi-Fi module, and the car comes up with no audio or display. Head units without Wi-Fi boot fine. The crash from logcat:\nE AndroidRuntime: FATAL EXCEPTION: CarServiceMain\nE AndroidRuntime: Process: com.android.car, PID: 1432\nE AndroidRuntime: java.lang.NullPointerException: Attempt to invoke virtual method 'void com.android.car.power.ComponentState.set(boolean)' on a null object reference\nE AndroidRuntime: \tat com.android.car.power.PowerComponentHandler.setState(PowerComponentHandler.java:42)\nE AndroidRuntime: \tat com.android.car.power.PowerComponentHandler.applyPolicy(PowerComponentHandler.java:34)\nE AndroidRuntime: \tat com.android.car.power.CarPowerManagementService.applyPowerPolicy(CarPowerManagementService.java:25)\nE AndroidRuntime: \tat com.android.car.power.CarPowerManagementService.onBootCompleted(CarPowerManagementService.java:16)\nFind the fault in packages/services/Car. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*PowerComponentHandler\\.java)(?=.*setState)",
+  "reference_answer": "packages/services/Car/service/src/com/android/car/power/PowerComponentHandler.java, setState: it dereferences the state of a component that was never registered (WIFI is in the all_on policy but not registered), so get() returns null.",
+  "fault": {
+    "file": "packages/services/Car/service/src/com/android/car/power/PowerComponentHandler.java",
+    "function": "setState"
+  },
+  "requires": [],
+  "timeout": 600,
+  "tags": [
+    "localization",
+    "aosp",
+    "java",
+    "logs",
+    "quick"
+  ],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

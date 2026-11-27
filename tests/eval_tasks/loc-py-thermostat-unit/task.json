@@ -1,0 +1,13 @@
+{
+  "prompt": "Bug report from the climate team: a driver sets the cabin temperature display to Celsius in settings, and it works until the head unit reboots. After every reboot the climate bar shows Fahrenheit again, although the settings file on disk still holds the Celsius choice. Find the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*settings_store\\.py)(?=.*load_unit)",
+  "reference_answer": "thermo/settings_store.py, load_unit: it reads the key temperature_unit while save_unit writes temp_unit, so it always falls back to the default F.",
+  "fault": {"file": "thermo/settings_store.py", "function": "load_unit"},
+  "requires": ["python3"],
+  "timeout": 600,
+  "tags": ["localization", "python", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

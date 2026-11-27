@@ -1,0 +1,10 @@
+filegroup {
+    name: "car-service-power-srcs",
+    srcs: ["service/src/com/android/car/power/**/*.java"],
+}
+
+android_app {
+    name: "CarServicePower",
+    srcs: [":car-service-power-srcs"],
+    static_libs: ["android.car.power-policy"],
+}
