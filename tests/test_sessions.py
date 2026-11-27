@@ -214,7 +214,7 @@ class EngineLogTests(_Base):
             _read("r2", "note.txt"),
         ]
         slog = self.track(SessionLog.create(self.sessions, title="t"))
-        killed = mock.patch.object(agent, "_execute", side_effect=SystemExit("killed"))
+        killed = mock.patch("critique_bot.engine.dispatch._execute", side_effect=SystemExit("killed"))
         real = agent._execute
         calls = {"n": 0}
 
@@ -224,7 +224,7 @@ class EngineLogTests(_Base):
                 raise SystemExit("killed")  # a hard kill while the second task's tool runs
             return real(*args, **kwargs)
 
-        killed = mock.patch.object(agent, "_execute", side_effect=execute)
+        killed = mock.patch("critique_bot.engine.dispatch._execute", side_effect=execute)
         with killed, self.assertRaises(SystemExit):
             self.run_loop(self.session(), slog, "Read other.txt", tasks=["Now read note.txt"])
         with open(slog.folder / "events.jsonl", "a", encoding="utf-8") as handle:

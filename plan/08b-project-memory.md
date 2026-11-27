@@ -217,8 +217,8 @@ Left:
 - Work item 10 and every target that needs a model: the eval runs on 3 repos (`plan/results/08b/`),
   turns/tokens deltas, acc@5, wrong-hunch pass@1, the KV primer time-to-first-token.
 - **Stage 5:** call `memory.primer.SlotPrimer.ensure` at session start (the engine must own the session,
-  its server address and slot); carry the two `memory_recall` calls into the split engine; the
-  agent-file `memory:` key.
+  its server address and slot); the agent-file `memory:` key. (The two `memory_recall` calls
+  now sit in `engine/loop.py`, after the Stage 5 merge.)
 - Stage 7: feed negative episodes to the rejected-patch memory.
 - Optional: TUI `/memory`, embeddings for episode search (Stage 9.5), the per-repo LoRA research option.
 

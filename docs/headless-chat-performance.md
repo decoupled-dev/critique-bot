@@ -2,7 +2,7 @@
 
 In headless mode only, drop images, fonts, media, motion, and browser background work so Edge does the minimum needed to send a prompt and read the reply. The reply is already read from the DOM; the renderer stays, because the page and crit both need layout. A visible window is unchanged.
 
-Only when crit launches headless (`headed` is false). `--headed`, the first-login window, and the Cloudflare retry in `src/critique_bot/agent.py` stay a normal browser, because those runs need images and a real compositor.
+Only when crit launches headless (`headed` is false). `--headed`, the first-login window, and the Cloudflare retry in `src/critique_bot/engine/runs.py` stay a normal browser, because those runs need images and a real compositor.
 
 Token generation time does not change. This cuts what Edge downloads and paints while it waits.
 

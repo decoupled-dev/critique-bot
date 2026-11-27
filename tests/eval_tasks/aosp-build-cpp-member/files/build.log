@@ -1,0 +1,8 @@
+[ 61% 5120/8420] //hardware/google/car/fan:libcarfanhal clang++ fan_hal.cpp
+FAILED: out/soong/.intermediates/hardware/google/car/fan/libcarfanhal/android_vendor_x86_64_shared/obj/hardware/google/car/fan/fan_hal.o
+PWD=/proc/self/cwd prebuilts/clang/host/linux-x86/clang-r536225/bin/clang++ -c -Ihardware/google/car/fan ... hardware/google/car/fan/fan_hal.cpp
+hardware/google/car/fan/fan_hal.cpp:42:9: error: no member named 'setLevel' in 'android::car::FanControl'
+   42 |     fan.setLevel(level);
+      |     ~~~ ^
+1 error generated.
+16:55:40 ninja failed with: exit status 1

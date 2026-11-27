@@ -10,29 +10,28 @@ wires the concrete pieces together.
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
              eval_harness, doctor                             (measuring, checking the model server)
-             agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
-             audit_cmd, sandbox_doctor                    (crit audit, crit doctor sandbox)
-             memory_cmd                                   (crit memory)
-3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
-             sessions_cmd                                 (crit sessions / resume / fork)
-3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format,
+             agent_ui, agent_acp, welcome, setup_wizard       (terminal and IDE front ends)
+             server, api_client                               (crit serve; crit attach, crit run)
+             audit_cmd, sandbox_doctor, sessions_cmd, extensions_cmd, config_cmd, installer,
+             memory_cmd                                       (crit memory)
+3  engine    engine/ (the loop and the Engine API, below), ui_api (the UI interface),
              session_log (event log, projection, resume/fork), compaction (context pressure),
-             prompt_build (byte-stable prefix, memory files, change notes),
-             memory_recall (project memory: the hunch at task start, the episode at task end)
+             prompt_build (byte-stable prefix, memory files, change notes), openai_format,
+             memory_recall (project memory: the hunch at task start, the episode at task end),
+             agent (compatibility names for older callers; apps may not import it)
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit (match ladder, atomic writes), agent_patch (unified/V4A patches),
              edit_guard (parse check and lint after each write), tool_output (result shaping),
              env_snapshot (first-turn environment note), agent_rules, agent_build, code_index,
-             workspace, project_home,
-             file_catalog (cached file lists, repo trees), big_file (windowed reads),
-             log_tools (the log tool), soong (Android.bp module lookup, lunch targets),
+             workspace, project_home, file_catalog (cached file lists, repo trees), big_file
+             (windowed reads), log_tools (the log tool), soong (Android.bp module lookup),
              sandbox/ (OS sandbox for commands: linux bwrap, macos sandbox-exec, windows),
-             egress_proxy (the only network path out of the sandbox), taint (untrusted content)
-             log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
+             egress_proxy (the only network path out of the sandbox), taint (untrusted content),
              extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
              indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
              memory/ (project memory: memory.db, cards, change patterns, episodes, conventions,
                       the memory tool, locate's memory retrievers, the KV primer; docs/memory.md)
+             packs/ (domain packs, loaded through extensions: aosp triage/adb/aosp_build; docs/packs/aosp.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              tool_parse (fallback tool-call parser), profiles (model profiles, server presets),
@@ -41,20 +40,87 @@ wires the concrete pieces together.
 ```
 
 A module imports only from its own layer and the layers below. `tests/test_layers.py`
-checks every import, lazy ones included, and fails on a new crossing. Add a new module to
-its `LAYERS` table.
+checks every import, lazy ones included, and fails on a new crossing; a package counts as
+one module. Add a new module to its `LAYERS` table.
 
 ## Interfaces
 
 | Layer | Interface | What goes through it |
 | --- | --- | --- |
-| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens`, `model_profile` / `tool_mode` / `native_tools_ok` (the model profile and native vs prompted tool calls), `server_info` / `probe_tool_turn` / `record_probe` (for `crit doctor model`) |
-| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
+| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`, and for a model API session `history` / `replace_history`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens`, `model_profile` / `tool_mode` / `native_tools_ok` (the model profile and native vs prompted tool calls), `server_info` / `probe_tool_turn` / `record_probe` (for `crit doctor model`) |
+| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs one process-wide, and `ToolContext.registry` gives a session its own. `shape_output` (every built-in result: head and tail within the budget, the full text under `.crit/cache/out/`), `environment_snapshot` (the first-turn environment note). Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | tools → OS | `sandbox.run` | Every command the agent runs: `ShellSession` passes its `sandbox.Policy` (set by `agent_shell.use_sandbox`) to `sandbox.run`, which wraps the argv for the platform and returns a `Popen`. The engine sees only `Permission.contained` (auto mode runs contained commands unasked) and `taint.check` around its permission decision. |
-| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens` |
-| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. `shape_output` (every built-in result: head and tail within the budget, the full text under `.crit/cache/out/`), `environment_snapshot` (the first-turn environment note). Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
-| engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
-| engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |
+| engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`, `take_session_change`). `engine.use_ui(...)` installs one for the process; the Engine gives each session thread its own (`ui.use_thread_ui`). |
+| engine → apps | `engine` (the package's `__init__`) | `Engine` / `SessionHandle` (below), `drive_ui`, `run_agent`, `run_read_only_task` + `AnswerContract` (an app gives a task, and for a read-only task the contract its final answer must meet), `run_agent_loop`, `use_ui` / `current_ui`, and the small pieces front ends show (`ToolCall`, `activity`, `hide_tool_markup`, `READ_ONLY_TOOLS`). Apps may also use `ui_api` and `session_log`; every other engine module is private to the engine and the routing layer. |
+| apps → network | `server` (`crit serve`) | The Engine API over HTTP and server-sent events, specified in [`api/openapi.yaml`](api/openapi.yaml); see [server.md](server.md). |
+
+## The engine package
+
+`critique_bot/engine/` was `agent.py` (4,700 lines) until Stage 5. No module in it is over
+800 lines.
+
+| Module | What it holds |
+| --- | --- |
+| `api.py` | `Engine` (create, open, fork and list one project's sessions), `SessionHandle` (`send`, `events(since_seq)`, `answer`, `cancel`, `set_mode`, `undo`, `close`), `EventUI`, `drive_ui` |
+| `runs.py` | `run_agent`: one whole session (open the backend, set the session up, run the loop, save the transcript) |
+| `loop.py` | `run_agent_loop`: tasks in, one task run each; the first message (task, repo map, skills, notes, first-turn context); task-end bookkeeping |
+| `task.py` | `_TaskRun`: the turn loop of one task (send, read the reply, decide), with three mixins: |
+| `dispatch.py` | running a reply's tool calls: permission, approval, rules, taint, parallel reads, repeat and loop detection |
+| `modes.py` | ask / edits / auto / plan, plan review, mode change notes |
+| `stop_rules.py` | when a task stops: finish checks, the project check, refusals, budgets |
+| `contracts.py` | `AnswerContract`, `run_read_only_task` (the review's read-only session) |
+| `delegate.py` | helper chats and file-defined agents (`delegate`), one pool per session |
+| `chat.py` | `_Chat`: the conversation, retries, size and health; **the engine's message list** for a model API session |
+| `context.py` | the Stage 3 hooks: logged tool calls, compaction at turn boundaries, resume, session switch, meta |
+| `prompts.py` | `prompts/agent*.txt` sections, tool formats, the task message, skills |
+| `parse.py`, `json_repair.py`, `replies.py` | reading a reply: tool calls (tags or Responses items), lenient JSON, finish codes, refusals, questions, plans |
+| `setup.py` | the tool format and set (apply_patch only for patch models), extensions, the shell, the role, profile values as loop settings |
+| `ui.py`, `runtime.py` | what a running session is connected to: its UI (process-wide or the session thread's own), its native tool list and extensions |
+| `text.py` | small helpers |
+
+`session_log`, `compaction` and `prompt_build` stay sibling modules in the engine layer
+(Stage 3), because `crit sessions` (an app) reads `session_log`, and the other two are
+self-contained; the engine package imports them. `agent.py` keeps the names older callers
+and tests import (90 lines); apps cannot import it.
+
+### The Engine API
+
+```python
+engine = Engine(config, home)                      # one project, one model configuration
+session = engine.create_session(mode="ask")        # the session log exists at once: session.id
+session.send("fix the failing test")               # starts the task on the session's thread
+for event in session.events(since_seq=0):          # replays the log, then follows it live
+    if event["type"] == "request":                 # an approval, a question, a plan review
+        session.answer(event["id"], {"decision": "yes"})
+    if event["type"] == "task_finished":
+        break
+engine.open_session(session.id)                    # resume (after a crash too)
+engine.fork_session(session.id, at_seq=12)
+```
+
+A `SessionHandle` runs `run_agent` on a worker thread whose UI is an `EventUI`. Every UI
+call becomes a session-log event (`notice`, `assistant_text`; tool calls are already
+`tool_started` / `tool_result`), and `approve`, `ask_question` and `review_plan` become a
+`request` event with an id that blocks the task until `answer(request_id, reply)`; only the
+first answer counts (`RequestClosed` after it). Because events are the log's, with its
+`seq`, a client that reconnects asks for `events(since_seq=N)` and misses nothing, and a
+session whose process died is resumed by `open_session` from the same log.
+
+`drive_ui(events, front, answer=..., send=...)` is the other direction: it shows a session
+on any front end with `NullUI`'s methods and answers the session's requests through it.
+`crit attach` uses it over HTTP; an in-process front end uses it on a `SessionHandle`.
+
+### Who uses what
+
+| Client | How it reaches the engine |
+| --- | --- |
+| `crit` in a terminal (TUI) | `engine.run_agent` in process, with the terminal installed as the UI (`engine.use_ui(agent_ui)`); the same run a `SessionHandle` drives |
+| `crit serve` + `crit attach` | `Engine` / `SessionHandle` behind HTTP; `drive_ui` over the event stream |
+| `crit run [--agent] [--json]` | `Engine.create_session(unattended=True)`, events printed as JSON lines (or `--url`: a server's agent run) |
+| `POST /v1/agents/{name}/runs` | a headless session with the file-defined agent as the role |
+| ACP (`crit --acp`) | `run_agent` with `agent_acp` as the UI; `session/load` resumes a logged session (the ACP session id is the log id) |
+| `crit review` (agent review) | `engine.run_read_only_task` with `review_agent.CONTRACT` |
+| queue / worker | unchanged one-shot reviews (`review_session`); CI can instead submit to a `crit serve` (`crit run --url ... --agent code-reviewer`) |
 
 ## The web chat is a removable module
 
@@ -80,17 +146,17 @@ Every session is an append-only event log in `.crit/sessions/<id>/` (`session_lo
 `_LoggedHooks` wraps a task run's hooks for `tool_started` / `tool_result`, `_approved`
 writes `permission_decision`, and the task loop writes `user_message`, `checkpoint`,
 `mode_changed`, `role_changed` and `task_finished`. `history_from_events` rebuilds a model
-API session's message list; resume and fork use it, and `LocalModelSession.replace_history`
-installs it. A model API session (`_context_window` in the loop settings and a session with
+API session's message list; resume and fork use it, and the engine installs it
+(`_Chat.set_history`). A model API session (`_context_window` in the loop settings and a session with
 `replace_history`) gets a `compaction.Compactor` at turn boundaries instead of the web
 chat's size/turn/time rotation. `prompt_build` owns the prefix (`seed_message`), memory
 files, the first turn's `SESSION` block and mid-session change notes.
 
-What Stage 5 finishes: the loop still keeps the live history in the session object
-(`LocalModelSession.messages`, or the web page) and logs it; the projection is used to
-rebuild it on resume and checked against it in tests. Making `history_from_events` the
-only source (the engine owns the message list and the session becomes a stateless
-request function), and ACP `session/load`, move with the `agent.py` split.
+Stage 5 made the engine the owner of a model API session's conversation: `_Chat.messages`
+is installed in the session (`replace_history`) before every request and grows by what the
+exchange appended; compaction, resume and a new chat replace it through the engine. The
+web chat's conversation stays on its page (there is no list to own); resume gives it a
+summary instead.
 
 ## Project memory (Stage 8b)
 
@@ -98,7 +164,7 @@ request function), and ACP `session/load`, move with the `agent.py` split.
 derived into it: cards from the code index, recipes and hot spots from its git history,
 episodes from a task's event log (passed in as plain events, so the package does not import
 the engine), conventions, and the learned glossary. The engine reaches it through two calls
-in the task loop, both in `memory_recall` and both safe to fail:
+in the task loop (`engine/loop.py`), both in `memory_recall` and both safe to fail:
 
 - `memory_recall.begin_task(workspace, index_path, task, options, slog)` returns the hunch
   block, which the loop appends to the task's message (never the prefix), and writes a
@@ -117,8 +183,10 @@ retrievers. `crit memory` (`memory_cmd`, apps layer) is the command line.
   session (`tests/test_review_agent.py` and `tests/test_tool_api.py` use scripted ones).
 - **tools:** `tests/test_tool_api.py` checks the specs against the implementation and
   runs the engine on a fake `ToolRegistry`.
-- **engine:** `run_agent_loop` with a scripted session, `NullUI`, and real or fake tools.
-- **front ends:** install the UI (`agent.use_ui(agent_ui)`) and drive the loop, as
+- **engine:** `run_agent_loop` with a scripted session, `NullUI`, and real or fake tools;
+  the Engine API with a fake provider (`tests/test_engine.py`).
+- **server:** `tests/test_server.py` against `docs/api/openapi.yaml`, plus a killed server.
+- **front ends:** install the UI (`engine.use_ui(agent_ui)`) and drive the loop, as
   `tests/test_agent_ui.py` does.
 
 ## Where standard protocols plug in
@@ -147,10 +215,16 @@ gets one registry, plus `run_hook` for the hooks that sit in the loop (`user_pro
 `task_finished`, `pre_compact`). Every extension process starts in `extensions.runner.run_argv`,
 which the sandbox replaces. File-defined agents are profiles: `/agent` (alias `/role`)
 seeds the main chat with one, and `delegate(agent=...)` runs one in a helper chat
-(`agent_helpers`), with its allowlist enforced through `ToolRegistry.only` and a git
+(`engine/delegate.py`), with its allowlist enforced through `ToolRegistry.only` and a git
 worktree for an agent that writes.
+
+Domain packs (`packs/`, also tools layer) are built-in bundles that `load_session` adds when the
+settings name them: their manifest tools (which may name Python handlers in the pack) and agents
+load like the user's own, so the engine still sees one registry.
 - **ACP.** `crit --acp` already runs crit as an Agent Client Protocol agent
   ([acp.md](acp.md)); `agent_acp` is one more front end behind `ui_api`.
+- **ACP.** `crit --acp` runs crit as an Agent Client Protocol agent ([acp.md](acp.md));
+  `agent_acp` is one more front end behind `ui_api`, and `session/load` resumes a logged session.
 
 ## Writes, edits and tool results (Stage 2)
 

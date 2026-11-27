@@ -20,7 +20,8 @@ You are a careful reviewer ... (the agent's instructions)
 ```
 
 Where they come from, later ones winning on a name clash: crit's built-in agents
-(``critique_bot/agents/*.md``, one per former role), ``~/.crit/agents/*.md``, then the
+(``critique_bot/agents/*.md``, one per former role), the active packs' agents
+(``critique_bot/packs/<pack>/agents/*.md``), ``~/.crit/agents/*.md``, then the
 project's ``.crit/agents/*.md``. A project agent is a prompt, so it loads without
 approval, but until ``crit trust`` approves it its ``mode`` cannot be looser than ``ask``.
 
@@ -206,10 +207,14 @@ def load_agent(path: Path, *, scope: str = "user") -> AgentDef:
 
 
 def load_agents(root: Path | None) -> tuple[dict[str, AgentDef], list[str]]:
-    """Every agent by name (built-in, then user, then project) and the problems found."""
+    """Every agent by name (built-in, active packs, then user, then project) and the problems found."""
     agents: dict[str, AgentDef] = {}
     problems: list[str] = []
     files = [trust.ExtFile("agents", "builtin", path) for path in sorted(builtin_dir().glob("*.md"))]
+    from critique_bot import packs
+
+    for folder in packs.agent_dirs():  # the active domain packs' agents (built-in content)
+        files += [trust.ExtFile("agents", "pack", path) for path in sorted(folder.glob("*.md"))]
     files += trust.discover(root, ["agents"])
     for item in files:
         try:

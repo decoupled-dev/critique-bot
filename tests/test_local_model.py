@@ -466,7 +466,7 @@ class AgentLoopOnLocalModelTests(unittest.TestCase):
         outcome: list[str] = []
         with open_provider(_config(self.server.url)) as provider:
             session = provider.session()
-            with unittest.mock.patch("critique_bot.agent._sleep", lambda _s: None):
+            with unittest.mock.patch("critique_bot.engine.chat._sleep", lambda _s: None):
                 run_agent_loop(
                     session,
                     workspace=self.root,

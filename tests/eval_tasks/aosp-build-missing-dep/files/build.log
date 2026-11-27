@@ -1,0 +1,16 @@
+[ 12% 1022/8420] //frameworks/hvac-common:car-hvac-common javac [common]
+[ 40% 3377/8420] //packages/apps/CarHvac:CarHvacApp javac [common]
+FAILED: out/soong/.intermediates/packages/apps/CarHvac/CarHvacApp/android_common/javac/CarHvacApp.jar
+out/soong/host/linux-x86/bin/soong_javac_wrapper ... (javac command line elided)
+packages/apps/CarHvac/src/com/android/car/hvac/FanPanel.java:3: error: package com.android.car.hvac.common does not exist
+import com.android.car.hvac.common.FanLevels;
+                                  ^
+packages/apps/CarHvac/src/com/android/car/hvac/FanPanel.java:7: error: cannot find symbol
+        return Math.min(level, FanLevels.MAX);
+                               ^
+  symbol:   variable FanLevels
+  location: class FanPanel
+2 errors
+16:02:11 ninja failed with: exit status 1
+
+#### failed to build some targets (02:41 (mm:ss)) ####

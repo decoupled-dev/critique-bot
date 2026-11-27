@@ -155,7 +155,7 @@ class HandshakeTests(_Base):
     def test_initialize_reports_capabilities_and_no_sign_in(self) -> None:
         result = self.client.result(self.client.request("initialize", protocolVersion=1))["result"]
         self.assertEqual(result["authMethods"], [])
-        self.assertFalse(result["agentCapabilities"]["loadSession"])
+        self.assertTrue(result["agentCapabilities"]["loadSession"])
         self.assertEqual(result["agentInfo"]["name"], "crit")
 
     def test_session_new_is_answered_once_the_agent_is_ready(self) -> None:
@@ -181,12 +181,51 @@ class HandshakeTests(_Base):
         self.assertEqual(reply["error"]["code"], agent_acp.INVALID_PARAMS)
 
     def test_unknown_methods_get_method_not_found(self) -> None:
-        reply = self.client.result(self.client.request("session/load", sessionId="x", cwd=str(self.root)))
+        reply = self.client.result(self.client.request("session/teleport", sessionId="x", cwd=str(self.root)))
         self.assertEqual(reply["error"]["code"], agent_acp.METHOD_NOT_FOUND)
 
     def test_closing_before_a_session_returns_none(self) -> None:
         self.client.close()
         self.assertIsNone(agent_acp.wait_for_session())
+
+
+class LoadSessionTests(_Base):
+    def _logged(self) -> tuple[object, str]:
+        from unittest.mock import patch
+
+        from critique_bot import session_log
+        from critique_bot.code_index import IndexStats
+        from critique_bot.project_home import init_bot_home
+
+        with patch("critique_bot.project_home.rebuild_index", return_value=IndexStats(files=0, symbols=0)):
+            home = init_bot_home(self.root)
+        slog = session_log.SessionLog.create(home.sessions_dir, title="earlier")
+        slog.write("user_message", text="what is in note.txt?", task=True)
+        slog.write("assistant_text", text="It says one.")
+        slog.write("task_finished", code="COMPLETED", task="what is in note.txt?")
+        slog.close(status="COMPLETED")
+        return home, slog.id
+
+    def test_session_load_resumes_the_log_and_replays_it(self) -> None:
+        home, sid = self._logged()
+        self.client.request("initialize", protocolVersion=1, clientCapabilities={})
+        load = self.client.request("session/load", sessionId=sid, cwd=str(self.root), mcpServers=[])
+        self.assertEqual(agent_acp.wait_for_session(), self.root)
+        self.assertEqual(agent_acp.resume_request(), sid)
+        agent_acp.set_session(home.sessions_dir, sid)  # what run_agent does with the resumed log
+        thread, box = self.run_in_thread(agent_acp.read_message)
+        said = self.client.update("user_message_chunk")["content"]["text"]
+        answered = self.client.update("agent_message_chunk")["content"]["text"]
+        self.assertEqual((said, answered), ("what is in note.txt?", "It says one."))
+        self.assertEqual(self.client.result(load)["result"]["sessionId"], sid)
+        self.client.close()
+        thread.join(5)
+
+    def test_an_unknown_session_is_refused(self) -> None:
+        self._logged()
+        reply = self.client.result(self.client.request("session/load", sessionId="20990101T000000Z-ffff",
+                                                       cwd=str(self.root), mcpServers=[]))
+        self.assertEqual(reply["error"]["code"], agent_acp.INVALID_PARAMS)
 
 
 class ClientRecordTests(_Base):

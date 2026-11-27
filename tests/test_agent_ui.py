@@ -641,9 +641,11 @@ class RunAgentTests(_Base):
     def _run(self, loop, **kwargs):
         from critique_bot import agent
 
-        with patch("critique_bot.model_api.open_provider", return_value=_Provider()), patch.object(
-            agent, "run_agent_loop", loop
-        ), patch.object(agent, "_remove_old_codegraph"), patch.object(agent, "_open_shell_session", return_value=None):
+        with patch("critique_bot.model_api.open_provider", return_value=_Provider()), patch(
+            "critique_bot.engine.loop.run_agent_loop", loop
+        ), patch("critique_bot.engine.setup._remove_old_codegraph"), patch(
+            "critique_bot.engine.setup._open_shell_session", return_value=None
+        ):
             return agent.run_agent(
                 self.config, self.home, "do it", max_rounds=None, output_dir=None, headed=False, **kwargs
             )

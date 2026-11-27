@@ -1,0 +1,13 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+android_app {
+    name: "CarHvacApp",
+    srcs: ["src/**/*.java"],
+    platform_apis: true,
+    certificate: "platform",
+    static_libs: [
+        "androidx.annotation_annotation",
+        "car-hvac-common",
+    ],
+}

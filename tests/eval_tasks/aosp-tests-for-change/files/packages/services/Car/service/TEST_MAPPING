@@ -1,0 +1,13 @@
+{
+  // Tests for every change under service/
+  "auto-presubmit": [
+    {
+      "name": "CarServicePowerUnitTest"
+    }
+  ],
+  "auto-postsubmit": [
+    {
+      "name": "CarServiceStressTest"
+    }
+  ]
+}

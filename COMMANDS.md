@@ -147,6 +147,15 @@ Used only after `crit chat` is running (`You>` prompt).
 
 ## Agent (`crit`)
 
+Serve the engine over HTTP, attach a terminal to it, or run one task headless
+([`docs/server.md`](docs/server.md)):
+
+```bash
+crit serve                                  # 127.0.0.1, a free port; address and token in ~/.crit/
+crit attach                                 # this terminal on the newest open session
+crit run --agent code-reviewer --json "review the last commit"   # events as JSON lines
+```
+
 `crit` with no mode word is the agent (`--mode agent`). Full guide: [`docs/agent.md`](docs/agent.md).
 
 Install it and put `crit` on `PATH` with the setup script (options: [`docs/agent.md`](docs/agent.md#quick-setup-with-the-script)):

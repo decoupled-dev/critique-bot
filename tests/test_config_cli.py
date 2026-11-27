@@ -343,7 +343,7 @@ class FirstRunTests(_Isolated):
             "critique_bot.webchat.browser.needs_visible_login", return_value=False
         ), patch("builtins.input", side_effect=answers), patch(
             "critique_bot.webchat.setup_ui.run_setup", return_value=0
-        ) as setup, patch("critique_bot.agent.run_agent", return_value=0) as run:
+        ) as setup, patch("critique_bot.engine.run_agent", return_value=0) as run:
             code, out, err = _capture(crit_main, ["--repo-dir", str(self.project), "fix the build"])
         return code, (run, setup), out + err
 

@@ -106,9 +106,10 @@ Ollama (`qwen3.6:27b`) and GGUF file names all work.
 | `tool_mode` | `native` (the server's tool calling), `prompted` (the engine's text format; no tools in the request), `auto` (native unless the doctor's cached probe says prompted) |
 | `sampling` | `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`, sent with every request (`local.temperature` wins) |
 | `preserve_thinking` | `true`: keep the model's reasoning on assistant messages in the history (`reasoning_content`); `false` (default): never send it back |
-| `edit_format`, `edit_fallback` | `str_replace`, `whole_file` or `apply_patch` (used by the Stage 2 edit tools) |
+| `edit_format`, `edit_fallback` | `str_replace`, `whole_file` or `apply_patch`. `apply_patch` is offered to the model only when the edit format is `apply_patch` (or `"edit_format": "patch"` in `.crit/settings.json`); no built-in profile sets it |
 | `effective_context` | tokens the model works well within; crit sizes chats to the smaller of this and the server's window (an explicit `local.num_ctx` wins) |
-| `tool_output_cap_tokens`, `shell_timeout_s` | per-model tool limits (used by the Stage 2 tool layer) |
+| `tool_output_cap_tokens`, `shell_timeout_s` | per-model tool limits (used by the Stage 2 tool layer). These, `edit_format` and `masking_penalty` become loop settings; the same key in `.crit/settings.json` wins |
+| `masking_penalty` | `true`: compaction prefers a summary to masking old tool results (thinking-off models, where masking costs more; see [sessions.md](sessions.md)) |
 | `max_tokens` | `max_tokens` when `local.max_tokens` is 0 |
 | `parallel_tool_calls` | sent with native tools when set; `false` for models that over-call |
 | `parsers` | per server, the options for the launch line, e.g. `{"vllm": {"tool_call_parser": "qwen3_coder"}}` |

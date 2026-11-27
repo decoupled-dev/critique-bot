@@ -28,7 +28,7 @@ In both sandboxed modes:
 
 **Escapes.** When a sandboxed command fails because it wrote outside what it may, or the proxy refused a host, crit asks once, naming the exact folder or host: "Allow writes to /opt/sdk for the rest of this session?" A yes holds for this session and the command runs again. crit never offers the home folder itself, `/`, or a masked secret. Nothing is offered while the session is tainted in auto mode. To make it permanent, add the folder to `"sandbox": {"writable": [...]}` in your own settings, or the host to `allowed_hosts`.
 
-**Presets.** `"preset": "aosp"` adds `out/` (also when it is a symlink to another disk), `~/.ccache`, `~/.cache/ccache`, and `~/.cache/bazel`. `"preset": "android"` adds `~/.android/cache` and `~/.android/build-cache`. On Linux, workspace-write also exposes `/dev/bus/usb` so `adb` and `fastboot` see a connected device.
+**Presets.** The [AOSP pack](packs/aosp.md), when on, uses the `aosp` preset unless you name one. `"preset": "aosp"` adds `out/` (also when it is a symlink to another disk), `~/.ccache`, `~/.cache/ccache`, and `~/.cache/bazel`. `"preset": "android"` adds `~/.android/cache` and `~/.android/build-cache`. On Linux, workspace-write also exposes `/dev/bus/usb` so `adb` and `fastboot` see a connected device.
 
 **Platforms.**
 
@@ -52,9 +52,11 @@ A refused request gets `403` with the reason. Every request, allowed or refused,
 
 ## Taint
 
-Willison's "lethal trifecta" is private data, untrusted content, and a way to send data out. crit removes the third leg once the second appears, instead of trusting the model to ignore instructions planted in what it reads. These mark the session **tainted**: a `web_fetch` page, a file read from outside the project, a Jira issue, a device log (the `log` tool on a device, `adb logcat`), and, with `"untrusted_workspace": true`, the project itself (for a third-party repo you just cloned).
+Willison's "lethal trifecta" is private data, untrusted content, and a way to send data out. crit removes the third leg once the second appears, instead of trusting the model to ignore instructions planted in what it reads. These mark the session **tainted**: a `web_fetch` page, a file read from outside the project, a Jira issue, an MCP tool's result, a manifest tool with `taint` set, a device log (the `log` tool on a device, `adb logcat`, the AOSP pack's `adb` and `triage` tools), and, with `"untrusted_workspace": true`, the project itself (for a third-party repo you just cloned).
 
 While tainted **in auto mode**, crit refuses without asking: `web_fetch` and other network calls, network commands and `git push`, and writes or commands outside the project; the egress proxy lets sandboxed commands reach only the model server. In ask and edits modes nothing changes (you see each such step anyway). The status line shows `tainted · restricted`, and `/trust` lifts it. Raising and lifting are both in the audit log.
+
+**Devices.** A tool action that changes a connected device (the AOSP pack's `adb` push, install, uninstall, reboot, settings_put and fastboot flash) asks every time, in every mode, auto included. It asks even with `"confirm_risky": false`, and a saved allow rule cannot cover it.
 
 ## The audit log
 

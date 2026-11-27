@@ -615,10 +615,10 @@ def use_registry(new: ToolRegistry | None) -> ToolRegistry:
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: Any) -> dict[str, Any]:
-    """Run one tool call through the installed registry."""
-    return _registry.execute(name, arguments, ctx)
+    """Run one tool call through the session's registry (``ctx.registry``), else the installed one."""
+    return (getattr(ctx, "registry", None) or _registry).execute(name, arguments, ctx)
 
 
 def permission_for(name: str, arguments: dict[str, Any] | None, ctx: Any) -> Any:
-    """What one tool call needs before it runs, from the installed registry."""
-    return _registry.permission(name, arguments, ctx)
+    """What one tool call needs before it runs, from the session's registry, else the installed one."""
+    return (getattr(ctx, "registry", None) or _registry).permission(name, arguments, ctx)

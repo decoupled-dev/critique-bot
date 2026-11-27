@@ -579,6 +579,9 @@ On Linux and macOS the same lines use `./gradlew`.
 | `syntax_preview` | `false` turns the welcome-screen syntax colors off. ctrl+t on that screen toggles it. |
 | `shell` | Default shell for `run_command`: `auto` (the default: PowerShell 7, then Windows PowerShell 5.1 on Windows; bash, then sh elsewhere), `pwsh`, `powershell`, `cmd`, `bash` (Git Bash on Windows), `sh`, or `zsh`. A shell that is not installed falls back to `auto`. `/shell` changes it for one session. |
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
+| `environment_snapshot` | `false` leaves the environment note (OS, shell, folder, git, languages, test command, tools on PATH, running background jobs) out of the first message. Default on. |
+| `keep_background_jobs` | `true` keeps background jobs a task started running after it ends. By default they are stopped when the task ends (jobs from earlier tasks are left alone). |
+| `edit_format` | `patch` (or `apply_patch`) offers the `apply_patch` tool; otherwise it is left out. A model profile can set it too. |
 | `compact_after_chars` | When the conversation holds about this many characters, crit starts a new conversation in the middle of a task; a new task starts in a new conversation at half of it (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 120000, or `num_ctx × 2` with a local model; values under 10000 are ignored. |
 | `compact_after_turns` | Start a new conversation after this many messages in one conversation (half of it between tasks). Default 30; at least 5. |
 | `compact_after_minutes` | Start a new conversation after it has been open this many minutes. Default 60; at least 5. Web chat only: a local model is compacted by context pressure instead (`compaction_*` keys, see [sessions.md](sessions.md#compaction-model-api-backends)). |

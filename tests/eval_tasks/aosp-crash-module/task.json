@@ -1,0 +1,20 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "The car service process (com.android.car) crashed during boot of our Android Automotive build; logcat.txt has the log. Which source file and line crashed, and which Soong module do I rebuild with m to test a fix? Answer in two lines. Do not change any file and do not run a build.",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*CarPowerManagementService\\.java:412)(?=.*CarServiceUpdatable)",
+  "reference_answer": "packages/services/Car/service/src/com/android/car/power/CarPowerManagementService.java:412 (handleWaitForVhal: mPowerComponentHandler is null).\nRebuild with m CarServiceUpdatable: the file is in filegroup car-service-srcs, which the android_app CarServiceUpdatable uses.",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "crash",
+    "soong"
+  ]
+}

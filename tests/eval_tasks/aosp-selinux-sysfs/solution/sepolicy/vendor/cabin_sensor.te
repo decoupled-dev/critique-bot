@@ -1,0 +1,8 @@
+# Cabin temperature sensor daemon.
+type vendor_cabin_sensor, domain;
+type vendor_cabin_sensor_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(vendor_cabin_sensor)
+allow vendor_cabin_sensor vendor_cabin_sensor_data_file:dir create_dir_perms;
+allow vendor_cabin_sensor vendor_cabin_sensor_data_file:file create_file_perms;
+allow vendor_cabin_sensor sysfs_cabin_temp:file { open read };

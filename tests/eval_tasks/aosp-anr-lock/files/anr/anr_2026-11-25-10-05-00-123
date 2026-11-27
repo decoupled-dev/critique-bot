@@ -1,0 +1,37 @@
+----- pid 5021 at 2026-11-25 10:05:00.123456789+0000 -----
+Cmd line: com.android.car.radio
+Build fingerprint: 'generic/sdk_car_x86_64/emulator_car64_x86_64:16/BP2A.250605.031/13578812:userdebug/dev-keys'
+ABI: 'x86_64'
+
+"main" prio=5 tid=1 Blocked
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x72c2a6b8 self=0x7c3fa5c3b000
+  | sysTid=5021 nice=-10 cgrp=top-app sched=0/0 handle=0x7c40d2e7d4f8
+  at com.android.car.radio.TunerSession.getCurrentStation(TunerSession.java:52)
+  - waiting to lock <0x0a1b2c3d> (a java.lang.Object) held by thread 18
+  at com.android.car.radio.RadioActivity.refreshStationLabel(RadioActivity.java:61)
+  at com.android.car.radio.RadioActivity.onWindowFocusChanged(RadioActivity.java:40)
+  at android.view.View.dispatchWindowFocusChanged(View.java:16100)
+  at android.os.Handler.dispatchMessage(Handler.java:107)
+  at android.os.Looper.loop(Looper.java:317)
+  at android.app.ActivityThread.main(ActivityThread.java:8705)
+
+"RenderThread" prio=7 tid=12 Native
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x13040318 self=0x7c3fa5c4e000
+  native: #00 pc 000c05a8  /apex/com.android.runtime/lib64/bionic/libc.so (__epoll_pwait+8)
+  native: #01 pc 0001a2f4  /system/lib64/libutils.so (android::Looper::pollOnce(int, int*, int*, void**)+212)
+
+"TunerWorker" prio=5 tid=18 Sleeping
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x13041a40 self=0x7c3fa5c51000
+  at java.lang.Thread.sleep(Native method)
+  - sleeping on <0x0e5d4c3b> (a java.lang.Object)
+  at java.lang.Thread.sleep(Thread.java:450)
+  at com.android.car.radio.TunerSession.scanBand(TunerSession.java:95)
+  - locked <0x0a1b2c3d> (a java.lang.Object)
+  at com.android.car.radio.ScanTask.run(ScanTask.java:22)
+  at java.lang.Thread.run(Thread.java:1012)
+
+"Binder:5021_1" prio=5 tid=8 Native
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x13040000 self=0x7c3fa5c40000
+  native: #00 pc 000c0f58  /apex/com.android.runtime/lib64/bionic/libc.so (__ioctl+8)
+
+----- end 5021 -----

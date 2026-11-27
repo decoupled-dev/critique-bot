@@ -945,6 +945,9 @@ SUBCOMMANDS = {
     "tool": "list, show and test manifest tools (crit tool --help)",
     "mcp": "list MCP servers; approve a server's changed tool definitions",
     "memory": "the project memory: status, show, review proposed conventions, export, prune (crit memory --help)",
+    "serve": "serve this project's sessions over HTTP for other clients (crit serve --help)",
+    "attach": "connect this terminal to a session of a running crit serve (crit attach --help)",
+    "run": "one headless task: crit run [--agent NAME] [--json] \"task\" (events as JSON lines)",
 }
 
 
@@ -1073,9 +1076,9 @@ def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
 
 def _agent_confirm(question: str) -> bool:
     """A yes/no question in the agent's terminal UI (default No)."""
-    from critique_bot import agent
+    from critique_bot import engine
 
-    asker = getattr(agent.agent_ui, "ask_question", None)
+    asker = getattr(engine.current_ui(), "ask_question", None)
     if not callable(asker):
         return False
     answer = asker(question, ["No", "Yes, allow it"])
@@ -1111,6 +1114,8 @@ def _main(argv: list[str] | None = None) -> int:
         if "--mode" in argv[1:] or any(arg.startswith("--mode=") for arg in argv[1:]):
             return _config_error(ConfigError(f"{argv[0]} already names the mode; drop --mode"))
         return _main_run(["--mode", MODE_WORDS[argv[0]], *argv[1:]])
+    if argv and argv[0] == "run" and not _headless_run_argv(argv[1:]):
+        return _main_run(argv)  # "crit run the tests" is still a task
     if argv and argv[0] in SUBCOMMANDS:
         command = argv[0]
         rest = argv[1:]
@@ -1128,6 +1133,9 @@ def _main(argv: list[str] | None = None) -> int:
             "resume": _main_resume,
             "fork": _main_fork,
             "memory": _main_memory,
+            "serve": _main_serve,
+            "attach": _main_attach,
+            "run": _main_headless,
         }
         if command in {"trust", "tool", "mcp"}:
             return _main_extensions([command, *rest])
@@ -1185,6 +1193,160 @@ def _main_memory(argv: list[str]) -> int:
     from critique_bot.memory_cmd import main as memory_main
 
     return memory_main(argv)
+def _headless_run_argv(rest: list[str]) -> bool:
+    """``crit run`` is the headless command when it has one of its own flags; otherwise the words
+    are a task for the agent, as before (``crit run the tests``)."""
+    flags = {"--agent", "--json", "--url", "-h", "--help"}
+    return any(arg in flags or arg.split("=", 1)[0] in flags for arg in rest)
+
+
+def _engine_inputs(repo_dir: str, config_arg: str | None, model: str | None) -> Any:
+    """(config, home) for an Engine on ``repo_dir`` without first-run questions, or an exit code."""
+    from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home
+
+    workspace = Path(repo_dir).resolve()
+    found = _find_config(config_arg, workspace, ask=False)
+    if isinstance(found, int):
+        return found
+    try:
+        config = load_config(found, model_override=model)
+        _log_config(config)
+    except ConfigError as exc:
+        return _config_error(exc)
+    try:
+        home = find_bot_home(workspace) or init_bot_home(workspace)
+    except BotHomeError as exc:
+        return _config_error(ConfigError(str(exc)))
+    return config, home
+
+
+def _main_serve(argv: list[str]) -> int:
+    """``crit serve``: the Engine API over HTTP (see server.py and docs/server.md)."""
+    from critique_bot import server
+    from critique_bot.engine import Engine
+
+    parser = argparse.ArgumentParser(prog="crit serve", description=(
+        "Serve this project's sessions over HTTP and server-sent events. Listens on 127.0.0.1 on a "
+        "random port; the address goes to ~/.crit/server.json and a token made for this start to "
+        "~/.crit/server.token (readable only by you)."))
+    parser.add_argument("--repo-dir", default=".", help="the project (default: this folder)")
+    parser.add_argument("--config", default=None, help="the config file (default: as crit finds it)")
+    parser.add_argument("--model", default=None, help="the model for new sessions")
+    parser.add_argument("--port", type=int, default=0, help="the port (default: a free one)")
+    parser.add_argument("--listen", default=None, metavar="ADDRESS",
+                        help="listen on this address instead of 127.0.0.1 (another machine's reach needs --insecure)")
+    parser.add_argument("--insecure", action="store_true",
+                        help="allow a non-loopback --listen address without TLS (a trusted network only)")
+    parser.add_argument("--headed", action="store_true", help="web chat backend: show the browser")
+    args = parser.parse_args(argv)
+    host = args.listen or server.DEFAULT_HOST
+    try:
+        server.check_bind(host, insecure=args.insecure)
+    except server.ServerError as exc:
+        log.notice(f"crit serve: {exc}")
+        return 2
+    found = _engine_inputs(args.repo_dir, args.config, args.model)
+    if isinstance(found, int):
+        return found
+    config, home = found
+    try:
+        app = server.CritServer(Engine(config, home, headed=args.headed), host=host, port=args.port,
+                                insecure=args.insecure)
+    except server.ServerError as exc:
+        log.notice(f"crit serve: {exc}")
+        return 1
+    print(f"crit serve: {app.url} for {home.root}", file=sys.stderr)
+    print(f"token: {server.token_file()} (crit attach reads it)", file=sys.stderr, flush=True)
+    try:
+        app.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _main_attach(argv: list[str]) -> int:
+    """``crit attach [--url URL] [SESSION] [task]``: this terminal on a crit serve session."""
+    from critique_bot import agent_ui, api_client
+
+    parser = argparse.ArgumentParser(prog="crit attach", description=(
+        "Connect this terminal to a session of a running crit serve: its new events, its open "
+        "approvals and questions, and the next tasks you type."))
+    parser.add_argument("--url", default=None, help="the server (default: the one in ~/.crit/server.json)")
+    parser.add_argument("--session", default=None, help="the session id (default: the newest live one, else a new one)")
+    parser.add_argument("task", nargs="*", help="a task to send first")
+    args = parser.parse_args(argv)
+    try:
+        client = api_client.Client.from_server_file(args.url)
+        health = client.health()
+    except api_client.ClientError as exc:
+        log.notice(f"crit attach: {exc}")
+        return 1
+    agent_ui.configure(workspace=Path(str(health.get("project") or ".")), model="crit serve",
+                       approve_mode="ask")
+    try:
+        return api_client.attach(client, args.session, agent_ui, task=" ".join(args.task).strip() or None)
+    except api_client.ClientError as exc:
+        log.notice(f"crit attach: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        agent_ui.shutdown()
+
+
+def _main_headless(argv: list[str]) -> int:
+    """``crit run [--agent NAME] [--json] [--mode M] [--url URL] task``: one task, no questions."""
+    from critique_bot import api_client
+    from critique_bot.server import agent_mode
+
+    parser = argparse.ArgumentParser(prog="crit run", description=(
+        "Run one task headless. Approvals no one can give are refused (use --mode auto to let "
+        "edits and contained commands run); --json prints every event as one JSON line."))
+    parser.add_argument("task", nargs="+", help="the task")
+    parser.add_argument("--agent", default=None, help="a file-defined agent (.crit/agents/NAME.md) or a role")
+    parser.add_argument("--json", action="store_true", help="events as JSON lines on stdout")
+    parser.add_argument("--mode", default=None, help="ask, edits, auto or plan (default: the agent's, else the settings')")
+    parser.add_argument("--url", default=None, help="run on this crit serve instead of in this process")
+    parser.add_argument("--repo-dir", default=".", help="the project (default: this folder)")
+    parser.add_argument("--config", default=None, help="the config file")
+    parser.add_argument("--model", default=None, help="the model")
+    args = parser.parse_args(argv)
+    task = " ".join(args.task).strip()
+    if args.url:
+        try:
+            client = api_client.Client.from_server_file(args.url)
+            if args.agent:
+                info = client.run_agent(args.agent, task, mode=args.mode)
+            else:
+                info = client.create(message=task, mode=args.mode, unattended=True, close_after=True)
+            return api_client.run_headless(client.events(str(info["id"])), json_lines=args.json)
+        except api_client.ClientError as exc:
+            log.notice(f"crit run: {exc}")
+            return 1
+    found = _engine_inputs(args.repo_dir, args.config, args.model)
+    if isinstance(found, int):
+        return found
+    config, home = found
+    from critique_bot.engine import Engine, EngineError
+    from critique_bot.extensions import agent_files
+
+    definition = agent_files.find_agent(args.agent, home.root) if args.agent else None
+    engine = Engine(config, home)
+    try:
+        handle = engine.create_session(
+            agent=args.agent, mode=args.mode or (agent_mode(definition) if definition is not None else None),
+            model=(definition.model or None) if definition is not None else None, title=task, unattended=True,
+            max_rounds=definition.max_steps if definition is not None else None, kind="run",
+        )
+        handle.send(task, close_after=True)
+        return api_client.run_headless(handle.events(0), json_lines=args.json)
+    except EngineError as exc:
+        log.notice(f"crit run: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        engine.close()
 
 
 def _main_sessions(argv: list[str]) -> int:
@@ -1581,7 +1743,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
 
 def _main_agent(args: argparse.Namespace) -> int:
     """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
-    from critique_bot.agent import run_agent
+    from critique_bot.engine import run_agent
     from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home, update_settings
     from critique_bot.roles import ROLE_IDS, normalize_role
     from critique_bot.welcome import pick_theme, stdio_is_tty
@@ -1771,7 +1933,7 @@ class _StderrTail:
 
 def _main_agent_acp(args: argparse.Namespace) -> int:
     """``crit --acp``: the agent behind an ACP client. Waits for the first session/new to pick the folder."""
-    from critique_bot import agent, agent_acp
+    from critique_bot import agent_acp, engine
 
     agent_acp.start()
     tail = _StderrTail(sys.stderr)
@@ -1780,11 +1942,14 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
     if cwd is None:
         return 0
     args.repo_dir = str(cwd)
+    resume = agent_acp.resume_request()
+    if resume:
+        args.resume_session = resume  # session/load: continue that logged session
     try:
         os.chdir(cwd)
     except OSError as exc:
         log.notice(f"Problem: cannot open {cwd}: {exc}")
-    agent.use_ui(agent_acp)
+    engine.use_ui(agent_acp)
     code = 1
     try:
         code = _main_agent(args)
@@ -1852,10 +2017,10 @@ def _apply_tool_flags(args: argparse.Namespace, home) -> None:
 
 def _use_terminal_ui() -> None:
     """The terminal, unless a front end is installed already (crit --acp installs the IDE's)."""
-    from critique_bot import agent, agent_ui, ui_api
+    from critique_bot import agent_ui, engine, ui_api
 
-    if isinstance(agent.agent_ui, ui_api.NullUI):
-        agent.use_ui(agent_ui)
+    if isinstance(engine.current_ui(), ui_api.NullUI):
+        engine.use_ui(agent_ui)
 
 
 def _review_engine(args: argparse.Namespace) -> str:
@@ -1868,7 +2033,7 @@ def _review_engine(args: argparse.Namespace) -> str:
 def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     """``crit review``: the Code Reviewer reads the project with read-only tools, then reports."""
     from critique_bot import review_agent
-    from critique_bot.agent import run_read_only_task
+    from critique_bot.engine import run_read_only_task
     from critique_bot.roles import CODE_REVIEWER
     from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home
 

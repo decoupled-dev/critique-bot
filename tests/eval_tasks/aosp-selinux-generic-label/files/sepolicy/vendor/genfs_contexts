@@ -1,0 +1,1 @@
+genfscon sysfs /devices/platform/cabin-temp/temp u:object_r:sysfs_cabin_temp:s0

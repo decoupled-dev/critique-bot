@@ -1,0 +1,18 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "carpowerpolicyd aborts at boot on our build (see logcat.txt; there are no symbols in this checkout). Which function in which source file aborts, and what is the most likely cause? Answer in two lines. Do not change any file.",
+  "answer": "(?=.*CarPowerPolicyServer\\.cpp)(?=.*applyPowerPolicy)(?=.*vendor_suspnd_prep)",
+  "reference_answer": "CarPowerPolicyServer::applyPowerPolicy in packages/services/Car/cpp/powerpolicy/server/src/CarPowerPolicyServer.cpp (the CHECK at line 144) aborts.\nThe policy id 'vendor_suspnd_prep' is not registered (a typo of vendor_suspend_prep in the vendor policy config), so getPowerPolicy returns no policy.",
+  "requires": [],
+  "tags": [
+    "aosp",
+    "logs",
+    "native",
+    "tombstone",
+    "quick"
+  ]
+}

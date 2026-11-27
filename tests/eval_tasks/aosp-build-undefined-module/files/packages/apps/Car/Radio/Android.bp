@@ -1,0 +1,12 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+android_app {
+    name: "CarRadioApp",
+    srcs: ["src/**/*.java"],
+    platform_apis: true,
+    static_libs: [
+        "car-radio-common",
+        "androidx.recyclerview_recyclerview",
+    ],
+}

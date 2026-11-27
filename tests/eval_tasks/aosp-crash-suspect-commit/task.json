@@ -1,0 +1,21 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "After yesterday's sync, car service crashes when the head unit shuts down with garage mode on. logcat.txt has the crash. Which recent commit in this repository most likely introduced it? Give the commit's subject line and one sentence on why. Do not change any file.",
+  "setup": "python3 make_history.py",
+  "answer": "power: skip garage mode setup when shutdown is pending",
+  "reference_answer": "\"power: skip garage mode setup when shutdown is pending\": it stopped creating mGarageModeHandler when a shutdown is pending, and handleShutdownPrepare (CarPowerManagementService.java:65) then calls start() on null.",
+  "requires": [
+    "python3",
+    "git"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "crash",
+    "git"
+  ]
+}

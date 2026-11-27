@@ -1,0 +1,4 @@
+[    8.120001] init: starting service 'vendor.fan_ctl'...
+[    8.131442] type=1400 audit(0.0:88): avc:  denied  { open } for  pid=915 comm="fan_ctl" path="/sys/devices/platform/fan-hwmon/hwmon/hwmon3/fan1_input" dev="sysfs" ino=51210 scontext=u:r:vendor_fan_ctl:s0 tcontext=u:object_r:sysfs:s0 tclass=file permissive=0
+[    8.131460] type=1400 audit(0.0:89): avc:  denied  { read } for  pid=915 comm="fan_ctl" name="fan1_input" dev="sysfs" ino=51210 scontext=u:r:vendor_fan_ctl:s0 tcontext=u:object_r:sysfs:s0 tclass=file permissive=0
+[    8.140010] init: Service 'vendor.fan_ctl' (pid 915) exited with status 1
