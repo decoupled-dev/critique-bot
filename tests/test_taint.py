@@ -187,7 +187,7 @@ class EngineTests(_Base):
         session = Scripted()
         asked: list[str] = []
         runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout=b"", stderr=b""))
-        with mock.patch.object(agent, "_approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("yes", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("yes", "")):
             run_agent_loop(session, workspace=self.root, index_path=None, cache_dir=None, first_task="push it",
                            max_rounds=5, max_result_chars=8000, read_message=lambda: None, emit=lambda _t: None,
                            ask_user=lambda _q: None, approve_mode="auto", runner=runner,

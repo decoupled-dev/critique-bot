@@ -34,7 +34,7 @@ def _loop(session, root: Path, task: str, **kwargs):
     kwargs.setdefault("emit", lambda _text: None)
     kwargs.setdefault("ask_user", lambda _question: None)
     # Never prompt: a review must not reach the approval prompt at all.
-    with patch("critique_bot.agent._approve_prompt", side_effect=AssertionError("asked for approval")):
+    with patch("critique_bot.engine.ui._approve_prompt", side_effect=AssertionError("asked for approval")):
         return run_agent_loop(
             session, workspace=root, index_path=None, cache_dir=None, first_task=task, **kwargs
         )

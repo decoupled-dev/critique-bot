@@ -176,8 +176,8 @@ class AutoModeTests(unittest.TestCase):
 
         run = self._agent("auto")
         asked: list = []
-        with patch.object(agent, "_approve_prompt", side_effect=lambda perm, **_: asked.append(perm) or ("no", "")), \
-             patch.object(agent, "_ui_approve_mode", return_value="auto"):
+        with patch("critique_bot.engine.ui._approve_prompt", side_effect=lambda perm, **_: asked.append(perm) or ("no", "")), \
+             patch("critique_bot.engine.ui._ui_approve_mode", return_value="auto"):
             self.assertEqual(run._approved(agent_tools.Permission("command", "Run", "command:ls", "ls -la")), (True, ""))
             self.assertEqual(run._approved(agent_tools.Permission("edit", "Edit", "edit", "")), (True, ""))
             approved, _ = run._approved(agent_tools.Permission("command", "Run", "command:python", "python x.py"))

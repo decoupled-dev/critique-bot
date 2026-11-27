@@ -220,7 +220,7 @@ class LoopTests(unittest.TestCase):
     def _run(self, root: Path, replies: list[str], task: str = "add a line to notes.txt") -> tuple[_Scripted, list[str]]:
         session = _Scripted(replies)
         outcome: list[str] = []
-        with patch("critique_bot.agent._approve_prompt", side_effect=AssertionError("asked")):
+        with patch("critique_bot.engine.ui._approve_prompt", side_effect=AssertionError("asked")):
             run_agent_loop(
                 session,
                 workspace=root,

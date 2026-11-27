@@ -118,7 +118,7 @@ class RegistryTests(unittest.TestCase):
         self.assertIsInstance(old, ToolRegistry)
         with tempfile.TemporaryDirectory() as tmp:
             session = _Scripted([_call("list_files", path="."), "Listed. COMPLETED"])
-            with patch("critique_bot.agent._approve_prompt", side_effect=AssertionError("asked")):
+            with patch("critique_bot.engine.ui._approve_prompt", side_effect=AssertionError("asked")):
                 run_agent_loop(
                     session,
                     workspace=Path(tmp),

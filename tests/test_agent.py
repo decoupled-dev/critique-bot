@@ -54,7 +54,7 @@ _REAL_APPROVE_PROMPT = None
 
 
 def _loop(session, root: Path, task: str, **kwargs):
-    import critique_bot.agent as agent
+    from critique_bot.engine import ui as engine_ui
 
     kwargs.setdefault("max_rounds", None)
     kwargs.setdefault("max_result_chars", 8000)
@@ -72,13 +72,13 @@ def _loop(session, root: Path, task: str, **kwargs):
     )
     global _REAL_APPROVE_PROMPT
     if _REAL_APPROVE_PROMPT is None:
-        _REAL_APPROVE_PROMPT = agent._approve_prompt
+        _REAL_APPROVE_PROMPT = engine_ui._approve_prompt
     # Auto mode asks before commands that are not read-only. Tests about other behaviour
     # answer yes; a test that patches _approve_prompt itself keeps its own answer.
-    if kwargs["approve_mode"] == "auto" and agent._approve_prompt is _REAL_APPROVE_PROMPT:
+    if kwargs["approve_mode"] == "auto" and engine_ui._approve_prompt is _REAL_APPROVE_PROMPT:
         from unittest import mock
 
-        with mock.patch.object(agent, "_approve_prompt", lambda *_a, **_k: ("yes", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda *_a, **_k: ("yes", "")):
             return run()
     return run()
 
@@ -1270,7 +1270,7 @@ class RobustLoopTests(unittest.TestCase):
 
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
-        with mock.patch.object(agent, "_execute", spy):
+        with mock.patch("critique_bot.engine.dispatch._execute", spy):
             _loop(_Scripted([_edit("note.txt", "one", "two"), "COMPLETED"]), root, "change note.txt", check_command="true")
             self.assertEqual(seen[-1]["timeout"], 600)
             (root / "note.txt").write_text("one\n", encoding="utf-8")
@@ -1460,7 +1460,7 @@ class RobustLoopTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         session = _Scripted([_edit("note.txt", "one", "two"), "FAILED: the user denied the edit"])
-        with mock.patch.object(agent, "_approve_prompt", lambda _perm: ("no", "edit b.txt instead")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda _perm: ("no", "edit b.txt instead")):
             _loop(session, root, "change note.txt", approve_mode="ask")
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "one\n")
         self.assertIn("denied by the user: edit b.txt instead", session.sent[1])
@@ -1483,7 +1483,7 @@ class RobustLoopTests(unittest.TestCase):
             [_edit("note.txt", "one", "two"), _edit("note.txt", "one", "two"), _edit("note.txt", "one", "three"), "COMPLETED"]
         )
         outcome: list[str] = []
-        with mock.patch.object(agent, "_approve_prompt", deny):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", deny):
             _loop(session, root, "change note.txt", approve_mode="ask", outcome=outcome)
         self.assertEqual(len(asked), 2)
         self.assertIn("already sent this exact call and the user denied it (do not touch note.txt)", session.sent[2])
@@ -1509,7 +1509,7 @@ class RobustLoopTests(unittest.TestCase):
             ]
         )
         outcome: list[str] = []
-        with mock.patch.object(agent, "_approve_prompt", lambda _perm: ("no", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda _perm: ("no", "")):
             _loop(session, root, "change note.txt", approve_mode="ask", outcome=outcome)
         self.assertNotEqual(outcome, ["BLOCKED"])
 
@@ -1532,7 +1532,7 @@ class RobustLoopTests(unittest.TestCase):
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         session = _Scripted([_call("read_files", path="note.txt"), "COMPLETED"])
         with mock.patch.object(agent.agent_ui, "take_shell_change", lambda: pending.pop() if pending else None), \
-                mock.patch.object(agent, "_execute", spy):
+                mock.patch("critique_bot.engine.dispatch._execute", spy):
             _loop(session, root, "what is in note.txt?")
         self.assertIn(f"Shell changed to {pwsh.label}: SHELL: {pwsh.label}", session.sent[0])
         self.assertNotIn("Shell changed", session.sent[1])
@@ -1553,7 +1553,7 @@ class RobustLoopTests(unittest.TestCase):
             return ("always", "")
 
         session = _Scripted([_edit("note.txt", "one", "two"), _edit("note.txt", "two", "three"), "COMPLETED"])
-        with mock.patch.object(agent, "_approve_prompt", approve):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", approve):
             _loop(session, root, "change note.txt", approve_mode="ask")
         self.assertEqual(len(asked), 1)
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "three\n")
@@ -1561,7 +1561,7 @@ class RobustLoopTests(unittest.TestCase):
         asked.clear()
         outside = agent._Perm("outside", "Edit /etc/x", "")
         session = _Scripted([_edit("note.txt", "three", "four"), _edit("note.txt", "four", "five"), "COMPLETED"])
-        with mock.patch.object(agent, "_approve_prompt", approve), mock.patch.object(
+        with mock.patch("critique_bot.engine.ui._approve_prompt", approve), mock.patch.object(
             agent_tools, "permission_for", lambda *_args: outside
         ):
             _loop(session, root, "change note.txt", approve_mode="ask")
@@ -1574,7 +1574,7 @@ class RobustLoopTests(unittest.TestCase):
 
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
-        with mock.patch.object(agent, "_approve_prompt", side_effect=AssertionError("asked")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", side_effect=AssertionError("asked")):
             _loop(_Scripted([_edit("note.txt", "one", "two"), "COMPLETED"]), root, "change note.txt", approve_mode="auto")
         self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "two\n")
 
@@ -1586,8 +1586,7 @@ class RobustLoopTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         (root / "note.txt").write_text("one\n", encoding="utf-8")
         modes = ["ask"]
-        with mock.patch.object(agent, "_ui_approve_mode", lambda: modes[0]), mock.patch.object(
-            agent, "_approve_prompt", side_effect=AssertionError("asked")
+        with mock.patch("critique_bot.engine.ui._ui_approve_mode", lambda: modes[0]), mock.patch("critique_bot.engine.ui._approve_prompt", side_effect=AssertionError("asked")
         ):
             session = _Scripted([_edit("note.txt", "one", "two"), "COMPLETED"])
             original_send = session.send
@@ -1621,7 +1620,7 @@ class RobustLoopTests(unittest.TestCase):
 
         reply = "".join(_call("read_files", path=name) for name in ("a.py", "b.py", "c.py"))
         session = _Scripted([reply, "They are small."])
-        with mock.patch.object(agent, "_execute", slow):
+        with mock.patch("critique_bot.engine.dispatch._execute", slow):
             _loop(session, Path(tempfile.mkdtemp()), "look at a.py, b.py and c.py and summarise them")
         self.assertGreaterEqual(active[1], 2)
         text = session.sent[1]

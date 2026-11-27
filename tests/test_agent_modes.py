@@ -83,7 +83,7 @@ class ModeTests(_Base):
     def test_auto_runs_edits_and_commands_without_asking(self) -> None:
         asked: list[str] = []
         session = _Scripted([_edit("note.txt", "one", "two"), _call("run_command", command="echo hi"), "COMPLETED"])
-        with mock.patch.object(agent, "_approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("no", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("no", "")):
             code = _loop(session, self.root, "change note.txt", approve_mode="auto")
         self.assertEqual(code, "COMPLETED")
         self.assertEqual(asked, [])
@@ -97,7 +97,7 @@ class ModeTests(_Base):
             return ("no", "not now")
 
         session = _Scripted([_call("run_command", command="git reset --hard HEAD~3"), "COMPLETED"])
-        with mock.patch.object(agent, "_approve_prompt", approve):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", approve):
             _loop(session, self.root, "clean up the repo", approve_mode="auto")
         self.assertEqual(len(seen), 1)
         self.assertIn("reset --hard", seen[0])
@@ -107,14 +107,14 @@ class ModeTests(_Base):
         seen: list[str] = []
         session = _Scripted([_call("run_command", command="git push origin HEAD"), "COMPLETED"])
         runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout=b"", stderr=b""))
-        with mock.patch.object(agent, "_approve_prompt", lambda perm, **kw: seen.append("asked") or ("no", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda perm, **kw: seen.append("asked") or ("no", "")):
             _loop(session, self.root, "push it", approve_mode="auto", settings={"confirm_risky": False}, runner=runner)
         self.assertEqual(seen, [])
 
     def test_edits_mode_accepts_edits_and_asks_for_commands(self) -> None:
         asked: list[str] = []
         session = _Scripted([_edit("note.txt", "one", "two"), _call("run_command", command="echo hi"), "COMPLETED"])
-        with mock.patch.object(agent, "_approve_prompt", lambda perm: asked.append(perm.kind) or ("yes", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda perm: asked.append(perm.kind) or ("yes", "")):
             _loop(session, self.root, "change note.txt", approve_mode="edits")
         self.assertEqual(asked, ["command"])
         self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "two\n")
@@ -130,7 +130,7 @@ class ModeTests(_Base):
             return ("yes", "")
 
         session._replies.insert(1, _edit("note.txt", "two", "three"))
-        with mock.patch.object(agent, "_approve_prompt", approve):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", approve):
             _loop(session, self.root, "change note.txt", approve_mode="ask")
         self.assertEqual(asked, ["edit"])
         self.assertEqual((self.root / "note.txt").read_text(encoding="utf-8"), "three\n")
@@ -172,7 +172,7 @@ class PlanModeTests(_Base):
                 "COMPLETED",
             ]
         )
-        with mock.patch.object(agent, "_review_plan", lambda: ("auto", "")):
+        with mock.patch("critique_bot.engine.ui._review_plan", lambda: ("auto", "")):
             code = _loop(session, self.root, "change note.txt to two", approve_mode="plan")
         self.assertIn("PLAN MODE", session.sent[0])
         self.assertIn("plan mode is on", session.sent[1])
@@ -184,7 +184,7 @@ class PlanModeTests(_Base):
     def test_read_only_commands_run_in_plan_mode(self) -> None:
         self.assertTrue(agent_tools.read_only_command("git log --oneline -5"))
         session = _Scripted([_call("run_command", command="echo hi"), _PLAN])
-        with mock.patch.object(agent, "_review_plan", lambda: ("stop", "")):
+        with mock.patch("critique_bot.engine.ui._review_plan", lambda: ("stop", "")):
             code = _loop(session, self.root, "change note.txt to two", approve_mode="plan")
         self.assertNotIn("plan mode is on", session.sent[1])
         self.assertEqual(code, "COMPLETED")
@@ -193,7 +193,7 @@ class PlanModeTests(_Base):
     def test_revise_then_stop(self) -> None:
         session = _Scripted([_PLAN, _PLAN + "\nAlso tests."])
         answers = iter([("no", "add a test too"), ("stop", "")])
-        with mock.patch.object(agent, "_review_plan", lambda: next(answers)):
+        with mock.patch("critique_bot.engine.ui._review_plan", lambda: next(answers)):
             code = _loop(session, self.root, "change note.txt to two", approve_mode="plan")
         self.assertIn("add a test too", session.sent[1])
         self.assertEqual(code, "COMPLETED")
@@ -201,13 +201,13 @@ class PlanModeTests(_Base):
 
     def test_a_bare_completed_asks_for_the_plan(self) -> None:
         session = _Scripted(["COMPLETED", _PLAN])
-        with mock.patch.object(agent, "_review_plan", lambda: ("none", "")):
+        with mock.patch("critique_bot.engine.ui._review_plan", lambda: ("none", "")):
             _loop(session, self.root, "change note.txt to two", approve_mode="plan")
         self.assertIn("Reply with the plan", session.sent[1])
 
     def test_a_question_is_answered_not_planned(self) -> None:
         session = _Scripted(["It holds the word one."])
-        with mock.patch.object(agent, "_review_plan", side_effect=AssertionError("no plan review")):
+        with mock.patch("critique_bot.engine.ui._review_plan", side_effect=AssertionError("no plan review")):
             code = _loop(session, self.root, "what is in note.txt?", approve_mode="plan")
         self.assertEqual(code, "COMPLETED")
         self.assertNotIn("PLAN MODE", session.sent[0])

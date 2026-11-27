@@ -132,8 +132,8 @@ class ApprovalTests(unittest.TestCase):
 
     def _decide(self, run, perm, answer=("no", "")):
         asked: list = []
-        with patch.object(agent, "_approve_prompt", side_effect=lambda p, **_: asked.append(p) or answer), \
-             patch.object(agent, "_ui_approve_mode", return_value=run.approve_mode):
+        with patch("critique_bot.engine.ui._approve_prompt", side_effect=lambda p, **_: asked.append(p) or answer), \
+             patch("critique_bot.engine.ui._ui_approve_mode", return_value=run.approve_mode):
             result = run._approved(perm)
         return result, asked
 

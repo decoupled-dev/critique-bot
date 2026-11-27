@@ -341,7 +341,7 @@ class EngineTests(TempProject):
         session_ = _Scripted(replies)
         old = tool_api.use_registry(found.registry(tool_api.builtin_registry()))
         try:
-            with mock.patch("critique_bot.agent._approve_prompt",
+            with mock.patch("critique_bot.engine.ui._approve_prompt",
                             side_effect=lambda perm, **_: asked.append(perm) or answer):
                 run_agent_loop(session_, workspace=self.root, index_path=None, cache_dir=None, first_task="do it",
                                max_rounds=4, max_result_chars=8000, read_message=lambda: None,

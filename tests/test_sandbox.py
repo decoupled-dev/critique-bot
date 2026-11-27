@@ -587,7 +587,7 @@ class AutoModeTests(unittest.TestCase):
         replies = [call, "COMPLETED"]
         scripted = SimpleNamespace(last_detail=None, send=lambda _prompt: replies.pop(0))
         asked: list[str] = []
-        with mock.patch.object(agent, "_approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("no", "")):
+        with mock.patch("critique_bot.engine.ui._approve_prompt", lambda perm, **kw: asked.append(perm.summary) or ("no", "")):
             agent.run_agent_loop(scripted, workspace=root, index_path=None, cache_dir=None, first_task="make it",
                                  max_rounds=5, max_result_chars=8000, read_message=lambda: None, emit=lambda _t: None,
                                  ask_user=lambda _q: None, approve_mode="auto", session_shell=session)
