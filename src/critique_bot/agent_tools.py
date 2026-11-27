@@ -1944,6 +1944,12 @@ def _write_files(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             if new_check.startswith("error") and agent_edit.syntax_check(name, before) == "ok":
                 errors.append(f"{name} not replaced: the new contents have a syntax {new_check}")
                 continue
+        if existed and before and contents:
+            # The file's own convention for the last line wins over the model's habit.
+            if before.endswith("\n") and not contents.endswith("\n"):
+                contents += "\n"
+            elif not before.endswith("\n") and contents.endswith("\n") and not contents.endswith("\n\n"):
+                contents = contents[:-1]
         if ctx.checkpoints is not None and not ctx.checkpoints.save(path) and existed and sensitive_file(path):
             notes.append(_NO_UNDO_NOTE)
         try:
@@ -2228,6 +2234,8 @@ def _edit_file_once(args: dict[str, Any], ctx: ToolContext, raw: str, path: Path
         agent_edit.save_text(path, text, loaded)
     except ValueError as exc:
         return err("edit_file", f"edit not applied: {exc}")
+    except OSError as exc:
+        return err("edit_file", f"edit not applied: could not write {name} ({exc}); the file is unchanged")
     version = _after_write(ctx, path)
     for step in steps:
         run_stats.edit_step("edit_file", step)

@@ -178,8 +178,13 @@ def _join_lines(body: str, like: TextFile | None, eol: str) -> str:
 def atomic_write_bytes(target: Path, payload: bytes) -> None:
     """Write through a temp file and ``os.replace`` so a reader never sees half a file.
 
-    A symbolic link is written through to the file it points at, not replaced.
-    A new file gets the usual permissions for new files (0666 minus umask).
+    The temp file is in the target's folder (a rename never crosses file systems) and is
+    flushed to disk (``fsync``) before the rename, so a crash leaves either the old file
+    or the new one, never a torn mix; a failure before the rename removes the temp file
+    and leaves the original as it was. An existing file keeps its permission bits (an
+    executable script stays executable). A symbolic link is written through to the file
+    it points at, not replaced. A new file gets the usual permissions for new files
+    (0666 minus umask).
     """
     target = Path(target)
     if target.is_symlink():
@@ -190,6 +195,11 @@ def atomic_write_bytes(target: Path, payload: bytes) -> None:
     try:
         with os.fdopen(handle, "wb") as temp:
             temp.write(payload)
+            temp.flush()
+            try:
+                os.fsync(temp.fileno())
+            except OSError:
+                pass  # a file system without fsync (some network shares): the rename is still atomic
         try:
             if existed:
                 shutil.copymode(target, temp_name)
@@ -198,12 +208,29 @@ def atomic_write_bytes(target: Path, payload: bytes) -> None:
         except OSError:
             pass
         _replace_with_retry(temp_name, target)
+        _fsync_dir(target.parent)
     except Exception:
         try:
             os.unlink(temp_name)
         except OSError:
             pass
         raise
+
+
+def _fsync_dir(folder: Path) -> None:
+    """Make the rename itself durable (POSIX; a no-op where folders cannot be opened)."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(folder), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _umask() -> int:
