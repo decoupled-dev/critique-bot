@@ -229,6 +229,10 @@ class CritServer:
         return 201, handle.info()
 
     def get_session(self, sid: str, **_: Any) -> Any:
+        try:
+            sid = self.engine.find(sid)  # a unique prefix of a logged session works too
+        except EngineError as exc:
+            raise HttpError(404, "not_found", str(exc)) from exc
         live = self.engine.session(sid)
         if live is not None:
             return live.info()
