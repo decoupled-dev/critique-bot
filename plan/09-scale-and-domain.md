@@ -40,6 +40,29 @@ fixed models: crit's own benchmark for the domain.
 - [ ] 40-task AOSP suite public, with graders audited (Stage 0 rules)
 - [ ] crit + pack ≥ crit without pack + 15 points pass@1 on the suite; ≥ opencode + 20
 
+**Built (checked without a model; 2026-11-27):**
+- [x] Pack layout `src/critique_bot/packs/aosp/` (tools/*.json, agents/*.md, handlers), shipped as
+      package data (pyproject, packaging/crit.spec, scripts/build.py)
+- [x] Activation: `"packs": ["aosp"]` (a security key: a committed settings file cannot set it);
+      an AOSP tree is offered the pack once; packs load through the extension loader as trusted content
+- [x] Manifest tools grouped by action (Stage 6 format extended with `actions`): `adb`, `aosp_build`, `triage`
+- [x] Device changes (push, install, uninstall, reboot, settings_put, flash) ask in every mode, also with
+      `confirm_risky: false` (tested in the engine); shell values checked against fixed patterns
+- [x] `triage` crash | anr | tombstone | selinux | build: source mapping (index or bounded scan), owning
+      module, ranked suspect commits, refusal guard; minimal SELinux rule without wildcards and the .te file;
+      symbolization with the tree's symbols and addr2line, unsymbolized frames reported as such
+- [x] Soong-aware test selection (`aosp_build` action `tests_for`): TEST_MAPPING (imports, presubmit
+      first) and Android.bp tests (`instrumentation_for`, deps through defaults)
+- [x] The `aosp` sandbox preset when the pack is on; device output (`adb`, `triage` on device logs) taints
+      the session (extension tool results are now observed by taint, MCP included)
+- [x] 13 synthetic AOSP tasks (`tests/eval_tasks/aosp-*`) that run without a tree, audited; suite README
+      for the later public repo (`tests/eval_tasks/AOSP-SUITE.md`); `crit eval --packs aosp` for A/B runs
+
+**Status (2026-11-27):** the pack, its tools and agents, and a 13-task skeleton suite are built and
+tested without a model or a device. Left: grow the suite to 40+ (HAL bugs, CarService behavior, real-tree
+tasks on a pinned `$AOSP`), run it with and without the pack on the reference model, and publish it as its
+own repository. The pack's agents and the `triage` report wording are untested with a model.
+
 ## 9.3 Gated batch debugger (DAP / gdb / pdb)
 **Why:** debug-gym: pdb helped Claude 3.7 (37.2% → 48.4%, and 52.1% when it was offered
 only after 5 attempts); it hurt GPT-4o on easy tasks and did nothing for Llama-70B. No

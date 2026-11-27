@@ -10,6 +10,7 @@ crit eval audit                                  # every grader fails untouched 
 crit eval --config ~/.crit/qwen.json --runs 3    # run the suite (crit eval run ... is the same)
 crit eval --tag quick                            # the 10-task subset for quick checks while developing
 crit eval compare .crit/eval/A .crit/eval/B      # what changed between two runs
+crit eval --tag aosp --packs aosp                # the AOSP tasks with the AOSP pack on (docs/packs/aosp.md)
 ```
 
 From a checkout, `python3 scripts/eval/run_eval.py` is the same command.

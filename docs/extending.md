@@ -109,6 +109,45 @@ $ crit tool test adb_logcat      # schema check, the [[examples]], output cap an
 $ crit tool test adb_logcat --args '{"filter": "CarService:V *:S"}'
 ```
 
+### One tool, several actions
+
+Related commands can share one tool, with an `action` argument. A small model picks
+among few tools more reliably than among many. Each action has its own `argv` and its own
+policy:
+
+```json
+{
+  "name": "adb",
+  "description": "Query or change the connected device. Not for saved logs (log). Output: the command's output.",
+  "read_only": true,
+  "taint": "device",
+  "parameters": {"type": "object", "properties": {
+    "name": {"type": "string"}, "apk": {"type": "string"}, "serial": {"type": "string"}}},
+  "run": {"env": {"ANDROID_SERIAL": "{serial}"}},
+  "actions": {
+    "getprop": {"argv": ["adb", "shell", "getprop", "{name}"], "patterns": {"name": "[A-Za-z0-9_.-]{1,120}"}},
+    "install": {"argv": ["adb", "install", "-r", "{apk}"], "device": true, "required": ["apk"]}
+  }
+}
+```
+
+Each action may set these keys:
+
+| key | meaning |
+|---|---|
+| `argv` | the action's program and arguments (same template rules as `run.argv`) |
+| `read_only` | overrides the tool's `read_only` for this action |
+| `required` | arguments this action needs |
+| `patterns` | a regular expression each named string argument must match in full. crit checks it before anything runs; the model never sees it. Use it for any value that reaches a shell on the other side (`adb shell` joins its arguments into a device shell command). |
+| `timeout_s`, `env`, `taint` | as at the top level, for this action |
+| `risk` | a sentence: the call asks in every mode, auto included |
+| `device` | `true`: the action changes a connected device. It asks every time, in every mode, even with `"confirm_risky": false` |
+
+crit adds the `action` enum to `parameters`, and the action names are forgiving
+(`Settings-Get` works). `run` may be left out when every action has its own `argv`. Only
+crit's own [packs](packs/aosp.md) may give an action a Python `handler`.
+`taint = "device"` marks the output as a device log for [taint](security.md#taint).
+
 The description lint wants three things: a **purpose** sentence, a **not-for** sentence
 (when to use something else), and the **output** (what comes back). Small models pick tools
 by their descriptions.
@@ -285,6 +324,12 @@ A hook that times out, cannot start, or prints something other than JSON counts 
 **ask**, because a broken policy hook must not let calls through. When several hooks run
 for one event, deny beats ask, ask beats allow, and their `append_context` texts are joined.
 Project hooks (`.crit/hooks.toml`) need `crit trust` first.
+
+## Packs
+
+A pack is a built-in bundle of manifest tools, agents and defaults for one domain. It is
+turned on in the settings (`"packs": ["aosp"]`) and loads through the same loader, as
+trusted content. See [the AOSP pack](packs/aosp.md).
 
 ## What is not built yet
 

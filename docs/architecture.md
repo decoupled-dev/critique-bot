@@ -29,6 +29,7 @@ wires the concrete pieces together.
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
              extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
              indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
+             packs/ (domain packs, loaded through extensions: aosp triage/adb/aosp_build; docs/packs/aosp.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              tool_parse (fallback tool-call parser), profiles (model profiles, server presets),
@@ -126,6 +127,10 @@ which the sandbox replaces. File-defined agents are profiles: `/agent` (alias `/
 seeds the main chat with one, and `delegate(agent=...)` runs one in a helper chat
 (`agent_helpers`), with its allowlist enforced through `ToolRegistry.only` and a git
 worktree for an agent that writes.
+
+Domain packs (`packs/`, also tools layer) are built-in bundles that `load_session` adds when the
+settings name them: their manifest tools (which may name Python handlers in the pack) and agents
+load like the user's own, so the engine still sees one registry.
 - **ACP.** `crit --acp` already runs crit as an Agent Client Protocol agent
   ([acp.md](acp.md)); `agent_acp` is one more front end behind `ui_api`.
 
