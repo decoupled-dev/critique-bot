@@ -179,6 +179,9 @@ SLASH_COMMANDS: dict[str, str] = {
     "/tools": "List the tools the model can call",
     "/commands": "The shell commands run this session, with exit codes and times",
     "/trust": "Lift the taint restrictions after untrusted content (a fetched page, an outside file) was read",
+    "/sessions": "List this project's logged sessions",
+    "/resume": "Continue a logged session: /resume <id> (the next message goes to it)",
+    "/fork": "Copy a session up to an event and continue the copy: /fork [<id>] [--at SEQ]",
     "/theme": "Change the text style",
     "/exit": "Leave crit",
 }
@@ -228,6 +231,11 @@ class UIState:
     #: A role chosen with /role that the chat has not been re-seeded for yet.
     role_changed: str | None = None
     last_error: str = ""
+    #: The session log this conversation writes to (.crit/sessions/<id>), and a /resume or
+    #: /fork the loop has not switched to yet ({"folder": ...}).
+    sessions_dir: Path | None = None
+    session_id: str = ""
+    session_request: dict[str, str] | None = None
     # live region
     waiting_explicit: bool = False
     waiting_depth: int = 0
@@ -336,6 +344,20 @@ def pinned_skills() -> list[str]:
 def current_role() -> str:
     """The role id the session runs as (``generic`` until configured)."""
     return _state.role
+
+
+def set_session(sessions_dir: Path | None, session_id: str) -> None:
+    """The engine tells the UI which logged session this conversation is (for /status, /fork)."""
+    with _lock:
+        _state.sessions_dir = Path(sessions_dir) if sessions_dir is not None else None
+        _state.session_id = session_id or ""
+
+
+def take_session_change() -> dict[str, str] | None:
+    """The session /resume or /fork asked for since the last call, or None. The loop switches to it."""
+    with _lock:
+        request, _state.session_request = _state.session_request, None
+    return request
 
 
 def take_role_change() -> str | None:
@@ -1971,6 +1993,12 @@ def handle_command(word: str, rest: str = "") -> None:
         print_commands()
     elif word == "/trust":
         _trust_command()
+    elif word == "/sessions":
+        _sessions_command()
+    elif word == "/resume":
+        _resume_command(rest)
+    elif word == "/fork":
+        _fork_command(rest)
 
 
 def _trust_command() -> None:
@@ -1980,6 +2008,85 @@ def _trust_command() -> None:
     shown = taint.describe()
     if taint.trust("/trust"):
         note("good", f"Trusted: restrictions lifted (was {shown}).")
+
+
+def _sessions_dir() -> Path | None:
+    if _state.sessions_dir is not None:
+        return _state.sessions_dir
+    try:
+        from critique_bot.project_home import find_bot_home
+
+        home = find_bot_home(_state.workspace)
+    except Exception:
+        return None
+    return home.sessions_dir if home is not None else None
+
+
+def _sessions_command() -> None:
+    from critique_bot import session_log
+
+    folder = _sessions_dir()
+    rows = session_log.list_sessions(folder) if folder is not None else []
+    if not rows:
+        note("note", "No logged sessions in this project yet.")
+        return
+    for row in rows[:15]:
+        mark = glyphs().pointer if row.id == _state.session_id else " "
+        line = Text(f" {mark} {row.id}  ", style="bold" if row.id == _state.session_id else "")
+        line.append(f"{row.updated.replace('T', ' ')[:16]}  {row.status:<10} {row.turns:>4} turns  ", style=_style("dim"))
+        line.append(_short(row.title, 60))
+        _print(line)
+    _print(Text("   /resume <id> continues one; /fork [<id>] [--at SEQ] copies one", style=_style("dim")))
+
+
+def _resume_command(rest: str) -> None:
+    from critique_bot import session_log
+
+    ref = rest.strip()
+    if not ref:
+        _sessions_command()
+        return
+    folder = _sessions_dir()
+    if folder is None:
+        note("bad", "No .crit folder here, so there are no sessions.")
+        return
+    try:
+        found = session_log.find_session(folder, ref)
+    except session_log.SessionNotFound as exc:
+        note("bad", str(exc))
+        return
+    if found.name == _state.session_id:
+        note("note", "That is this session.")
+        return
+    with _lock:
+        _state.session_request = {"folder": str(found)}
+    note("note", f"Resuming session {found.name}: your next message continues it.")
+
+
+def _fork_command(rest: str) -> None:
+    from critique_bot import session_log
+    from critique_bot.sessions_cmd import split_fork
+
+    folder = _sessions_dir()
+    if folder is None:
+        note("bad", "No .crit folder here, so there are no sessions.")
+        return
+    try:
+        ref, at, _rest = split_fork(rest.split())
+    except ValueError:
+        note("bad", "Use /fork [<id>] [--at SEQ]; SEQ is an event number (crit sessions show <id>).")
+        return
+    if ref == "last" and _state.session_id:
+        ref = _state.session_id
+    try:
+        fork = session_log.fork_session(folder, ref, at=at)
+    except session_log.SessionNotFound as exc:
+        note("bad", str(exc))
+        return
+    with _lock:
+        _state.session_request = {"folder": str(fork.folder)}
+    note("note", f"Forked {fork.meta.get('parent')} at event {fork.meta.get('parent_seq')} into {fork.id}: "
+                 "your next message continues the copy.")
 
 
 def _mode_command(rest: str) -> None:
@@ -2138,6 +2245,11 @@ def print_status_table() -> None:
     table.add_row("role", roles.role_label(_state.role))
     if _state.pinned_skills:
         table.add_row("skills", ", ".join(_state.pinned_skills))
+    if _state.session_id:
+        table.add_row("session", _state.session_id)
+    cache = cache_hit_line()
+    if cache:
+        table.add_row("cache", cache)
     history = list(getattr(_state.session_shell, "history", None) or [])
     if history:
         failed = sum(1 for item in history if item.get("exit") != 0)
@@ -2149,6 +2261,20 @@ def print_status_table() -> None:
         for job in running[:5]:
             table.add_row("", f"{job.get('id')}: {_short(job.get('command', ''), 60)}")
     _print(Padding(table, (0, 0, 0, 2)))
+
+
+def cache_hit_line() -> str:
+    """``82% of 41.2k prompt tokens came from the server's cache (12 requests)``, or "" before any usage."""
+    from critique_bot import run_stats
+
+    stats = run_stats.snapshot()
+    prompt = int(stats.get("prompt_tokens") or 0)
+    if prompt <= 0:
+        return ""
+    cached = int(stats.get("cached_tokens") or 0)
+    size = f"{prompt / 1000:.1f}k" if prompt >= 1000 else str(prompt)
+    requests = int(stats.get("model_requests") or 0)
+    return f"{cached / prompt:.0%} of {size} prompt tokens came from the server's cache ({requests} requests)"
 
 
 def _jobs() -> list[dict] | None:

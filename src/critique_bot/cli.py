@@ -723,6 +723,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--crit-defaults", dest="crit_defaults", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
+        "--resume",
+        dest="resume_session",
+        default=None,
+        metavar="ID",
+        help="agent mode: continue a logged session (an id from crit sessions, or last); same as crit resume",
+    )
+    parser.add_argument(
         "--max-rounds",
         type=int,
         default=None,
@@ -924,6 +931,9 @@ SUBCOMMANDS = {
     "eval": "measure crit (or opencode) on a suite of real tasks (crit eval --help)",
     "audit": "show what crit did: commands, file writes, network requests, permissions (crit audit --help)",
     "doctor": "check this machine: crit doctor model (the model server) or crit doctor sandbox",
+    "sessions": "list, show, export, or prune this project's logged sessions (crit sessions --help)",
+    "resume": "continue a logged session: crit resume [<id>|--last] [task or options]",
+    "fork": "copy a logged session up to an event and continue the copy: crit fork <id> [--at SEQ]",
 }
 
 
@@ -1103,6 +1113,9 @@ def _main(argv: list[str] | None = None) -> int:
             "eval": _main_eval,
             "audit": _main_audit,
             "doctor": _main_doctor,
+            "sessions": _main_sessions,
+            "resume": _main_resume,
+            "fork": _main_fork,
         }
         return handlers[command](rest)
     return _main_run(argv)
@@ -1154,6 +1167,42 @@ def _main_doctor(argv: list[str]) -> int:
         return DOCTOR_TOPICS[argv[0]][1](argv[1:])
     args = parser.parse_args(argv)
     return DOCTOR_TOPICS[args.topic][1](list(args.rest))
+def _main_sessions(argv: list[str]) -> int:
+    from critique_bot.sessions_cmd import main_sessions
+
+    return main_sessions(argv)
+
+
+def _main_resume(argv: list[str]) -> int:
+    """``crit resume [<id>|--last] ...``: the agent, continuing a logged session."""
+    from critique_bot.sessions_cmd import USAGE, resume_argv, wants_help
+
+    if wants_help(argv):
+        print(USAGE["resume"])
+        raise SystemExit(0)
+    found = resume_argv(argv)
+    if isinstance(found, str):
+        log.notice(f"crit resume: {found}")
+        return 1
+    return _main_run(["--mode", MODE_AGENT, "--crit-defaults", *found])
+
+
+def _main_fork(argv: list[str]) -> int:
+    """``crit fork <id> [--at SEQ] ...``: copy a session up to an event, then continue the copy."""
+    from critique_bot.sessions_cmd import USAGE, fork_argv, wants_help
+
+    if wants_help(argv):
+        print(USAGE["fork"])
+        raise SystemExit(0)
+    found = fork_argv(argv)
+    if isinstance(found, str):
+        log.notice(f"crit fork: {found}")
+        return 1
+    rest, line = found
+    print(line, file=sys.stderr)
+    if len(rest) == 2 and not _may_ask():
+        return 0  # nothing to do now; crit resume <id> continues it later
+    return _main_run(["--mode", MODE_AGENT, "--crit-defaults", *rest])
 
 
 def _main_eval(argv: list[str]) -> int:
@@ -1671,6 +1720,7 @@ def _main_agent(args: argparse.Namespace) -> int:
         headed=bool(args.headed),
         approve_mode=_agent_mode(args),
         role=role_flag,
+        **({"resume": args.resume_session} if getattr(args, "resume_session", None) else {}),
     )
     config_prompts.offer_blocked_hosts()
     return code

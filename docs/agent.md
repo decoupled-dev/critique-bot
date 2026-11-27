@@ -305,11 +305,14 @@ Each session opens with a box that shows the folder, model (and, for a local mod
 | `/auto` | Auto mode for the rest of the session. |
 | `/skills [name ...]` | List the skills, or pin some for every task this session. `/skills off name` unpins. |
 | `/role [name]` | Show the roles, or switch this project's role (see [Roles](#roles)). The choice is kept in `.crit/settings.json`, and the next task starts a new conversation with the role's instructions. |
-| `/status` | Model, shell, folder, mode, role, pinned skills, and background commands. |
+| `/status` | Model, shell, folder, mode, role, pinned skills, the session id, the prompt-cache hit ratio, and background commands. |
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |
 | `/commands` | The shell commands run this session: exit code, time, shell, and whether one was retried or moved to the background. |
 | `/trust` | Lift the taint restrictions after untrusted content was read (see [Modes](#modes)); logged in the audit log. |
+| `/sessions` | This project's logged sessions ([sessions.md](sessions.md)). |
+| `/resume <id>` | Your next message continues that session. |
+| `/fork [<id>] [--at SEQ]` | Copy a session (this one by default) up to an event and continue the copy. |
 | `/theme` | Change the text style. |
 | `/exit` | Leave (`exit` and `quit` work too). |
 
@@ -412,7 +415,7 @@ crit treats a build differently from other commands. Builds include `gradlew`, `
 - **git never waits for an editor.** `rebase --continue`, merges and reverts keep their message. A git command that stops on conflicts adds a CONFLICTS section with the files and the exact next command.
 - **The model does not hand the work back.** A reply such as "please build the APK yourself in Android Studio" or "run this command on your machine" is sent back, up to twice, with the instruction to run it with `run_command` and fix the cause from the hints.
 
-Every command is listed by `/commands` and saved in `.crit/sessions/<stamp>/agent.json` under `commands`.
+Every command is listed by `/commands` and saved in `.crit/sessions/<id>/agent.json` under `commands`.
 
 ### Helper conversations: small sessions for parts of a task
 
@@ -465,7 +468,7 @@ crit "explain the build setup"
 
 With a local model there is no sign-in step and no browser window. The header shows the model and where it runs (`qwen2.5-coder-14b · local at 127.0.0.1:8080`). The first run still picks the role and, once per user, asks for the text style. Helper tabs (`delegate`) work: each helper is its own conversation with the server. Starting a new conversation is immediate, and a reply that stops arriving is retried the same way as a page that stops answering.
 
-A local model has a smaller context window than a hosted one, so crit starts a new conversation sooner (about `num_ctx × 2` characters) and sends smaller tool results (`num_ctx / 2` characters). crit never asks for the context size: with `local.num_ctx` at 0 it reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `max_model_len`), and when the server does not say, it assumes 32768. Set `local.num_ctx` in `config.json` to override it with the size the server was started with (`llama-server -c`); `compact_after_chars` and `max_result_chars` in `.crit/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
+A local model has a smaller context window than a hosted one, so crit sends smaller tool results (`num_ctx / 2` characters) and, instead of starting new conversations by size, compacts the conversation when it nears the window: old tool results are masked, then older turns summarized ([sessions.md](sessions.md#compaction-model-api-backends)). crit never asks for the context size: with `local.num_ctx` at 0 it reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `max_model_len`), and when the server does not say, it assumes 32768. Set `local.num_ctx` in `config.json` to override it with the size the server was started with (`llama-server -c`); `compact_after_chars` and `max_result_chars` in `.crit/settings.json` still override these defaults. Nothing leaves the PC: the server must be on localhost unless its host is in `allowed_hosts`. Keys and limits: [`config.json.md`](config.json.md#local-model-backend-local).
 
 A server that needs an API key (a 401 or 403 when crit checks it) makes the first run say `the server needs an API key` and ask `API key: ` without showing what you type; a refused key is asked once more, then `Try another key? [Y/n]`. Later, `crit config --api-key` asks for it the same way, `crit config --api-key -` reads it from stdin, and `crit config --api-key none` removes it; `CRIT_API_KEY` works too. It is stored as `local.api_key` only in your own `~/.crit/config.json` (a shared config file cannot set it), sent as `Authorization: Bearer <key>` only to the configured server, never logged, and redacted from transcripts. `crit config` shows `API key: set` or `API key: not set`, never the key.
 
@@ -529,7 +532,7 @@ When the output is not a terminal, crit prints plain text with no colors or spin
 
 ### Project notes
 
-The first `crit` writes `.crit/AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every conversation (the first task, `/new`, and each new conversation after compaction), the same way `CLAUDE.md` works for Claude Code. Put the build and test commands and the rules the model should follow there:
+The first `crit` writes `.crit/AGENT.md`. Text below the `<!-- notes start -->` line is sent with the instructions at the start of every conversation (the first task, `/new`, and each new conversation after compaction), the same way `CLAUDE.md` works for Claude Code. `AGENTS.md` files from the repository root down to the project folder, and your own `~/.crit/AGENT.md`, go with it (deeper files last; 32 KiB in all, with a warning when cut; see [sessions.md](sessions.md#memory-files)). Keep them short and written by hand: crit never generates them. Put the build and test commands and the rules the model should follow there:
 
 ```markdown
 <!-- notes start -->
@@ -576,7 +579,11 @@ On Linux and macOS the same lines use `./gradlew`.
 | `check_timeout` | Seconds the `check_command` may run. Default 600. |
 | `compact_after_chars` | When the conversation holds about this many characters, crit starts a new conversation in the middle of a task; a new task starts in a new conversation at half of it (see [Long sessions and replies that never come](#long-sessions-and-replies-that-never-come)). Default 120000, or `num_ctx × 2` with a local model; values under 10000 are ignored. |
 | `compact_after_turns` | Start a new conversation after this many messages in one conversation (half of it between tasks). Default 30; at least 5. |
-| `compact_after_minutes` | Start a new conversation after it has been open this many minutes. Default 60; at least 5. |
+| `compact_after_minutes` | Start a new conversation after it has been open this many minutes. Default 60; at least 5. Web chat only: a local model is compacted by context pressure instead (`compaction_*` keys, see [sessions.md](sessions.md#compaction-model-api-backends)). |
+| `session_log` | `false`: do not keep an event log for new sessions (no `crit resume` / `fork` for them). Default on. |
+| `sessions_keep_days`, `sessions_keep` | What `crit sessions prune` keeps: 30 days and 200 sessions by default. |
+| `slot_pinning` | llama.cpp: send each session to one slot (`id_slot`) so its prompt cache stays warm. Default on when the server is llama.cpp; `false` turns it off; a number is the slot count. |
+| `memory_files` | `false`: use only `.crit/AGENT.md`, not `AGENTS.md` files or `~/.crit/AGENT.md`. |
 | `handoff_notes` | `false` skips asking the old conversation for a handoff note before moving to a new one. Default `true`. |
 | `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same conversation when nothing was answered yet; a stalled reply, an unhealthy conversation, and every later retry go to a new conversation with a summary of the task. Default 3. |
 

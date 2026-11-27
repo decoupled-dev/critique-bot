@@ -16,6 +16,7 @@ and ``GET /v1/models`` for the model list. A reply that stops arriving is notice
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import re
@@ -284,6 +285,37 @@ class LocalModelSession(ChatSession):
         self.messages = []
         return True
 
+    # The message list, for the engine's session log and compaction. Generic: OpenAI chat
+    # messages in, OpenAI chat messages out; nothing here knows why the list changes.
+
+    def history(self) -> list[dict[str, Any]]:
+        """A copy of the conversation as it goes to the server (OpenAI chat messages)."""
+        return [dict(message) for message in self.messages]
+
+    def replace_history(self, messages: list[dict[str, Any]]) -> None:
+        """Continue from ``messages`` instead of the current list (resume, compaction)."""
+        self.messages = [dict(message) for message in messages if isinstance(message, dict)]
+        known = [str(call.get("id") or "") for message in self.messages for call in message.get("tool_calls") or []
+                 if isinstance(call, dict)]
+        numbers = [int(name[5:]) for name in known if name.startswith("call_") and name[5:].isdigit()]
+        self._call_count = max([self._call_count, *numbers])
+
+    def pin_slot(self, key: str, slots: int | None = None) -> int | None:
+        """Send every request of this session to one llama.cpp slot, so its KV cache stays warm.
+
+        The slot is a stable hash of ``key`` (the session id) modulo the server's slots, read
+        from ``GET /props`` (``total_slots``), or ``slots`` when given (no detection). Only
+        llama.cpp takes ``id_slot``; with another server this does nothing and returns None.
+        """
+        count = slots if isinstance(slots, int) and slots > 0 else server_slots(
+            self.client.url, self.client._api_key)
+        if not count:
+            self.client.slot = None
+            return None
+        digest = hashlib.sha256(key.encode("utf-8")).digest()
+        self.client.slot = int.from_bytes(digest[:4], "big") % count
+        return self.client.slot
+
     def stop_generation(self) -> bool:
         # Requests are synchronous: when send returns or raises, the server has stopped.
         return False
@@ -305,6 +337,8 @@ class LocalModelClient:
         #: ``local.profile``: the profile id to use instead of matching the model name.
         self.profile_id = config.local.profile
         self._profile: tuple[str, Any] | None = None
+        #: llama.cpp: the slot this client's requests go to (``id_slot``), set by pin_slot.
+        self.slot: int | None = None
         #: ``local.api_key`` (or CRIT_API_KEY): sent as a Bearer token, only to this server.
         self._api_key = config.local.api_key
         self.first_chunk_seconds = max(config.reply_start_ms / 1000.0, _MIN_FIRST_CHUNK_SECONDS)
@@ -437,6 +471,10 @@ class LocalModelClient:
         max_tokens = self.max_tokens or profile.max_tokens
         if max_tokens:
             body["max_tokens"] = max_tokens
+        if self.slot is not None:
+            # llama.cpp: keep this conversation in one slot and reuse its cached prefix.
+            body["id_slot"] = self.slot
+            body["cache_prompt"] = True
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -987,3 +1025,20 @@ def probe_turn(
                                     for c in found]
                 break
     return out
+#: Slots each llama.cpp server reported (url -> count; 0 for a server that is not llama.cpp).
+_reported_slots: dict[str, int] = {}
+
+
+def server_slots(url: str, api_key: str | None = None) -> int:
+    """llama.cpp's slot count (``GET /props`` ``total_slots``), or 0 for any other server.
+
+    Only llama.cpp serves ``/props`` with ``total_slots``; vLLM and the rest answer 404 and
+    get no ``id_slot`` in their requests. Asked once per server per run.
+    """
+    key = url.rstrip("/")
+    if key in _reported_slots:
+        return _reported_slots[key]
+    props = _get_json(url, "/props", api_key)
+    found = _positive(props.get("total_slots")) if isinstance(props, dict) else 0
+    _reported_slots[key] = found
+    return found

@@ -118,6 +118,14 @@ class NullUI:
     def take_role_change(self) -> str | None:
         return None
 
+    def take_session_change(self) -> dict[str, str] | None:
+        """A logged session /resume or /fork asked to switch to: {"folder": path}."""
+        return None
+
+    def set_session(self, sessions_dir: Path | None, session_id: str) -> None:
+        """Which logged session the conversation writes to (shown in /status)."""
+        return None
+
     def pinned_skills(self) -> list[str]:
         return []
 
