@@ -33,7 +33,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from critique_bot import log, roles
+from critique_bot import log, roles, taint
 from critique_bot.ui_api import _MODE_ALIASES, MODE_LABELS, MODES, NEW_CHAT, normalize_mode  # noqa: F401
 
 _QUIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit", "/q"})
@@ -178,6 +178,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/shell": "Show or switch the default shell",
     "/tools": "List the tools the model can call",
     "/commands": "The shell commands run this session, with exit codes and times",
+    "/trust": "Lift the taint restrictions after untrusted content (a fetched page, an outside file) was read",
     "/theme": "Change the text style",
     "/exit": "Leave crit",
 }
@@ -298,6 +299,7 @@ def configure(
             _state.cache_dir = Path(cache_dir)
         if session_shell is not None:
             _state.session_shell = session_shell
+            taint.on_change(_taint_note)
         if tools is not None:
             _state.tools = tuple(tools)
         if role is not None:
@@ -447,6 +449,10 @@ def welcome_header(*, version: str | None = None) -> None:
     _print(Panel(body, border_style=_style("accent"), expand=False, padding=(0, 1)))
     _print(Text(" Tips: describe a task, ask a question, or type / for commands.", style=_style("dim")))
     _print()
+
+
+def _taint_note(text: str) -> None:
+    note("note" if "Untrusted" in text else "good", text)
 
 
 def note(kind: str, message: str) -> None:
@@ -1692,6 +1698,9 @@ def _toolbar_text(armed_until: list[float]) -> Any:
             rows.append(("class:hint", " (shift+tab to cycle)"))
         else:
             rows.append(("class:hint", "  ask before edits · shift+tab to cycle"))
+        marker = taint.marker()
+        if marker:
+            rows.append(("class:hint.warn", f" · {marker} (/trust)"))
         parts = [p for p in (_state.shell_label, "? for shortcuts") if p]
         rows.append(("class:hint", " · " + " · ".join(parts)))
         return rows
@@ -1960,6 +1969,17 @@ def handle_command(word: str, rest: str = "") -> None:
         _print_tools()
     elif word == "/commands":
         print_commands()
+    elif word == "/trust":
+        _trust_command()
+
+
+def _trust_command() -> None:
+    if not taint.tainted():
+        note("note", "Nothing to trust: no untrusted content entered this session.")
+        return
+    shown = taint.describe()
+    if taint.trust("/trust"):
+        note("good", f"Trusted: restrictions lifted (was {shown}).")
 
 
 def _mode_command(rest: str) -> None:

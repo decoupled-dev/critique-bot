@@ -6,7 +6,7 @@ import shutil
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from critique_bot import egress, env_names, integrations, log
 from critique_bot import redaction
@@ -217,6 +217,9 @@ class BotConfig:
     redact_terms: tuple[str, ...] = ()
     #: Personal data (emails, phone numbers, cards, IBANs, national IDs) is redacted too.
     redact_pii: bool = True
+    #: The default OS sandbox for agent commands ("read-only", "workspace-write", "full", or an
+    #: object; see sandbox/__init__.py). .crit/settings.json "sandbox" overrides it. None: workspace-write.
+    sandbox: Any = None
 
     @property
     def is_local(self) -> bool:
@@ -576,8 +579,18 @@ def load_config(
         gitlab=gitlab,
         jira=jira,
         site_login=site_login,
+        sandbox=_sandbox_field(raw.get("sandbox")),
         **_redaction_settings(raw),
     )
+
+
+def _sandbox_field(value: object) -> Any:
+    """config.json "sandbox": a mode name or an object (checked in full when a session starts)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (str, dict)):
+        return value
+    raise ConfigError('sandbox must be "read-only", "workspace-write", "full", or an object with "mode"')
 
 
 # --------------------------------------------------------------------------- where the config lives
@@ -817,6 +830,7 @@ KNOWN_CONFIG_KEYS = frozenset(
         "min_interval_seconds", "interval_jitter_seconds", "turn_pause_seconds", "max_parallel_tabs",
         "max_attempts", "result_retention", "job_timeout_seconds", "max_prompt_chars", "max_file_chars",
         "max_files", "max_read_bytes", "local", "gitlab", "gitlab_base_url", "redact_terms", "redact_pii",
+        "sandbox",
     }
 )
 

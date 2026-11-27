@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
+from critique_bot import audit, sandbox
 from critique_bot.privacy import TELEMETRY_OFF_ENV
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
@@ -1914,9 +1915,12 @@ class _Launch:
         want_env: bool = False,
         stdin_pipe: bool = False,
         log_dir: Path | None = None,
+        sandbox_policy: Any = None,
     ) -> None:
         self.shell = shell
         self.command = command
+        #: The sandbox mode this ran in ("full" when not sandboxed).
+        self.sandbox_mode = getattr(sandbox_policy, "mode", "full") if sandbox_policy is not None else "full"
         folder = _private_dir()
         token = uuid.uuid4().hex
         self.marker = os.path.join(folder, f"{token}.cwd") if want_cwd else None
@@ -1956,8 +1960,9 @@ class _Launch:
                 capture.sink = self._log
                 capture.sink_lock = shared
         try:
-            self.proc = subprocess.Popen(
+            self.proc = sandbox.run(
                 script_argv(shell, self.script),
+                policy=sandbox_policy,
                 cwd=str(cwd),
                 stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -2119,10 +2124,12 @@ def _execute(
     detach_on_timeout: bool = False,
     offline: bool = False,
     want_env: bool = False,
+    sandbox_policy: Any = None,
 ) -> tuple[_Launch, bool, bool]:
     """Run until exit, timeout, or cancel. With ``detach_on_timeout`` a command that is
     still producing work at the deadline is left running (the caller adopts it)."""
-    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd, offline=offline, want_env=want_env)
+    launch = _Launch(shell, command, cwd, env, want_cwd=want_cwd, offline=offline, want_env=want_env,
+                     sandbox_policy=sandbox_policy)
     timed_out = interrupted = False
     deadline = launch.started + max(0.0, timeout)
     last_flush = 0.0
@@ -2251,6 +2258,11 @@ class ShellSession:
         self.detach_on_timeout = True
         #: Where complete logs of long outputs and jobs are kept (None: crit's private temp folder).
         self.log_dir: Path | None = None
+        #: The sandbox commands run in (a sandbox.Policy), or None: unsandboxed, as before. See use_sandbox.
+        self.sandbox: Any = None
+        #: Folders the user allowed writing to for this session (sandbox escapes).
+        self.sandbox_escapes: list[Path] = []
+        self._sandbox_build: Callable[[tuple[Path, ...]], Any] | None = None
         if self.shell.is_posix and sys.platform != "win32":
             prewarm_login_environment()
         _SESSIONS.add(self)
@@ -2338,6 +2350,7 @@ class ShellSession:
             detach_on_timeout=self.detach_on_timeout,
             offline=self.offline,
             want_env=True,
+            sandbox_policy=self.sandbox,
         )
         if timed_out and launch.poll() is None and not launch.killed:
             job_id = self._adopt(command, launch, chosen)
@@ -2444,6 +2457,8 @@ class ShellSession:
         with self._lock:
             self.history.append(entry)
             del self.history[:-200]
+        audit.record("command", command=command, cwd=str(start), shell=result.shell.label, sandbox=self.sandbox_mode(),
+                     exit=result.exit_code, result=how, seconds=entry["seconds"])
 
     def note_retry(self, reason: str) -> None:
         """Mark the last history entry as retried (the next entry is the retry)."""
@@ -2459,13 +2474,34 @@ class ShellSession:
         start = self._start_dir(cwd)
         launch = _Launch(
             chosen, command, start, self.environment(), want_cwd=False, offline=self.offline, stdin_pipe=True,
-            log_dir=self.log_dir,
+            log_dir=self.log_dir, sandbox_policy=self.sandbox,
         )
         with self._lock:
             self._counter += 1
             job_id = f"b{self._counter}"
             self._jobs[job_id] = _Job(job_id, command, launch, chosen)
+        audit.record("command", command=command, cwd=str(start), shell=chosen.label, sandbox=self.sandbox_mode(),
+                     background=job_id)
         return job_id
+
+    # -- sandbox
+
+    def sandbox_mode(self) -> str:
+        """The sandbox mode commands run in now ("full": not sandboxed)."""
+        policy = self.sandbox
+        return str(getattr(policy, "mode", "full")) if policy is not None else "full"
+
+    def allow_write(self, folder: Path) -> bool:
+        """Let later commands write to ``folder`` (a sandbox escape the user allowed). True when it changed."""
+        if self.sandbox is None or self._sandbox_build is None:
+            return False
+        real = Path(os.path.realpath(folder))
+        if real in self.sandbox_escapes:
+            return False
+        self.sandbox_escapes.append(real)
+        self.sandbox = self._sandbox_build(tuple(self.sandbox_escapes))
+        audit.record("sandbox", event="escape", path=str(real), mode=self.sandbox_mode())
+        return True
 
     def _job(self, job_id: str) -> _Job:
         job = self._jobs.get(str(job_id).strip())
@@ -2659,6 +2695,93 @@ class ShellSession:
                 job.launch.cleanup()
             except Exception:  # noqa: BLE001
                 pass
+
+
+# --------------------------------------------------------------------------- sandbox
+
+_SANDBOX_NOTED = False
+
+
+def use_sandbox(
+    session: Any,
+    settings: dict[str, Any] | None,
+    *,
+    default: Any = None,
+    offline: bool = False,
+    home: Path | None = None,
+    platform_name: str | None = None,
+) -> str:
+    """Run ``session``'s commands in the sandbox ``settings["sandbox"]`` asks for; a note for the user.
+
+    ``default`` is config.json's ``"sandbox"``. ``offline`` (strict egress or ``"offline": true``):
+    commands reach no host; the egress proxy still forwards the adb port. When the platform
+    cannot sandbox, commands run as before (permission prompts unchanged) and the note
+    says why, once per process. The note is "" when there is nothing to say.
+    """
+    if session is None or not hasattr(session, "sandbox"):
+        return ""
+    options = settings if isinstance(settings, dict) else {}
+    try:
+        wanted = sandbox.parse_settings(options.get("sandbox"), default)
+    except ValueError as exc:
+        audit.record("sandbox", event="invalid", error=str(exc))
+        note = _apply_sandbox(session, sandbox.Settings(), offline=offline, home=home, platform_name=platform_name)
+        return f"sandbox setting ignored ({exc}); using the default." + (f" {note}" if note else "")
+    return _apply_sandbox(session, wanted, offline=offline, home=home, platform_name=platform_name)
+
+
+def _apply_sandbox(session: Any, wanted: Any, *, offline: bool, home: Path | None, platform_name: str | None) -> str:
+    global _SANDBOX_NOTED
+    if wanted.mode == sandbox.FULL:
+        session.sandbox = None
+        audit.record("sandbox", event="session", mode=sandbox.FULL, workspace=str(session.workspace))
+        return "sandbox is off (\"sandbox\": \"full\"): commands run with your own rights" if wanted.explicit else ""
+    found = sandbox.availability(platform_name)
+    if not found.ok:
+        session.sandbox = None
+        audit.record("sandbox", event="unavailable", mode=wanted.mode, backend=found.backend, problem=found.problem)
+        if _SANDBOX_NOTED:
+            return ""
+        _SANDBOX_NOTED = True
+        return (f"commands are not sandboxed: {found.problem}. They run as before, with permission prompts. "
+                "crit doctor sandbox says how to fix it.")
+    proxy = None
+    ports = tuple(wanted.ports) + tuple(sandbox.PRESETS.get(wanted.preset, {}).get("ports", ()))
+    if wanted.mode == sandbox.WORKSPACE_WRITE and (ports or not offline):
+        try:
+            from critique_bot import egress_proxy
+
+            proxy = egress_proxy.shared(ports=ports, allow_hosts=not offline)
+        except Exception as exc:  # noqa: BLE001 - no proxy: no network at all, still sandboxed
+            audit.record("sandbox", event="proxy_failed", error=str(exc))
+            proxy = None
+    folders: list[Path] = [Path(_private_dir())]
+    if getattr(session, "log_dir", None) is not None:
+        folders.append(Path(session.log_dir))
+
+    def build(escapes: tuple[Path, ...] = ()) -> Any:
+        return sandbox.build_policy(
+            wanted,
+            session.workspace,
+            home=home,
+            private=tuple(folders),
+            extra_writable=escapes,
+            proxy_socket=getattr(proxy, "socket_path", "") if proxy is not None else "",
+            proxy_port=getattr(proxy, "port", 0) if proxy is not None else 0,
+            network=proxy is not None and not offline,
+        )
+
+    session._sandbox_build = build
+    session.sandbox = build(tuple(getattr(session, "sandbox_escapes", ()) or ()))
+    policy = session.sandbox
+    audit.record(
+        "sandbox", event="session", mode=policy.mode, backend=found.backend, workspace=str(policy.workspace),
+        writable=[str(item) for item in policy.writable], masked=len(policy.masked), network=policy.network,
+        ports=list(policy.ports),
+    )
+    where = "the workspace and build caches" if policy.mode == sandbox.WORKSPACE_WRITE else "nothing (read-only)"
+    net = ("the egress allow-list through crit's proxy" if policy.network == "proxy" else "no network")
+    return f"commands run sandboxed ({policy.mode}, {found.backend}): they may write {where}; {net}"
 
 
 # --------------------------------------------------------------------------- compatibility

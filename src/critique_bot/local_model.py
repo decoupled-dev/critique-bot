@@ -24,7 +24,7 @@ import time
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from critique_bot import log, run_stats
+from critique_bot import audit, log, run_stats
 from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError, ChatProvider, ChatSession
 from critique_bot.config import BotConfig
 
@@ -549,6 +549,10 @@ class LocalModelClient:
         return http.client.HTTPConnection(self._host, self._port, timeout=timeout)
 
     def _open(self, method: str, path: str, body: dict[str, Any] | None, *, timeout: float) -> _Stream:
+        endpoint = f"{'https' if self._https else 'http'}://{self._host}:{self._port}{self._prefix}{path}"
+        if endpoint not in _AUDITED:
+            _AUDITED.add(endpoint)  # the audit log names each model endpoint once per process
+            audit.record("model", endpoint=endpoint, backend="local", method=method)
         conn = self._connection(_CONNECT_SECONDS)
         payload = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Accept": "application/x-ndjson, text/event-stream, application/json"}
@@ -573,6 +577,9 @@ class LocalModelClient:
             return opened.status, opened.read_all()
         finally:
             opened.close()
+
+
+_AUDITED: set[str] = set()
 
 
 class _Stream:

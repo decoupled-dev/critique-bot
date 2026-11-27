@@ -922,6 +922,8 @@ SUBCOMMANDS = {
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
     "eval": "measure crit (or opencode) on a suite of real tasks (crit eval --help)",
+    "audit": "show what crit did: commands, file writes, network requests, permissions (crit audit --help)",
+    "doctor": "check this machine: crit doctor sandbox",
 }
 
 
@@ -1099,9 +1101,43 @@ def _main(argv: list[str] | None = None) -> int:
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
             "eval": _main_eval,
+            "audit": _main_audit,
+            "doctor": _main_doctor,
         }
         return handlers[command](rest)
     return _main_run(argv)
+
+
+def _main_audit(argv: list[str]) -> int:
+    from critique_bot import audit_cmd
+
+    return audit_cmd.main(argv)
+
+
+def _doctor_sandbox(argv: list[str]) -> int:
+    from critique_bot.sandbox_doctor import doctor_sandbox
+
+    return doctor_sandbox(argv)
+
+
+#: ``crit doctor <topic>``: each topic is one function taking the remaining arguments.
+DOCTOR_TOPICS = {
+    "sandbox": ("can commands run in the OS sandbox here, and how to fix it if not", _doctor_sandbox),
+}
+
+
+def _main_doctor(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="crit doctor",
+        description="Check this machine. Topics: "
+        + "; ".join(f"{name}: {about}" for name, (about, _handler) in DOCTOR_TOPICS.items()),
+    )
+    parser.add_argument("topic", choices=sorted(DOCTOR_TOPICS), help="what to check")
+    parser.add_argument("rest", nargs=argparse.REMAINDER, help="options for that check (crit doctor TOPIC --help)")
+    if argv and argv[0] in DOCTOR_TOPICS:
+        return DOCTOR_TOPICS[argv[0]][1](argv[1:])
+    args = parser.parse_args(argv)
+    return DOCTOR_TOPICS[args.topic][1](list(args.rest))
 
 
 def _main_eval(argv: list[str]) -> int:
