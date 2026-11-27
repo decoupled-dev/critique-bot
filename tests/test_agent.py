@@ -1004,11 +1004,12 @@ class ReplayTests(unittest.TestCase):
             "`bot-agent` is an alias for `--mode agent`. Later turns are the task, then tool results. "
             "The model emits <tool_call> blocks.",
         )
-        session = _Scripted([reply, "COMPLETED"])
+        # A loose (punctuation) match needs the file read first: stale-read protection.
+        session = _Scripted([_call("read_files", path="README.md"), reply, "COMPLETED"])
         outcome: list[str] = []
         _loop(session, root, "Add one sentence to the Agent section of README.md", outcome=outcome)
         self.assertIn("emits <tool_call> blocks", readme.read_text(encoding="utf-8"))
-        self.assertNotIn("cut off", session.sent[1])
+        self.assertNotIn("cut off", session.sent[2])
         self.assertEqual(outcome, ["COMPLETED"])
 
 

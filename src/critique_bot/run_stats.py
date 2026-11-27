@@ -14,7 +14,10 @@ Counted:
 * ``edits`` per tool: calls, ok, seconds, and an estimate of the output tokens the model
   spent on the arguments (characters / 4);
 * ``repeat_breaks`` (identical calls refused as a loop), ``compactions`` (the chat moved
-  to a new conversation), ``stale_edit_refusals``;
+  to a new conversation), ``stale_edit_refusals`` (an edit refused because the file changed
+  on disk since the model read it), ``unread_edit_refusals`` (an edit of a file never read);
+* ``edits[tool]["steps"]``: how each edit matched (the match-ladder step, or ambiguous /
+  refused / guard_rejected), recorded by the tools themselves;
 * ``exit_reason``: the last status the task reported (COMPLETED, FAILED, ...).
 """
 
@@ -31,6 +34,7 @@ _lock = threading.Lock()
 _counts: Counter[str] = Counter()
 _tools: Counter[str] = Counter()
 _edits: dict[str, dict[str, float]] = {}
+_steps: dict[str, Counter[str]] = {}
 _values: dict[str, Any] = {}
 
 
@@ -39,6 +43,7 @@ def reset() -> None:
         _counts.clear()
         _tools.clear()
         _edits.clear()
+        _steps.clear()
         _values.clear()
 
 
@@ -89,6 +94,13 @@ def edit(name: str, *, ok: bool, seconds: float, argument_chars: int) -> None:
         row["out_tokens"] += max(0, argument_chars) // 4
 
 
+def edit_step(name: str, step: str) -> None:
+    """How one edit (or one patch hunk) matched: a match-ladder step (exact, whitespace, indent,
+    punctuation, fuzzy) or why it did not (ambiguous, refused, guard_rejected)."""
+    with _lock:
+        _steps.setdefault(name, Counter())[step or "?"] += 1
+
+
 def snapshot() -> dict[str, Any]:
     with _lock:
         out: dict[str, Any] = {
@@ -109,6 +121,8 @@ def snapshot() -> dict[str, Any]:
         }
         out["tool_calls"] = dict(_tools)
         out["edits"] = {name: dict(row) for name, row in _edits.items()}
+        for name, steps in _steps.items():
+            out["edits"].setdefault(name, {})["steps"] = dict(steps)
         out.update(_values)
         for key, value in _counts.items():
             out.setdefault(key, value)

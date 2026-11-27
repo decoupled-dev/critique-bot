@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index
-from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, soong
+from critique_bot import big_file, file_catalog, gitlab_access, integrations, log_tools, run_stats, soong
 from critique_bot.code_index import SKIP_DIR_NAMES, refresh_path
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 from critique_bot.redaction import REDACTED, redact_secrets, sensitive_file  # noqa: F401 (re-exported)
@@ -136,6 +136,10 @@ class TaskState:
     todos: list[dict[str, str]] = field(default_factory=list)
     commands: int = 0
     commands_failed: int = 0
+    #: Content digest of each file as the model last saw it (read or written): stale-edit protection.
+    versions: dict[str, str] = field(default_factory=dict)
+    #: Failed edits per file since its last successful edit (the whole-file hint counts these).
+    edit_failures: dict[str, int] = field(default_factory=dict)
 
     @property
     def mutated(self) -> bool:
@@ -236,6 +240,23 @@ class ToolContext:
     delegate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None
     #: Saved "allow" and "deny" rules from .crit/settings.json (agent_rules.Rules); None when there are none.
     rules: Any = None
+    #: The effective .crit/settings.json (tool_output_cap_tokens, edit_fail_limit, whole_file_max_lines,
+    #: edit_guard, lint, lint_timeout_s, shell_timeout_s, ...). None: every default.
+    settings: dict[str, Any] | None = None
+
+    def setting(self, key: str, default: Any = None) -> Any:
+        """One setting, or ``default`` when it is not set."""
+        if isinstance(self.settings, dict) and self.settings.get(key) is not None:
+            return self.settings[key]
+        return default
+
+    def int_setting(self, key: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+        """A whole-number setting within bounds; ``default`` when it is missing or not a number."""
+        raw = self.setting(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < minimum:
+            return default
+        value = int(raw)
+        return min(value, maximum) if maximum is not None else value
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).resolve()
@@ -1193,10 +1214,13 @@ def _read_one(
         out.append(f"offset {start} is past the end; the file has {total} lines")
     elif total == 0:
         out.append("(empty file)")
+        if state is not None:
+            state.versions[name] = agent_edit.content_digest(path)
     out.extend(numbered)
     shown_end = start + len(numbered) - 1
     if numbered and state is not None:
         state.note_read(name, version, start, shown_end)
+        state.versions[name] = agent_edit.content_digest(path)
     if numbered and shown_end < total:
         out.append(
             f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}{capped_note}. "
@@ -1259,6 +1283,7 @@ def _read_window(
     shown_end = start + len(numbered) - 1
     if numbered and state is not None and not column:
         state.note_read(name, version, start, shown_end)
+        state.versions[name] = agent_edit.content_digest(path)
     if numbered and shown_end < total:
         out.append(f"... {total} lines; next offset={shown_end + 1} limit={DEFAULT_READ_LINES}.")
     return "\n".join(out)
@@ -1722,6 +1747,10 @@ def _after_write(ctx: ToolContext, path: Path) -> str:
     version = agent_edit.file_version(path)
     if ctx.state is not None:
         ctx.state.note_write(name, version)
+        if path.is_file():
+            ctx.state.versions[name] = agent_edit.content_digest(path)
+        else:
+            ctx.state.versions.pop(name, None)
     if not Path(name).is_absolute():
         widen_index(ctx, name)
         catalog = file_catalog.catalog_for(ctx.workspace)
@@ -1961,10 +1990,135 @@ _SECRET_DIFF_NOTE = "(diff not shown: this file usually holds secrets)"
 _NO_UNDO_NOTE = "crit undo will not restore it (files that hold secrets are not copied)"
 
 
+#: After this many failed edits on one file, the result suggests a whole-file write (setting edit_fail_limit).
+DEFAULT_EDIT_FAIL_LIMIT = 2
+#: Files longer than this get "make smaller edits" instead (setting whole_file_max_lines).
+DEFAULT_WHOLE_FILE_MAX_LINES = 800
+
+
+UNREAD = "unread"
+
+
+def stale_problem(ctx: ToolContext, path: Path, name: str, old: str = "") -> str:
+    """Why an edit of the existing file ``path`` must wait for a (re-)read, or "".
+
+    A file whose bytes changed since the model last read or wrote it (the user, a
+    formatter, a build, a command) is refused; the message names the lines to read again.
+    A file never read in this task gives :data:`UNREAD`: the caller allows it only when
+    every edit matches the file exactly (that proves the model has the text, say from a
+    search hit, and saves a turn on a slow local model) and refuses it otherwise, with
+    :func:`unread_message`. Without task state (a direct tool call) nothing is refused.
+    """
+    state = ctx.state
+    if state is None or not path.is_file():
+        return ""
+    known = state.versions.get(name)
+    if known is None:
+        if name in state.reads or name in state.edits:
+            return ""  # read before digests were kept (an old state): trust it
+        return UNREAD
+    current = agent_edit.content_digest(path)
+    if current == known:
+        return ""
+    run_stats.count("stale_edit_refusals")
+    return (
+        f"{name} changed on disk since you read it (the user, a formatter, a build, or a command changed it); "
+        f"nothing was applied. Re-read {_reread_range(ctx, path, name, old)} and edit again"
+    )
+
+
+def unread_message(name: str) -> str:
+    run_stats.count("unread_edit_refusals")
+    return (
+        f"{name} was not read in this task and old_string does not match its text exactly, so nothing was applied. "
+        "Read it first (read_files) and copy old_string from what you read"
+    )
+
+
+def _reread_range(ctx: ToolContext, path: Path, name: str, old: str) -> str:
+    """"lines X-Y" around where ``old`` is now, else the spans read before, else the file."""
+    try:
+        lines = agent_edit.load_text(path).text.split("\n")
+    except (OSError, ValueError):
+        lines = []
+    needle = agent_edit.strip_read_prefix(old or "").strip("\n")
+    if needle and lines:
+        first = needle.split("\n")[0].strip()
+        for index, line in enumerate(lines):
+            if first and first in line:
+                width = needle.count("\n") + 1
+                return f"lines {max(1, index + 1 - 5)}-{min(len(lines), index + width + 5)}"
+    record = ctx.state.reads.get(name) if ctx.state is not None else None
+    if record is not None and record.spans:
+        return "lines " + _spans_text(record.spans)
+    return f"{name}" if not lines else f"lines 1-{min(len(lines), 100)}"
+
+
+def _note_edit_outcome(ctx: ToolContext, name: str, path: Path, result: dict[str, Any]) -> dict[str, Any]:
+    """Count failed edits per file; past ``edit_fail_limit`` the result says what to do instead."""
+    state = ctx.state
+    if state is None or not name:
+        return result
+    if result.get("ok"):
+        state.edit_failures.pop(name, None)
+        return result
+    count = state.edit_failures.get(name, 0) + 1
+    state.edit_failures[name] = count
+    limit = ctx.int_setting("edit_fail_limit", DEFAULT_EDIT_FAIL_LIMIT, 1)
+    if count < limit:
+        return result
+    longest = ctx.int_setting("whole_file_max_lines", DEFAULT_WHOLE_FILE_MAX_LINES, 1)
+    try:
+        lines = agent_edit.load_text(path).text.count("\n") + 1 if path.is_file() else 0
+    except (OSError, ValueError):
+        lines = 0
+    if lines > longest:
+        hint = (
+            f"{count} edits of {name} have failed. It has {lines} lines, too many to rewrite whole: make smaller "
+            "edits, one function or block at a time, with an old_string of 2-6 lines copied from a fresh read_files"
+        )
+    else:
+        hint = (
+            f"{count} edits of {name} have failed. Use write_files with the full new content of this file instead "
+            "(every line, not only the changed part)"
+        )
+    result["error"] = f"{result.get('error') or 'edit failed'}. {hint}"
+    result["hint"] = "whole_file" if lines <= longest else "smaller_edits"
+    return result
+
+
+def _changed_lines(before: str, after: str) -> str:
+    """The new file's changed line ranges, for example "lines 12-18" or "lines 4-5, 40"."""
+    matcher = difflib.SequenceMatcher(None, before.split("\n"), after.split("\n"), autojunk=False)
+    spans: list[tuple[int, int]] = []
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if j2 > j1:
+            spans.append((j1 + 1, j2))
+        else:
+            spans.append((j1 + 1, j1 + 1) if j1 else (1, 1))
+    if not spans:
+        return ""
+    parts = [f"{a}" if a == b else f"{a}-{b}" for a, b in spans[:6]]
+    more = f", ... ({len(spans)} places)" if len(spans) > 6 else ""
+    return ("line " if len(spans) == 1 and spans[0][0] == spans[0][1] else "lines ") + ", ".join(parts) + more
+
+
 def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     raw = args.get("path") or args.get("file")
     if not isinstance(raw, str) or not raw:
         return err("edit_file", "path is required")
+    path = resolve(ctx.workspace, raw)
+    name = rel(ctx.workspace, path)
+    result = _edit_file_once(args, ctx, raw, path, name)
+    if result.get("counts_as_failure", True):
+        result = _note_edit_outcome(ctx, name, path, result)
+    result.pop("counts_as_failure", None)
+    return result
+
+
+def _edit_file_once(args: dict[str, Any], ctx: ToolContext, raw: str, path: Path, name: str) -> dict[str, Any]:
     edits = args.get("edits")
     if edits is None:
         edits = [
@@ -1978,42 +2132,56 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         edits = [_normalize_edit(edits)]
     if not isinstance(edits, list) or not edits:
         return err("edit_file", 'edits must be a list of {"old_string", "new_string"}')
-    path = resolve(ctx.workspace, raw)
-    name = rel(ctx.workspace, path)
     if not path.is_file():
-        return err(
+        result = err(
             "edit_file",
             f"not found: {raw}. Use write_files to create a new file{_path_hint(ctx, raw)}",
         )
+        result["counts_as_failure"] = False
+        return result
     problem = _guard_target(ctx, path, raw)
     if problem:
         return err("edit_file", problem)
     expected = args.get("version")
     if isinstance(expected, str) and expected and expected != agent_edit.file_version(path):
         return err("edit_file", f"{name} changed since you read it (version {expected}); read it again")
+    first_old = next((str(item.get("old_string") or "") for item in edits if isinstance(item, dict)), "")
+    stale = stale_problem(ctx, path, name, first_old)
+    if stale and stale != UNREAD:
+        result = err("edit_file", stale)
+        result["stale"] = True
+        result["counts_as_failure"] = False
+        return result
     loaded = agent_edit.load_text(path)
     text = loaded.text
     notes: list[str] = []
+    steps: list[str] = []
     total = 0
     for number, edit in enumerate(edits, start=1):
+        label = f"edit {number} of {len(edits)}: " if len(edits) > 1 else ""
+        suffix = "; no edit was applied (the edits in one call apply together or not at all)" if len(edits) > 1 else ""
         if not isinstance(edit, dict):
-            return err("edit_file", f"edit {number} must be an object")
+            return err("edit_file", f"{label or f'edit {number}: '}must be an object{suffix}")
         old = edit.get("old_string")
         new = edit.get("new_string")
         if not isinstance(old, str) or old == "":
-            return err("edit_file", f"edit {number}: old_string is empty. Use write_files for a new file")
+            return err("edit_file", f"{label or f'edit {number}: '}old_string is empty. Use write_files for a new file{suffix}")
         if not isinstance(new, str):
-            return err("edit_file", f"edit {number}: new_string must be a string")
+            return err("edit_file", f"{label or f'edit {number}: '}new_string must be a string{suffix}")
         placeholder = agent_edit.placeholder_line(new)
         if placeholder is not None and agent_edit.placeholder_line(old) is None and placeholder[1] not in loaded.text:
             return err(
                 "edit_file",
-                f"edit {number}: new_string holds a placeholder for left-out code ({placeholder[1][:60]}). "
-                "Write the real lines; new_string replaces old_string exactly as sent",
+                f"{label or f'edit {number}: '}new_string holds a placeholder for left-out code ({placeholder[1][:60]}). "
+                f"Write the real lines; new_string replaces old_string exactly as sent{suffix}",
             )
         result = agent_edit.replace_span(text, old, new, replace_all=bool(edit.get("replace_all")))
+        if stale == UNREAD and (result.text is None or result.step != "exact"):
+            refused = err("edit_file", label + unread_message(name) + suffix)
+            refused["stale"] = True
+            refused["counts_as_failure"] = False
+            return refused
         if result.text is None:
-            label = f"edit {number} of {len(edits)}: " if len(edits) > 1 else ""
             output = ""
             if result.candidate and sensitive_file(path):
                 output = "(the closest text is not shown: this file usually holds secrets; read it to see it)"
@@ -2022,12 +2190,18 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                     "closest text in the file. Copy old_string from it exactly, without the N| prefix:\n"
                     + result.candidate
                 )
-            suffix = "; no edit was applied" if len(edits) > 1 else ""
-            return err("edit_file", label + result.note + suffix, output=output, ctx=ctx)
+            run_stats.edit_step("edit_file", "ambiguous" if result.hits else "refused")
+            failed = err("edit_file", label + result.note + suffix, output=output, ctx=ctx)
+            if result.hits:
+                failed["hits"] = list(result.hits)
+            return failed
         text = result.text
         total += result.count
+        steps.append(result.step)
         if result.note:
             notes.append(result.note)
+    if text == loaded.text:
+        return err("edit_file", "the edit leaves the file exactly as it was; nothing to change")
     if REDACTED in text and REDACTED not in loaded.text:
         return err(
             "edit_file",
@@ -2041,6 +2215,7 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         diff = _SECRET_DIFF_NOTE if diff else ""  # its lines would carry the file's secrets to the chat
     strict = Path(name).suffix.lower() in agent_edit.STRICT_SUFFIXES
     if strict and before_check == "ok" and after_check.startswith("error"):
+        run_stats.edit_step("edit_file", "guard_rejected")
         return err(
             "edit_file",
             f"edit not applied: it would leave {name} with a syntax {after_check}",
@@ -2054,7 +2229,10 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     except ValueError as exc:
         return err("edit_file", f"edit not applied: {exc}")
     version = _after_write(ctx, path)
-    message = f"updated {name} ({total})"
+    for step in steps:
+        run_stats.edit_step("edit_file", step)
+    where = _changed_lines(loaded.text, text)
+    message = f"updated {name} ({total} {'change' if total == 1 else 'changes'}" + (f"; now {where}" if where else "") + ")"
     if notes:
         message += "; " + "; ".join(dict.fromkeys(notes))
     if after_check:
@@ -2063,7 +2241,9 @@ def _edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if diff:
         message += "\n" + diff
     plus, minus = _diff_counts(diff)
-    return ok("edit_file", message, ctx, _ui(f"Updated {name} (+{plus} -{minus})", diff))
+    done = ok("edit_file", message, ctx, _ui(f"Updated {name} (+{plus} -{minus})", diff))
+    done["match"] = steps[0] if len(set(steps)) == 1 else ",".join(steps)
+    return done
 
 
 def _delete_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

@@ -27,7 +27,6 @@ from critique_bot.redaction import sensitive_file
 
 _LINE_NO_RE = re.compile(r"^\s*\d+\|")
 _PUNCT_RE = re.compile(r"[`*_~\"'\u2018\u2019\u201c\u201d]")
-_MIN_FUZZY_RATIO = 0.9
 _MAX_DIFF_CHARS = 2_500
 
 
@@ -43,19 +42,19 @@ class TextFile:
 
 
 @dataclass(frozen=True)
-class Match:
-    start: int
-    end: int
-    how: str
-    reindent: bool = False
-
-
-@dataclass(frozen=True)
 class EditResult:
     text: str | None
     count: int
     note: str
     candidate: str = ""
+    #: The ladder step that matched (see LADDER_STEPS); empty when nothing matched.
+    step: str = ""
+    #: 1-based first and last line the new text occupies in the result.
+    lines: tuple[int, int] | None = None
+    #: Line numbers of every hit when the match was ambiguous.
+    hits: tuple[int, ...] = ()
+    #: On a refusal, the first line of old_string that differs from the closest candidate.
+    differs: str = ""
 
 
 def file_version(path: Path) -> str:
@@ -66,6 +65,26 @@ def file_version(path: Path) -> str:
         return "missing"
     raw = f"{stat.st_mtime_ns}:{stat.st_size}".encode("ascii")
     return hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:8]  # a file-version fingerprint
+
+
+#: Files up to this size are fingerprinted by their bytes; larger ones by size and mtime.
+DIGEST_MAX_BYTES = 16 * 1024 * 1024
+
+
+def content_digest(path: Path) -> str:
+    """A fingerprint of the file's bytes ("missing" when it does not exist).
+
+    Stale-read protection compares this against the fingerprint taken when the model read
+    the file, so a change by the user, a formatter or a build is noticed even when the
+    size and modification time happen to come out the same.
+    """
+    try:
+        size = Path(path).stat().st_size
+        if size > DIGEST_MAX_BYTES:
+            return "v:" + file_version(path)
+        return hashlib.sha1(Path(path).read_bytes(), usedforsecurity=False).hexdigest()[:16]
+    except OSError:
+        return "missing"
 
 
 _EOL_RE = re.compile(r"\r\n|\r|\n")
@@ -265,6 +284,18 @@ def placeholder_line(text: str) -> tuple[int, str] | None:
     return None
 
 
+#: The steps of the match ladder, in the order they are tried (run_stats counts each).
+LADDER_STEPS = ("exact", "whitespace", "indent", "punctuation", "fuzzy")
+#: Step 4: a window must be at least this similar to old_string...
+FUZZY_MIN_RATIO = 0.92
+#: ...and beat the best window elsewhere in the file by this margin.
+FUZZY_MARGIN = 0.05
+#: Fuzzy matching is skipped on files longer than this (it compares every window).
+FUZZY_MAX_FILE_LINES = 50_000
+#: The closest candidate shown when an edit is refused.
+CANDIDATE_MAX_LINES = 15
+
+
 def replace_span(
     text: str,
     old: str,
@@ -272,17 +303,27 @@ def replace_span(
     *,
     replace_all: bool = False,
 ) -> EditResult:
-    """Replace ``old`` with ``new`` in ``text`` (which already uses ``\\n``).
+    """Replace ``old`` with ``new`` in ``text`` (which already uses ``\\n``): the match ladder.
 
-    Order: exact, exact after removing ``N|`` prefixes, line match ignoring
-    surrounding whitespace (re-indenting the replacement), line match ignoring
-    markdown punctuation, then the closest window at 90% similarity. Every
-    loose match must be unique. ``text`` in the result is None on failure and
-    ``candidate`` holds the closest block of the file with line numbers.
+    1. ``exact``: the text as sent (and again without copied ``N|`` prefixes). One hit
+       applies; several hits are refused with their line numbers unless ``replace_all``.
+    2. ``whitespace``: line by line, ignoring line endings and trailing whitespace.
+    3. ``indent``: ignoring each line's indentation; ``new`` is re-indented to the hit
+       (tabs vs spaces included).
+    4. ``punctuation``: ignoring markdown punctuation a chat page adds or drops.
+    5. ``fuzzy``: the window most similar to ``old`` (≥ 92%), only when it beats every
+       window elsewhere by ≥ 5 points.
+
+    Each step stops at the first that finds anything: a unique hit applies, several hits
+    are refused. Otherwise the result is a refusal with the closest candidate (≤ 15
+    numbered lines) and the first line that differs. ``text`` in the result is None on
+    failure; ``step`` says which step matched; ``lines`` is the 1-based range the new text
+    occupies (the first and last hit's for ``replace_all``).
     """
-    needle = strip_read_prefix(old).replace("\r\n", "\n").replace("\r", "\n")
-    replacement = strip_read_prefix(new).replace("\r\n", "\n").replace("\r", "\n")
-    if _same_lines(needle, replacement):
+    raw = old.replace("\r\n", "\n").replace("\r", "\n")
+    needle = raw if raw and raw in text else strip_read_prefix(old).replace("\r\n", "\n").replace("\r", "\n")
+    replacement = (new if needle == raw else strip_read_prefix(new)).replace("\r\n", "\n").replace("\r", "\n")
+    if needle == replacement or (_same_lines(needle, replacement) and needle.strip() == replacement.strip()):
         return EditResult(
             None,
             0,
@@ -291,35 +332,278 @@ def replace_span(
         )
     if not needle.strip():
         return EditResult(None, 0, "old_string is blank")
+    prefix_note = "removed N| prefixes from old_string" if needle != raw else ""
     count = text.count(needle)
     if count == 1 or (count > 1 and replace_all):
-        times = count if replace_all else 1
-        updated = text.replace(needle, replacement) if replace_all else text.replace(needle, replacement, 1)
-        note = "removed N| prefixes from old_string" if needle != old.replace("\r\n", "\n") else ""
-        return EditResult(updated, times, note)
+        return _apply_exact(text, needle, replacement, replace_all, prefix_note)
     if count > 1:
+        hits = _hit_lines(text, needle)
         return EditResult(
             None,
             0,
-            f"old_string matched {count} times; pass replace_all true or include more surrounding lines",
+            f"old_string matches {count} places (lines {_list_lines(hits)}); include more surrounding lines "
+            "so it matches one place, or pass replace_all true to change every one",
+            hits=tuple(hits),
         )
-    match = _loose_match(text, needle)
-    if match is None:
-        return EditResult(None, 0, "old_string was not found", best_candidate(text, needle))
-    if match.how == "ambiguous":
-        return EditResult(
-            None,
-            0,
-            "old_string matched more than once after ignoring whitespace and punctuation; "
-            "include more surrounding lines",
-        )
-    body = replacement
-    if match.reindent:
-        body = _reindent(replacement, needle, text[match.start : match.end])
-    if body.endswith("\n") and text[match.end : match.end + 1] == "\n":
-        body = body[:-1]
-    updated = text[: match.start] + body + text[match.end :]
-    return EditResult(updated, 1, f"matched {match.how}")
+    lines = text.split("\n")
+    needle_lines = needle.split("\n")
+    ends_newline = len(needle_lines) > 1 and needle_lines[-1] == ""
+    if ends_newline:
+        needle_lines = needle_lines[:-1]
+    for step, normalize in (
+        ("whitespace", lambda line: line.rstrip()),
+        ("indent", lambda line: line.strip()),
+        ("punctuation", _fold_punct),
+    ):
+        folded = [normalize(line) for line in needle_lines]
+        if not any(folded):
+            continue
+        hits = _folded_hits(lines, folded, normalize)
+        if not hits:
+            continue
+        if len(hits) > 1 and not replace_all:
+            what = {"whitespace": "trailing whitespace", "indent": "indentation", "punctuation": "punctuation"}[step]
+            return EditResult(
+                None,
+                0,
+                f"old_string matches {len(hits)} places when {what} is ignored (lines "
+                f"{_list_lines([hit + 1 for hit in hits])}); include more surrounding lines so it matches one place",
+                hits=tuple(hit + 1 for hit in hits),
+                step=step,
+            )
+        return _apply_lines(text, lines, hits, len(needle_lines), needle, replacement, ends_newline, step,
+                            reindent=step != "whitespace", note=prefix_note)
+    if len(lines) <= FUZZY_MAX_FILE_LINES:
+        scored = _fuzzy_scores(lines, needle_lines)
+        if scored:
+            best_ratio, best_start = scored[0]
+            width = len(needle_lines)
+            runner = max(
+                (ratio for ratio, start in scored[1:] if abs(start - best_start) >= width), default=0.0
+            )
+            if best_ratio >= FUZZY_MIN_RATIO:
+                if runner > best_ratio - FUZZY_MARGIN:
+                    second = next(start for ratio, start in scored[1:]
+                                  if abs(start - best_start) >= width and ratio == runner)
+                    return EditResult(
+                        None,
+                        0,
+                        f"old_string was not found exactly; it is about equally close to lines "
+                        f"{best_start + 1}-{best_start + width} ({best_ratio:.0%}) and "
+                        f"{second + 1}-{second + width} ({runner:.0%}). Copy old_string exactly from one of them",
+                        hits=(best_start + 1, second + 1),
+                        candidate=_numbered(lines, best_start, width),
+                    )
+                result = _apply_lines(text, lines, [best_start], width, needle, replacement, ends_newline, "fuzzy",
+                                      reindent=True, note="")
+                first, last = result.lines or (best_start + 1, best_start + width)
+                return EditResult(
+                    result.text,
+                    result.count,
+                    f"matched approximately at lines {best_start + 1}-{best_start + width} "
+                    f"({best_ratio:.0%} similar); check the diff",
+                    step="fuzzy",
+                    lines=(first, last),
+                )
+    return _refusal(lines, needle_lines)
+
+
+def _apply_exact(text: str, needle: str, replacement: str, replace_all: bool, note: str) -> EditResult:
+    starts: list[int] = []
+    position = text.find(needle)
+    while position >= 0:
+        starts.append(position)
+        if not replace_all:
+            break
+        position = text.find(needle, position + len(needle))
+    pieces: list[str] = []
+    last = 0
+    ranges: list[tuple[int, int]] = []
+    line_shift = 0
+    for start in starts:
+        pieces.append(text[last:start])
+        pieces.append(replacement)
+        first_line = text.count("\n", 0, start) + 1 + line_shift
+        ranges.append((first_line, first_line + _span_lines(replacement)))
+        line_shift += replacement.count("\n") - needle.count("\n")
+        last = start + len(needle)
+    pieces.append(text[last:])
+    return EditResult("".join(pieces), len(starts), note, step="exact", lines=(ranges[0][0], ranges[-1][1]))
+
+
+def _span_lines(body: str) -> int:
+    """Lines past the first that ``body`` covers (0 for one line)."""
+    trimmed = body[:-1] if body.endswith("\n") else body
+    return trimmed.count("\n")
+
+
+def _hit_lines(text: str, needle: str) -> list[int]:
+    hits: list[int] = []
+    position = text.find(needle)
+    while position >= 0 and len(hits) < 50:
+        hits.append(text.count("\n", 0, position) + 1)
+        position = text.find(needle, position + 1)
+    return hits
+
+
+def _list_lines(numbers: list[int], limit: int = 10) -> str:
+    shown = ", ".join(str(number) for number in numbers[:limit])
+    return shown + (f", ... ({len(numbers)} in all)" if len(numbers) > limit else "")
+
+
+def _folded_hits(lines: list[str], folded: list[str], normalize) -> list[int]:
+    width = len(folded)
+    if width == 0 or width > len(lines):
+        return []
+    first = folded[0]
+    hay = [normalize(line) for line in lines]
+    hits: list[int] = []
+    start = 0
+    while start <= len(lines) - width:
+        if hay[start] == first and hay[start : start + width] == folded:
+            hits.append(start)
+            start += width  # hits do not overlap
+        else:
+            start += 1
+    return hits
+
+
+def _apply_lines(
+    text: str,
+    lines: list[str],
+    hits: list[int],
+    width: int,
+    needle: str,
+    replacement: str,
+    ends_newline: bool,
+    step: str,
+    *,
+    reindent: bool,
+    note: str,
+) -> EditResult:
+    """Replace ``width`` whole lines at each hit (0-based line indexes) with ``replacement``.
+
+    The region matched is the hit's lines, plus the newline after them when ``old_string``
+    ended with one, the same as an exact match of the text would cover.
+    """
+    out = text
+    ranges: list[tuple[int, int]] = []
+    for hit in sorted(hits, reverse=True):
+        start = _offset_of_line(out, hit)
+        end = _offset_of_line(out, hit + width)
+        if not ends_newline and end > start and out[end - 1 : end] == "\n" and hit + width <= len(lines):
+            end -= 1
+        body = replacement
+        if reindent:
+            matched = "\n".join(lines[hit : hit + width])
+            body = _reindent(replacement, needle, matched)
+        if ends_newline and not out[start:end].endswith("\n") and body.endswith("\n"):
+            body = body[:-1]  # the hit is the last line of a file without a final newline
+        out = out[:start] + body + out[end:]
+        ranges.append((hit + 1, hit + 1 + _span_lines(body)))
+    ranges.sort()
+    # Later hits shifted by the earlier ones: recount the first and last from the top.
+    shift = 0
+    fixed: list[tuple[int, int]] = []
+    for first, last in ranges:
+        fixed.append((first + shift, last + shift))
+        shift += (last - first) - (width - 1)
+    result_note = note
+    if step in {"whitespace", "indent", "punctuation"}:
+        result_note = "; ".join(part for part in (note, f"matched ignoring {_STEP_WORDS[step]}") if part)
+    return EditResult(out, len(hits), result_note, step=step, lines=(fixed[0][0], fixed[-1][1]))
+
+
+_STEP_WORDS = {
+    "whitespace": "line endings and trailing whitespace",
+    "indent": "indentation (new_string re-indented to the file)",
+    "punctuation": "markdown punctuation",
+}
+
+
+def _fuzzy_scores(lines: list[str], needle_lines: list[str]) -> list[tuple[float, int]]:
+    """Windows the size of ``needle_lines`` with their similarity, best first.
+
+    Only windows within reach of the threshold minus the margin are scored, so the
+    runner-up for the margin test is among them when it matters.
+    """
+    width = len(needle_lines)
+    if width == 0 or width > len(lines):
+        return []
+    needle_text = "\n".join(line.strip() for line in needle_lines)
+    if len(needle_text) < 12:
+        return []
+    floor = FUZZY_MIN_RATIO - FUZZY_MARGIN - 1e-9
+    stripped = [line.strip() for line in lines]
+    scored: list[tuple[float, int]] = []
+    for start in range(len(lines) - width + 1):
+        window = "\n".join(stripped[start : start + width])
+        if abs(len(window) - len(needle_text)) > max(8, int(len(needle_text) * 0.2)):
+            continue
+        matcher = difflib.SequenceMatcher(None, needle_text, window, autojunk=False)
+        if matcher.real_quick_ratio() < floor or matcher.quick_ratio() < floor:
+            continue
+        ratio = matcher.ratio()
+        if ratio >= floor:
+            scored.append((ratio, start))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored
+
+
+def _closest_window(lines: list[str], needle_lines: list[str]) -> int:
+    """Start of the window most like ``needle_lines`` (-1 when nothing is close)."""
+    width = len(needle_lines)
+    if not lines or width == 0:
+        return -1
+    width = min(width, len(lines))
+    target = "\n".join(line.strip() for line in needle_lines[:width])
+    probe = max((line.strip() for line in needle_lines), key=len)
+    stripped = [line.strip() for line in lines]
+    best_score, best = 0.0, -1
+    for start in range(len(lines) - width + 1):
+        window = "\n".join(stripped[start : start + width])
+        hit = bool(probe) and any(probe in line for line in stripped[start : start + width])
+        matcher = difflib.SequenceMatcher(None, target, window, autojunk=False)
+        if matcher.quick_ratio() < 0.4 and not hit:
+            continue
+        score = matcher.ratio() + (0.25 if hit else 0.0)
+        if score > best_score:
+            best_score, best = score, start
+    return best if best_score >= 0.45 else -1
+
+
+def _numbered(lines: list[str], start: int, width: int, context: int = 2) -> str:
+    begin = max(0, start - context)
+    end = min(len(lines), start + width + context)
+    if end - begin > CANDIDATE_MAX_LINES:
+        end = begin + CANDIDATE_MAX_LINES
+    return "\n".join(f"{number + 1}|{lines[number]}" for number in range(begin, end))
+
+
+def _refusal(lines: list[str], needle_lines: list[str]) -> EditResult:
+    """Step 5: not found. The closest candidate and the first line that differs."""
+    start = _closest_window(lines, needle_lines)
+    if start < 0:
+        return EditResult(None, 0, "old_string was not found, and nothing in the file is close to it; read the file again")
+    width = min(len(needle_lines), len(lines) - start)
+    differs = ""
+    for index in range(width):
+        expected, found = needle_lines[index], lines[start + index]
+        if expected != found:
+            differs = (
+                f"line {index + 1} of old_string differs: expected {_show(expected)}, "
+                f"file line {start + index + 1} has {_show(found)}"
+            )
+            break
+    if not differs and len(needle_lines) > width:
+        differs = f"old_string has {len(needle_lines)} lines but the file ends after line {len(lines)}"
+    note = "old_string was not found" + (f"; {differs}" if differs else "")
+    return EditResult(None, 0, note, candidate=_numbered(lines, start, width), differs=differs)
+
+
+def _show(line: str, limit: int = 100) -> str:
+    shown = repr(line)
+    return shown if len(shown) <= limit else shown[: limit - 4] + "...'"
 
 
 def _same_lines(left: str, right: str) -> bool:
@@ -330,86 +614,6 @@ def _same_lines(left: str, right: str) -> bool:
         return [line.strip() for line in parts]
 
     return lines(left) == lines(right)
-
-
-def _loose_match(text: str, needle: str) -> Match | None:
-    lines = needle.split("\n")
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
-    if not lines:
-        return None
-    for how, normalize in (
-        ("ignoring surrounding whitespace", lambda line: line.strip()),
-        ("ignoring punctuation and markdown", _fold_punct),
-    ):
-        folded = [normalize(line) for line in lines]
-        if not any(folded):
-            continue
-        found = _match_folded(text, folded, normalize, how)
-        if found is not None:
-            return found
-    return _fuzzy_match(text, lines)
-
-
-def _match_folded(text: str, folded: list[str], normalize, how: str) -> Match | None:
-    haystack = text.split("\n")
-    width = len(folded)
-    if width == 0 or width > len(haystack):
-        return None
-    folded_hay = [normalize(line) for line in haystack]
-    hits: list[int] = []
-    for start in range(len(haystack) - width + 1):
-        if folded_hay[start : start + width] == folded:
-            hits.append(start)
-            if len(hits) > 1:
-                return Match(0, 0, "ambiguous")
-    if not hits:
-        return None
-    return _line_span(text, hits[0], width, how)
-
-
-def _line_span(text: str, first: int, width: int, how: str) -> Match:
-    start = _offset_of_line(text, first)
-    end = _offset_of_line(text, first + width)
-    if end > start and text[end - 1 : end] == "\n":
-        end -= 1
-    return Match(start, end, how, True)
-
-
-def _fuzzy_match(text: str, lines: list[str]) -> Match | None:
-    haystack = text.split("\n")
-    width = len(lines)
-    if width == 0 or width > len(haystack):
-        return None
-    needle_text = "\n".join(line.strip() for line in lines)
-    if len(needle_text) < 12:
-        return None
-    best_ratio = 0.0
-    best_start = -1
-    ties = 0
-    for start in range(len(haystack) - width + 1):
-        window = "\n".join(line.strip() for line in haystack[start : start + width])
-        if abs(len(window) - len(needle_text)) > max(20, len(needle_text) // 3):
-            continue
-        matcher = difflib.SequenceMatcher(None, needle_text, window, autojunk=False)
-        if matcher.real_quick_ratio() < _MIN_FUZZY_RATIO or matcher.quick_ratio() < _MIN_FUZZY_RATIO:
-            continue
-        ratio = matcher.ratio()
-        if ratio > best_ratio + 1e-9:
-            best_ratio = ratio
-            best_start = start
-            ties = 0
-        elif abs(ratio - best_ratio) <= 1e-9:
-            ties += 1
-    if best_start < 0 or best_ratio < _MIN_FUZZY_RATIO:
-        return None
-    if ties:
-        return Match(0, 0, "ambiguous")
-    # Only drift in punctuation or spacing is tolerated: a different word means different code.
-    found = "\n".join(haystack[best_start : best_start + width])
-    if re.findall(r"\w+", needle_text) != re.findall(r"\w+", found):
-        return None
-    return _line_span(text, best_start, width, f"closest text ({best_ratio:.0%} similar)")
 
 
 def _fold_punct(line: str) -> str:
@@ -428,31 +632,59 @@ def _offset_of_line(text: str, line_index: int) -> int:
     return offset
 
 
+def _indent_of(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _indent_unit(block: str) -> int:
+    """The width of one indentation level in a block that indents with spaces (default 4)."""
+    widths = sorted({len(_indent_of(line)) for line in block.split("\n") if line.strip() and "\t" not in _indent_of(line)})
+    steps = [b - a for a, b in zip(widths, widths[1:]) if b > a]
+    if widths and widths[0]:
+        steps.append(widths[0])
+    unit = min(steps) if steps else 4
+    return unit if 1 < unit <= 8 else 4
+
+
 def _reindent(replacement: str, needle: str, matched: str) -> str:
-    """Shift ``replacement`` so its indentation matches the text that matched."""
+    """Shift ``replacement`` so its indentation matches the text that matched.
+
+    The indentation each line has beyond old_string's common indent is kept, written in
+    the file's style: tabs when the matched lines indent with tabs, spaces otherwise.
+    """
     needle_indent = _common_indent(needle)
     matched_indent = _common_indent(matched)
-    if needle_indent == matched_indent:
+    matched_tabs = any(_indent_of(line).startswith("\t") for line in matched.split("\n") if line.strip())
+    needle_tabs = any(_indent_of(line).startswith("\t") for line in needle.split("\n") if line.strip())
+    unit = _indent_unit(needle if not needle_tabs else matched)
+    file_unit = _indent_unit(matched) if not matched_tabs else unit
+    # Spaces on both sides, but 2 per level in old_string and 4 in the file (or the reverse).
+    scale = not matched_tabs and not needle_tabs and unit != file_unit and {unit, file_unit} <= {2, 4, 8}
+    if needle_indent == matched_indent and matched_tabs == needle_tabs and not scale:
         return replacement
     out: list[str] = []
     for line in replacement.split("\n"):
         if not line.strip():
             out.append(line)
-        elif needle_indent and line.startswith(needle_indent):
-            out.append(matched_indent + line[len(needle_indent) :])
-        elif not needle_indent:
-            out.append(matched_indent + line)
+            continue
+        lead = _indent_of(line)
+        if lead.startswith(needle_indent):
+            extra = lead[len(needle_indent) :]
         else:
             out.append(line)
+            continue
+        if matched_tabs and not needle_tabs and extra and "\t" not in extra:
+            extra = "\t" * (len(extra) // unit) + " " * (len(extra) % unit)
+        elif needle_tabs and not matched_tabs and "\t" in extra:
+            extra = extra.replace("\t", " " * file_unit)
+        elif scale and extra:
+            extra = " " * ((len(extra) // unit) * file_unit + len(extra) % unit)
+        out.append(matched_indent + extra + line[len(lead) :])
     return "\n".join(out)
 
 
 def _common_indent(block: str) -> str:
-    indents = [
-        re.match(r"[ \t]*", line).group(0)  # type: ignore[union-attr]
-        for line in block.split("\n")
-        if line.strip()
-    ]
+    indents = [_indent_of(line) for line in block.split("\n") if line.strip()]
     if not indents:
         return ""
     prefix = indents[0]
