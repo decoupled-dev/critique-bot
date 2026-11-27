@@ -114,21 +114,18 @@ class TaintSourceTests(SecBase):
         self.read(str(self.page))
         self.assertTrue(taint.tainted())
 
-    # SECURITY FINDING PM-12: a relative path outside the workspace (../) is read without raising taint
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-12 (fixed): a relative path outside the workspace (../) is read without raising taint
     def test_relative_outside_read_taints(self) -> None:
         self.read("../outside/page.html")
         self.assertTrue(taint.tainted(), "untrusted text from outside the workspace did not taint the session")
 
-    # SECURITY FINDING PM-12: a link in the workspace that points outside is read without raising taint
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-12 (fixed): a link in the workspace that points outside is read without raising taint
     def test_link_to_outside_read_taints(self) -> None:
         os.symlink(self.page, self.root / "notes.html")
         self.read("notes.html")
         self.assertTrue(taint.tainted())
 
-    # SECURITY FINDING PM-12: cat of a file outside the workspace (asked, approved) does not taint
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-12 (fixed): cat of a file outside the workspace (asked, approved) does not taint
     def test_command_reading_outside_taints(self) -> None:
         session = Scripted([call("run_command", command=f"cat {self.page}"), "COMPLETED"])
         with Approvals(default="yes").patch():

@@ -29,6 +29,7 @@ LAYERS: dict[str, int] = {
     "config_prompts": CORE,
     "patch": CORE,
     "redaction": CORE,
+    "secret_paths": CORE,
     "privacy": CORE,
     "egress": CORE,
     "audit": CORE,

@@ -307,7 +307,7 @@ only at `gitlab.base_url`.
 
 ## `sandbox`
 
-The default OS sandbox for the agent's commands, for every project: `"workspace-write"` (the default when unset), `"read-only"`, `"full"` (no sandbox), or an object with `mode`, `writable`, `preset`, `env_files`, and `ports`. A project's own (untracked) `.crit/settings.json` `"sandbox"` overrides it. See [security.md](security.md#the-sandbox) and `crit doctor sandbox`.
+The default OS sandbox for the agent's commands, for every project: `"workspace-write"` (the default when unset), `"read-only"`, `"full"` (no sandbox), or an object with `mode`, `writable`, `preset`, `env_files`, `ports`, `masked` (more paths to hide), and `unmask` (credential paths to keep readable). A project's own (untracked) `.crit/settings.json` `"sandbox"` overrides it. See [security.md](security.md#the-sandbox) and `crit doctor sandbox`.
 
 ## `redact_terms` and `redact_pii`
 

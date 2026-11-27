@@ -71,6 +71,9 @@ class ExtensionSession:
     _denials: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def __post_init__(self) -> None:
+        self.mcp_tools = unique_mcp_tools(self.mcp_tools, {tool.name for tool in self.tools}, self.notes)
+
     # ------------------------------------------------------------------ the tools
 
     def specs(self) -> list[Any]:
@@ -311,10 +314,42 @@ def _inactive(item: trust.ExtFile) -> str:
     return f"{item.path} is off ({why}): it came with the project. Check it, then run: crit trust {item.path}"
 
 
+def unique_mcp_tools(tools: list[mcp_client.McpTool], taken: set[str], notes: list[str]) -> list[mcp_client.McpTool]:
+    """``tools`` without any whose model-facing name is ambiguous (SF-8): a server name with
+    ``__`` in it, or a name another tool already has (the first one keeps it). Each is a note."""
+    seen: dict[str, str] = {name: "a tool of crit or a manifest" for name in taken}
+    out: list[mcp_client.McpTool] = []
+    refused: set[str] = set()
+    for tool in tools:
+        problem = mcp_client.server_name_problem(tool.server.name)
+        if problem:
+            if tool.server.name not in refused:
+                refused.add(tool.server.name)
+                notes.append(f"MCP server {tool.server.name} is off: {problem}. Rename it in mcp.json")
+            continue
+        owner = f"{tool.server.name}/{tool.remote_name}"
+        if tool.name in seen:
+            notes.append(f"MCP tool {owner} is off: its name {tool.name} is already {seen[tool.name]}'s. "
+                         "Rename one of the servers in mcp.json")
+            log.warn(f"MCP tool name collision: {tool.name} ({owner} and {seen[tool.name]})")
+            continue
+        seen[tool.name] = owner
+        out.append(tool)
+    return out
+
+
 def _connect_all(servers: list[mcp_client.McpServer], workspace: Path, notes: list[str]) -> tuple[
         list[mcp_client.McpClient], list[mcp_client.McpTool]]:
     clients: list[mcp_client.McpClient] = []
     tools: list[mcp_client.McpTool] = []
+    named = []
+    for server in servers:
+        problem = mcp_client.server_name_problem(server.name)
+        if problem:
+            notes.append(f"MCP server {server.name} is off: {problem}. Rename it in mcp.json")
+        else:
+            named.append(server)
+    servers = named
     if not servers:
         return clients, tools
 
@@ -337,6 +372,12 @@ def _connect_all(servers: list[mcp_client.McpServer], workspace: Path, notes: li
             clients.append(client)
             pinned = mcp_client.pin_tools(server.name, listed)
             for name, _old, _new in pinned.changed:
+                if name in pinned.added:
+                    notes.append(
+                        f"MCP tool {server.name}/{name} is new since the server was pinned; it is off until you "
+                        f"check its description: crit mcp approve {server.name}"
+                    )
+                    continue
                 notes.append(
                     f"MCP tool {server.name}/{name} changed its description or schema since it was pinned; it is "
                     f"off until you check the change: crit mcp approve {server.name}"
@@ -404,7 +445,8 @@ def load_session(
             session.notes.append(f"MCP server {name} skipped: offline is on and it is reached over HTTP")
             servers.pop(name)
     if connect_mcp and servers:
-        session.clients, session.mcp_tools = _connect_all(list(servers.values()), workspace, session.notes)
+        session.clients, found_tools = _connect_all(list(servers.values()), workspace, session.notes)
+        session.mcp_tools = unique_mcp_tools(found_tools, {tool.name for tool in session.tools}, session.notes)
     limit = settings.get("max_loaded_tools", DEFAULT_MAX_LOADED_TOOLS)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         limit = DEFAULT_MAX_LOADED_TOOLS

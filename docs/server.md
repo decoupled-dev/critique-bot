@@ -19,6 +19,10 @@ crit run [--agent NAME] [--json] [--mode MODE] [--flow FLOW] [--url URL] "task"
   you (mode 0600). They are removed when the server stops; a server that was killed leaves
   them behind until the next one replaces them. `CRIT_HOME` moves `~/.crit`.
 - Every request needs `Authorization: Bearer <token>`; without it the answer is `401`.
+- A connection that has not sent an authorized request within 30 seconds is closed, and at
+  most 64 connections are served at once (more are closed at once), so a local program that
+  opens connections and never finishes them cannot tie the server up. Once the token checks
+  out the connection has no timeout, so an event stream stays open while you read it.
 - One server serves one project (the folder it was started in, or `--repo-dir`). A session
   for another folder is refused; start another server there. Only one server's address is
   kept in `~/.crit/server.json`: the last one started.

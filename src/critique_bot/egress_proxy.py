@@ -73,12 +73,15 @@ class EgressProxy:
         restricted: Callable[[], bool] | None = None,
         model_host: Callable[[], str] | None = None,
         connect_ports: frozenset[int] = CONNECT_PORTS,
+        taint_kinds: Callable[[], set[str]] | None = None,
     ) -> None:
         #: Host loopback ports a sandboxed command may reach.
         self.ports = set(ports)
         #: False: no host at all (offline / strict egress); only the forwarded loopback ports.
         self.allow_hosts = allow_hosts
         self.restricted = restricted or _taint_restricted
+        #: What tainted the session ("web_fetch", "device_log", ...): decides the forwarded ports.
+        self.taint_kinds = taint_kinds or _taint_kinds
         self.model_host = model_host or (lambda: egress.policy().chat_host)
         self.connect_ports = connect_ports
         #: Hosts the user allowed for this session.
@@ -95,6 +98,10 @@ class EgressProxy:
 
     # -- policy
 
+    def _device_taint_only(self) -> bool:
+        kinds = self.taint_kinds()
+        return bool(kinds) and kinds <= {"device_log"}
+
     def allow_host(self, host: str) -> None:
         self.extra_hosts.add(host.lower().rstrip("."))
 
@@ -106,6 +113,12 @@ class EgressProxy:
         loopback = host == "localhost" or (address is not None and address.is_loopback)
         if loopback:
             if port in self.ports:
+                if self.restricted() and not self._device_taint_only():
+                    # The adb server can push files to a device that has its own network: under taint
+                    # from a page, an MCP server or an outside file it is not a way out (residual in
+                    # sandbox-egress.md). A device log alone keeps it: the device already wrote that text.
+                    return Decision(False, f"the session is tainted ({', '.join(sorted(self.taint_kinds()))}) and in "
+                                           f"auto mode: the forwarded port {port} (adb) is closed until /trust")
                 return Decision(True, FORWARDED)
             return Decision(False, f"the host's loopback port {port} is not forwarded into the sandbox")
         if address is not None and (address.is_link_local or address.is_multicast or address.is_unspecified):
@@ -362,6 +375,12 @@ async def _splice(
     except Exception:
         pass
     return counts[0], counts[1]
+
+
+def _taint_kinds() -> set[str]:
+    from critique_bot import taint
+
+    return taint.kinds()
 
 
 def _taint_restricted() -> bool:

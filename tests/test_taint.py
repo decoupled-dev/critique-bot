@@ -66,6 +66,42 @@ class SourceTests(_Base):
         self.assertTrue(taint.tainted())
         self.assertIn("outside_read: /etc/hosts", taint.describe())
 
+    def test_a_failed_result_with_untrusted_text_taints(self) -> None:
+        # SF-5: an HTTP error page, an MCP error, a flagged tool that failed.
+        self.assertEqual(taint.observe("web_fetch", {"url": "https://x.example"},
+                                       {"ok": False, "error": "HTTP 404", "output": INJECTION}), "web_fetch")
+        taint.reset()
+        self.assertEqual(taint.observe("mcp__s__t", {}, {"ok": False, "error": "x", "taint": "mcp:s/t"}), "mcp")
+        taint.reset()
+        self.assertEqual(taint.observe("tool_x", {}, {"ok": False, "error": "x", "taint": "tool:tool_x"}), "tool_output")
+        taint.reset()
+        # Not when the call never ran, or crit wrote the error itself.
+        self.assertEqual(taint.observe("web_fetch", {}, {"ok": False, "denied": True, "taint": "mcp:s/t"}), "")
+        self.assertEqual(taint.observe("web_fetch", {}, {"ok": False, "error": "url is required"}), "")
+        self.assertFalse(taint.tainted())
+
+    def test_relative_and_linked_outside_reads_taint(self) -> None:
+        # PM-12.
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "page.html").write_text(INJECTION, encoding="utf-8")
+        (self.root / "link.html").symlink_to(outside / "page.html")
+        taint.observe("read_files", {"path": "link.html"}, {"ok": True}, self.root)
+        self.assertTrue(taint.tainted())
+        taint.reset()
+        rel = Path("..") / outside.name / "page.html"
+        taint.observe("read_files", {"path": str(rel)}, {"ok": True}, self.root)
+        self.assertTrue(taint.tainted())
+
+    def test_an_approved_outside_read_taints_whatever_the_tool(self) -> None:
+        perm = agent_tools.Permission("outside", "Run: cat /tmp/page.html", "", "cat /tmp/page.html",
+                                      risk=agent_tools.OUTSIDE_READ_RISK)
+        taint.check(perm, "ask", lambda _perm: (False, "no"))
+        self.assertFalse(taint.tainted(), "refused: nothing was read")
+        taint.check(perm, "ask", lambda _perm: (True, ""))
+        self.assertTrue(taint.tainted())
+        self.assertIn("outside_read", taint.describe())
+
     def test_device_logs_and_issue_text_taint(self) -> None:
         taint.observe("run_command", {"command": "adb -s emulator-5554 logcat -d"}, {"ok": True})
         self.assertIn("device_log", taint.describe())

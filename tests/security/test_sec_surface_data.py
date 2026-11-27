@@ -63,8 +63,7 @@ class TaintOnFailureTest(unittest.TestCase):
         taint.reset()
         self.addCleanup(taint.reset)
 
-    # SECURITY FINDING SF-5: a failed result never taints the session, though its error/output is untrusted text.
-    @unittest.expectedFailure
+    # SECURITY FINDING SF-5 (fixed): a failed result never taints the session, though its error/output is untrusted text.
     def test_an_untrusted_error_result_taints_the_session(self) -> None:
         from critique_bot.extensions import untrusted
 

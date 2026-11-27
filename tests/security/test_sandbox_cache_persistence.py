@@ -63,8 +63,7 @@ class CachePersistencePolicyTests(unittest.TestCase):
             sandbox.Settings(mode=sandbox.WORKSPACE_WRITE), self.ws, home=self.home, make_caches=True,
         )
 
-    # SECURITY FINDING SB-2: ~/.gradle/init.gradle (auto-run Groovy) is writable in the sandbox
-    @unittest.expectedFailure
+    # SECURITY FINDING SB-2 (fixed): ~/.gradle/init.gradle (auto-run Groovy) is writable in the sandbox
     def test_gradle_init_scripts_cannot_be_planted(self) -> None:
         policy = self._policy()
         writable = [p for p in AUTO_RUN
@@ -96,8 +95,7 @@ class CachePersistenceUnderBwrapTests(unittest.TestCase):
         proc.communicate(timeout=60)
         return proc.returncode
 
-    # SECURITY FINDING SB-2: a sandboxed command plants ~/.gradle/init.gradle that persists on host
-    @unittest.expectedFailure
+    # SECURITY FINDING SB-2 (fixed): a sandboxed command plants ~/.gradle/init.gradle that persists on host
     def test_planted_gradle_init_does_not_persist(self) -> None:
         payload = "// crit-security-probe: would run outside the sandbox"
         self._run(["/bin/sh", "-c", f"printf '%s' '{payload}' > ~/.gradle/init.gradle"])

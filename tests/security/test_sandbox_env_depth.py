@@ -61,8 +61,7 @@ class EnvDepthTests(unittest.TestCase):
         # Sanity: the top-level .env is masked, so the test above isolates the depth bug.
         self.assertTrue(self._is_masked(self.ws / ".env"))
 
-    # SECURITY FINDING SB-3: .env files deeper than two levels are not masked
-    @unittest.expectedFailure
+    # SECURITY FINDING SB-3 (fixed): .env files deeper than two levels are not masked
     def test_deep_env_is_masked(self) -> None:
         self.assertTrue(
             self._is_masked(self.deep / ".env"),
