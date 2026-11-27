@@ -3045,8 +3045,10 @@ def run_agent_loop(
         if not restored:
             slog.write("system_prompt", hash=prompt_build.prefix_hash(seed), text=seed)
             if _NATIVE_TOOLS:
-                slog.write("tools_declared", hash=session_log_mod.text_hash(json.dumps(_NATIVE_TOOLS, sort_keys=True))[:16],
-                           tools=_NATIVE_TOOLS)
+                declared = json.dumps(_NATIVE_TOOLS, sort_keys=True, ensure_ascii=False)
+                # One string, so the long list goes to a blob instead of a long line in the log.
+                slog.write("tools_declared", hash=session_log_mod.text_hash(declared)[:16], tools_json=declared,
+                           names=[str((tool.get("function") or {}).get("name")) for tool in _NATIVE_TOOLS])
         if restored:
             pass  # the rebuilt conversation already starts with the instructions
         elif seed_first:

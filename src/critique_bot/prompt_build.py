@@ -288,8 +288,9 @@ def load_memory(
 # --------------------------------------------------------------------------- the first turn and notes
 
 
-def git_status_line(workspace: Path, *, timeout: float = 5.0) -> str:
-    """``branch main, 3 changed files (a.py, b.py, c.py)``, or "" outside git or on failure."""
+def git_status_line(workspace: Path, *, timeout: float = 3.0) -> str:
+    """``branch main, 3 changed files (a.py, b.py, c.py)``, or "" outside git, on failure, or when git
+    takes longer than ``timeout`` (a very large checkout: the session starts without it)."""
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain=v1", "--branch"],

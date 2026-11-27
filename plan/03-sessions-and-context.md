@@ -125,13 +125,55 @@ per session (slot = hash(session id) mod server slots, read from `/props`).
 - Redaction: a secret in a tool output never appears in events.jsonl or blobs.
 
 ## Completion targets
-- [ ] Every session is resumable after a hard kill; fork works at any seq
+- [x] Every session is resumable after a hard kill; fork works at any seq (2026-11-27: tested with a
+      scripted server, `tests/test_sessions.py`; a kill mid-tool plus a half-written log line)
 - [ ] Prompt-prefix hash is stable across the session in 100% of eval runs (except at
       recorded compaction events)
 - [ ] Cache hit ratio (cached/prompt tokens) ≥ 80% median on llama.cpp and vLLM over the suite
 - [ ] Long-task subset: pass@1 ≥ Stage 2 result, with ≥ 30% fewer prompt tokens per solved task
 - [ ] No task fails because the context window overflowed
-- [ ] `crit sessions`, `resume`, `fork`, `show`, `export --redacted` documented and tested
+- [x] `crit sessions`, `resume`, `fork`, `show`, `export --redacted` documented and tested
+      ([docs/sessions.md](../docs/sessions.md), `tests/test_sessions.py`)
+
+## Status (2026-11-27)
+
+Done (model-agnostic, tested with scripted sessions and fake servers):
+- `session_log.py`: writer (redaction on write, blobs by SHA-256, fsync at turn boundaries,
+  tolerant reader), meta, list/find/fork/prune/export/show, `history_from_events`,
+  `resume_summary`. Events from the loop: all v1 types, plus `session_resumed`.
+- Resume: model API sessions get their message list back (`LocalModelSession.replace_history`);
+  the web chat starts a new chat with a summary. Fork at any seq. CLI `crit sessions
+  [list|show|export|prune]`, `crit resume`, `crit fork`, `--resume ID`; TUI `/sessions`,
+  `/resume`, `/fork`.
+- `prompt_build.py`: the prefix (`seed_message` moved here), memory files (hierarchical
+  `AGENTS.md` + `.crit/AGENT.md` + `~/.crit/AGENT.md`, 32 KiB cap with a warning), the
+  first-turn `SESSION` block (date, git status), change notes for mode/role (role switches on
+  model API sessions are appended, not a new chat). Prefix-hash test over 20 turns.
+- `compaction.py`: mask > 70%, summarize > 85% (helper request on a second session sharing the
+  prefix, or a state summary), keep 3 turns, re-attach 5 files, todo recitation, once per 5
+  turns at turn boundaries, `compaction` events with tokens before/after. Web chat rotation
+  unchanged.
+- Cache: llama.cpp `id_slot` + `cache_prompt` (slot count from `/props` `total_slots`,
+  `slot_pinning` setting), cache hit ratio in `/status`.
+
+Left:
+- **Stage 5:** history only from the projection. Today the session object owns the live list
+  (`LocalModelSession.messages`, the web page) and the log mirrors it; the projection rebuilds
+  it on resume and is checked equal to it in tests. In the split, the engine should own the
+  list (built by `history_from_events`) and send it through a stateless request call. Also
+  ACP `session/load` (resume from an IDE), and the sessions list in the HTTP server.
+- `transcript.md` is not rendered from events yet: `agent.json` / `agent.md` are still written
+  from the loop's `turns` (crit eval reads them); `crit sessions show` renders from events.
+  `agent.json` holds the latest run of a resumed session only.
+- Permission changes ("always allow") are logged as `permission_decision` but not appended as
+  a note to the model; mode and role changes are.
+- The repo map (item 4 of the prefix) still goes with the first task, not refreshed at
+  compaction (Stage 8 owns the map).
+- Work item 8 and the targets that need a model: prefix stable in 100% of eval runs, cache hit
+  ≥ 80%, the long-task subset, no context overflow. `crit eval` does not summarize the cache
+  ratio per run yet (the counters are in `agent.json` `stats`).
+- Thinking-off profiles: `masking_penalty` is read from settings; wiring it from Stage 1
+  profiles is a one-line merge once profiles land.
 
 ## Risks
 - **Log size on AOSP sessions:** blobs are deduplicated by hash, and large tool outputs are

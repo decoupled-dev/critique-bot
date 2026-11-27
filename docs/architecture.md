@@ -10,7 +10,10 @@ wires the concrete pieces together.
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
-3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
+             sessions_cmd                                 (crit sessions / resume / fork)
+3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format,
+             session_log (event log, projection, resume/fork), compaction (context pressure),
+             prompt_build (byte-stable prefix, memory files, change notes)
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
@@ -49,6 +52,26 @@ modules carry `@needs_webchat` (`tests/webchat_support.py`).
 Defaults are safe and headless: with no UI installed the engine uses `NullUI`, which
 approves nothing and asks nothing, and with no registry installed it uses the built-in
 tools.
+
+## Sessions and context (Stage 3)
+
+Every session is an append-only event log in `.crit/sessions/<id>/` (`session_log`, see
+[sessions.md](sessions.md)). The loop records through a few hooks: `_Chat.send` writes
+`model_request` / `assistant_turn` (with the `wire` messages a model API session added),
+`_LoggedHooks` wraps a task run's hooks for `tool_started` / `tool_result`, `_approved`
+writes `permission_decision`, and the task loop writes `user_message`, `checkpoint`,
+`mode_changed`, `role_changed` and `task_finished`. `history_from_events` rebuilds a model
+API session's message list; resume and fork use it, and `LocalModelSession.replace_history`
+installs it. A model API session (`_context_window` in the loop settings and a session with
+`replace_history`) gets a `compaction.Compactor` at turn boundaries instead of the web
+chat's size/turn/time rotation. `prompt_build` owns the prefix (`seed_message`), memory
+files, the first turn's `SESSION` block and mid-session change notes.
+
+What Stage 5 finishes: the loop still keeps the live history in the session object
+(`LocalModelSession.messages`, or the web page) and logs it; the projection is used to
+rebuild it on resume and checked against it in tests. Making `history_from_events` the
+only source (the engine owns the message list and the session becomes a stateless
+request function), and ACP `session/load`, move with the `agent.py` split.
 
 ## Testing a layer on its own
 
