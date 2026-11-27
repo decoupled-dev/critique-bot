@@ -918,7 +918,7 @@ class PromptAndSetupTests(unittest.TestCase):
         self.assertNotIn("do not use && or ||", text)
         for phrase in ("cd carries over", "background true", "command_output", "kill_command", '"shell"'):
             self.assertIn(phrase, text)
-        self.assertIn("thirty-eight names", text)
+        self.assertIn("twenty-nine names", text)
         for name in ALLOWED_TOOLS:
             self.assertIn(name, text)
 

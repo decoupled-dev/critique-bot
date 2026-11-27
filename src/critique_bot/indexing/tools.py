@@ -22,14 +22,29 @@ MAX_LIMIT = 200
 #: Characters of output when the context does not say (the agent's cap still applies).
 DEFAULT_CHARS = 6000
 
-#: Tools that run nothing and change nothing.
-READ_ONLY_TOOLS = (
-    "find_symbol", "symbol_refs", "who_calls", "callees", "imports_of", "imported_by", "module_of",
-    "repo_map", "git_blame", "git_history", "cochanged", "find_strings", "locate",
-)
+#: The tools the model sees. code_nav and code_history group related lookups under an action,
+#: so a small model chooses among few tools.
+READ_ONLY_TOOLS = ("code_nav", "code_history", "find_strings", "locate")
 #: Tools that may run a command (coverage_locate runs the failing test).
 COMMAND_TOOLS = ("coverage_locate",)
 TOOLS = READ_ONLY_TOOLS + COMMAND_TOOLS
+#: code_nav and code_history actions -> the handler that answers them.
+NAV_ACTIONS = ("find_symbol", "refs", "who_calls", "callees", "imports_of", "imported_by", "module_of", "repo_map")
+HISTORY_ACTIONS = ("blame", "log", "cochanged")
+#: Names earlier versions advertised (and models still call): tool -> (new tool, action).
+LEGACY_NAMES = {
+    "find_symbol": ("code_nav", "find_symbol"),
+    "symbol_refs": ("code_nav", "refs"),
+    "who_calls": ("code_nav", "who_calls"),
+    "callees": ("code_nav", "callees"),
+    "imports_of": ("code_nav", "imports_of"),
+    "imported_by": ("code_nav", "imported_by"),
+    "module_of": ("code_nav", "module_of"),
+    "repo_map": ("code_nav", "repo_map"),
+    "git_blame": ("code_history", "blame"),
+    "git_history": ("code_history", "log"),
+    "cochanged": ("code_history", "cochanged"),
+}
 
 
 class ToolError(Exception):
@@ -742,18 +757,52 @@ def coverage_locate(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
         return _out(dbs, lines, ctx, "nothing to show")
 
 
+def _action(args: dict[str, Any], allowed: tuple[str, ...], tool: str) -> str:
+    action = str(args.get("action") or "").strip().lower().replace("-", "_")
+    aliases = {"symbol_refs": "refs", "references": "refs", "find": "find_symbol", "definition": "find_symbol",
+               "git_blame": "blame", "history": "log", "git_history": "log", "commits": "log", "map": "repo_map"}
+    action = aliases.get(action, action)
+    if action not in allowed:
+        raise ToolError(f"{tool} needs action, one of: {', '.join(allowed)}")
+    return action
+
+
+_NAV = {
+    "find_symbol": lambda args, ctx: find_symbol(args, ctx),
+    "refs": lambda args, ctx: symbol_refs(args, ctx),
+    "who_calls": lambda args, ctx: who_calls(args, ctx),
+    "callees": lambda args, ctx: callees(args, ctx),
+    "imports_of": lambda args, ctx: imports_of(args, ctx),
+    "imported_by": lambda args, ctx: imported_by(args, ctx),
+    "module_of": lambda args, ctx: module_of(args, ctx),
+    "repo_map": lambda args, ctx: repo_map(args, ctx),
+}
+_HISTORY = {
+    "blame": lambda args, ctx: git_blame(args, ctx),
+    "log": lambda args, ctx: git_history(args, ctx),
+    "cochanged": lambda args, ctx: cochanged(args, ctx),
+}
+
+
+def code_nav(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
+    action = _action(args, NAV_ACTIONS, "code_nav")
+    if action in {"imports_of", "imported_by", "module_of"} and not _text(args, "path") and _text(args, "name"):
+        args = {**args, "path": args["name"]}  # a file passed as name
+    if action == "repo_map" and not _text(args, "scope") and _text(args, "path"):
+        args = {**args, "scope": args["path"], "path": ""}
+    return _NAV[action](args, ctx)
+
+
+def code_history(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
+    action = _action(args, HISTORY_ACTIONS, "code_history")
+    if action == "log" and _text(args, "name") and not _text(args, "symbol"):
+        args = {**args, "symbol": args["name"]}
+    return _HISTORY[action](args, ctx)
+
+
 HANDLERS: dict[str, Callable[[dict[str, Any], Any], tuple[bool, str]]] = {
-    "find_symbol": find_symbol,
-    "symbol_refs": symbol_refs,
-    "who_calls": who_calls,
-    "callees": callees,
-    "imports_of": imports_of,
-    "imported_by": imported_by,
-    "module_of": module_of,
-    "repo_map": repo_map,
-    "git_blame": git_blame,
-    "git_history": git_history,
-    "cochanged": cochanged,
+    "code_nav": code_nav,
+    "code_history": code_history,
     "find_strings": find_strings,
     "coverage_locate": coverage_locate,
     "locate": locate,
@@ -762,6 +811,9 @@ HANDLERS: dict[str, Callable[[dict[str, Any], Any], tuple[bool, str]]] = {
 
 def run(name: str, args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
     """Run one index tool. Errors in the arguments come back as ``(False, message)``."""
+    if name in LEGACY_NAMES:
+        name, action = LEGACY_NAMES[name]
+        args = {**args, "action": args.get("action") or action}
     handler = HANDLERS.get(name)
     if handler is None:
         return False, f"unknown index tool {name}"
@@ -784,5 +836,12 @@ def paths_of(name: str, args: dict[str, Any]) -> list[str]:
         value = args.get(key)
         if isinstance(value, list):
             out += [str(item) for item in value]
-    del name
+    named = args.get("name")
+    if name == "code_nav" and isinstance(named, str) and named.strip():
+        action = str(args.get("action") or "")
+        located = re.match(r"^(.+?\.\w+):\d+$", named.strip())
+        if located:  # refs of path:line
+            out.append(located.group(1))
+        elif action in {"imports_of", "imported_by", "module_of"}:
+            out.append(named)
     return out

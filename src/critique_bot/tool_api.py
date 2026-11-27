@@ -374,122 +374,84 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
     ),
     # ---- the index tools (Stage 8, critique_bot.indexing.tools): structure, history, evidence
     ToolSpec(
-        "find_symbol",
-        "Where a class, function or method is defined: path:line-end, kind, signature; exact names first, then "
-        "names that contain it. Not for text in bodies (search_code). Example: {\"name\": \"CarPropertyService.setProperty\"}.",
-        _obj({"name": _s("a name, Parent.name, or part of a name"),
-              "kind": _s("class, interface, function, method, struct, enum, ..."),
-              "path": _s("only under this folder, or in this build module"), "limit": _i("cap on results", 1, 200)},
-             ["name"]),
+        "code_nav",
+        "Navigate code by structure from crit's index. action find_symbol: where a name is defined; refs: every "
+        "use of a name by file; who_calls / callees: likely call edges (matched by name); imports_of / "
+        "imported_by: file dependencies; module_of: the build module (Android.bp, Gradle, CMake, Bazel) of a "
+        "file, its deps and users; repo_map: a ranked outline of a folder or module. Not for: text inside "
+        'bodies (search_code) or vague bug reports (locate). Example: {"action": "who_calls", "name": '
+        '"HvacController.setTemp", "depth": 2}. Returns: one line per item (path:line, kind, name, signature) '
+        "under a header with counts; starts with partial: while the index is still being built. Limits: 30 "
+        "items unless limit (at most 200); depth 1-2; repo_map 1000 tokens unless budget_tokens (at most 8000).",
+        _obj({"action": {"type": "string", "enum": ["find_symbol", "refs", "who_calls", "callees", "imports_of",
+                                                    "imported_by", "module_of", "repo_map"]},
+              "name": _s("a symbol: name, Parent.name, part of a name, or path:line of a definition"),
+              "path": _s("a file (imports_of, imported_by, module_of) or a folder/module to search in"),
+              "kind": _s("find_symbol: class, interface, function, method, struct, enum, ..."),
+              "depth": _i("who_calls/callees: 1 or 2", 1, 2),
+              "scope": _s("repo_map: folder or module name (default: the project)"),
+              "budget_tokens": _i("repo_map: size of the map", 100, 8000),
+              "focus": {"type": "array", "items": _S, "description": "repo_map: files to center the map on"},
+              "limit": _i("cap on items", 1, 200)}, ["action"]),
         read_only=True,
     ),
     ToolSpec(
-        "symbol_refs",
-        "Every use of a name, grouped by file with line numbers (definitions included). Use before renaming or "
-        "changing a signature. Example: {\"name\": \"setFanSpeed\"} or {\"name\": \"src/Fan.kt:42\"}.",
-        _obj({"name": _s("a name, Parent.name, or path:line of its definition"), "path": _s("only under this folder"),
-              "limit": _i("files to list", 1, 200)}, ["name"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "who_calls",
-        "Functions that call a symbol, best matches first; depth 2 adds their callers. Calls match by name, so "
-        "check them (symbol_refs lists every use). Example: {\"symbol\": \"HvacController.setTemp\", \"depth\": 2}.",
-        _obj({"symbol": _s("function or Parent.method"), "depth": _i("1 or 2", 1, 2), "path": _s("its file or folder"),
-              "limit": _i("cap", 1, 200)}, ["symbol"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "callees",
-        "What a function calls and where each callee is defined (likely, by name); depth 2 goes one level further. "
-        "Example: {\"symbol\": \"Parser.parse\"}.",
-        _obj({"symbol": _s("function or Parent.method"), "path": _s("its file"), "depth": _i("1 or 2", 1, 2),
-              "limit": _i("cap", 1, 200)}, ["symbol"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "imports_of",
-        "The imports/includes of one file and the files they resolve to. Example: {\"path\": \"app/src/main/Foo.kt\"}.",
-        _obj({"path": _PATH}, ["path"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "imported_by",
-        "Files that import or include one file (who depends on it). Example: {\"path\": \"src/util/units.py\"}.",
-        _obj({"path": _PATH, "limit": _i("cap", 1, 200)}, ["path"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "module_of",
-        "The build module (Soong Android.bp, Gradle, CMake, Bazel) that builds a file, its deps and the modules that "
-        "use it: what to build or test after a change. Example: {\"path\": \"packages/services/Car/service/src/.../CarService.java\"}.",
-        _obj({"path": _PATH}, ["path"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "repo_map",
-        "A ranked outline of a folder or module (files by import/call rank, with their main definitions), within a "
-        "token budget; files read this task rank higher. For orientation, not search. Example: {\"scope\": \"service/src\"}.",
-        _obj({"scope": _s("folder or module name (default: the project)"),
-              "budget_tokens": _i("size of the map (default 1000)", 100, 8000),
-              "focus": {"type": "array", "items": _S, "description": "files to center the map on"}}),
-        read_only=True,
-    ),
-    ToolSpec(
-        "git_blame",
-        "Who last changed some lines, and in which commit (grouped runs). Example: {\"path\": \"src/a.py\", \"lines\": \"120-160\"}.",
-        _obj({"path": _PATH, "lines": _s("a range such as 120-160 (at most 400 lines)")}, ["path", "lines"]),
-        read_only=True,
-    ),
-    ToolSpec(
-        "git_history",
-        "Commits about a file (path), one function (symbol), words in commit messages (query), or code changes that "
-        "added/removed a pattern (changed: git log -G). Example: {\"query\": \"fahrenheit display\"}.",
-        _obj({"path": _PATH, "symbol": _s("function or class: commits that changed its lines"),
-              "query": _s("words to find in commit messages"), "changed": _s("regex for git log -G"),
-              "limit": _i("commits", 1, 50)}),
-        read_only=True,
-    ),
-    ToolSpec(
-        "cochanged",
-        "Files that usually change in the same commits as one file (what else a change may need). "
-        "Example: {\"path\": \"types.hal\"}.",
-        _obj({"path": _PATH, "limit": _i("cap", 1, 50)}, ["path"]),
+        "code_history",
+        "Git history from crit's index. action blame: who last changed some lines (path, lines); log: commits "
+        "for a file (path), one function's lines (name), words in commit messages (query) or changes that "
+        "added/removed a pattern (changed, git log -G); cochanged: files that usually change in the same "
+        "commits as path. Not for: one commit's diff (git_show) or uncommitted work (git_diff). Example: "
+        '{"action": "log", "query": "fahrenheit display"}. Returns: one commit or file per line (hash, date, '
+        "author, subject; or path, times, share). Limits: 10 commits unless limit (at most 50); blame at most "
+        "400 lines.",
+        _obj({"action": {"type": "string", "enum": ["blame", "log", "cochanged"]}, "path": _PATH,
+              "lines": _s("blame: a range such as 120-160"),
+              "name": _s("log: a function or class whose lines' commits to list"),
+              "query": _s("log: words to find in commit messages"), "changed": _s("log: regex for git log -G"),
+              "limit": _i("commits or files", 1, 50)}, ["action"]),
         read_only=True,
     ),
     ToolSpec(
         "find_strings",
         "Find the code that emits a log line, error message, UI string, log tag, resource or property key "
-        "(ro.*, persist.*) or SELinux type; a whole logcat line works, numbers may differ. "
-        "Example: {\"text\": \"E CarSvc: fan level too high: 12\"}.",
+        "(ro.*, persist.*) or SELinux type; a whole logcat line works and numbers may differ. Not for: "
+        'identifiers (code_nav find_symbol) or regular expressions (search_code). Example: {"text": '
+        '"E CarSvc: fan level too high: 12"}. Returns: path:line kind (tag, function) "literal" (match %), '
+        "best first. Limits: 15 hits unless limit (at most 100).",
         _obj({"text": _s("the message, tag or key as seen"), "path": _s("only under this folder"),
               "kind": {"type": "string", "enum": ["log", "error", "tag", "resource", "property", "selinux", "literal"]},
               "limit": _i("cap", 1, 100)}, ["text"]),
         read_only=True,
     ),
     ToolSpec(
+        "locate",
+        "Start here for a bug report or vague task: fuses stack frames, log/error strings, test names, identifiers "
+        "(split, abbreviations expanded), file names, commit messages and the call graph into ranked file and "
+        "function candidates with the evidence for each; a hypothesis to check by reading. Not for: a known name "
+        '(code_nav find_symbol) or an exact text (search_code). Example: {"description": "temperature shows in F '
+        'after reboot", "evidence": "I ClusterUnits: display units from property: metric"}. Returns: numbered '
+        "path:line function [retrievers] with a why line and other likely functions. Limits: 10 candidates "
+        "unless limit (at most 30); about 1.5 s of search.",
+        _obj({"description": _s("the task or bug report"), "evidence": _s("log lines, stack trace, failing test output"),
+              "path": _s("only this module/folder (AOSP: indexes it on first use)"), "limit": _i("candidates", 1, 30)},
+             ["description"]),
+        read_only=True,
+    ),
+    ToolSpec(
         "coverage_locate",
-        "Run a failing Python test command under line tracing (or read a coverage report: coverage.py JSON, JaCoCo XML, "
-        "LCOV from llvm-cov/gcov) and rank the functions it executed; passing commands sharpen it (Ochiai). trace "
-        "resolves a stack trace to code. Runs commands like run_command. Example: "
-        "{\"command\": \"python -m pytest tests/test_x.py::test_bad\", \"passing\": [\"python -m pytest tests/test_x.py::test_ok\"]}.",
+        "Rank the functions a failing test executed: runs a Python test command under line tracing, or reads a "
+        "coverage report (coverage.py JSON, JaCoCo XML, LCOV from llvm-cov/gcov); passing commands or reports "
+        "sharpen it (Ochiai); trace resolves a stack trace to code. Runs commands like run_command. Not for: "
+        'a bug without a failing test or trace (locate). Example: {"command": "python -m pytest tests/test_x.py", '
+        '"passing": ["python -m pytest tests/test_y.py"]}. Returns: score path:start-end function (lines run), '
+        "most suspicious first, and resolved stack frames. Limits: 15 functions unless limit (at most 50); "
+        "300 s per run unless timeout (at most 1800); 5 passing runs.",
         _obj({"command": _s("the failing test command"),
               "passing": {"type": "array", "items": _S, "description": "passing test commands"},
               "report": _s("coverage report of the failing run"),
               "passing_reports": {"type": "array", "items": _S, "description": "reports of passing runs"},
               "trace": _s("a stack trace or tombstone backtrace"), "timeout": _i("seconds per run", 5, 1800),
               "limit": _i("functions to list", 1, 50)}),
-    ),
-    ToolSpec(
-        "locate",
-        "Start here for a bug report or vague task: fuses stack frames, log/error strings, test names, identifiers "
-        "(split and abbreviations expanded), file names, commit messages and the call graph into ranked file/function "
-        "candidates with reasons. A hypothesis to check by reading. Example: {\"description\": \"temperature shows "
-        "in F after reboot\", \"evidence\": \"<log lines or trace>\"}.",
-        _obj({"description": _s("the task or bug report"), "evidence": _s("log lines, stack trace, failing test output"),
-              "path": _s("only this module/folder (AOSP: indexes it on first use)"), "limit": _i("candidates", 1, 30)},
-             ["description"]),
-        read_only=True,
     ),
     ToolSpec(
         "delegate",

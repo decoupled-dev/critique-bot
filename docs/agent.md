@@ -601,7 +601,7 @@ The tool protocol is long. Sending it as the first message works, but the model 
 
 ### Tools
 
-The model has 38 tools (24 general ones and 14 read-only index tools; see [indexing.md](indexing.md)). `/tools` lists them in a session. New areas get one tool with an action, not one tool per action: a small model picks better from fewer.
+The model has 29 tools (24 general ones and 5 index tools; see [indexing.md](indexing.md)). `/tools` lists them in a session. New areas get one tool with an action, not one tool per action: a small model picks better from fewer.
 
 | Tool | What it does |
 | --- | --- |
