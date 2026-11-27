@@ -38,6 +38,7 @@ LAYERS: dict[str, int] = {
     "model_api": MODELS,
     "local_model": MODELS,
     "tool_parse": MODELS,
+    "profiles": MODELS,
     # the web chat: a removable package (critique_bot/webchat/), reached only via model_api
     "webchat": MODELS,
     # tools: what the agent can do on this machine; tool_api is its interface
@@ -76,6 +77,7 @@ LAYERS: dict[str, int] = {
     "config_cmd": APPS,
     "installer": APPS,
     "eval_harness": APPS,
+    "doctor": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,

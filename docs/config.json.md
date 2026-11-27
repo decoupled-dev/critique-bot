@@ -134,7 +134,7 @@ Hosted APIs (`openai`, `anthropic`, ...) are not a backend: the only data that l
 
 ## Local model (`backend: local`)
 
-The model runs behind an OpenAI-compatible server (llama.cpp's `llama-server`, LM Studio, vLLM) and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`. Ollama is not supported.
+The model runs behind an OpenAI-compatible server (llama.cpp's `llama-server`, LM Studio, vLLM) and crit calls its HTTP API directly, so there is no browser, no sign-in, and no selectors. Nothing leaves the PC: the server must be on `localhost` / `127.0.0.1` (a model on another machine in the LAN is allowed only when its host is listed in `allowed_hosts`), and the request never goes through an `http_proxy`. Ollama works through its OpenAI-compatible endpoint (`url` `http://127.0.0.1:11434`); its native API (`local.api: ollama`) is not supported. Per-server launch lines, model profiles and `crit doctor model`: [local-models.md](local-models.md).
 
 `crit configure` (or the first `crit` with no config) asks for these and writes the file. In one line: `crit config --backend local --local-url http://127.0.0.1:8080 --model NAME`. By hand:
 
@@ -161,7 +161,21 @@ llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 -
 | `local.num_ctx` | 0 (read from the server) | The context window the server was started with (`llama-server -c`). crit sizes its conversations to it; it is not sent to the server. When it is 0 or not set, crit reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `data[].max_model_len`) and otherwise assumes 32768. crit never asks for it. |
 | `local.api_key` | none | The server's API key, sent as `Authorization: Bearer <key>` only to this server. Read only from your own `~/.crit/config.json` or `CRIT_API_KEY`; a shared config file cannot supply it (it is ignored there). Never logged, and redacted from transcripts and the log file. Set it with `crit config --api-key`. |
 | `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
-| `local.max_tokens` | none sent | The longest reply, sent as `max_tokens`. Hosted gateways (OpenRouter) reserve credit for the model's whole output window without it, and refuse with HTTP 402 on a small balance: set 8192 there. |
+| `local.max_tokens` | the profile's, else none sent | The longest reply, sent as `max_tokens`. Hosted gateways (OpenRouter) reserve credit for the model's whole output window without it, and refuse with HTTP 402 on a small balance: set 8192 there. |
+| `local.profile` | chosen by the model name | The [model profile](local-models.md#model-profiles) to use, by id (`qwen3.6-27b`, `gemma3`, `generic`, or one of yours in `~/.crit/profiles/`). Left out, crit picks the profile whose name pattern fits `model` best, else `generic`. An unknown id is logged and ignored. |
+
+### Model profiles
+
+A profile holds what differs between model families: native or prompted tool calls, the sampling the model card recommends (`temperature`, `top_p`, `top_k`, ...), whether earlier reasoning goes back to the model, and context and output limits. `local.temperature` and `local.max_tokens` still win over the profile, and so does an explicit `local.num_ctx` over the profile's `effective_context`. `crit doctor model` shows which profile is in use and checks the server's tool calls; [local-models.md](local-models.md) lists the built-in profiles, the server presets, and how to write your own.
+
+```json
+{
+  "backend": "local",
+  "url": "http://127.0.0.1:8000",
+  "model": "Qwen/Qwen3.6-27B",
+  "local": { "profile": "qwen3.6-27b" }
+}
+```
 
 Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
 

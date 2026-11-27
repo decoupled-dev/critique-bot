@@ -1,0 +1,32 @@
+{
+  "profiles": [
+    {
+      "id": "kimi-k2",
+      "match": ["kimi-k2*", "moonshotai/kimi-k2*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 0.6},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "kimi_k2"},
+        "sglang": {"tool_call_parser": "kimi_k2"}
+      },
+      "source": "https://huggingface.co/moonshotai/Kimi-K2-Instruct (recommended temperature)",
+      "notes": "Model card: temperature 0.6 for Kimi-K2-Instruct (the Thinking variant recommends 1.0; override it in a user profile). Large MoE, usually served on the LAN."
+    },
+    {
+      "id": "minimax-m2",
+      "match": ["minimax-m2*", "minimaxai/minimax-m2*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 40},
+      "preserve_thinking": true,
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "minimax_m2", "reasoning_parser": "minimax_m2_append_think"}
+      },
+      "source": "https://huggingface.co/MiniMaxAI/MiniMax-M2 (recommended parameters; interleaved thinking)",
+      "notes": "Model card: temperature 1.0, top_p 0.95, top_k 40. Interleaved thinking: the card says to keep the assistant's thinking in the history, so preserve_thinking is on."
+    }
+  ]
+}

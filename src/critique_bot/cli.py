@@ -922,6 +922,7 @@ SUBCOMMANDS = {
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
     "eval": "measure crit (or opencode) on a suite of real tasks (crit eval --help)",
+    "doctor": "check the local model server: type, context, tool-call probe (crit doctor model)",
 }
 
 
@@ -1099,9 +1100,25 @@ def _main(argv: list[str] | None = None) -> int:
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
             "eval": _main_eval,
+            "doctor": _main_doctor,
         }
         return handlers[command](rest)
     return _main_run(argv)
+
+
+def _main_doctor(argv: list[str]) -> int:
+    from critique_bot import doctor
+
+    def load(explicit: str | None) -> BotConfig | int:
+        found = _find_config(explicit, ask=False)
+        if isinstance(found, int):
+            return found
+        try:
+            return load_config(found)
+        except ConfigError as exc:
+            return _config_error(exc)
+
+    return doctor.main(argv, load)
 
 
 def _main_eval(argv: list[str]) -> int:

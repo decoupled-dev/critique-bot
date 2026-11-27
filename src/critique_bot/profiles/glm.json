@@ -1,0 +1,49 @@
+{
+  "profiles": [
+    {
+      "id": "glm-4.5",
+      "match": [
+        "glm-4.5*",
+        "glm-4.6*",
+        "glm4.5*",
+        "glm4.6*"
+      ],
+      "tool_mode": "native",
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {
+          "tool_call_parser": "glm45",
+          "reasoning_parser": "glm45"
+        },
+        "sglang": {
+          "tool_call_parser": "glm45",
+          "reasoning_parser": "glm45"
+        }
+      },
+      "source": "https://huggingface.co/zai-org/GLM-4.6 (Evaluation / recommended parameters)",
+      "notes": "Model cards for GLM-4.5/4.6 (incl. GLM-4.5-Air): temperature 1.0, top_p 0.95 for general and code evaluation. Interleaved thinking between tool calls."
+    },
+    {
+      "id": "glm-4.7",
+      "match": [
+        "glm-4.7*",
+        "glm4.7*"
+      ],
+      "tool_mode": "native",
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "preserve_thinking": true,
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "source": "https://huggingface.co/zai-org/GLM-4.7",
+      "notes": "Sampling as GLM-4.5/4.6 (temperature 1.0, top_p 0.95). GLM-4.7 keeps thinking across turns in coding-agent use (preserved thinking), so reasoning goes back in the history. Its vLLM/SGLang parser names are not set here: check the model card for the version you run."
+    }
+  ]
+}

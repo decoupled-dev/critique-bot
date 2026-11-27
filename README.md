@@ -22,6 +22,8 @@ Prebuilt downloads for Linux (.deb and zip) and Windows: see [docs/install.md](d
 
 Measuring crit (or opencode) on a suite of real tasks with a fixed model: [`docs/eval.md`](docs/eval.md).
 
+Running a local model (servers, launch lines, model profiles, `crit doctor model`): [`docs/local-models.md`](docs/local-models.md).
+
 ## Requirements
 
 - Python 3.10+

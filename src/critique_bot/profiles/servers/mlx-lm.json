@@ -1,0 +1,15 @@
+{
+  "id": "mlx-lm",
+  "name": "MLX-LM server (macOS)",
+  "kind": "local",
+  "detect": "GET /v1/models (no server-specific endpoint)",
+  "default_url": "http://127.0.0.1:8080",
+  "launch": "mlx_lm.server --model {model} --port 8080",
+  "native_tools": "Tool-call support depends on the mlx-lm version and the model's template; prompted mode (local.profile with tool_mode prompted) is often the reliable choice. Run crit doctor model.",
+  "speculation": {
+    "notes": "Recent mlx-lm has a --draft-model option; check mlx_lm.server --help.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "crit cannot tell MLX-LM from another generic OpenAI-compatible server; the doctor reports it as generic."
+}

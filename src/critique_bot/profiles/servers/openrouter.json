@@ -1,0 +1,21 @@
+{
+  "id": "openrouter",
+  "name": "OpenRouter (hosted)",
+  "kind": "hosted",
+  "detect": "url host openrouter.ai",
+  "default_url": "https://openrouter.ai/api",
+  "launch": "(hosted: nothing to launch) crit config --backend local --local-url https://openrouter.ai/api --model {model}; add openrouter.ai to allowed_hosts; export CRIT_API_KEY=<key>; set local.max_tokens 8192",
+  "native_tools": "Most listed models support tools; the provider behind a model decides how well. Model ids look like qwen/qwen3.6-27b; profiles match the part after the slash.",
+  "cache": "Provider-side; usage reports cached tokens for some providers.",
+  "needs": {
+    "api_key": "CRIT_API_KEY (or crit config --api-key)",
+    "max_tokens": "local.max_tokens: without it OpenRouter reserves credit for the model's whole output window and refuses with HTTP 402 on a small balance",
+    "allowed_hosts": "openrouter.ai"
+  },
+  "speculation": {
+    "notes": "Not under your control.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "Sends your prompts to a third party: use synthetic or public code only, never private code (plan/decisions.md)."
+}

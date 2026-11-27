@@ -1,0 +1,16 @@
+{
+  "id": "sglang",
+  "name": "SGLang",
+  "kind": "local",
+  "detect": "GET /get_server_info",
+  "default_url": "http://127.0.0.1:30000",
+  "launch": "python -m sglang.launch_server --model-path {model} --context-length {context} {parsers} --port 30000",
+  "native_tools": "--tool-call-parser <family> (the profile's parsers.sglang), and --reasoning-parser where one exists.",
+  "cache": "Radix (prefix) cache, on by default.",
+  "speculation": {
+    "notes": "--speculative-algorithm (EAGLE/EAGLE3, and n-gram in newer releases) with its draft options; the names and supported algorithms differ by version: check python -m sglang.launch_server --help. /get_server_info reports speculative_algorithm when it is on.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "/get_server_info also reports the tool_call_parser and context_length the server runs with; crit doctor model shows them."
+}

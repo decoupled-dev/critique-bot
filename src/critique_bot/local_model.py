@@ -265,6 +265,10 @@ class LocalModelSession(ChatSession):
                 self._call_count += 1
                 call["id"] = f"call_{self._call_count}"
         message: dict[str, Any] = {"role": "assistant", "content": content}
+        if detail.get("reasoning") and self.client.profile.preserve_thinking:
+            # The profile says this model wants its earlier thinking back (Qwen3.6, MiniMax-M2);
+            # otherwise it is never echoed (R1-style models must not see it again).
+            message["reasoning_content"] = detail["reasoning"]
         if calls:
             message["tool_calls"] = calls
         self.messages.append(message)
@@ -298,6 +302,9 @@ class LocalModelClient:
         self.num_ctx = config.local.num_ctx
         self.temperature = config.local.temperature
         self.max_tokens = config.local.max_tokens
+        #: ``local.profile``: the profile id to use instead of matching the model name.
+        self.profile_id = config.local.profile
+        self._profile: tuple[str, Any] | None = None
         #: ``local.api_key`` (or CRIT_API_KEY): sent as a Bearer token, only to this server.
         self._api_key = config.local.api_key
         self.first_chunk_seconds = max(config.reply_start_ms / 1000.0, _MIN_FIRST_CHUNK_SECONDS)
@@ -308,6 +315,20 @@ class LocalModelClient:
         self._host = parts.hostname or "127.0.0.1"
         self._port = parts.port or (443 if self._https else 80)
         self._prefix = parts.path.rstrip("/")
+
+    @property
+    def profile(self) -> Any:
+        """The model profile (critique_bot.profiles.Profile) for the current model name."""
+        if self._profile is None or self._profile[0] != self.model:
+            from critique_bot import profiles
+
+            try:
+                found = profiles.resolve(self.model, self.profile_id)
+            except profiles.ProfileError as exc:
+                log.warn(f"model profiles: {exc}; using no profile")
+                found = profiles.Profile(id=profiles.GENERIC)
+            self._profile = (self.model, found)
+        return self._profile[1]
 
     # ------------------------------------------------------------------ requests
 
@@ -409,13 +430,18 @@ class LocalModelClient:
         body: dict[str, Any] = {
             "model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
         }
+        profile = self.profile
+        body.update(profile.sampling_dict())  # the model card's sampling; config wins below
         if self.temperature is not None:
             body["temperature"] = self.temperature
-        if self.max_tokens:
-            body["max_tokens"] = self.max_tokens
+        max_tokens = self.max_tokens or profile.max_tokens
+        if max_tokens:
+            body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+            if profile.parallel_tool_calls is not None:
+                body["parallel_tool_calls"] = profile.parallel_tool_calls
         return "/v1/chat/completions", body
 
     def _events(self, stream: _Stream) -> Iterator[dict[str, Any]]:
@@ -809,3 +835,148 @@ def server_context_window(url: str, model: str = "", api_key: str | None = None)
         log.info(f"local model: the server reports a {found}-token context window")
     _reported_ctx[key] = found
     return found
+
+
+# --------------------------------------------------------------------------- doctor support
+
+#: Endpoints that tell servers apart, in the order they are tried: (path, server id).
+_SERVER_ENDPOINTS = (
+    ("/props", "llama.cpp"),
+    ("/get_server_info", "sglang"),
+    ("/version", "vllm"),
+    ("/api/version", "ollama"),
+    ("/api/v0/models", "lmstudio"),
+    ("/info", "tgi"),
+)
+
+
+def _find_keys(value: Any, wanted: tuple[str, ...], depth: int = 0) -> dict[str, Any]:
+    """Every key in ``wanted`` found anywhere in a nested dict (first hit wins), up to 3 levels deep."""
+    found: dict[str, Any] = {}
+    if depth > 3 or not isinstance(value, dict):
+        return found
+    for key, item in value.items():
+        if key in wanted and key not in found and not isinstance(item, (dict, list)):
+            found[key] = item
+    for item in value.values():
+        if isinstance(item, dict):
+            for key, hit in _find_keys(item, wanted, depth + 1).items():
+                found.setdefault(key, hit)
+    return found
+
+
+def detect_server(url: str, api_key: str | None = None, model: str = "") -> dict[str, Any]:
+    """Which server answers at ``url`` and what it reports: ``type`` (llama.cpp, sglang, vllm,
+    ollama, lmstudio, tgi, openrouter, generic), ``version``, ``context`` (tokens, 0 when not
+    reported), ``kv_cache`` (llama.cpp cache type when reported), ``template_has_tools``
+    (llama.cpp: whether the loaded chat template mentions tools; None when unknown),
+    ``tool_call_parser`` and ``speculation`` (when the server reports them)."""
+    info: dict[str, Any] = {"type": "generic", "version": "", "context": 0, "kv_cache": "",
+                            "template_has_tools": None, "tool_call_parser": "", "speculation": ""}
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
+        info["type"] = "openrouter"
+        return info
+    for path, kind in _SERVER_ENDPOINTS:
+        data = _get_json(url, path, api_key)
+        if not isinstance(data, (dict, list)) or not data:
+            continue
+        if kind == "llama.cpp" and not (isinstance(data, dict) and (
+                "default_generation_settings" in data or "build_info" in data or "chat_template" in data)):
+            continue
+        if kind == "vllm" and not (isinstance(data, dict) and set(data) == {"version"}):
+            continue  # vLLM answers exactly {"version": ...}
+        if kind == "ollama" and not (isinstance(data, dict) and "version" in data):
+            continue
+        if kind == "lmstudio" and not (isinstance(data, dict) and isinstance(data.get("data"), list) and any(
+                isinstance(m, dict) and ("max_context_length" in m or "state" in m) for m in data["data"])):
+            continue
+        if kind == "tgi" and not (isinstance(data, dict) and "model_id" in data):
+            continue
+        info["type"] = kind
+        if isinstance(data, dict):
+            _read_server_details(kind, data, info, model)
+        break
+    if not info["context"]:
+        info["context"] = server_context_window(url, model, api_key)
+    return info
+
+
+def _read_server_details(kind: str, data: dict[str, Any], info: dict[str, Any], model: str) -> None:
+    if kind == "llama.cpp":
+        settings = data.get("default_generation_settings")
+        n_ctx = _positive(settings.get("n_ctx")) if isinstance(settings, dict) else 0
+        info["context"] = n_ctx or _positive(data.get("n_ctx"))
+        info["version"] = str(data.get("build_info") or "")
+        keys = _find_keys(data, ("cache_type_k", "cache_type_v", "type_k", "type_v"))
+        kv = [str(keys[k]) for k in ("cache_type_k", "type_k", "cache_type_v", "type_v") if k in keys]
+        info["kv_cache"] = "/".join(dict.fromkeys(kv))
+        template = data.get("chat_template")
+        if isinstance(template, str) and template:
+            info["template_has_tools"] = "tool" in template
+        spec = _find_keys(data, ("speculative.n_max", "n_draft", "speculative_n_max"))
+        if spec:
+            info["speculation"] = ", ".join(f"{k}={v}" for k, v in spec.items())
+    elif kind == "sglang":
+        found = _find_keys(data, ("version", "context_length", "tool_call_parser", "speculative_algorithm",
+                                  "kv_cache_dtype"))
+        info["version"] = str(found.get("version") or "")
+        info["context"] = _positive(found.get("context_length"))
+        info["tool_call_parser"] = str(found.get("tool_call_parser") or "")
+        info["speculation"] = str(found.get("speculative_algorithm") or "")
+        info["kv_cache"] = str(found.get("kv_cache_dtype") or "")
+    elif kind in ("vllm", "ollama"):
+        info["version"] = str(data.get("version") or "")
+    elif kind == "lmstudio":
+        entries = [m for m in data.get("data") or [] if isinstance(m, dict)]
+        chosen = [m for m in entries if model and m.get("id") == model] or entries
+        for entry in chosen:
+            info["context"] = _positive(entry.get("loaded_context_length")) or _positive(entry.get("max_context_length"))
+            if info["context"]:
+                break
+    elif kind == "tgi":
+        info["version"] = str(data.get("version") or "")
+        info["context"] = _positive(data.get("max_total_tokens")) or _positive(data.get("max_input_tokens"))
+        if data.get("speculate"):
+            info["speculation"] = f"speculate={data['speculate']}"
+
+
+def probe_turn(
+    config: BotConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """One native tool-call request for ``crit doctor model``: what the server parsed and what
+    the fallback parser would recover. Never raises for a model failure; ``error`` says it."""
+    from critique_bot import tool_parse
+
+    client = LocalModelClient(config, model=model)
+    detail: dict[str, Any] = {}
+    out: dict[str, Any] = {"text": "", "reasoning": "", "native": [], "recovered": [], "error": "", "finish": ""}
+    try:
+        out["text"] = client.chat(messages, detail=detail, tools=tools)
+    except ChatError as exc:
+        out["error"] = str(exc)
+        return out
+    out["reasoning"] = str(detail.get("reasoning") or "")
+    out["finish"] = str(detail.get("done_reason") or "")
+    out["usage"] = {"prompt": detail.get("prompt_eval_count"), "completion": detail.get("eval_count")}
+    for call in detail.get("tool_calls") or []:
+        function = call.get("function") or {}
+        raw = function.get("arguments") or ""
+        try:
+            arguments: Any = json.loads(raw) if isinstance(raw, str) and raw.strip() else ({} if not raw else raw)
+            ok = isinstance(arguments, dict)
+        except ValueError:
+            arguments, ok = raw, False
+        out["native"].append({"name": str(function.get("name") or ""), "arguments": arguments, "arguments_ok": ok})
+    if not out["native"]:
+        for text in (out["text"], out["reasoning"]):
+            found, _cleaned = tool_parse.recover_calls(text)
+            if found:
+                out["recovered"] = [{"name": c.name, "arguments": c.arguments, "source": c.source, "notes": c.notes}
+                                    for c in found]
+                break
+    return out

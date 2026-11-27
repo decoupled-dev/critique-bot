@@ -1,0 +1,7 @@
+{
+  "id": "generic",
+  "tool_mode": "auto",
+  "edit_format": "str_replace",
+  "edit_fallback": "whole_file",
+  "notes": "Any model no other profile matches. tool_mode auto: native tool calls unless crit doctor model found they fail on this server, then prompted. No sampling is sent (the server's defaults apply). The plan's 16K effective context for unknown models is not set yet: it would shrink every unknown model's chats before the eval shows it helps."
+}

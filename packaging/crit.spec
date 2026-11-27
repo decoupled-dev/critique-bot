@@ -60,6 +60,11 @@ for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
 for skill_md in sorted((ROOT / "src" / "critique_bot" / "skills").glob("*/SKILL.md")):
     datas.append((str(skill_md), f"critique_bot/skills/{skill_md.parent.name}"))
 
+# Built-in model profiles and server presets: profiles.builtin_dir().
+for profile_json in sorted((ROOT / "src" / "critique_bot" / "profiles").rglob("*.json")):
+    relative = profile_json.parent.relative_to(ROOT / "src")
+    datas.append((str(profile_json), relative.as_posix()))
+
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],
     pathex=[str(ROOT / "src")],
