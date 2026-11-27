@@ -18,7 +18,10 @@ wires the concrete pieces together.
              session_log (event log, projection, resume/fork), compaction (context pressure),
              prompt_build (byte-stable prefix, memory files, change notes)
 2  tools     tool_api (interface), agent_tools (implementation),
-             agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
+             agent_shell, agent_edit (match ladder, atomic writes), agent_patch (unified/V4A patches),
+             edit_guard (parse check and lint after each write), tool_output (result shaping),
+             env_snapshot (first-turn environment note), agent_rules, agent_build, code_index,
+             workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets),
              sandbox/ (OS sandbox for commands: linux bwrap, macos sandbox-exec, windows),
@@ -43,6 +46,8 @@ its `LAYERS` table.
 | models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens`, `model_profile` / `tool_mode` / `native_tools_ok` (the model profile and native vs prompted tool calls), `server_info` / `probe_tool_turn` / `record_probe` (for `crit doctor model`) |
 | tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | tools → OS | `sandbox.run` | Every command the agent runs: `ShellSession` passes its `sandbox.Policy` (set by `agent_shell.use_sandbox`) to `sandbox.run`, which wraps the argv for the platform and returns a `Popen`. The engine sees only `Permission.contained` (auto mode runs contained commands unasked) and `taint.check` around its permission decision. |
+| models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens` |
+| tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. `shape_output` (every built-in result: head and tail within the budget, the full text under `.crit/cache/out/`), `environment_snapshot` (the first-turn environment note). Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
 | engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
 | engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |
 
@@ -122,3 +127,24 @@ seeds the main chat with one, and `delegate(agent=...)` runs one in a helper cha
 worktree for an agent that writes.
 - **ACP.** `crit --acp` already runs crit as an Agent Client Protocol agent
   ([acp.md](acp.md)); `agent_acp` is one more front end behind `ui_api`.
+
+## Writes, edits and tool results (Stage 2)
+
+- **Match ladder** (`agent_edit.replace_span`): exact → line endings / trailing whitespace →
+  indentation (re-indented, tabs vs spaces) → markdown punctuation → fuzzy (≥ 92% and ≥ 5 points
+  ahead of any other window). Several hits are refused with their line numbers; a miss shows the
+  closest candidate and the first line that differs. `apply_patch` (`agent_patch`) finds each
+  hunk through the same ladder and ignores line numbers; no `git apply`.
+- **Write safety**: reads and writes record a digest of the file; an edit to a file changed on
+  disk since then is refused (`stale_edit_refusals`), and an edit to a file never read applies
+  only on an exact match. Batches and multi-file patches are all or nothing; writes go through
+  a temp file in the same folder, `fsync`, then `rename`, keeping encoding, BOM, line endings,
+  the final-newline state and permission bits.
+- **Guard** (`edit_guard`): a parse check (tree-sitter with the `index` extra, else the
+  language's cheap front end) and a time-bounded lint that reports only new issues; setting
+  `edit_guard` is `flag` (default), `reject` or `off`, and `lint` overrides the linter table.
+- **Results**: `tool_output.shape_output` keeps every result within `tool_output_cap_tokens`
+  (else the engine's per-result size, at most 10K tokens), saving the full text; empty results
+  say what happened. The task state counts failed edits per file, and after `edit_fail_limit`
+  (default 2) the result suggests a whole-file write (or smaller edits over
+  `whole_file_max_lines`, default 800).

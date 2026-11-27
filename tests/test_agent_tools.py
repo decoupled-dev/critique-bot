@@ -460,7 +460,7 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(patched_paths(patch), ["old.txt", "r1.txt", "r2.txt"])
         self.assertEqual(patched_paths("--- x.txt\n+++ x.txt\n@@ -1 +1 @@\n-a\n+b\n"), ["x.txt"])
 
-    def test_no_unsafe_paths_flag(self) -> None:
+    def test_apply_patch_never_runs_git(self) -> None:
         seen: list[list[str]] = []
 
         def runner(argv, **_kw):
@@ -468,9 +468,11 @@ class PatchTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
         root = Path(tempfile.mkdtemp())
-        execute("apply_patch", {"patch": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"}, _ctx(root, runner=runner))
-        self.assertTrue(seen)
-        self.assertTrue(all("--unsafe-paths" not in argv for argv in seen))
+        (root / "a.txt").write_text("a\n", encoding="utf-8")
+        result = execute("apply_patch", {"patch": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"}, _ctx(root, runner=runner))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(seen, [])
+        self.assertEqual((root / "a.txt").read_text(encoding="utf-8"), "b\n")
 
     @unittest.skipUnless(HAS_GIT, "git")
     def test_deleted_file_is_checkpointed(self) -> None:

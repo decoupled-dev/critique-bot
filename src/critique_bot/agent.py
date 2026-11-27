@@ -3031,6 +3031,7 @@ def run_agent_loop(
         ),
         web_hosts=_web_hosts(options),
         rules=_load_rules(options),
+        settings=options,
     )
     outcome_code = "COMPLETED"
     pool_box: list[Any] = []

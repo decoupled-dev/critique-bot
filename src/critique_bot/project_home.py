@@ -69,6 +69,8 @@ SECURITY_KEYS = frozenset(
         "auto_questions",
         # the OS sandbox (mode, writable folders, preset, env_files, ports): a cloned repo cannot loosen it
         "sandbox",
+        # commands crit runs on its own after every edit
+        "lint",
     }
 )
 

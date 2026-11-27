@@ -76,7 +76,7 @@ class ReadFilesWindowTests(unittest.TestCase):
         ):
             result = execute("read_files", {"path": "logcat.txt", "offset": 69_999, "limit": 3}, self.ctx)
         out = result["output"]
-        self.assertIn("lines 69999-70001 of 120000", out)
+        self.assertIn("lines 69999-70001 of 120,000", out)
         self.assertIn("70000|E AndroidRuntime: FATAL EXCEPTION", out)
         self.assertIn("read on with col=", out)
         self.assertLess(len(out), 6000)

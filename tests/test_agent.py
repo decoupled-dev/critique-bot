@@ -442,8 +442,8 @@ class ToolTests(unittest.TestCase):
         (root / "big.txt").write_text("\n".join(f"line {i}" for i in range(900)) + "\n", encoding="utf-8")
         result = execute_tool("read_files", {"paths": ["big.txt"]}, workspace=root)
         self.assertIn("1|line 0", result["output"])
-        self.assertIn("next offset=201", result["output"])
-        self.assertNotIn("201|line 200", result["output"])
+        self.assertIn("next offset=101", result["output"])
+        self.assertNotIn("101|line 100", result["output"])
         wide = execute_tool("read_files", {"paths": ["big.txt"], "limit": 5000}, workspace=root, max_chars=100_000)
         self.assertIn("limit capped at 400", wide["output"])
         self.assertNotIn("401|line 400", wide["output"])
@@ -1004,11 +1004,12 @@ class ReplayTests(unittest.TestCase):
             "`bot-agent` is an alias for `--mode agent`. Later turns are the task, then tool results. "
             "The model emits <tool_call> blocks.",
         )
-        session = _Scripted([reply, "COMPLETED"])
+        # A loose (punctuation) match needs the file read first: stale-read protection.
+        session = _Scripted([_call("read_files", path="README.md"), reply, "COMPLETED"])
         outcome: list[str] = []
         _loop(session, root, "Add one sentence to the Agent section of README.md", outcome=outcome)
         self.assertIn("emits <tool_call> blocks", readme.read_text(encoding="utf-8"))
-        self.assertNotIn("cut off", session.sent[1])
+        self.assertNotIn("cut off", session.sent[2])
         self.assertEqual(outcome, ["COMPLETED"])
 
 

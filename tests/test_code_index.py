@@ -89,14 +89,16 @@ class CodeIndexTests(unittest.TestCase):
             self.assertTrue(found["ok"], found)
             lines = found["output"].splitlines()
             self.assertTrue(lines)
-            self.assertNotIn("function alpha", lines[0])
+            self.assertNotIn("function alpha", found["output"])
             edited = execute_tool(
                 "search_code",
                 {"pattern": "beta"},
                 workspace=root,
                 index_path=index,
             )
-            self.assertTrue(edited["output"].splitlines()[0].startswith("calc.py:1: function beta"))
+            # A count line comes first, then the definitions, then the text hits.
+            hits = [line for line in edited["output"].splitlines() if line.startswith("calc.py:")]
+            self.assertTrue(hits[0].startswith("calc.py:1: function beta"))
 
     def test_refresh_only_reparses_changed_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
