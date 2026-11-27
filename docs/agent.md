@@ -586,6 +586,7 @@ On Linux and macOS the same lines use `./gradlew`.
 | `sessions_keep_days`, `sessions_keep` | What `crit sessions prune` keeps: 30 days and 200 sessions by default. |
 | `slot_pinning` | llama.cpp: send each session to one slot (`id_slot`) so its prompt cache stays warm. Default on when the server is llama.cpp; `false` turns it off; a number is the slot count. |
 | `memory_files` | `false`: use only `.crit/AGENT.md`, not `AGENTS.md` files or `~/.crit/AGENT.md`. |
+| `memory` | Project memory ([memory.md](memory.md)): `full` (default) recalls a hunch at each task's start and records what each task did; `recall` only reads; `off` turns it off (`--no-memory` for one run). `memory_budget` (tokens, default 600), `memory_untrusted`, `memory_cards` (`extractive` or `model`) tune it. |
 | `handoff_notes` | `false` skips asking the old conversation for a handoff note before moving to a new one. Default `true`. |
 | `reply_retries` | How many times a failed, empty, or missing reply is retried before the task ends. The first retry goes to the same conversation when nothing was answered yet; a stalled reply, an unhealthy conversation, and every later retry go to a new conversation with a summary of the task. Default 3. |
 

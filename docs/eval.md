@@ -43,6 +43,20 @@ config file, the GPU and `--note` (use it for the server, quant and flags).
 both runs share, with a paired bootstrap 90% interval. With a suite of 30–50 tasks, a
 difference whose interval includes 0 is noise.
 
+## Project memory: warm-up then held-out
+
+`crit eval` gives each trial a fresh workspace, so nothing carries over between tasks.
+`scripts/eval/memory_eval.py` measures [project memory](memory.md) instead: it runs a plan's
+warm-up tasks, then its held-out test tasks, in one copy of a repository, with memory on and
+off, and reports turns to the first correct file, tokens before the first edit, the hunch's
+acc@5, the wrong-hunch rate and pass@1 (also on the tasks whose hunch was wrong). Test tasks
+whose reference change overlaps a warm-up task's are left out.
+
+```bash
+python3 scripts/eval/memory_eval.py run --plan plan.json --config ~/.crit/qwen.json --runs 3 --out out/
+python3 scripts/eval/memory_eval.py report out/
+```
+
 ## Comparing with opencode
 
 ```bash

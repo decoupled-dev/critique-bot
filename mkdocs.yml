@@ -42,6 +42,7 @@ nav:
   - Using crit:
       - The agent: agent.md
       - Sessions, resume and context: sessions.md
+      - Project memory: memory.md
       - IDEs (ACP): acp.md
       - Review in GitLab CI: gitlab-ci.md
   - Extending:

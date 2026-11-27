@@ -45,6 +45,11 @@ command. The names of the first Stage 8 build (`find_symbol`, `symbol_refs`, `wh
 `cochanged`) still work when a model calls them: they run as `code_nav` / `code_history` with
 the matching action, but they are not advertised.
 
+With [project memory](memory.md), `locate` also searches the plain-language file cards and the
+learned project glossary (a badly named symbol and the words that say what it does), so code is
+found by what it does even when its names say nothing. Memory adds those entries to the index's
+`glossary` table too (source `learned`), so the identifier expansion of every search uses them.
+
 Call edges are matched by name, so `who_calls` and `callees` say "likely"; `refs` lists every
 textual use when precision matters.
 

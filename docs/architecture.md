@@ -12,11 +12,13 @@ wires the concrete pieces together.
              eval_harness, doctor                             (measuring, checking the model server)
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
              audit_cmd, sandbox_doctor                    (crit audit, crit doctor sandbox)
+             memory_cmd                                   (crit memory)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
              sessions_cmd                                 (crit sessions / resume / fork)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format,
              session_log (event log, projection, resume/fork), compaction (context pressure),
-             prompt_build (byte-stable prefix, memory files, change notes)
+             prompt_build (byte-stable prefix, memory files, change notes),
+             memory_recall (project memory: the hunch at task start, the episode at task end)
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit (match ladder, atomic writes), agent_patch (unified/V4A patches),
              edit_guard (parse check and lint after each write), tool_output (result shaping),
@@ -29,6 +31,8 @@ wires the concrete pieces together.
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
              extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
              indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
+             memory/ (project memory: memory.db, cards, change patterns, episodes, conventions,
+                      the memory tool, locate's memory retrievers, the KV primer; docs/memory.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              tool_parse (fallback tool-call parser), profiles (model profiles, server presets),
@@ -87,6 +91,25 @@ What Stage 5 finishes: the loop still keeps the live history in the session obje
 rebuild it on resume and checked against it in tests. Making `history_from_events` the
 only source (the engine owns the message list and the session becomes a stateless
 request function), and ACP `session/load`, move with the `agent.py` split.
+
+## Project memory (Stage 8b)
+
+`memory/` (tools layer, part of its interface) owns `.crit/memory/memory.db` and everything
+derived into it: cards from the code index, recipes and hot spots from its git history,
+episodes from a task's event log (passed in as plain events, so the package does not import
+the engine), conventions, and the learned glossary. The engine reaches it through two calls
+in the task loop, both in `memory_recall` and both safe to fail:
+
+- `memory_recall.begin_task(workspace, index_path, task, options, slog)` returns the hunch
+  block, which the loop appends to the task's message (never the prefix), and writes a
+  `memory_recall` event;
+- `memory_recall.end_task(workspace, index_path, task, code, changed, reads, options, slog,
+  side_factory=...)` runs right after the `task_finished` event and records the episode,
+  cards, mined history and glossary entries.
+
+The `memory` tool is one more `ToolRegistry` entry; `locate` imports `memory.retrievers`
+lazily (`indexing.locate.RETRIEVER_MODULES`), which registers the `cards` and `glossary`
+retrievers. `crit memory` (`memory_cmd`, apps layer) is the command line.
 
 ## Testing a layer on its own
 
