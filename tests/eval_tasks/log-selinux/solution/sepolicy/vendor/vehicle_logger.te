@@ -1,0 +1,18 @@
+# Vehicle logger: collects vehicle bus frames and writes them to /data/vendor/vehicle_logs.
+type vendor_vehicle_logger, domain;
+type vendor_vehicle_logger_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(vendor_vehicle_logger)
+
+# Log storage.
+allow vendor_vehicle_logger vendor_vehicle_log_file:dir create_dir_perms;
+allow vendor_vehicle_logger vendor_vehicle_log_file:file create_file_perms;
+
+# Socket node of the vehicle bus.
+allow vendor_vehicle_logger vendor_vehicle_bus_socket:sock_file write;
+
+# Properties it reads at start.
+get_prop(vendor_vehicle_logger, vendor_vehicle_logger_prop)
+
+# Connect to the vehicle bus daemon (denied: connectto on unix_stream_socket).
+allow vendor_vehicle_logger vendor_vehicle_bus:unix_stream_socket connectto;

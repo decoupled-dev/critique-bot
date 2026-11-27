@@ -1,0 +1,13 @@
+{
+  "prompt": "Our service config loader rejects fractional timeouts. With `timeout = 1.5` (or `timeout = 0.25`) in the config file, `svcconf conf/service.conf` reports `line 3: invalid value for timeout` and the default timeout is used, even though README.md says timeouts are given in seconds and fractions are allowed. Whole numbers work. Please fix this without changing how other settings are validated. Build and run the tests with `make test`.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_config.sh",
+  "requires": ["g++", "make"],
+  "timeout": 900,
+  "tags": ["cpp", "bugfix", "regression-trap", "multi-file"],
+  "category": "bugfix",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

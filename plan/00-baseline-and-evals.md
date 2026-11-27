@@ -101,8 +101,10 @@ token counts. Pin the opencode version in `results/meta.json`.
 - Smoke: `crit eval --only py-fix-test --runs 1` against a scripted fake model session.
 
 ## Completion targets
-- [ ] `crit eval` runs the suite with `--runs 3` and writes results.jsonl + summary.md
-- [ ] ≥ 30 tasks; every task passes the grader audit
+Progress: [`results/00/README.md`](results/00/README.md).
+
+- [x] `crit eval` runs the suite with `--runs 3` and writes results.jsonl + summary.md
+- [x] ≥ 30 tasks; every task passes the grader audit (31 tasks; 30 audited here, 1 needs `$AOSP`)
 - [ ] Baseline recorded: crit (current text protocol) and opencode, same Qwen3.6-27B
       quant, same llama.cpp build, same context size. Repeat on vLLM if available
 - [ ] Each metric in the table above is populated for crit; tokens/turns for opencode

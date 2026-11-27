@@ -1,0 +1,13 @@
+{
+  "prompt": "Saved chat transcripts from conversations with some of our international users cannot be reopened. Loading them with `TranscriptReader` either throws `java.io.IOException: unknown frame type ...` or gives messages that are cut off or garbled, and every message after that is wrong too. Transcripts from English-only conversations load fine. Find and fix the cause. Plain Java, no build tool: `javac -d out $(find src -name '*.java') && java -cp out chat.Main` runs a demo.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_transcript.sh",
+  "requires": ["java", "javac"],
+  "timeout": 900,
+  "tags": ["java", "bugfix", "encoding", "multi-file"],
+  "category": "bugfix",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

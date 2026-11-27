@@ -1,0 +1,13 @@
+{
+  "prompt": "The thumbnail batch job sometimes writes thumbnails under the wrong file names: in a batch that mixes big and small images, `photo-big.jpg.thumb` may contain the thumbnail of `icon.png`. With `-workers 1` it never happens. Find and fix the cause. Run the tests with `go test ./...`.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "go test -count=1 ./... ./hiddentest_thumbs/",
+  "requires": ["go"],
+  "timeout": 900,
+  "tags": ["go", "bugfix", "concurrency", "multi-file"],
+  "category": "bugfix",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

@@ -1,0 +1,6 @@
+# Vehicle bus daemon: owns /dev/socket/vehicle_bus.
+type vendor_vehicle_bus, domain;
+type vendor_vehicle_bus_exec, exec_type, vendor_file_type, file_type;
+type vendor_vehicle_bus_socket, file_type;
+
+init_daemon_domain(vendor_vehicle_bus)

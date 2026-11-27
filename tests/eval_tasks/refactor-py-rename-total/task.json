@@ -1,0 +1,13 @@
+{
+  "prompt": "Refactor: rename the function `calc_tot` to `compute_total` everywhere in this repository: its definition, every import and call site, the tests, docstrings, comments and the README. Do not leave a compatibility alias or any mention of the old name. Behaviour must not change and the existing tests must still pass (`python3 -m unittest discover -s tests`).",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_rename.sh",
+  "requires": ["python3", "grep"],
+  "timeout": 900,
+  "tags": ["python", "refactor", "rename", "quick", "multi-file"],
+  "category": "refactor",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

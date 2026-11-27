@@ -1,0 +1,13 @@
+{
+  "prompt": "The media app on our Android Automotive head unit froze and the system showed an ANR. logcat.txt is the full logcat from the unit and traces.txt is the ANR trace dump. Which package had the ANR, which thread holds the lock that its main thread is blocked on, and at which source file:line in the app's code does that thread hold the lock? Answer in one line. Do not change any file.",
+  "fixture": "files",
+  "setup": "python3 gen_logs.py",
+  "answer": "(?=.*com\\.example\\.carmedia)(?=.*MediaSyncWorker)(?=.*MediaIndexer\\.java:217)",
+  "reference_answer": "com.example.carmedia ANRed: its main thread waits on <0x0b7c41d2>, held by thread 23 \"MediaSyncWorker\" in MediaIndexer.rebuildIndex (MediaIndexer.java:217).",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["logs", "android", "anr"],
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

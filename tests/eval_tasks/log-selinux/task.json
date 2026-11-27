@@ -1,0 +1,16 @@
+{
+  "prompt": "The vendor.vehicle_logger service on our Android Automotive build keeps exiting right after boot and init restarts it over and over. dmesg.txt and logcat.txt are from the device; both are full of SELinux denials, most of them harmless. Find the denial that actually stops vehicle_logger from running and tell me its scontext, tcontext, tclass and permission in one line. Then add the minimal allow rule that fixes it to sepolicy/vendor/vehicle_logger.te. Do not touch other files.",
+  "fixture": "files",
+  "setup": "python3 gen_logs.py",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 check_sepolicy.py",
+  "answer": "(?=.*vendor_vehicle_logger)(?=.*vendor_vehicle_bus\\b)(?=.*unix_stream_socket)(?=.*connectto)",
+  "reference_answer": "The enforced denial (permissive=0) is scontext=u:r:vendor_vehicle_logger:s0 tcontext=u:r:vendor_vehicle_bus:s0 tclass=unix_stream_socket { connectto }; I added allow vendor_vehicle_logger vendor_vehicle_bus:unix_stream_socket connectto; to sepolicy/vendor/vehicle_logger.te.",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["logs", "android", "selinux", "sepolicy"],
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

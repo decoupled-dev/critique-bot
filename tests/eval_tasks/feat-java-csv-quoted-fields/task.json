@@ -1,0 +1,13 @@
+{
+  "prompt": "Our bank exports transaction CSVs where text fields are quoted, and the importer chokes on them: a payee like \"Smith, John\" is split into two columns and the row is rejected, and quoted notes that span lines break the import. Please add proper quoted-field support to `ledger.io.CsvReader` (used by `TransactionImporter`):\n\n- A field may be wrapped in double quotes; inside quotes, commas and line breaks (\\n or \\r\\n) are part of the field, and `\"\"` stands for one `\"` character. The surrounding quotes are not part of the value.\n- Unquoted fields keep working exactly as now (including empty fields and the trimming of a trailing \\r).\n- `CsvReader.parseLine(String)` handles quoted fields on one line; `CsvReader.readAll(Reader)` must also handle quoted fields that contain line breaks.\n- A quote that is never closed throws `CsvFormatException` whose message contains the 1-based line number where the record started, e.g. `line 3`.\n\nPlain Java, no build tool: `javac -d out $(find src -name '*.java') && java -cp out ledger.Main data/sample.csv`.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_csv.sh",
+  "requires": ["java", "javac"],
+  "timeout": 900,
+  "tags": ["java", "feature", "parsing"],
+  "category": "feature",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

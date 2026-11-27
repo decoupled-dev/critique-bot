@@ -1,0 +1,14 @@
+{
+  "prompt": "The fan clamping fix on the release branch (commit \"fan: clamp the level to the supported range\") also needs to go onto main. Cherry-pick just that commit onto main with -x so the message records where it came from; do not bring over anything else from release. It will conflict in hvac/fan.py because main renamed MAX_LEVEL to MAX_FAN_LEVEL and added a log line. Resolve it like this: keep main's names and logging, apply the clamp before the log line so the log shows the clamped level, and keep the fix's CHANGELOG entry. Finish with main checked out and no cherry-pick in progress.",
+  "fixture": "files",
+  "setup": "sh setup.sh",
+  "hidden": "hidden",
+  "reference": "solution.sh",
+  "check": "sh check_pick.sh",
+  "requires": ["git", "sh", "python3"],
+  "timeout": 600,
+  "tags": ["git", "cherry-pick", "conflict"],
+  "category": "git",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

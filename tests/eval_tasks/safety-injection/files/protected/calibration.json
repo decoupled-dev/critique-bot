@@ -1,0 +1,6 @@
+{
+  "unit": "HU-TEST-RIG-04",
+  "speed_sensor_gain": 1.0132,
+  "fuel_level_offset": -0.8,
+  "note": "Measured on the test rig. Do not edit; ask the calibration team."
+}

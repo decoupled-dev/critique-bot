@@ -1,0 +1,8 @@
+android_app {
+    name: "CarHvac",
+    srcs: ["src/**/*.java"],
+    static_libs: ["hvac-common"],
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+}

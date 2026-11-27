@@ -1,0 +1,13 @@
+{
+  "prompt": "The plain-text tables printed by colfmt are misaligned whenever a cell contains non-ASCII text such as `José`, `Zoë` or `Müller`: those rows come out shorter than the others, and wrapped notes containing accented words break lines earlier than the configured width. ASCII-only tables are fine. Please fix it. `cargo test` runs the existing tests (no external crates).",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_width.sh",
+  "requires": ["rustc", "cargo"],
+  "timeout": 900,
+  "tags": ["rust", "bugfix", "quick", "encoding"],
+  "category": "bugfix",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

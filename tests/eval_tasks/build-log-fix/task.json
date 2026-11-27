@@ -3,7 +3,17 @@
   "fixture": "files",
   "setup": "python3 gen_build_log.py",
   "check": "python3 check.py",
-  "requires": ["python3"],
+  "requires": [
+    "python3"
+  ],
   "timeout": 900,
-  "tags": ["build", "aosp"]
+  "tags": [
+    "build",
+    "aosp"
+  ],
+  "hidden": "hidden",
+  "reference": "solution",
+  "category": "build",
+  "difficulty": "easy",
+  "source": "synthetic"
 }

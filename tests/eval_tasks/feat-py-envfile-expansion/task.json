@@ -1,0 +1,13 @@
+{
+  "prompt": "Issue: support variable references in .env files.\n\n`envfile.parse()` should expand `${NAME}` and `${NAME:-fallback}` inside values:\n\n- `NAME` is looked up first among keys defined earlier in the same file, then in the `environ` mapping passed to `parse()` (default: `os.environ`). Keys defined later in the file are not visible yet.\n- `${NAME:-fallback}` uses `fallback` when `NAME` is unset or empty; the fallback is literal text (no nested references needed).\n- `${NAME}` with `NAME` unset (and no fallback) raises `EnvFileError`, and the error message contains the line number as `line N` and the variable name.\n- `$$` produces a literal `$`. A `$` not followed by `{` or `$` stays as it is.\n- Values in single quotes are taken literally (no expansion, `$$` stays `$$`); unquoted and double-quoted values are expanded. Expanded text is not expanded again.\n\nAll current behaviour (comments, `export` prefix, quotes, escapes in double quotes, errors for bad lines) must keep working.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 -m unittest discover -s hidden_tests -q",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["python", "feature", "parsing"],
+  "category": "feature",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

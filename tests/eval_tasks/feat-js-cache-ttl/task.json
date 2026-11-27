@@ -1,0 +1,13 @@
+{
+  "prompt": "Add expiry to our LRU cache in `lib/cache.js`.\n\n- `new LruCache({ max, ttlMs })`: optional `ttlMs` is the default time-to-live of every entry, in milliseconds. Without it, entries never expire (as now).\n- `cache.set(key, value, { ttlMs })` overrides the TTL for that one entry. Setting an existing key again restarts its TTL.\n- An entry whose age is greater than or equal to its TTL is expired: `get` returns `undefined` (and counts as a miss in `stats()`), `has` returns `false`, and it is not counted by `size`, not listed by `keys()`, and is removed when found.\n- New method `prune()` removes all expired entries and returns how many it removed.\n- Reading an entry with `get` updates its LRU position but does not extend its TTL.\n- Time comes from the `now` option (a function returning milliseconds), which already exists for tests; it defaults to `Date.now`.\n\nNo npm packages; `node --test test/` runs the existing tests.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "node --test hidden_js/cache_ttl.test.js",
+  "requires": ["node"],
+  "timeout": 900,
+  "tags": ["javascript", "node", "feature", "quick"],
+  "category": "feature",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

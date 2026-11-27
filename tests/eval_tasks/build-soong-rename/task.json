@@ -1,0 +1,14 @@
+{
+  "prompt": "The platform build broke after hvac-common changed. build.log in this folder is the full output of m. Find the error and fix it on the caller side; the change in hvac-common is intended and must stay. There is no Soong here, so do not try to run m; you can check your fix with javac.",
+  "fixture": "files",
+  "setup": "python3 gen_build_log.py",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh check_java.sh",
+  "requires": ["python3", "javac", "java", "sh"],
+  "timeout": 900,
+  "tags": ["build", "aosp", "soong", "java"],
+  "category": "build",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

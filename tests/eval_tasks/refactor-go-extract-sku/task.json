@@ -1,0 +1,13 @@
+{
+  "prompt": "Refactor: the SKU clean-up and validation code is copy-pasted in three places in package `catalog` (`CreateProduct` in product.go, `AdjustStock` in stock.go and `SetPrice` in pricing.go). Extract it into one exported function `NormalizeSKU(raw string) (string, error)` in a new file `catalog/sku.go` and make all three call it, so the logic exists only once. Behaviour, including the exact error messages, must stay the same. `go test ./...` must still pass.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_sku.sh",
+  "requires": ["go", "grep"],
+  "timeout": 900,
+  "tags": ["go", "refactor", "extract-function", "multi-file"],
+  "category": "refactor",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

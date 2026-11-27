@@ -921,6 +921,7 @@ SUBCOMMANDS = {
     "setup": "open a local web UI to configure selectors by clicking them",
     "queue-status": "show worker liveness, queued jobs, and recent results",
     "gitlab-post": "post the review on a GitLab merge request",
+    "eval": "measure crit (or opencode) on a suite of real tasks (crit eval --help)",
 }
 
 
@@ -1096,9 +1097,16 @@ def _main(argv: list[str] | None = None) -> int:
             "setup": _main_setup,
             "queue-status": _main_queue_status,
             "gitlab-post": _main_gitlab_post,
+            "eval": _main_eval,
         }
         return handlers[command](rest)
     return _main_run(argv)
+
+
+def _main_eval(argv: list[str]) -> int:
+    from critique_bot import eval_harness
+
+    return eval_harness.main(argv)
 
 
 def _main_worker(argv: list[str]) -> int:

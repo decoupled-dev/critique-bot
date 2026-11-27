@@ -1,0 +1,14 @@
+{
+  "prompt": "On the branch feature/telemetry, one commit accidentally added assets/sample_dump.bin (a 3 MB dump) and config/credentials.env (credentials), and a later commit edited the credentials file. Before anyone pushes this branch, remove both files from its history completely. Rewrite only the commits on feature/telemetry that are not on main, keep every other change in those commits (including the rest of the commit that added them) and keep the commit messages. Do not change main.",
+  "fixture": "files",
+  "setup": "python3 make_history.py",
+  "hidden": "hidden",
+  "reference": "solution.sh",
+  "check": "python3 check_scrub.py",
+  "requires": ["python3", "git"],
+  "timeout": 900,
+  "tags": ["git", "history-rewrite", "secrets"],
+  "category": "git",
+  "difficulty": "hard",
+  "source": "synthetic"
+}

@@ -1,0 +1,13 @@
+sku,name,warehouse,qty,unit_price_eur,discontinued
+A-100,Cable 2m,OSL,12,4.50,0
+A-100,Cable 2m,LON,40,4.50,0
+A-100,Cable 2m,BER,3,4.50,0
+A-210,Adapter USB-C,HEL,0,9.90,0
+A-210,Adapter USB-C,LON,7,9.90,0
+B-300,Desk lamp,BER,25,29.00,0
+B-300,Desk lamp,OSL,2,29.00,0
+B-410,Monitor arm,LON,15,54.00,0
+C-500,Old dock,BER,9,79.00,1
+C-500,Old dock,HEL,4,79.00,1
+D-600,Keyboard,MAD,30,39.00,0
+D-610,Mouse,MAD,55,19.00,0

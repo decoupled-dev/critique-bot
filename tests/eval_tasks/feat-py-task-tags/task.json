@@ -1,0 +1,13 @@
+{
+  "prompt": "Feature request for taskq: tags.\n\nWhen a task is added with words like `#home` or `#Urgent` in its title, those words become the task's tags and are removed from the stored title (leftover whitespace collapsed to single spaces and trimmed). Tags are stored lowercased without the `#`, without duplicates, in order of first appearance. A `#` that is not followed by a letter, digit, `-` or `_` (for example `C#` or `# 5`) is left alone.\n\n- `Task` gets a `tags` attribute (a list of strings, empty by default).\n- `TaskStore.list()` gets an optional keyword `tag=`; when given, only tasks carrying that tag are returned (matching is case-insensitive, with or without a leading `#`). It combines with the existing `include_done` option.\n- The CLI gets `taskq list --tag NAME`, and `taskq list` shows tags after the title as `[home, urgent]` when a task has any.\n- Tags must survive save and load, and task files written by the current version (no tags in them) must still load.\n\nKeep the existing behaviour and tests working.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 -m unittest discover -s hidden_tests -q",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["python", "feature", "multi-file"],
+  "category": "feature",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

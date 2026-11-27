@@ -1,0 +1,9 @@
+{
+  "name": "tiny-lru-cache",
+  "version": "1.2.0",
+  "private": true,
+  "main": "lib/cache.js",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

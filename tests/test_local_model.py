@@ -316,6 +316,31 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(session.last_detail["prompt_eval_count"], 12)
             self.assertEqual(session.last_detail["done_reason"], "stop")
 
+    def test_usage_is_asked_for_and_counted_for_crit_eval(self) -> None:
+        from critique_bot import run_stats
+
+        run_stats.reset()
+        self.server.replies = ["one", "two"]
+        with open_provider(_config(self.server.url)) as provider:
+            session = provider.session()
+            session.send("a")
+            session.send("b")
+            self.assertEqual(self.server.requests[-1]["body"]["stream_options"], {"include_usage": True})
+        stats = run_stats.snapshot()
+        self.assertEqual(stats["model_requests"], 2)
+        self.assertEqual(stats["prompt_tokens"], 24)
+        self.assertEqual(stats["completion_tokens"], 6)
+
+    def test_cached_tokens_from_vllm_usage_and_llama_cpp_timings(self) -> None:
+        client = open_provider(_config(self.server.url)).client
+        detail: dict[str, Any] = {}
+        client._chunk({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 5,
+                                                 "prompt_tokens_details": {"cached_tokens": 80}}}, detail)
+        self.assertEqual((detail["prompt_eval_count"], detail["cached_count"]), (100, 80))
+        detail = {}
+        client._chunk({"choices": [], "timings": {"prompt_n": 20, "cache_n": 900, "predicted_n": 7}}, detail)
+        self.assertEqual((detail["prompt_eval_count"], detail["cached_count"], detail["eval_count"]), (920, 900, 7))
+
     def test_thinking_is_kept_out_of_the_reply(self) -> None:
         self.server.replies = ["<think>\nlet me see\n</think>\nCOMPLETED"]
         self.server.reasoning = "hidden chain of thought"

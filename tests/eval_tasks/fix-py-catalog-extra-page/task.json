@@ -1,0 +1,19 @@
+{
+  "prompt": "On the product catalog pages, when the number of products is an exact multiple of the page size (for example 40 products at 20 per page), the pager shows an extra empty last page (\"Page 3 of 3\" with no products on it). Other product counts look fine. Please fix it.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 -m unittest discover -s hidden_tests -q",
+  "requires": [
+    "python3"
+  ],
+  "timeout": 900,
+  "tags": [
+    "python",
+    "bugfix",
+    "off-by-one"
+  ],
+  "category": "bugfix",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

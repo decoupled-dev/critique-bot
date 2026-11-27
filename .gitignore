@@ -17,3 +17,4 @@ storage_state.json
 config.json.*
 config*.bak*
 *.cache.json
+.crit/eval/

@@ -1,4 +1,4 @@
-"""scripts/eval/run_eval.py with a fake crit: workspace, check, answer, stats, skip."""
+"""scripts/eval/run_eval.py (a wrapper for crit eval) with a fake crit: workspace, check, answer, stats, skip."""
 
 from __future__ import annotations
 
@@ -82,14 +82,19 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(by_task["needs-tool"]["result"], "skipped")
         self.assertEqual(code, 1)
         self.assertIn("42", (self.out / "fix-value" / "1" / "changes.diff").read_text())
-        self.assertIn("passed 1/2", (self.out / "summary.md").read_text())
+        summary = (self.out / "summary.md").read_text()
+        self.assertIn("| tasks / trials | 2 / 2 |", summary)
+        self.assertIn("| pass@1 | 0.50 |", summary)
 
 
 class RealTaskSpecTests(unittest.TestCase):
     def test_every_task_spec_is_valid(self) -> None:
-        tasks = run_eval.load_tasks(run_eval.TASKS, set(), set())
+        from critique_bot import eval_harness
+
+        tasks = eval_harness.load_tasks(eval_harness.DEFAULT_SUITE)
         self.assertGreaterEqual(len(tasks), 5)
-        for name, folder, spec in tasks:
+        for task in tasks:
+            name, folder, spec = task.name, task.folder, task.spec
             self.assertTrue(spec.get("prompt"), name)
             self.assertTrue(spec.get("check") or spec.get("answer"), f"{name} has no way to pass or fail")
             if not spec.get("workspace"):

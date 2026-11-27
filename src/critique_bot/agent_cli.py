@@ -7,7 +7,7 @@ The first word picks the mode; with no mode word crit runs the local coding agen
     crit review --quick         the one-shot review (one message, no tools; what CI runs)
     crit ask --prompt ...       one-shot prompt with optional files (also: crit general)
     crit chat                   interactive conversation in this terminal
-    crit setup | worker | submit | queue-status | gitlab-post
+    crit setup | worker | submit | queue-status | gitlab-post | eval
     crit install | uninstall    put crit on PATH / remove crit for this user (no questions)
 
 ``crit --yes`` (also ``--auto`` or ``-y``) runs edits and commands without

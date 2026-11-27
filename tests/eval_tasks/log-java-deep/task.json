@@ -1,0 +1,13 @@
+{
+  "prompt": "Car Settings (com.example.carsettings) closed by itself on a test unit right after the driver opened the display page. logcat.txt is the full logcat from that unit; other apps also logged exceptions during the drive. What exception crashed Car Settings, and at which source file:line in Car Settings' own code did it start? Answer in one line. Do not change any file.",
+  "fixture": "files",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*IllegalArgumentException)(?=.*BrightnessController\\.java:173)",
+  "reference_answer": "java.lang.IllegalArgumentException (Invalid brightness level -12, wrapped in a RuntimeException from resume), from BrightnessController.applyLevel at BrightnessController.java:173.",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["logs", "android", "java"],
+  "category": "logs",
+  "difficulty": "hard",
+  "source": "synthetic"
+}

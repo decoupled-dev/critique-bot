@@ -1,0 +1,13 @@
+{
+  "prompt": "The car audio HAL (vendor.audio-hal-caraudio) crashed and was restarted by init during this drive. logcat.txt is the full logcat including the tombstone, with the frames already symbolized. Which library and function caused the crash (not a libc helper it happened to be in), and at which source file:line? Answer in one line. Do not change any file.",
+  "fixture": "files",
+  "setup": "python3 gen_log.py",
+  "answer": "(?=.*libcaraudio_zone\\.so)(?=.*applyGain)(?=.*ZoneMixer\\.cpp:388)",
+  "reference_answer": "SIGSEGV in libcaraudio_zone.so, ZoneMixer::applyGain(float*, unsigned long) at vendor/example/audio/zone/ZoneMixer.cpp:388 (the memcpy in libc.so is only where it faulted).",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["logs", "android", "native", "quick"],
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

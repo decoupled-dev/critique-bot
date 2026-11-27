@@ -24,7 +24,7 @@ import time
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from critique_bot import log
+from critique_bot import log, run_stats
 from critique_bot.model_api import COMPLETION_IDLE, COMPLETION_STOPPED, ChatError, ChatProvider, ChatSession
 from critique_bot.config import BotConfig
 
@@ -134,6 +134,7 @@ class LocalModelSession(ChatSession):
             raise
         self.messages.append({"role": "assistant", "content": reply})
         self.last_detail = detail
+        run_stats.add_usage(detail.get("prompt_eval_count"), detail.get("eval_count"), detail.get("cached_count"))
         return reply
 
     def new_chat(self) -> bool:
@@ -245,7 +246,10 @@ class LocalModelClient:
     # ------------------------------------------------------------------ wire formats
 
     def _chat_request(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
-        body: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True}
+        # include_usage: the last chunk carries token counts (vLLM, llama.cpp, LM Studio, Ollama), for crit eval.
+        body: dict[str, Any] = {
+            "model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
+        }
         if self.temperature is not None:
             body["temperature"] = self.temperature
         return "/v1/chat/completions", body
@@ -305,6 +309,17 @@ class LocalModelClient:
                 detail["prompt_eval_count"] = usage["prompt_tokens"]
             if isinstance(usage.get("completion_tokens"), int):
                 detail["eval_count"] = usage["completion_tokens"]
+            details = usage.get("prompt_tokens_details")
+            if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int):
+                detail["cached_count"] = details["cached_tokens"]  # vLLM, OpenAI-compatible servers
+        timings = event.get("timings")
+        if isinstance(timings, dict):  # llama.cpp: prompt_n tokens processed, cache_n reused from the cache
+            if isinstance(timings.get("cache_n"), int):
+                detail["cached_count"] = timings["cache_n"]
+            if isinstance(timings.get("prompt_n"), int) and "prompt_eval_count" not in detail:
+                detail["prompt_eval_count"] = timings["prompt_n"] + int(timings.get("cache_n") or 0)
+            if isinstance(timings.get("predicted_n"), int) and "eval_count" not in detail:
+                detail["eval_count"] = timings["predicted_n"]
         return text, done
 
     def _warn_if_truncated(self, detail: dict[str, Any]) -> None:

@@ -9,7 +9,7 @@ crit "fix the failing test"           # coding agent (the default)
 crit review --patch-file diff.patch   # code review: reads the project, then reports
 crit ask --prompt "Summarize" a.txt   # one-shot prompt (alias: general)
 crit chat                             # interactive conversation
-crit setup | worker | submit | queue-status | gitlab-post
+crit setup | worker | submit | queue-status | gitlab-post | eval
 ```
 
 `--mode MODE` still works and means the same as the mode word. Details: [Modes](COMMANDS.md#modes).
@@ -19,6 +19,8 @@ Command reference for Linux (bash) and Windows PowerShell: [`COMMANDS.md`](COMMA
 How the code is layered (models, tools, engine, apps, routing) and the interface each layer offers: [`docs/architecture.md`](docs/architecture.md).
 
 Prebuilt downloads for Linux (.deb and zip) and Windows: see [docs/install.md](docs/install.md).
+
+Measuring crit (or opencode) on a suite of real tasks with a fixed model: [`docs/eval.md`](docs/eval.md).
 
 ## Requirements
 

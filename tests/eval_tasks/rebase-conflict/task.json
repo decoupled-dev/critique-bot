@@ -3,7 +3,18 @@
   "setup": "sh setup.sh",
   "check": "sh check.sh",
   "fixture": "files",
-  "requires": ["git", "sh"],
+  "requires": [
+    "git",
+    "sh"
+  ],
   "timeout": 600,
-  "tags": ["git"]
+  "tags": [
+    "git",
+    "quick"
+  ],
+  "hidden": "hidden",
+  "reference": "solution.sh",
+  "category": "git",
+  "difficulty": "easy",
+  "source": "synthetic"
 }

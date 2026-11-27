@@ -1,0 +1,13 @@
+{
+  "prompt": "The pump station simulator sometimes raises a DRY_RUN fault right at startup, although the controller schedules `open-valve` before `start-pump` for the same tick. Looking at the event log, timers that are due on the same tick do not run in the order they were scheduled, and it gets worse the more timers there are on that tick. Timers due on the same tick must run in the order they were scheduled (a periodic timer counts as scheduled again when it is re-armed). Find the cause and fix it. Build with CMake (`cmake -S . -B build && cmake --build build && ./build/sim_tests`).",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_sched.sh",
+  "requires": ["g++", "cmake", "make"],
+  "timeout": 900,
+  "tags": ["cpp", "bugfix", "ordering", "multi-file", "cmake"],
+  "category": "bugfix",
+  "difficulty": "hard",
+  "source": "synthetic"
+}

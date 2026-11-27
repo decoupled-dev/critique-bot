@@ -3,7 +3,17 @@
   "fixture": "files",
   "setup": "python3 gen_log.py",
   "answer": "(?=.*com\\.example\\.hvac)(?=.*NullPointerException)(?=.*HvacPanelController\\.java:142)",
-  "requires": ["python3"],
+  "requires": [
+    "python3"
+  ],
   "timeout": 900,
-  "tags": ["logs", "android"]
+  "tags": [
+    "logs",
+    "android",
+    "quick"
+  ],
+  "reference_answer": "com.example.hvac crashed with java.lang.NullPointerException at HvacPanelController.java:142",
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic"
 }

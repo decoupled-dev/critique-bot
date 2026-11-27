@@ -33,6 +33,7 @@ LAYERS: dict[str, int] = {
     "output": CORE,
     "roles": CORE,
     "integrations": CORE,
+    "run_stats": CORE,
     # models: the model behind crit; model_api is its interface
     "model_api": MODELS,
     "provider": MODELS,
@@ -75,6 +76,7 @@ LAYERS: dict[str, int] = {
     "setup_wizard": APPS,
     "config_cmd": APPS,
     "installer": APPS,
+    "eval_harness": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,

@@ -40,6 +40,9 @@ jobs:
         env:
           PYTHONUTF8: "1"
         run: python -m unittest discover -s tests
+      - name: Eval grader audit (every check fails untouched and passes with its reference)
+        if: runner.os == 'Linux'
+        run: python -m critique_bot.eval_harness audit
 
   audit:
     runs-on: ubuntu-22.04

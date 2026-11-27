@@ -1,0 +1,19 @@
+{
+  "prompt": "We changed the prop.Store interface in this Go module so both methods take a context.Context (see prop/prop.go). Now go build ./... and go vet ./... fail. Update the rest of the module to the new interface, following the contract in the interface's comment, so that build, vet and the bridge work again. Do not change prop/prop.go.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh check_go.sh",
+  "requires": [
+    "go",
+    "sh"
+  ],
+  "timeout": 600,
+  "tags": [
+    "build",
+    "go"
+  ],
+  "category": "build",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

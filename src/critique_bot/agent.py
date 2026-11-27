@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, integrations, log, roles
+from critique_bot import run_stats
 from critique_bot.config import effective_theme
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
@@ -1905,6 +1906,7 @@ class _Chat:
             self.can_restart = False
             return False
         self._note("note", f"Starting a new conversation: {reason}.")
+        run_stats.count("compactions")
         self.chars = 0
         self.violations = 0
         self.health.clear()
@@ -1935,6 +1937,7 @@ class _Hooks:
         _tool_done(call, result)
 
     def status(self, code: str) -> None:
+        run_stats.set_value("exit_reason", code)
         _print_status(code)
 
 
@@ -2229,6 +2232,7 @@ class _TaskRun:
         extras = [extra] if extra else []
         if self._is_loop(signature) and all((self.history.get(key) or {}).get("ok") for key in signature):
             self.chat.strike()
+            run_stats.count("repeat_breaks")
             self.hooks.ui("note", "The same calls came back again. Not running them.")
             results = [
                 {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": "not run: the same calls as your previous replies"}
@@ -2260,6 +2264,7 @@ class _TaskRun:
                         result = future.result()
                         self.hooks.tool_done(call, result)
                         self._record(call, result)
+                        run_stats.tool_result(canonical_tool(call.tool) or call.tool, result)
                         slots[index] = result
             batch.clear()
 
@@ -2268,12 +2273,14 @@ class _TaskRun:
         for index, call in enumerate(calls):
             if call.error:
                 flush()
+                run_stats.tool_result(call.tool, None, malformed=True)
                 slots[index] = {"tool": call.tool, "ok": False, "error": call.error}
                 self.hooks.ui("bad", _friendly_error(call.error))
                 continue
             repeat = self._repeat_result(call)
             if repeat is not None:
                 flush()
+                run_stats.count("repeat_answers")
                 self.hooks.tool_start(call)
                 self.hooks.tool_done(call, repeat)
                 slots[index] = repeat
@@ -2356,9 +2363,19 @@ class _TaskRun:
 
     def _execute_one(self, call: ToolCall) -> dict[str, Any]:
         self.hooks.tool_start(call)
+        started = time.monotonic()
         result = _execute(call.tool, call.arguments, self.ctx)
+        seconds = time.monotonic() - started
         self.hooks.tool_done(call, result)
         self._record(call, result)
+        name = canonical_tool(call.tool) or call.tool
+        run_stats.tool_result(name, result)
+        if name in run_stats.EDIT_TOOLS:
+            try:
+                size = len(json.dumps(call.arguments, ensure_ascii=False))
+            except (TypeError, ValueError):
+                size = 0
+            run_stats.edit(name, ok=bool(result.get("ok")), seconds=seconds, argument_chars=size)
         return result
 
     def _permission(self, call: ToolCall) -> Any:
@@ -3398,6 +3415,7 @@ def run_agent(
     is the default. The transcript is saved even when Ctrl+C or an error ends the session.
     """
     started = datetime.now(timezone.utc)
+    run_stats.reset()
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
@@ -3839,6 +3857,7 @@ def _save_transcript(
     }
     if commands:
         payload["commands"] = commands
+    payload["stats"] = run_stats.snapshot()
     stamp = started.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     try:
         write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)

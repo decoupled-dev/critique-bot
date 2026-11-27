@@ -1,0 +1,13 @@
+{
+  "prompt": "After we moved the unit conversion code out of src/units/ into its own library under libs/units/, the trip computer no longer builds (cmake -S . -B build && cmake --build build). Fix the build without undoing the move.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh check_build.sh",
+  "requires": ["cmake", "g++", "make", "sh"],
+  "timeout": 600,
+  "tags": ["build", "cmake", "cpp", "quick"],
+  "category": "build",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

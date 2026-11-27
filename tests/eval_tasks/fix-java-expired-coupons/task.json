@@ -1,0 +1,13 @@
+{
+  "prompt": "Support says customers are still getting discounts from coupons that expired weeks ago (for example SUMMER24 after its end date), and finance is worried that coupons scheduled for next month might already work too. A coupon should only apply from its start time up to its expiry time. Please fix the checkout. The project is plain Java with no build tool; `sh run_tests.sh` compiles and runs the existing tests.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "sh hidden_check_coupons.sh",
+  "requires": ["java", "javac"],
+  "timeout": 900,
+  "tags": ["java", "bugfix", "quick", "wrong-condition"],
+  "category": "bugfix",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

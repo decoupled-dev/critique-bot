@@ -1,0 +1,19 @@
+{
+  "prompt": "python3 -m unittest test_units fails on main in this repo, but it passed at the tag v1.0. Find the commit that introduced the failure and tell me its subject line. Leave the repository as you found it (main checked out, no bisect in progress, no changes).",
+  "fixture": "files",
+  "setup": "python3 make_history.py",
+  "answer": "cluster: share unit constants between gauges",
+  "reference_answer": "The first bad commit is \"cluster: share unit constants between gauges\": it changed KM_PER_MILE from 1.609344 to 1.61.",
+  "requires": [
+    "python3",
+    "git"
+  ],
+  "timeout": 900,
+  "tags": [
+    "git",
+    "bisect"
+  ],
+  "category": "git",
+  "difficulty": "medium",
+  "source": "synthetic"
+}

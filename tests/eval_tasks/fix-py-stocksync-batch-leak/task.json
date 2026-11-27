@@ -1,0 +1,13 @@
+{
+  "prompt": "The nightly stock report runs several jobs in one process (`python3 -m stocksync.cli nightly`, which calls `run_batch`). The reports come out wrong after the first job: the 'all-sites' job, which has no warehouse filter, only lists the warehouses that an earlier job filtered on, and the currency and minimum quantity of one job seem to stick to later jobs. Running each job alone (`python3 -m stocksync.cli job all-sites`) gives the correct report. Find the cause and fix it so batch runs give the same output as single runs.",
+  "fixture": "files",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 -m unittest discover -s hidden_tests -q",
+  "requires": ["python3"],
+  "timeout": 900,
+  "tags": ["python", "bugfix", "state", "multi-file"],
+  "category": "bugfix",
+  "difficulty": "hard",
+  "source": "synthetic"
+}

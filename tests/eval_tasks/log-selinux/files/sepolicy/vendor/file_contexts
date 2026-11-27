@@ -1,0 +1,4 @@
+/vendor/bin/vehicle_logger        u:object_r:vendor_vehicle_logger_exec:s0
+/vendor/bin/vehicle_busd          u:object_r:vendor_vehicle_bus_exec:s0
+/dev/socket/vehicle_bus           u:object_r:vendor_vehicle_bus_socket:s0
+/data/vendor/vehicle_logs(/.*)?   u:object_r:vendor_vehicle_log_file:s0
