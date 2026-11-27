@@ -185,8 +185,7 @@ class RuleScopeTests(SecBase):
 
 
 class WrittenCodeTests(SecBase):
-    # SECURITY FINDING PM-5: code the task wrote runs through an allowed test/build command that does not name it
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-5 (fixed): code the task wrote runs through an allowed test/build command that does not name it
     def test_allowed_test_command_does_not_run_a_test_file_the_task_wrote(self) -> None:
         # Edits mode: edits run unasked. The user allowed the project's test command. The injected
         # model writes a new test file (which could open a socket) and runs the allowed command.
@@ -202,6 +201,30 @@ class WrittenCodeTests(SecBase):
             self.loop(session, approve_mode="edits", settings={"allow": [f"{python} -m unittest*"]})
         self.assertFalse((self.root / "pwned-by-test-file").exists(),
                          "a file this task wrote ran through an allow rule (docs: such a command asks)")
+
+    def test_rule_answers_again_until_the_next_edit(self) -> None:
+        # Regression (PM-5): one yes after an edit covers the allowed command until files change again.
+        python = sys.executable
+        approvals = Approvals(answers=["yes"], default="no")
+        session = Scripted([
+            call("write_files", files=[{"path": "test_a.py", "content": "import unittest\n"}]),
+            call("run_command", command=f"{python} -m unittest discover"),
+            call("run_command", command=f"{python} -m unittest discover -q"),
+            call("write_files", files=[{"path": "test_b.py", "content": "import unittest\n"}]),
+            call("run_command", command=f"{python} -m unittest discover -v"),
+            "COMPLETED",
+        ])
+        with approvals.patch():
+            self.loop(session, approve_mode="edits", settings={"allow": [f"{python} -m unittest*"]})
+        self.assertEqual(len(approvals.asked), 2)
+
+    def test_runs_project_code(self) -> None:
+        from critique_bot import agent_tools
+
+        for command in ("pytest -x", "make", "./gradlew test", "npm test", "cd app && ./run.sh", "python3 -m unittest"):
+            self.assertTrue(agent_tools.runs_project_code(command), command)
+        for command in ("git status", "ls -la", "echo hi", "git commit -m x"):
+            self.assertFalse(agent_tools.runs_project_code(command), command)
 
     def test_command_naming_the_written_file_asks(self) -> None:
         # Control: naming the written script directly is caught.

@@ -320,6 +320,9 @@ class Permission:
     #: The command runs inside the OS sandbox (workspace writes only, network through the egress
     #: proxy), so auto mode runs it without asking unless it is risky.
     contained: bool = False
+    #: The command runs code from the project (a test runner, a build, a package script, an
+    #: interpreter, a script by path): after the task changes files it asks again, rule or not.
+    runs_code: bool = False
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -4454,6 +4457,9 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
                 # "Don't ask again" remembers the rule the prompt shows. With no rule to show, it is
                 # not offered: a whole program (every git or adb command) is wider than what was asked.
                 perm.key = ""
+        if perm.kind == "command" and tool == "run_command":
+            command = str(normalized.get("command") or "")
+            perm.runs_code = not read_only_command(command) and runs_project_code(command)
         if perm.kind == "command" and tool in {"run_command", "command_input"}:
             policy = getattr(ctx.session, "sandbox", None)
             perm.contained = bool(policy is not None and getattr(policy, "sandboxed", False))
@@ -4752,6 +4758,48 @@ def _command_runs_written(command: str, ctx: ToolContext) -> str:
             if inside(ctx.workspace, path) and rel(ctx.workspace, path) in state.edits:
                 return word
     return ""
+
+
+# Programs that run code from the project they are pointed at: test runners, build tools,
+# package scripts, task runners. A file the task wrote (a test, a Makefile, build.gradle,
+# package.json, conftest.py) runs through them without the command naming it.
+_CODE_RUNNERS = frozenset({
+    "make", "gmake", "nmake", "ninja", "cmake", "ctest", "meson", "scons", "bazel", "bazelisk", "buck", "buck2",
+    "gradle", "gradlew", "mvn", "mvnw", "ant", "sbt", "cargo", "go", "dotnet", "msbuild", "swift", "xcodebuild",
+    "npm", "npx", "yarn", "pnpm", "pnpx", "bun", "bunx", "deno", "rake", "bundle", "composer", "mix", "flutter",
+    "dart", "pytest", "py.test", "tox", "nox", "uv", "uvx", "poetry", "pipenv", "hatch", "pdm", "pre-commit",
+    "jest", "vitest", "mocha", "karma", "playwright", "rspec", "phpunit", "just", "task", "invoke",
+    "m", "mm", "mmm", "mma", "mmma", "atest", "soong_ui", "tradefed", "lunch",
+})
+
+
+def runs_project_code(command: str) -> bool:
+    """True when ``command`` runs code from the project: a test runner, a build, a package
+    script, an interpreter, or a script by path (``./run.sh``, ``tools/check``).
+
+    Such a command runs files the task may have written without naming them
+    (``pytest`` picks up a new ``test_x.py``, ``make`` reads the Makefile), so the
+    approval logic asks again after the task changes files.
+    """
+    from critique_bot.agent_rules import _INTERPRETER_RE
+
+    for segment in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command or "")))[::2]:
+        if not segment.strip():
+            continue
+        program, _args = _split_program(segment)
+        if not program:
+            return True  # VAR=x in front, env -S, ...: what runs cannot be told
+        if program in _CD_PROGRAMS:
+            continue
+        if program in _CODE_RUNNERS or _INTERPRETER_RE.match(program):
+            return True
+        try:
+            first = shlex.split(segment.strip(), posix=False)[0].strip("\"'")
+        except (ValueError, IndexError):
+            first = segment.strip().split()[0] if segment.strip() else ""
+        if re.search(r"[\\/]", first) and not os.path.isabs(first):
+            return True  # ./run.sh, tools/check: a file in the project
+    return False
 
 
 def _command_outside_paths(command: str, ctx: ToolContext, cwd: Path | None = None) -> list[str]:
