@@ -18,3 +18,26 @@ config.json.*
 config*.bak*
 *.cache.json
 .crit/eval/
+.crit/history
+# Local-only material that must not reach a public repository (Stage 10 audit).
+research_notes/
+reports/
+site/
+config.*.json
+!config*.example.json
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+*.env
+.envrc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
