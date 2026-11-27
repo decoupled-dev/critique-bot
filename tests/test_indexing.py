@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -334,24 +335,24 @@ class IncrementalTests(ProjectCase):
 
 class ToolTests(ProjectCase):
     def test_find_symbol_and_refs(self) -> None:
-        text = self.tool("find_symbol", name="to_display")
+        text = self.tool("code_nav", action="find_symbol", name="to_display")
         self.assertIn("app/units.py:1-4 function to_display", text)
-        refs = self.tool("symbol_refs", name="to_display")
+        refs = self.tool("code_nav", action="refs", name="to_display")
         self.assertIn("app/panel.py: 2, 12", refs)
         self.assertIn("app/units.py: 1", refs)
 
     def test_calls_and_imports(self) -> None:
-        self.assertIn("app/panel.py:12 Panel.show", self.tool("who_calls", symbol="to_display"))
-        callees = self.tool("callees", symbol="Panel.show")
+        self.assertIn("app/panel.py:12 Panel.show", self.tool("code_nav", action="who_calls", name="to_display"))
+        callees = self.tool("code_nav", action="callees", name="Panel.show")
         self.assertIn("to_display -> app/units.py:1", callees)
-        self.assertIn("app.units.to_display -> app/units.py", self.tool("imports_of", path="app/panel.py"))
-        self.assertIn("app/main.py", self.tool("imported_by", path="app/panel.py"))
+        self.assertIn("app.units.to_display -> app/units.py", self.tool("code_nav", action="imports_of", path="app/panel.py"))
+        self.assertIn("app/main.py", self.tool("code_nav", action="imported_by", path="app/panel.py"))
 
     def test_module_of(self) -> None:
-        text = self.tool("module_of", path="svc/src/com/x/HvacService.java")
+        text = self.tool("code_nav", action="module_of", path="svc/src/com/x/HvacService.java")
         self.assertIn("hvac-svc", text)
         self.assertIn("hvac-units", text)
-        self.assertIn("module fan (cmake library)", self.tool("module_of", path="native/fan.c"))
+        self.assertIn("module fan (cmake library)", self.tool("code_nav", action="module_of", path="native/fan.c"))
 
     def test_find_strings_from_a_log_line(self) -> None:
         text = self.tool("find_strings", text="E fanctl : fan level too high: 12")
@@ -360,20 +361,20 @@ class ToolTests(ProjectCase):
         self.assertTrue(text.startswith("app/panel.py:10 log in Panel.show"), text)
 
     def test_repo_map_is_ranked_within_budget_and_stable(self) -> None:
-        first = self.tool("repo_map", budget_tokens=100)
+        first = self.tool("code_nav", action="repo_map", budget_tokens=100)
         self.assertLessEqual(len(first), 100 * 4 + 200)
-        self.assertEqual(first, self.tool("repo_map", budget_tokens=100))
+        self.assertEqual(first, self.tool("code_nav", action="repo_map", budget_tokens=100))
         self.assertIn("app/units.py", first)
 
     def test_history_tools(self) -> None:
-        text = self.tool("git_history", path="app/units.py")
+        text = self.tool("code_history", action="log", path="app/units.py")
         self.assertIn("2 commit(s)", text)
         self.assertIn("fix fahrenheit rounding", text)
-        self.assertIn("app/panel.py  2x", self.tool("cochanged", path="app/units.py"))
-        self.assertIn("fix fahrenheit rounding", self.tool("git_history", query="fahrenheit"))
-        self.assertIn("first version", self.tool("git_blame", path="app/units.py", lines="1-2"))
-        self.assertIn("clamp", self.tool("git_history", changed="def clamp"))
-        self.assertIn("to_display (app/units.py:1-4)", self.tool("git_history", symbol="to_display"))
+        self.assertIn("app/panel.py  2x", self.tool("code_history", action="cochanged", path="app/units.py"))
+        self.assertIn("fix fahrenheit rounding", self.tool("code_history", action="log", query="fahrenheit"))
+        self.assertIn("first version", self.tool("code_history", action="blame", path="app/units.py", lines="1-2"))
+        self.assertIn("clamp", self.tool("code_history", action="log", changed="def clamp"))
+        self.assertIn("to_display (app/units.py:1-4)", self.tool("code_history", action="log", name="to_display"))
 
     def test_history_is_incremental(self) -> None:
         from critique_bot.indexing import history
@@ -413,6 +414,32 @@ class ToolTests(ProjectCase):
         self.assertTrue(ranked, text)
         self.assertIn("app/units.py", ranked[0])
 
+    def test_old_tool_names_run_with_their_action(self) -> None:
+        from critique_bot import agent_tools
+        from critique_bot.agent_tools import ToolContext
+
+        ctx = ToolContext(workspace=self.root, index_path=self.db)
+        self.assertEqual(agent_tools.canonical_tool("who_calls"), "code_nav")
+        self.assertEqual(agent_tools.canonical_tool("cochanged"), "code_history")
+        result = agent_tools.execute("find_symbol", {"name": "to_display"}, ctx)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["tool"], "code_nav")
+        self.assertIn("app/units.py:1-4 function to_display", result["output"])
+        result = agent_tools.execute("git_history", {"path": "app/units.py"}, ctx)
+        self.assertIn("fix fahrenheit rounding", result["output"])
+        self.assertEqual(agent_tools.permission_for("who_calls", {"symbol": "x"}, ctx).kind, "read")
+        self.assertNotIn("find_symbol", agent_tools.ALLOWED_TOOLS)
+
+    def test_an_action_is_required(self) -> None:
+        from critique_bot.indexing import tools
+
+        ok, text = tools.run("code_nav", {"name": "to_display"}, self.ctx)
+        self.assertFalse(ok)
+        self.assertIn("find_symbol, refs, who_calls", text)
+        ok, text = tools.run("code_nav", {"action": "imports_of", "path": "/etc/passwd"}, self.ctx)
+        self.assertFalse(ok)
+        self.assertIn("outside the workspace", text)
+
     def test_partial_results_are_labelled(self) -> None:
         from critique_bot.indexing import engine, tools
 
@@ -429,13 +456,13 @@ class ToolTests(ProjectCase):
             from types import SimpleNamespace
 
             ctx = SimpleNamespace(workspace=self.root, index_path=missing, max_chars=4000, state=None)
-            ok, text = tools.run("find_symbol", {"name": "to_display"}, ctx)
+            ok, text = tools.run("code_nav", {"action": "find_symbol", "name": "to_display"}, ctx)
             self.assertTrue(text.startswith("partial:"), text)
         finally:
             release.set()
             engine.wait_all(30)
             engine._build_main = original
-        ok, text = tools.run("find_symbol", {"name": "to_display"}, ctx)
+        ok, text = tools.run("code_nav", {"action": "find_symbol", "name": "to_display"}, ctx)
         self.assertFalse(text.startswith("partial:"), text)
         self.assertIn("app/units.py", text)
 
@@ -452,6 +479,7 @@ class RepoTreeGroupTests(unittest.TestCase):
         (self.root / ".repo" / "project.list").write_text("packages/services/Car\nframeworks/base\n")
         for project, files in {
             "packages/services/Car": {"service/src/CarSvc.java": "class CarSvc { void boot() { Log.e(TAG, \"car boot failed\"); } }\n",
+                                      "service/src/Q.java": "// throttles the compressor when the cabin overheats\nclass Q { void a() {} }\n",
                                       "Android.bp": 'android_app { name: "CarService", srcs: ["service/src/**/*.java"] }\n'},
             "frameworks/base": {"core/Foo.java": "class Foo { void bar() {} }\n"},
         }.items():
@@ -489,10 +517,14 @@ class RepoTreeGroupTests(unittest.TestCase):
         group_db = store.group_db_path(self.index, "packages/services/Car")
         self.assertTrue(group_db.is_file())
         self.assertFalse(store.group_db_path(self.index, "frameworks/base").exists())
-        ok, text = tools.run("module_of", {"path": "packages/services/Car/service/src/CarSvc.java"}, ctx)
+        ok, text = tools.run("code_nav", {"action": "module_of", "path": "packages/services/Car/service/src/CarSvc.java"}, ctx)
         self.assertIn("CarService", text)
+        if shutil.which("rg"):  # a module group keeps no text: comments are searched with one rg pass
+            ok, text = tools.run("locate", {"description": "compressor overheats", "path": "packages/services/Car"}, ctx)
+            self.assertIn("packages/services/Car/service/src/Q.java", text)
+            self.assertIn("lexical", text)
         # without a path: the project database and every group built so far
-        ok, text = tools.run("find_symbol", {"name": "CarSvc"}, ctx)
+        ok, text = tools.run("code_nav", {"action": "find_symbol", "name": "CarSvc"}, ctx)
         self.assertIn("CarSvc.java", text)
 
 

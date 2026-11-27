@@ -57,6 +57,7 @@ class Query:
     identifiers: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
+    workspace: str = ""  # for retrievers that read files (ripgrep on a module group)
 
 
 # --------------------------------------------------------------------------- parsing the question
@@ -346,7 +347,8 @@ def r_symbols(query: Query, conn: sqlite3.Connection) -> list[Hit]:
     why: dict[tuple[str, str, int], list[str]] = defaultdict(list)
     for ident in query.identifiers:
         _parent, name = graph.split_symbol(ident)
-        for row in conn.execute(f"SELECT path, line, name, parent FROM symbols WHERE name = ? AND kind IN {_DEF_KINDS} LIMIT 20", (name,)):
+        # _DEF_KINDS is a constant list of kinds, not input
+        for row in conn.execute(f"SELECT path, line, name, parent FROM symbols WHERE name = ? AND kind IN {_DEF_KINDS} LIMIT 20", (name,)):  # nosec B608
             key = (str(row[0]), f"{row[3]}.{row[2]}" if row[3] else str(row[2]), int(row[1]))
             score[key] += 3.0
             why[key].append(f"defines {ident}")
@@ -355,7 +357,7 @@ def r_symbols(query: Query, conn: sqlite3.Connection) -> list[Hit]:
             continue
         like = "%" + term.replace("%", "").replace("_", "\\_") + "%"
         rows = conn.execute(
-            f"SELECT path, line, name, parent FROM symbols WHERE lower(name) LIKE ? ESCAPE '\\' AND kind IN {_DEF_KINDS} LIMIT 200",
+            f"SELECT path, line, name, parent FROM symbols WHERE lower(name) LIKE ? ESCAPE '\\' AND kind IN {_DEF_KINDS} LIMIT 200",  # nosec B608: a constant
             (like,),
         ).fetchall()
         if not rows:
@@ -417,14 +419,16 @@ def r_commits(query: Query, conn: sqlite3.Connection) -> list[Hit]:
 
 
 def r_lexical(query: Query, conn: sqlite3.Connection) -> list[Hit]:
-    """Words of the description in file text (comments included), through the trigram index."""
-    if store.get_meta(conn, "fts") != "1":
-        return []
-    try:
-        if not conn.execute("SELECT 1 FROM content LIMIT 1").fetchone():
-            return []
-    except sqlite3.OperationalError:
-        return []
+    """Words of the description in file text (comments included), through the trigram index, or
+    (a module group of an AOSP tree, which keeps no text) one multi-pattern ripgrep pass."""
+    has_text = store.get_meta(conn, "fts") == "1"
+    if has_text:
+        try:
+            has_text = conn.execute("SELECT 1 FROM content LIMIT 1").fetchone() is not None
+        except sqlite3.OperationalError:
+            has_text = False
+    if not has_text:
+        return _rg_lexical(query, conn)
     score: dict[str, float] = defaultdict(float)
     why: dict[str, list[str]] = defaultdict(list)
     for term, weight, _reason in [item for item in query.terms if len(item[0]) >= 4][:10]:
@@ -439,6 +443,51 @@ def r_lexical(query: Query, conn: sqlite3.Connection) -> list[Hit]:
             score[str(path)] += weight * spread
             if len(why[str(path)]) < 3:
                 why[str(path)].append(term)
+    ranked = sorted(score, key=lambda path: (-score[path], path))
+    return [Hit(path, 0, "", "text mentions " + ", ".join(why[path])) for path in ranked[:PER_RETRIEVER]]
+
+
+RG_SECONDS = 1.0
+
+
+def _rg_lexical(query: Query, conn: sqlite3.Connection) -> list[Hit]:
+    """All description words in one ripgrep pass over the group's folder (like search_code with
+    patterns), counted per file and word."""
+    import shutil
+    import subprocess
+
+    group = store.get_meta(conn, "group")
+    root = query.workspace
+    exe = shutil.which("rg")
+    terms = [item for item in query.terms if len(item[0]) >= 4][:10]
+    if not group or not root or exe is None or not terms:
+        return []
+    folder = f"{root}/{group}"
+    argv = [exe, "-i", "-o", "--no-line-number", "--with-filename", "--max-count", "20", "--max-filesize", "1M"]
+    for term, _weight, _reason in terms:
+        argv += ["-e", re.escape(term)]
+    try:
+        proc = subprocess.run([*argv, folder], capture_output=True, text=True, errors="replace", timeout=RG_SECONDS)
+        out = proc.stdout
+    except subprocess.TimeoutExpired as exc:  # use what came back in time
+        out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+    except OSError:
+        return []
+    weights = {term: weight for term, weight, _r in terms}
+    files_per_term: dict[str, set[str]] = defaultdict(set)
+    for row in out.splitlines():
+        path, _, match = row.rpartition(":")
+        word = match.lower()
+        if word in weights and path.startswith(root):
+            files_per_term[word].add(path[len(str(root)) + 1 :])
+    score: dict[str, float] = defaultdict(float)
+    why: dict[str, list[str]] = defaultdict(list)
+    for term, files in files_per_term.items():
+        spread = 1.0 / math.log(2 + len(files))
+        for path in files:
+            score[path] += weights[term] * spread
+            if len(why[path]) < 3:
+                why[path].append(term)
     ranked = sorted(score, key=lambda path: (-score[path], path))
     return [Hit(path, 0, "", "text mentions " + ", ".join(why[path])) for path in ranked[:PER_RETRIEVER]]
 
@@ -563,12 +612,13 @@ class Located:
 
 
 def locate(db_paths: list, description: str, evidence: str = "", *, budget: float = DEFAULT_BUDGET,
-           limit: int = 10, only: list[str] | None = None) -> Located:
+           limit: int = 10, only: list[str] | None = None, workspace: str = "") -> Located:
     """Run every retriever on every database within ``budget`` seconds and fuse the results."""
     started = time.monotonic()
     first = store.connect(db_paths[0]) if db_paths else None
     try:
         query = parse_query(description, evidence, first)
+        query.workspace = str(workspace)
     finally:
         if first is not None:
             first.close()

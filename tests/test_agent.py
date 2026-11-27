@@ -627,9 +627,9 @@ class ToolTests(unittest.TestCase):
 
     def test_tool_count(self) -> None:
         # Few tools: a small model picks better from fewer. New areas get one tool with an
-        # action enum (log: summary/query/around/diff), not one tool per action. The 14 index
-        # tools (Stage 8) are named by the plan; eval runs decide whether they stay separate.
-        self.assertEqual(len(ALLOWED_TOOLS), 38)
+        # action enum (log: summary/query/around/diff), not one tool per action. The index adds
+        # five: code_nav and code_history (with actions), find_strings, locate, coverage_locate.
+        self.assertEqual(len(ALLOWED_TOOLS), 29)
 
     def test_opencode_names_run_the_same_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

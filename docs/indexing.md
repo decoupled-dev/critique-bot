@@ -29,15 +29,24 @@ and their output starts with `partial:`.
 
 ## Tools
 
-`locate` (fused localization from a bug report, logs and traces), `find_strings`, `find_symbol`,
-`symbol_refs`, `who_calls`, `callees`, `imports_of`, `imported_by`, `module_of`, `repo_map`,
-`git_blame`, `git_history`, `cochanged`, and `coverage_locate` (runs a failing Python test under
-line tracing, or reads a coverage.py JSON, JaCoCo XML or LCOV report, and ranks functions with
-Ochiai when passing runs are given). All but `coverage_locate` are read-only; `coverage_locate`
-asks like `run_command` when it runs a command.
+Five tools; related lookups share one tool with an `action`, so a small model picks among few:
 
-Call edges are matched by name, so `who_calls` and `callees` say "likely"; `symbol_refs` lists
-every textual use when precision matters.
+| Tool | Actions / what it answers |
+| --- | --- |
+| `locate` | fused localization from a bug report, log lines and traces: ranked files and functions with the evidence for each |
+| `find_strings` | the code that prints a log line, error, UI string, tag, resource or property key |
+| `code_nav` | `find_symbol`, `refs`, `who_calls`, `callees`, `imports_of`, `imported_by`, `module_of`, `repo_map` |
+| `code_history` | `blame`, `log` (by path, function `name`, commit-message `query`, or `changed` for `git log -G`), `cochanged` |
+| `coverage_locate` | runs a failing Python test under line tracing, or reads a coverage.py JSON, JaCoCo XML or LCOV report, and ranks functions (Ochiai with passing runs); resolves stack traces |
+
+All but `coverage_locate` are read-only; `coverage_locate` asks like `run_command` when it runs a
+command. The names of the first Stage 8 build (`find_symbol`, `symbol_refs`, `who_calls`,
+`callees`, `imports_of`, `imported_by`, `module_of`, `repo_map`, `git_blame`, `git_history`,
+`cochanged`) still work when a model calls them: they run as `code_nav` / `code_history` with
+the matching action, but they are not advertised.
+
+Call edges are matched by name, so `who_calls` and `callees` say "likely"; `refs` lists every
+textual use when precision matters.
 
 ## Benchmarks
 

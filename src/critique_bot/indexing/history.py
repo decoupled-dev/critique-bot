@@ -131,9 +131,9 @@ def _forget_project(conn: sqlite3.Connection, prefix: str) -> None:
     for start in range(0, len(shas), 500):
         chunk = shas[start : start + 500]
         marks = ",".join("?" * len(chunk))
-        conn.execute(f"DELETE FROM commit_files WHERE sha IN ({marks})", chunk)
+        conn.execute(f"DELETE FROM commit_files WHERE sha IN ({marks})", chunk)  # nosec B608: marks is "?,?..."
         if store.get_meta(conn, "commit_fts") == "1":
-            conn.execute(f"DELETE FROM commit_text WHERE sha IN ({marks})", chunk)
+            conn.execute(f"DELETE FROM commit_text WHERE sha IN ({marks})", chunk)  # nosec B608: marks is "?,?..."
     conn.execute("DELETE FROM commits WHERE project = ?", (prefix,))
     if prefix:
         like = prefix + "/%"
@@ -214,7 +214,7 @@ def search_commits(conn: sqlite3.Connection, query: str, *, limit: int = 15) -> 
     if not rows:
         score = " + ".join("(instr(lower(subject || ' ' || body), ?) > 0)" for _ in words)
         rows = conn.execute(
-            f"SELECT sha, ts, author, subject, ({score}) AS hits FROM commits WHERE hits > 0 ORDER BY hits DESC, ts DESC LIMIT ?",
+            f"SELECT sha, ts, author, subject, ({score}) AS hits FROM commits WHERE hits > 0 ORDER BY hits DESC, ts DESC LIMIT ?",  # nosec B608: score is fixed text with ? placeholders
             (*words, limit),
         ).fetchall()
     out = []

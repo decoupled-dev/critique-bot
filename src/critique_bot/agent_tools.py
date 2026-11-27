@@ -70,20 +70,11 @@ ALLOWED_TOOLS = (
     "log",
     "jira",
     # the index tools (Stage 8; critique_bot.indexing.tools)
-    "find_symbol",
-    "symbol_refs",
-    "who_calls",
-    "callees",
-    "imports_of",
-    "imported_by",
-    "module_of",
-    "repo_map",
-    "git_blame",
-    "git_history",
-    "cochanged",
+    "code_nav",
+    "code_history",
     "find_strings",
-    "coverage_locate",
     "locate",
+    "coverage_locate",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -104,17 +95,8 @@ READ_ONLY = frozenset(
         "log",
         "jira",
         # the index tools, except coverage_locate (it runs the failing test)
-        "find_symbol",
-        "symbol_refs",
-        "who_calls",
-        "callees",
-        "imports_of",
-        "imported_by",
-        "module_of",
-        "repo_map",
-        "git_blame",
-        "git_history",
-        "cochanged",
+        "code_nav",
+        "code_history",
         "find_strings",
         "locate",
     }
@@ -344,7 +326,7 @@ def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> di
             "allowed": list(ALLOWED_TOOLS),
             "ui": _ui(f"Unknown tool {name}"),
         }
-    args = normalize_args(canonical, arguments if isinstance(arguments, (dict, str)) else {})
+    args = normalize_args(canonical, with_action(name, arguments) if isinstance(arguments, (dict, str)) else {})
     try:
         result = _HANDLERS[canonical](args, ctx)
     except Exception as exc:  # a tool bug must come back as a result, not end the task
@@ -416,7 +398,23 @@ def _diff_counts(diff: str) -> tuple[int, int]:
     return added, removed
 
 
+#: Index tool names of the first Stage 8 build: they run as code_nav / code_history with this action.
+LEGACY_ACTIONS = {
+    "find_symbol": ("code_nav", "find_symbol"),
+    "symbol_refs": ("code_nav", "refs"),
+    "who_calls": ("code_nav", "who_calls"),
+    "callees": ("code_nav", "callees"),
+    "imports_of": ("code_nav", "imports_of"),
+    "imported_by": ("code_nav", "imported_by"),
+    "module_of": ("code_nav", "module_of"),
+    "repo_map": ("code_nav", "repo_map"),
+    "git_blame": ("code_history", "blame"),
+    "git_history": ("code_history", "log"),
+    "cochanged": ("code_history", "cochanged"),
+}
+
 _ALIASES = {
+    **{old: new for old, (new, _action) in LEGACY_ACTIONS.items()},
     "grep": "search_code",
     "rg": "search_code",
     "search": "search_code",
@@ -470,6 +468,16 @@ _ALIASES = {
     "parallel": "delegate",
     "dispatch_agent": "delegate",
 }
+
+
+def with_action(name: str, args: Any) -> Any:
+    """Arguments for ``name`` with the action an old index tool name implies (find_symbol ->
+    code_nav action find_symbol). Other names and calls that already have an action pass through."""
+    key = str(name).strip().strip("`\"'").lower().replace("-", "_")
+    legacy = LEGACY_ACTIONS.get(key)
+    if legacy is None or not isinstance(args, dict) or args.get("action"):
+        return args
+    return {**args, "action": legacy[1]}
 
 
 def canonical_tool(name: str) -> str:
@@ -4422,6 +4430,7 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
     The result also names the tool and its paths, for saved rules, and for a command the
     allow rule a "don't ask again" answer would save.
     """
+    args = with_action(name, args)
     perm = _permission_for(name, args, ctx)
     tool = canonical_tool(name) or ""
     perm.tool = tool
@@ -5451,10 +5460,7 @@ def read_only_command(command: str) -> bool:
     return True
 
 
-_INDEX_PATH_TOOLS = frozenset({
-    "find_symbol", "symbol_refs", "who_calls", "callees", "imports_of", "imported_by", "module_of", "repo_map",
-    "git_blame", "git_history", "cochanged", "find_strings", "coverage_locate", "locate",
-})
+_INDEX_PATH_TOOLS = frozenset({"code_nav", "code_history", "find_strings", "coverage_locate", "locate"})
 
 
 def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:
