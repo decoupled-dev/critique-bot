@@ -943,7 +943,8 @@ def _key(name: str, args: dict[str, Any] | None) -> tuple[str, str]:
 
 def _title(name: str, args: dict[str, Any]) -> str:
     try:
-        from critique_bot.agent import ToolCall, _activity
+        from critique_bot.engine import ToolCall
+        from critique_bot.engine import activity as _activity
 
         return _activity(ToolCall(name, dict(args)))
     except Exception:

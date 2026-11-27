@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from critique_bot.agent import AnswerContract, hide_tool_markup
+from critique_bot.engine import AnswerContract, hide_tool_markup
 from critique_bot.config import compose_prompt
 from critique_bot.review_comments import has_review_json
 

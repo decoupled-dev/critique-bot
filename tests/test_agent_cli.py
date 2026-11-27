@@ -87,19 +87,19 @@ class AgentCliTests(unittest.TestCase):
                 from critique_bot.code_index import IndexStats
 
                 rebuild.return_value = IndexStats(files=0, symbols=0)
-                with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                with patch("critique_bot.engine.run_agent", return_value=0) as run:
                     self.assertEqual(
                         main(["--config", str(config), "--mode", "agent", "--repo-dir", str(root), "init"]),
                         0,
                     )
                 run.assert_not_called()
-                with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                with patch("critique_bot.engine.run_agent", return_value=0) as run:
                     self.assertEqual(
                         main(["--mode", "agent", "--repo-dir", str(root)]),
                         0,
                     )
                 self.assertEqual(run.call_args.args[2], "")
-            with patch("critique_bot.agent.run_agent", return_value=0) as run:
+            with patch("critique_bot.engine.run_agent", return_value=0) as run:
                 code = main(
                     [
                         "--mode",
@@ -111,7 +111,7 @@ class AgentCliTests(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertEqual(run.call_args.args[2], "update the test cases")
-            with patch("critique_bot.agent.run_agent", return_value=0) as run:
+            with patch("critique_bot.engine.run_agent", return_value=0) as run:
                 code = agent_main(["--repo-dir", str(root), "update the test cases"])
             self.assertEqual(code, 0)
             self.assertEqual(run.call_args.args[2], "update the test cases")
@@ -140,7 +140,7 @@ class AgentCliTests(unittest.TestCase):
                         with patch("critique_bot.welcome.ask_login", return_value=True):
                             with patch("critique_bot.webchat.browser.needs_visible_login", return_value=True):
                                 with patch("critique_bot.webchat.provider.login_in_edge") as login:
-                                    with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                                    with patch("critique_bot.engine.run_agent", return_value=0) as run:
                                         code = agent_main(["--repo-dir", str(root), "--config", str(config)])
             self.assertEqual(code, 0)
             settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
@@ -170,7 +170,7 @@ class AgentCliTests(unittest.TestCase):
                     ):
                         with patch("critique_bot.welcome.ask_login", return_value=False):
                             with patch("critique_bot.webchat.provider.login_in_edge") as login:
-                                with patch("critique_bot.agent.run_agent", return_value=0) as run:
+                                with patch("critique_bot.engine.run_agent", return_value=0) as run:
                                     code = agent_main(["--repo-dir", str(root)])
             self.assertEqual(code, 0)
             settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
@@ -196,7 +196,7 @@ class AgentCliTests(unittest.TestCase):
             with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role", side_effect=AssertionError("asked")), patch(
-                "critique_bot.agent.run_agent", return_value=0
+                "critique_bot.engine.run_agent", return_value=0
             ) as run, redirect_stderr(err):
                 self.assertEqual(agent_main(["--repo-dir", str(root), "add tests"]), 0)
                 settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
@@ -226,7 +226,7 @@ class AgentCliTests(unittest.TestCase):
             ), patch("critique_bot.welcome.pick_theme", side_effect=AssertionError("theme screen")), patch(
                 "critique_bot.welcome.pick_role", side_effect=AssertionError("role screen")
             ), patch("critique_bot.welcome.ask_login", side_effect=AssertionError("login question")), patch(
-                "critique_bot.agent.run_agent", return_value=0
+                "critique_bot.engine.run_agent", return_value=0
             ) as run:
                 self.assertEqual(agent_main(["--repo-dir", second, "fix it"]), 0)
             run.assert_called_once()
@@ -242,7 +242,7 @@ class AgentCliTests(unittest.TestCase):
             ), patch("critique_bot.welcome.pick_theme", return_value=("light", True)) as pick, patch(
                 "critique_bot.welcome.ask_login", return_value=True
             ), patch("critique_bot.webchat.browser.needs_visible_login", return_value=False), patch(
-                "critique_bot.agent.run_agent", return_value=0
+                "critique_bot.engine.run_agent", return_value=0
             ):
                 self.assertEqual(agent_main(["--repo-dir", one, "fix it"]), 0)
                 self.assertEqual(agent_main(["--repo-dir", two, "fix it"]), 0)
@@ -261,7 +261,7 @@ class AgentCliTests(unittest.TestCase):
             with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role") as pick, patch(
-                "critique_bot.agent.run_agent", return_value=0
+                "critique_bot.engine.run_agent", return_value=0
             ) as run:
                 self.assertEqual(agent_main(["--repo-dir", str(root), "--role", "AOSPExpert", "fix the HAL"]), 0)
                 settings = json.loads((root / ".crit" / "settings.json").read_text(encoding="utf-8"))
@@ -280,7 +280,7 @@ class AgentCliTests(unittest.TestCase):
             self._config(root)
             with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
-            ), patch("critique_bot.agent.run_agent", return_value=0) as run:
+            ), patch("critique_bot.engine.run_agent", return_value=0) as run:
                 self.assertEqual(agent_main(["--repo-dir", str(root), "--role", "wizard", "fix it"]), 1)
                 run.assert_not_called()
 
@@ -291,7 +291,7 @@ class AgentCliTests(unittest.TestCase):
             with patch("critique_bot.project_home.rebuild_index"), patch(
                 "critique_bot.welcome.stdio_is_tty", return_value=False
             ), patch("critique_bot.welcome.pick_role") as pick, patch(
-                "critique_bot.agent.run_agent", return_value=0
+                "critique_bot.engine.run_agent", return_value=0
             ):
                 self.assertEqual(agent_main(["--repo-dir", str(root), "fix it"]), 0)
                 pick.assert_not_called()

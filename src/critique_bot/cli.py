@@ -1065,9 +1065,9 @@ def _first_run_wizard(target: Path, *, reconfigure: bool = False) -> Path | int:
 
 def _agent_confirm(question: str) -> bool:
     """A yes/no question in the agent's terminal UI (default No)."""
-    from critique_bot import agent
+    from critique_bot import engine
 
-    asker = getattr(agent.agent_ui, "ask_question", None)
+    asker = getattr(engine.current_ui(), "ask_question", None)
     if not callable(asker):
         return False
     answer = asker(question, ["No", "Yes, allow it"])
@@ -1566,7 +1566,7 @@ def _main_gitlab_post(argv: list[str]) -> int:
 
 def _main_agent(args: argparse.Namespace) -> int:
     """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
-    from critique_bot.agent import run_agent
+    from critique_bot.engine import run_agent
     from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home, update_settings
     from critique_bot.roles import ROLE_IDS, normalize_role
     from critique_bot.welcome import pick_theme, stdio_is_tty
@@ -1756,7 +1756,7 @@ class _StderrTail:
 
 def _main_agent_acp(args: argparse.Namespace) -> int:
     """``crit --acp``: the agent behind an ACP client. Waits for the first session/new to pick the folder."""
-    from critique_bot import agent, agent_acp
+    from critique_bot import agent_acp, engine
 
     agent_acp.start()
     tail = _StderrTail(sys.stderr)
@@ -1769,7 +1769,7 @@ def _main_agent_acp(args: argparse.Namespace) -> int:
         os.chdir(cwd)
     except OSError as exc:
         log.notice(f"Problem: cannot open {cwd}: {exc}")
-    agent.use_ui(agent_acp)
+    engine.use_ui(agent_acp)
     code = 1
     try:
         code = _main_agent(args)
@@ -1835,10 +1835,10 @@ def _apply_tool_flags(args: argparse.Namespace, home) -> None:
 
 def _use_terminal_ui() -> None:
     """The terminal, unless a front end is installed already (crit --acp installs the IDE's)."""
-    from critique_bot import agent, agent_ui, ui_api
+    from critique_bot import agent_ui, engine, ui_api
 
-    if isinstance(agent.agent_ui, ui_api.NullUI):
-        agent.use_ui(agent_ui)
+    if isinstance(engine.current_ui(), ui_api.NullUI):
+        engine.use_ui(agent_ui)
 
 
 def _review_engine(args: argparse.Namespace) -> str:
@@ -1851,7 +1851,7 @@ def _review_engine(args: argparse.Namespace) -> str:
 def _main_review_agent(args: argparse.Namespace, output_dir: Path) -> int:
     """``crit review``: the Code Reviewer reads the project with read-only tools, then reports."""
     from critique_bot import review_agent
-    from critique_bot.agent import run_read_only_task
+    from critique_bot.engine import run_read_only_task
     from critique_bot.roles import CODE_REVIEWER
     from critique_bot.project_home import BotHomeError, find_bot_home, init_bot_home
 

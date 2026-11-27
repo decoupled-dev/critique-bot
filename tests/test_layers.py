@@ -111,6 +111,9 @@ INTERFACES: dict[int, frozenset[str]] = {
     # services the engine drives directly are part of the interface.
     TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home",
                        "gitlab_access", "jira", "sandbox", "taint", "extensions"}),
+    # The engine package's __init__ is the API apps use; ui_api is how front ends plug in, and
+    # session_log is read by crit sessions. agent (compatibility names) is for routing and tests.
+    ENGINE: frozenset({"engine", "ui_api", "session_log"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when
