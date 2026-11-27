@@ -76,8 +76,22 @@ SECURITY_KEYS = frozenset(
         "lint",
         # domain packs: tools that reach a device, and a looser sandbox preset (packs.sandbox_value)
         "packs",
+        # recall of memory episodes stored during tainted sessions (memory poisoning otherwise kept out)
+        "memory_untrusted",
+        # background jobs a task started keep running after it ends
+        "keep_background_jobs",
     }
 )
+# Audited and left out (PM-13): they only narrow crit or shape the prompt from the project's
+# own content, never widen what runs or where data goes. ``deny``, ``offline``, ``extensions``
+# (false only turns extensions off), ``untrusted_workspace`` (true only taints), ``shell`` (one of
+# a fixed list of shells), ``background_on_timeout`` (false only stops backgrounding), ``memory``,
+# ``memory_files``, ``memory_cards``, ``memory_budget``, ``kv_primer``, ``seed_instructions``,
+# ``auto_skills``, ``environment_snapshot``, ``helper_sessions`` (helpers only read, at most 4),
+# ``flow``/``flow_budgets``/``plan_triggers``/``impact_list``/``handoff_notes``, ``compaction*``,
+# ``edit_format``/``edit_guard``/``tool_set``/``tool_format``, ``session_log``, ``role``, ``theme``.
+# Model-server and network settings (``url``, ``allowed_hosts``, ``egress``, ``page_network``,
+# redaction) live in the config file, which ``config`` names and APPROVAL_KEYS gates.
 
 #: Keys of a project's settings file that count only once the user approved their values
 #: (``crit trust .crit/settings.json``, or the question crit asks at start). ``config`` picks
@@ -460,6 +474,7 @@ _KEY_WORDS = {
     "config": "the model server your code is sent to",
     "memory_untrusted": "recall of notes from untrusted sessions",
     "auto_questions": "questions crit answers on its own",
+    "keep_background_jobs": "programs that keep running after the task",
 }
 
 

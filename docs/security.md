@@ -153,7 +153,7 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 
 A cloned repository, a downloaded archive, or a folder another user can write to is untrusted input, so it cannot loosen crit's rules:
 
-- **Project settings that loosen crit count only once you approve them.** The keys in `project_home.APPROVAL_KEYS` (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`, `lint`, `packs`, and `config`, the model server) are left out of a project's `.crit/settings.json` until you approve the values it sets, whether or not the folder is a git repository. In a terminal, `crit` shows them at start and asks once:
+- **Project settings that loosen crit count only once you approve them.** The keys in `project_home.APPROVAL_KEYS` (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`, `lint`, `packs`, `memory_untrusted`, `keep_background_jobs`, and `config`, the model server) are left out of a project's `.crit/settings.json` until you approve the values it sets, whether or not the folder is a git repository. In a terminal, `crit` shows them at start and asks once:
 
   ```
   /work/proj/.crit/settings.json sets values that loosen crit or pick the model server:

@@ -52,10 +52,11 @@ class ProjectSettingsTests(SecBase):
         self.assertEqual(set(home.settings) & set(_LOOSE), set(),
                          "allow/permissions/confirm_risky from a file the user never wrote are in effect")
 
-    # SECURITY FINDING PM-13: "memory_untrusted" (recall episodes from tainted sessions) is not a security key
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-13 (fixed): "memory_untrusted" (recall episodes from tainted sessions) is not a security key
     def test_memory_untrusted_is_a_security_key(self) -> None:
         self.assertIn("memory_untrusted", project_home.SECURITY_KEYS)
+        self.assertIn("keep_background_jobs", project_home.SECURITY_KEYS)
+        self.assertLessEqual(project_home.SECURITY_KEYS, project_home.APPROVAL_KEYS)
 
 
 class EvalTests(SecBase):
