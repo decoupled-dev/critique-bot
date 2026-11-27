@@ -185,6 +185,8 @@ The script's `crit` always passes `--config`. Without the script, pass `--config
 | `crit --headed "TASK"` | Show the browser window |
 | `crit undo` | Restore the files the last task changed. Run again to step back further |
 | `crit init` | Create `.crit/`, or rebuild the index without replacing settings |
+| `crit --no-memory "TASK"` | No project memory for this run: no hunch at the start, nothing recorded |
+| `crit memory` | The project memory: `status`, `show <id>`, `list`, `forget <id>`, `review` (approve proposed conventions; `--stale`), `export`, `import`, `prune`, `mine` ([`docs/memory.md`](docs/memory.md)) |
 
 The same commands in both shells:
 

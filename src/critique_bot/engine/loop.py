@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, log, prompt_build, roles
+from critique_bot import memory_recall
 from critique_bot import session_log as session_log_mod
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
@@ -384,6 +385,9 @@ def run_agent_loop(
         message = task_message(
             task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"], tickets=tickets,
         )
+        hunch = memory_recall.begin_task(workspace, index_path, task, options, slog)  # Stage 8b: project memory
+        if hunch:
+            message += "\n\n" + hunch
         if chat.pending_notes:
             message = "\n\n".join(chat.pending_notes) + "\n\n" + message
             chat.pending_notes = []
@@ -425,6 +429,8 @@ def run_agent_loop(
         mode_told = run.mode_seen
         changed = list(task_state.edits)
         slog.write("task_finished", code=outcome_code, task=task, changed=changed or None)
+        memory_recall.end_task(workspace, index_path, task, outcome_code, changed, list(task_state.reads), options, slog,
+                               side_factory=side_factory)  # Stage 8b: episode, cards, patterns
         _update_session_meta(slog)
         runtime.hook("task_finished", {"task": task, "status": outcome_code, "changed": changed})
         chat.history.append(

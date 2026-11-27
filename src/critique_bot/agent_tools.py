@@ -75,6 +75,8 @@ ALLOWED_TOOLS = (
     "find_strings",
     "locate",
     "coverage_locate",
+    # project memory (Stage 8b; critique_bot.memory.tool): search, show, propose
+    "memory",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -99,6 +101,8 @@ READ_ONLY = frozenset(
         "code_history",
         "find_strings",
         "locate",
+        # project memory: search and show read; propose only queues a note for a person to approve
+        "memory",
     }
 )
 SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
@@ -5604,4 +5608,13 @@ def _index_tool(name: str) -> Callable[[dict[str, Any], ToolContext], dict[str, 
     return run
 
 
+def _memory(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """The project memory tool (critique_bot.memory.tool): search, show, propose."""
+    from critique_bot.memory import tool as memory_tool
+
+    done, text = memory_tool.run(args, ctx)
+    return ok("memory", text, ctx) if done else err("memory", text, ctx=ctx)
+
+
+_HANDLERS["memory"] = _memory
 _HANDLERS.update({name: _index_tool(name) for name in ALLOWED_TOOLS if name not in _HANDLERS})

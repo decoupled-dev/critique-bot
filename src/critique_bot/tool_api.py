@@ -454,6 +454,24 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
               "trace": _s("a stack trace or tombstone backtrace"), "timeout": _i("seconds per run", 5, 1800),
               "limit": _i("functions to list", 1, 50)}),
     ),
+    # ---- project memory (Stage 8b, critique_bot.memory.tool)
+    ToolSpec(
+        "memory",
+        "Project memory: what past tasks here changed and why, file and module cards, change recipes, approved "
+        "conventions. action search: items like query (words, a symbol, an error text); show: one item by id "
+        "(e12, f40, n3, r2) with its sources; propose: a project-specific convention for a person to approve "
+        "(text naming the file, symbol or command, plus evidence). Memory is a hunch: verify by reading the code. "
+        'Not for: reading code (read_files) or finding it (locate). Example: {"action": "search", "query": '
+        '"temperature unit after reboot"}. Returns: one item per line (id, kind, outcome, summary). Limits: 12 '
+        "items unless limit; at most 2 proposals per task; generic advice is refused.",
+        _obj({"action": {"type": "string", "enum": ["search", "show", "propose"]},
+              "query": _s("search: what to look for"), "id": _s("show: an item id such as e12"),
+              "kind": {"type": "string", "enum": ["episode", "card", "convention", "recipe", "hotspot"]},
+              "text": _s("propose: the convention, naming the file, symbol or command"),
+              "evidence": {"type": "array", "items": _S, "description": "propose: command output, file:line, test name"},
+              "limit": _i("cap on items", 1, 50)}, ["action"]),
+        read_only=True,
+    ),
     ToolSpec(
         "delegate",
         "Hand self-contained parts of the task to helper chats that report back. Not for: one read or search, "

@@ -168,10 +168,59 @@ it is ever recommended.
       tokens before first edit −30%, pass@1 ≥ memory-off (it must never hurt)
 - [ ] Predicted-file acc@5 ≥ 60% after 15 warm-up tasks on each repo
 - [ ] Wrong hunches don't reduce pass@1 (memory-on pass@1 on wrong-hunch tasks ≥ memory-off)
-- [ ] Recall block ≤ budget in 100% of runs; prompt prefix stays byte-stable (the hunch is in the first user turn)
-- [ ] A file change invalidates its card within one session; stale conventions are flagged
-- [ ] No convention enters memory without approval (test)
+- [x] Recall block ≤ budget in 100% of runs; prompt prefix stays byte-stable (the hunch is in the first user turn)
+      (2026-11-27: by construction and tested: `test_memory_engine` RecallTests (budgets 100-600 with 40 long
+      episodes) and EngineHookTests (the system message is unchanged after a hunch; the hunch is in the user
+      message). The eval runs will confirm it on real tasks)
+- [x] A file change invalidates its card within one session; stale conventions are flagged
+      (`test_memory` CardTests: a changed hash rebuilds the card at the next use, `invalidate` drops it, a deleted
+      file's card goes; ConventionTests: `stale_check` flags a missing file and an undefined symbol)
+- [x] No convention enters memory without approval (test)
+      (`test_memory_cmd` test_no_convention_enters_memory_without_approval; proposals are never recalled,
+      imports arrive as proposals)
 - [ ] KV primer (llama.cpp): session-start time to first token −70% on a 32K primer
+
+## Status (2026-11-27)
+
+Done (model-agnostic, tested with scripted sessions, fake servers and fake transcripts):
+- Work item 1: `.crit/memory/memory.db` (gitignored, private folder, redacted on write) with provenance
+  required on every row; the `memory/` package in the tools layer (interface), recall ranking and the
+  hunch in the engine module `memory_recall`, `crit memory` in the apps layer (`memory_cmd`).
+- Item 2 (M1): lazy file cards keyed by sha256, rebuilt on hash change; module cards (build file, entry
+  points, key classes, deps, test module); written at task end for files read and edited and for the top
+  repo-map files of the touched modules. Builder pluggable: extractive from the index (default, offline) or
+  model-backed (`memory_cards: model`, one helper request per card, falls back when the reply names no real
+  symbol). "Batched regeneration at idle times" is not built: cards are rebuilt lazily on next use.
+- Item 3 (M2): change sets with 3/4-file subsets (recipes = count >= 2, subsets of a same-count superset
+  hidden), fix-commit hot spots, both mined incrementally per index database; a session's changed files
+  count as a change set too.
+- Item 4 (M3): episodes at `task_finished` from the event log: class, files, symbols (checked against the
+  index), root cause and fix found heuristically in the final message, evidence (tests passing after the
+  last edit), outcome verified/accepted/completed, negative episodes for failed/abandoned tasks, session
+  and commit ids, file hashes; untrusted when the session is tainted. The Stage 7 hookup (rejected-patch
+  memory) waits for Stage 7.
+- Item 5 (M4): proposals through the `memory` tool (2 per task, evidence required, generic-advice filter,
+  duplicates refused), `crit memory review` (interactive or `--approve/--reject`), `--stale` check (files,
+  symbols, command programs). No TUI `/memory` yet.
+- Item 6: recall at task start (query, candidates, ranking, budgeted hunch in the task's user message, a
+  `memory_recall` event), `--no-memory`, `memory: off | recall | full`; wrong-hunch cutback (likely files
+  withheld when > 50% of the last 20 top-1 hunches were wrong, at least 6). The agent-file key (`memory:` in
+  a file-defined agent) is not wired: agents set settings through their profile once Stage 5 lands.
+- Item 7: one `memory` tool with `action` search | show | propose (decisions.md), the thirtieth tool.
+- Item 8: `crit memory status | show | list | forget | review | export | import | prune | mine`.
+- Item 9 (part): `memory.primer` saves/restores a llama.cpp slot keyed by the primer bytes + model + quant
+  + context, tested against a fake server; `kv_primer` setting/profile flag. Not yet called at session start.
+- `locate` gets `cards` and `glossary` retrievers; the learned glossary is copied into the index glossary.
+- `scripts/eval/memory_eval.py`: the warm-up-then-held-out runner and report (metric math unit-tested).
+
+Left:
+- Work item 10 and every target that needs a model: the eval runs on 3 repos (`plan/results/08b/`),
+  turns/tokens deltas, acc@5, wrong-hunch pass@1, the KV primer time-to-first-token.
+- **Stage 5:** call `memory.primer.SlotPrimer.ensure` at session start (the engine must own the session,
+  its server address and slot); the agent-file `memory:` key. (The two `memory_recall` calls
+  now sit in `engine/loop.py`, after the Stage 5 merge.)
+- Stage 7: feed negative episodes to the rejected-patch memory.
+- Optional: TUI `/memory`, embeddings for episode search (Stage 9.5), the per-repo LoRA research option.
 
 ## Risks
 - **Confident wrong hunches steer the model off course:** confidence scores, the "verify"

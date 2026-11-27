@@ -12,10 +12,12 @@ wires the concrete pieces together.
              eval_harness, doctor                             (measuring, checking the model server)
              agent_ui, agent_acp, welcome, setup_wizard       (terminal and IDE front ends)
              server, api_client                               (crit serve; crit attach, crit run)
-             audit_cmd, sandbox_doctor, sessions_cmd, extensions_cmd, config_cmd, installer
+             audit_cmd, sandbox_doctor, sessions_cmd, extensions_cmd, config_cmd, installer,
+             memory_cmd                                       (crit memory)
 3  engine    engine/ (the loop and the Engine API, below), ui_api (the UI interface),
              session_log (event log, projection, resume/fork), compaction (context pressure),
              prompt_build (byte-stable prefix, memory files, change notes), openai_format,
+             memory_recall (project memory: the hunch at task start, the episode at task end),
              agent (compatibility names for older callers; apps may not import it)
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit (match ladder, atomic writes), agent_patch (unified/V4A patches),
@@ -27,6 +29,8 @@ wires the concrete pieces together.
              egress_proxy (the only network path out of the sandbox), taint (untrusted content),
              extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
              indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
+             memory/ (project memory: memory.db, cards, change patterns, episodes, conventions,
+                      the memory tool, locate's memory retrievers, the KV primer; docs/memory.md)
              packs/ (domain packs, loaded through extensions: aosp triage/adb/aosp_build; docs/packs/aosp.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
@@ -153,6 +157,25 @@ is installed in the session (`replace_history`) before every request and grows b
 exchange appended; compaction, resume and a new chat replace it through the engine. The
 web chat's conversation stays on its page (there is no list to own); resume gives it a
 summary instead.
+
+## Project memory (Stage 8b)
+
+`memory/` (tools layer, part of its interface) owns `.crit/memory/memory.db` and everything
+derived into it: cards from the code index, recipes and hot spots from its git history,
+episodes from a task's event log (passed in as plain events, so the package does not import
+the engine), conventions, and the learned glossary. The engine reaches it through two calls
+in the task loop (`engine/loop.py`), both in `memory_recall` and both safe to fail:
+
+- `memory_recall.begin_task(workspace, index_path, task, options, slog)` returns the hunch
+  block, which the loop appends to the task's message (never the prefix), and writes a
+  `memory_recall` event;
+- `memory_recall.end_task(workspace, index_path, task, code, changed, reads, options, slog,
+  side_factory=...)` runs right after the `task_finished` event and records the episode,
+  cards, mined history and glossary entries.
+
+The `memory` tool is one more `ToolRegistry` entry; `locate` imports `memory.retrievers`
+lazily (`indexing.locate.RETRIEVER_MODULES`), which registers the `cards` and `glossary`
+retrievers. `crit memory` (`memory_cmd`, apps layer) is the command line.
 
 ## Testing a layer on its own
 

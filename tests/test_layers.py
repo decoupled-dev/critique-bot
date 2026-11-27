@@ -71,6 +71,8 @@ LAYERS: dict[str, int] = {
     "taint": TOOLS,
     # extensions/ (a package): manifest tools, MCP client, hooks, agent and command files, trust
     "extensions": TOOLS,
+    # project memory (Stage 8b, a package): store, cards, patterns, episodes, conventions, the memory tool
+    "memory": TOOLS,
     # packs/ (a package): domain packs (AOSP) loaded through extensions; handlers use the tools above
     "packs": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
@@ -82,6 +84,7 @@ LAYERS: dict[str, int] = {
     "session_log": ENGINE,
     "compaction": ENGINE,
     "prompt_build": ENGINE,
+    "memory_recall": ENGINE,
     # apps: things built on the engine and the models
     "review_agent": APPS,
     "review_session": APPS,
@@ -102,6 +105,7 @@ LAYERS: dict[str, int] = {
     "sandbox_doctor": APPS,
     "sessions_cmd": APPS,
     "extensions_cmd": APPS,
+    "memory_cmd": APPS,
     # the Engine API over HTTP (crit serve) and its clients (crit attach, crit run)
     "server": APPS,
     "api_client": APPS,
@@ -118,7 +122,7 @@ INTERFACES: dict[int, frozenset[str]] = {
     # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
     # services the engine drives directly are part of the interface.
     TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home",
-                       "gitlab_access", "jira", "sandbox", "taint", "extensions"}),
+                       "gitlab_access", "jira", "sandbox", "taint", "extensions", "memory"}),
     # The engine package's __init__ is the API apps use; ui_api is how front ends plug in, and
     # session_log is read by crit sessions. agent (compatibility names) is for routing and tests.
     ENGINE: frozenset({"engine", "ui_api", "session_log"}),

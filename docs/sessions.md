@@ -41,6 +41,7 @@ Each event has `seq` (1, 2, ...), `ts` (UTC), `turn` (model replies so far) and 
 | `checkpoint` | the undo checkpoint of a task |
 | `mode_changed`, `role_changed` | a switch mid-session (old, new) |
 | `compaction` | `new_chat`, `mask` or `summarize`, with tokens before and after |
+| `memory_recall` | the project-memory hunch added to a task: its likely files with confidences, the source ids, its tokens and budget ([memory.md](memory.md)) |
 | `task_finished` | the finish code (COMPLETED, FAILED, INTERRUPTED, ...) and the files changed |
 | `error` | a reply that failed (it is retried) |
 | `notice`, `assistant_text` | what the terminal would show: a note (`kind`, `text`) and the model's words (written by Engine API sessions, [server.md](server.md)) |

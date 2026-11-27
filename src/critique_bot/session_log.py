@@ -68,6 +68,7 @@ EVENT_TYPES = frozenset(
         "mode_changed",
         "role_changed",
         "compaction",
+        "memory_recall",
         "task_finished",
         "error",
         # The Engine API (Stage 5): what a client sees and answers.
