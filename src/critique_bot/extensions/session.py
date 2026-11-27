@@ -64,8 +64,10 @@ class ExtensionSession:
     #: Sentences for the user: inactive files, broken manifests, blocked MCP tools.
     notes: list[str] = field(default_factory=list)
     deferred: bool = False
-    #: File-defined agents by name (built-in, user, project), for delegate(agent=...).
+    #: File-defined agents by name (built-in, pack, user, project), for delegate(agent=...).
     agents: dict[str, agent_files.AgentDef] = field(default_factory=dict)
+    #: Active domain packs (``"packs"`` in the settings), e.g. ["aosp"].
+    packs: list[str] = field(default_factory=list)
     _denials: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -121,7 +123,12 @@ class ExtensionSession:
             tool = tools.get(name)
             if tool is None:
                 return {"tool": name, "ok": False, "error": f"unknown tool {name!r}"}
-            return tool.execute(arguments, ctx)
+            try:
+                result = tool.execute(arguments, ctx)
+            except Exception as exc:  # noqa: BLE001 - a tool bug comes back as a result, not a crashed task
+                result = {"tool": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            _observe_taint(name, arguments, result, ctx)
+            return result
 
         return ToolRegistry(self.specs(), execute=execute, permission=permission)
 
@@ -143,7 +150,7 @@ class ExtensionSession:
 
     def active(self) -> bool:
         """True when this session changes anything about the tools."""
-        return bool(self.tools or self.mcp_tools or self.hooks or self.agents)
+        return bool(self.tools or self.mcp_tools or self.hooks or self.agents or self.packs)
 
     def delegate_spec(self, base: Any) -> Any:
         """The delegate tool's spec with the agents it can start (``agent`` in each task)."""
@@ -250,8 +257,41 @@ class ExtensionSession:
         self.clients.clear()
 
 
-def _load_tools(files: list[trust.ExtFile], builtin_names: tuple[str, ...], notes: list[str]) -> list[manifest.ManifestTool]:
-    found: dict[str, manifest.ManifestTool] = {}
+def _observe_taint(name: str, arguments: Any, result: dict[str, Any], ctx: Any) -> None:
+    """Untrusted output (an MCP result, a manifest tool with ``taint``, a device log) taints the session,
+    as built-in results do in agent_tools."""
+    from critique_bot import taint
+
+    try:
+        taint.observe(name, arguments if isinstance(arguments, dict) else {}, result, getattr(ctx, "workspace", None))
+    except Exception:  # noqa: BLE001 - bookkeeping never breaks a tool result
+        pass
+
+
+def _pack_tools(names: list[str], builtin_names: tuple[str, ...], notes: list[str]) -> list[manifest.ManifestTool]:
+    """The manifest tools of the active packs (crit's own files: trusted, may name Python handlers)."""
+    from critique_bot import packs
+
+    out: list[manifest.ManifestTool] = []
+    for name in names:
+        try:
+            pack = packs.load(name)
+        except (KeyError, ImportError) as exc:
+            notes.append(f"pack {name} not loaded: {exc}")
+            continue
+        for path in pack.tool_files:
+            try:
+                out.append(manifest.load_manifest(path, scope="pack", builtin_names=builtin_names,
+                                                  handlers=pack.handlers))
+            except (OSError, manifest.ManifestError) as exc:
+                notes.append(f"pack {name} tool skipped: {exc}")
+    return out
+
+
+def _load_tools(files: list[trust.ExtFile], builtin_names: tuple[str, ...], notes: list[str], *,
+                pack_tools: list[manifest.ManifestTool] | None = None) -> list[manifest.ManifestTool]:
+    # Pack tools first: the user's or the project's own tool of the same name replaces one.
+    found: dict[str, manifest.ManifestTool] = {tool.name: tool for tool in pack_tools or []}
     for item in files:
         if not item.active():
             notes.append(_inactive(item))
@@ -324,10 +364,20 @@ def load_session(
     session = ExtensionSession(workspace)
     if settings.get("extensions") is False:
         return session
+    from critique_bot import packs
+
+    pack_names, pack_notes = packs.requested(settings)
+    packs.activate(pack_names)
+    session.packs = pack_names
+    session.notes.extend(pack_notes)
+    offered = packs.offer(workspace, settings, trust.project_ext_dir(workspace) / "cache")
+    if offered:
+        session.notes.append(offered)
     session.agents, problems = agent_files.load_agents(workspace)
     session.notes.extend(f"agent skipped: {problem}" for problem in problems)
     files = trust.discover(workspace, ["tools", "hooks", "mcp"])
-    session.tools = _load_tools([f for f in files if f.kind == "tools"], builtin, session.notes)
+    session.tools = _load_tools([f for f in files if f.kind == "tools"], builtin, session.notes,
+                                pack_tools=_pack_tools(pack_names, builtin, session.notes))
     hooks: list[hooks_mod.Hook] = []
     for item in [f for f in files if f.kind == "hooks"]:
         if not item.active():

@@ -1,0 +1,2 @@
+type sysfs_cabin_temp, fs_type, sysfs_type;
+type vendor_cabin_sensor_data_file, file_type, data_file_type;

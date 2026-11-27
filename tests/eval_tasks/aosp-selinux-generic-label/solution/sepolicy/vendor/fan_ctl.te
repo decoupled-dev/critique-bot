@@ -1,0 +1,6 @@
+# Fan controller daemon: reads the fan tachometer from hwmon.
+type vendor_fan_ctl, domain;
+type vendor_fan_ctl_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(vendor_fan_ctl)
+allow vendor_fan_ctl sysfs_fan_hwmon:file { open read };

@@ -1,0 +1,17 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "question",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "I changed packages/services/Car/service/src/com/android/car/power/CarPowerManagementService.java. Which test modules should I run before uploading: the presubmit tests that TEST_MAPPING files ask for, and the instrumentation test of the app that builds this file? Give the atest command line. Do not run anything and do not change any file.",
+  "answer": "(?=.*CarServicePowerUnitTest)(?=.*CarServiceTest\\b)(?=.*CarServiceHostUnitTest)(?=.*atest)",
+  "reference_answer": "Presubmit: CarServicePowerUnitTest (service/TEST_MAPPING) and CarServiceHostUnitTest (packages/services/Car/TEST_MAPPING, host); instrumentation: CarServiceTest (instrumentation_for CarServiceUpdatable, which builds the file via filegroup car-service-srcs). atest CarServicePowerUnitTest CarServiceTest CarServiceHostUnitTest",
+  "requires": [],
+  "tags": [
+    "aosp",
+    "soong",
+    "tests",
+    "quick"
+  ]
+}

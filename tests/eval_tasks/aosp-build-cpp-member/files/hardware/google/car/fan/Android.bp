@@ -1,0 +1,9 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+cc_library_shared {
+    name: "libcarfanhal",
+    vendor: true,
+    srcs: ["fan_hal.cpp"],
+    export_include_dirs: ["."],
+}

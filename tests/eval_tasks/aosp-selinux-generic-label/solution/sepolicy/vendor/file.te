@@ -1,0 +1,2 @@
+type sysfs_cabin_temp, fs_type, sysfs_type;
+type sysfs_fan_hwmon, fs_type, sysfs_type;

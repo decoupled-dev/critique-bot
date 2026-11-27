@@ -1,0 +1,9 @@
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+cc_binary {
+    name: "carpowerpolicyd",
+    srcs: ["src/*.cpp"],
+    shared_libs: ["libbase", "libbinder", "liblog", "libutils"],
+    init_rc: ["carpowerpolicyd.rc"],
+}

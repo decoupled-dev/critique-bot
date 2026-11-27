@@ -44,7 +44,8 @@ index = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-critique_bot = ["prompts/*.txt", "skills/*/SKILL.md", "profiles/*.json", "profiles/servers/*.json", "agents/*.md"]
+critique_bot = ["prompts/*.txt", "skills/*/SKILL.md", "profiles/*.json", "profiles/servers/*.json", "agents/*.md",
+                "packs/*/tools/*.json", "packs/*/agents/*.md"]
 
 [tool.bandit]
 # Reviewed false positives (see docs/security.md, "Scans"):

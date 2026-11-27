@@ -1,0 +1,22 @@
+{
+  "fixture": "files",
+  "timeout": 900,
+  "category": "logs",
+  "difficulty": "medium",
+  "source": "synthetic",
+  "prompt": "vendor.cabin_sensor exits right after it starts on our Android Automotive build, and init keeps restarting it. dmesg.txt is from the device and is full of SELinux denials, most of them harmless. Find the denials that actually stop cabin_sensor and add the minimal allow rule to sepolicy/vendor/cabin_sensor.te. Do not touch other files and do not use wildcards or macros that grant more.",
+  "setup": "python3 gen_logs.py",
+  "hidden": "hidden",
+  "reference": "solution",
+  "check": "python3 check_te.py",
+  "requires": [
+    "python3"
+  ],
+  "tags": [
+    "aosp",
+    "logs",
+    "selinux",
+    "sepolicy",
+    "quick"
+  ]
+}

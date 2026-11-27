@@ -2722,8 +2722,10 @@ def use_sandbox(
     if session is None or not hasattr(session, "sandbox"):
         return ""
     options = settings if isinstance(settings, dict) else {}
+    from critique_bot import packs
+
     try:
-        wanted = sandbox.parse_settings(options.get("sandbox"), default)
+        wanted = sandbox.parse_settings(packs.sandbox_value(options), default)
     except ValueError as exc:
         audit.record("sandbox", event="invalid", error=str(exc))
         note = _apply_sandbox(session, sandbox.Settings(), offline=offline, home=home, platform_name=platform_name)

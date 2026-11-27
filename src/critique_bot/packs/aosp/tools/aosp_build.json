@@ -1,0 +1,24 @@
+{
+  "name": "aosp_build",
+  "description": "Build and test in an AOSP tree. lunch: choose the build target (no target: list the tree's targets). m: build Soong modules (no modules: the modules that own the changed files; never the whole platform). atest: run tests (no tests: the ones tests_for picks). tests_for: which test modules cover some files, from TEST_MAPPING and Android.bp. lunch, m and atest run in the session's shell like run_command (envsetup.sh is sourced, the lunch target is kept). Not for: Gradle or app builds outside the tree (run_command), reading a saved build log (triage action build). Example: {\"action\": \"m\", \"modules\": [\"CarService\"]}. Output: the build's summary and errors, or the test list with the reason for each test.",
+  "read_only": true,
+  "timeout_s": 60,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {"type": "string", "enum": ["lunch", "m", "atest", "tests_for"]},
+      "target": {"type": "string", "description": "lunch: e.g. sdk_car_x86_64-trunk_staging-userdebug"},
+      "modules": {"type": "array", "items": {"type": "string"}, "description": "m: Soong module names"},
+      "tests": {"type": "array", "items": {"type": "string"}, "description": "atest: test module names"},
+      "paths": {"type": "array", "items": {"type": "string"}, "description": "tests_for/atest: changed files (default: the files changed in git and this task)"},
+      "host": {"type": "boolean", "description": "atest: host-side tests (--host)"},
+      "timeout": {"type": "integer", "minimum": 60, "maximum": 7200, "description": "seconds before the build moves to the background"}
+    }
+  },
+  "actions": {
+    "lunch": {"handler": "aosp_build", "patterns": {"target": "[A-Za-z0-9_.-]{1,120}"}},
+    "m": {"handler": "aosp_build", "read_only": false, "patterns": {"modules": "[A-Za-z0-9_.+@-]{1,200}"}},
+    "atest": {"handler": "aosp_build", "read_only": false, "patterns": {"tests": "[A-Za-z0-9_.+:#@-]{1,200}"}},
+    "tests_for": {"handler": "tests_for"}
+  }
+}

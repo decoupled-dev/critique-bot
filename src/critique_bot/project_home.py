@@ -72,6 +72,8 @@ SECURITY_KEYS = frozenset(
         "sandbox",
         # commands crit runs on its own after every edit
         "lint",
+        # domain packs: tools that reach a device, and a looser sandbox preset (packs.sandbox_value)
+        "packs",
     }
 )
 

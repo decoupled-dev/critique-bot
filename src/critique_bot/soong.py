@@ -53,6 +53,19 @@ class Module:
     defaults: list[str] = field(default_factory=list)
     #: Modules it builds against: static_libs, shared_libs, libs, header_libs, required, ...
     deps: list[str] = field(default_factory=list)
+    #: Test modules: the suites it is in (device-tests, general-tests, ...) and the app it instruments.
+    test_suites: list[str] = field(default_factory=list)
+    instrumentation_for: str = ""
+
+    @property
+    def is_test(self) -> bool:
+        """A test module: a *_test type, a test suite, an instrumentation, or a ...Test(s) name."""
+        return bool(
+            self.buildable and (
+                re.search(r"(?:^|_)test(?:_host)?$|_test_", self.type) or self.test_suites or self.instrumentation_for
+                or re.search(r"Tests?$|_tests?$", self.name)
+            )
+        )
 
     @property
     def buildable(self) -> bool:
@@ -170,6 +183,8 @@ def _parse(bp_path: str, mtime_ns: int, bp_rel: str) -> tuple[Module, ...]:
                 exclude=_strings(body, "exclude_srcs", variables),
                 defaults=_strings(body, "defaults", variables),
                 deps=_strings(body, _DEP_PROPS, variables),
+                test_suites=_strings(body, "test_suites", variables),
+                instrumentation_for=next(iter(_strings(body, "instrumentation_for", variables)), ""),
             )
         )
     return tuple(modules)

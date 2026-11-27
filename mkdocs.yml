@@ -46,6 +46,7 @@ nav:
       - Review in GitLab CI: gitlab-ci.md
   - Extending:
       - Tools, MCP, agents, commands, hooks: extending.md
+      - The AOSP pack: packs/aosp.md
   - Security:
       - Sandbox, egress and taint: security.md
       - Locking down Windows: windows-lockdown.md
