@@ -62,6 +62,8 @@ LAYERS: dict[str, int] = {
     "sandbox": TOOLS,
     "egress_proxy": TOOLS,
     "taint": TOOLS,
+    # extensions/ (a package): manifest tools, MCP client, hooks, agent and command files, trust
+    "extensions": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
     "agent_helpers": ENGINE,
@@ -89,6 +91,7 @@ LAYERS: dict[str, int] = {
     "audit_cmd": APPS,
     "sandbox_doctor": APPS,
     "sessions_cmd": APPS,
+    "extensions_cmd": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,
@@ -102,7 +105,7 @@ INTERFACES: dict[int, frozenset[str]] = {
     # agent_tools (the tool implementations) sits behind tool_api's registry. The workspace
     # services the engine drives directly are part of the interface.
     TOOLS: frozenset({"tool_api", "agent_shell", "agent_edit", "agent_rules", "agent_build", "code_index", "project_home",
-                       "gitlab_access", "jira", "sandbox", "taint"}),
+                       "gitlab_access", "jira", "sandbox", "taint", "extensions"}),
 }
 
 #: Known crossings still to remove. Each entry is (importer, imported). The test fails when

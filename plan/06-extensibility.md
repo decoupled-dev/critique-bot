@@ -161,15 +161,33 @@ notifications.
 - Hooks: a deny decision stops the tool call; a timeout → ask.
 
 ## Completion targets
-- [ ] A user can add a tool with one TOML file, test it with `crit tool test`, and see it in
+- [x] A user can add a tool with one TOML file, test it with `crit tool test`, and see it in
       `/tools`, with no code changes
 - [ ] MCP: works with at least 3 public servers (filesystem, git, one HTTP); pinning and
-      taint verified by tests
+      taint verified by tests *(pinning, untrusted wrapping and the taint flag are tested against a
+      fake stdio server and a fake streamable-HTTP server; the three public servers are not run yet)*
 - [ ] With 40 MCP tools configured, suite pass@1 drops ≤ 2 points against none (deferred
-      schemas working)
-- [ ] All former roles exist as agent files; `/role` still works
-- [ ] `crit serve --agent X` + `POST /v1/agents/X/runs` documented and tested
+      schemas working) *(deferred schemas + `tool_search` built and tested; the eval is not run)*
+- [x] All former roles exist as agent files; `/role` still works
+- [ ] `crit serve --agent X` + `POST /v1/agents/X/runs` documented and tested *(waits for Stage 5;
+      the hook is `agent_files.find_agent` + `run_agent` with the agent as its role)*
 - [ ] Every extension type goes through permission, sandbox and audit (test per type)
+      *(permission: yes, one test per type; sandbox: every extension process starts in
+      `extensions.runner.run_argv` for Stage 4 to replace; audit waits for Stage 4)*
+
+## Status (2026-11-27, branch wip/s6-extend)
+Done: work items 1 (discovery, trust store, `crit trust`), 2 (manifest tools, `crit tool`,
+description lint), 3 (own MCP client: stdio + streamable HTTP, pinning with `crit mcp approve`,
+`mcp__server__tool`, deferred schemas + `tool_search`, untrusted wrapping, ACP `mcpServers`),
+4 (agent files, built-in agents from the roles, `/agent` with `/role` as alias,
+`delegate(agent=...)` with allowlists, `max_steps` with a tool-free last step, `max_parallel`,
+worktree isolation for writers with the diff returned), 6 (slash commands), 7 (hooks),
+8 (`docs/extending.md`). Left: 5 (headless runs, Stage 5), 9 (the 40-tool eval), per-agent
+`model`/`budget`/`sandbox`/`flow` (read, not applied), removing tools from a native request
+on the last step (today the tools are refused instead), `crit mcp serve`.
+Deviations: hooks and agent files live in the tools layer (`extensions/`), not the engine,
+because the pre/post tool hooks wrap the registry and the agent loader is file discovery;
+the engine only calls `run_hook` and reads agent definitions.
 
 ## Risks
 - **Tool sprawl hurts small models:** default caps, deferred schemas, and per-agent allowlists.

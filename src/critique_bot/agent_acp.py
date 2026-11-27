@@ -297,7 +297,7 @@ def _initialize(request_id: Any, params: dict[str, Any]) -> None:
             "agentCapabilities": {
                 "loadSession": False,
                 "promptCapabilities": {"image": False, "audio": False, "embeddedContext": True},
-                "mcpCapabilities": {"http": False, "sse": False},
+                "mcpCapabilities": {"http": True, "sse": False},
             },
             "authMethods": [],
             "agentInfo": {"name": "crit", "title": "crit", "version": __version__},
@@ -316,6 +316,11 @@ def _new_session(request_id: Any, params: dict[str, Any]) -> None:
         _fail(request_id, INVALID_PARAMS, f"cwd must be an existing absolute folder, got {raw!r}")
         return
     cwd = cwd.resolve()
+    # The editor's MCP servers join the session's tools through the same path as mcp.json
+    # (extensions/session.py): pinned, prefixed mcp__<name>__<tool>, output marked untrusted.
+    from critique_bot import extensions
+
+    extensions.offer_client_servers(params.get("mcpServers"))
     with _lock:
         _state.client["mcpServers"] = redact_servers(params.get("mcpServers"))
         if _state.requested_cwd is None:
@@ -792,7 +797,7 @@ def pinned_skills() -> list[str]:
 def handle_command(word: str, rest: str = "") -> None:
     if word in {"/mode", "/permissions"}:
         set_mode(rest)
-    elif word == "/role":
+    elif word in {"/role", "/agent"}:
         _set_role(rest)
     elif word == "/undo":
         _undo()
@@ -802,7 +807,7 @@ def handle_command(word: str, rest: str = "") -> None:
         note("bad", f"{word} is not available here.")
 
 
-_IDLE_COMMANDS = {"/mode", "/permissions", "/role", "/undo", "/plan", "/auto", "/ask", "/edits"}
+_IDLE_COMMANDS = {"/mode", "/permissions", "/role", "/agent", "/undo", "/plan", "/auto", "/ask", "/edits"}
 
 
 def read_message(**_ignored: Any) -> str | None:

@@ -64,6 +64,9 @@ for skill_md in sorted((ROOT / "src" / "critique_bot" / "skills").glob("*/SKILL.
 for profile_json in sorted((ROOT / "src" / "critique_bot" / "profiles").rglob("*.json")):
     relative = profile_json.parent.relative_to(ROOT / "src")
     datas.append((str(profile_json), relative.as_posix()))
+# Built-in agents (one per former role): extensions.agent_files.builtin_dir().
+for agent_md in sorted((ROOT / "src" / "critique_bot" / "agents").glob("*.md")):
+    datas.append((str(agent_md), "critique_bot/agents"))
 
 a = Analysis(
     [str(ROOT / "src" / "critique_bot" / "__main__.py")],

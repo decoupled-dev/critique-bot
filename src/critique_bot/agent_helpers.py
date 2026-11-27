@@ -20,6 +20,7 @@ conversation.
 from __future__ import annotations
 
 import queue
+import tempfile
 import threading
 import time
 from concurrent.futures import Future
@@ -36,6 +37,12 @@ from critique_bot.tool_api import TaskState, ToolContext, canonical_tool
 HELPER_MAX_ROUNDS = 40
 #: Characters of each helper's report passed back to the coordinator.
 REPORT_CHARS = 6_000
+#: A file-defined agent's summary: about 2K tokens.
+AGENT_REPORT_CHARS = 8_000
+#: Characters of a writer agent's patch shown to the coordinator.
+PATCH_CHARS = 40_000
+_LAST_STEP = ("This is your last step: tools are off now. Reply COMPLETED and your summary "
+              "(what you found or changed, with paths), nothing else.")
 
 
 @dataclass
@@ -47,6 +54,9 @@ class Report:
     rounds: int = 0
     seconds: float = 0.0
     error: str = ""
+    #: A writer agent's changes, made in its own worktree, as a git patch for the coordinator.
+    patch: str = ""
+    agent: str = ""
 
 
 def _agent():
@@ -90,11 +100,28 @@ def _helper_run_class():
     class HelperRun(agent._TaskRun):
         """A task run that never asks: it may read anything and change only its own files."""
 
-        def __init__(self, *args: Any, allowed: set[str], commands: bool = False, **kwargs: Any) -> None:
+        def __init__(
+            self,
+            *args: Any,
+            allowed: set[str],
+            commands: bool = False,
+            tools: Any = None,
+            agent_name: str = "",
+            anywhere: bool = False,
+            last_step: bool = False,
+            **kwargs: Any,
+        ) -> None:
             super().__init__(*args, **kwargs)
             self.allowed = allowed
             #: May run builds and tests: only the single helper of a delegate call.
             self.commands = commands
+            #: A file-defined agent's tools (a ToolRegistry from .only), or None for every tool.
+            self.tools = tools
+            self.agent_name = agent_name
+            #: Works in its own worktree: may change any file there.
+            self.anywhere = anywhere
+            #: The last allowed step removes the tools, so the agent summarizes.
+            self.last_step = last_step
             self._call: Any = None
             self.plan_done = True
             self.reviewed = True  # the coordinator shows the diff once, at the end
@@ -109,12 +136,32 @@ def _helper_run_class():
 
         def _permission(self, call: Any) -> Any:
             self._call = call
+            name = canonical_tool(getattr(call, "tool", "")) or str(getattr(call, "tool", ""))
+            if self.tools is not None and self.tools.spec(name) is None:
+                # Not batched as a read: _approved refuses it with the agent's list.
+                return agent_tools.Permission("command", f"{name} (not in the {self.agent_name} agent's tools)", "",
+                                              risk="not allowed for this agent", tool=name)
             return super()._permission(call)
+
+        def _run_calls(self, calls: list[Any], *, extra: str = "") -> None:
+            if self.last_step and self.max_rounds is not None and calls:
+                if self.state.step >= self.max_rounds - 1:
+                    results = [{"tool": canonical_tool(c.tool) or c.tool, "ok": False,
+                                "error": "not run: no tools on the last step"} for c in calls]
+                    self.state.step += 1
+                    self._send_results(results, extra=_LAST_STEP, calls=calls)
+                    return
+                if self.state.step == self.max_rounds - 2:
+                    extra = (extra + "\n\n" if extra else "") + _LAST_STEP
+            super()._run_calls(calls, extra=extra)
 
         def _approved(self, perm: Any) -> tuple[bool, str]:
             call = self._call
             name = canonical_tool(getattr(call, "tool", "")) if call is not None else ""
             kind = getattr(perm, "kind", "read") or "read"
+            if self.tools is not None and self.tools.spec(name or str(getattr(call, "tool", ""))) is None:
+                return False, (f"the {self.agent_name} agent cannot use {name or getattr(call, 'tool', '?')}; "
+                               f"its tools: {', '.join(self.tools.names())}")
             if name == "delegate":
                 return False, "a helper cannot delegate; do the brief yourself"
             denied = agent._rule_denied(self.ctx, perm)
@@ -145,7 +192,7 @@ def _helper_run_class():
                     destination = args.get("destination") or args.get("to") or args.get("new_path")
                     if isinstance(destination, str) and destination.strip():
                         targets.append(agent_tools.rel(self.ctx.workspace, agent_tools.resolve(self.ctx.workspace, destination)))
-                outside = [item for item in targets if item not in self.allowed]
+                outside = [] if self.anywhere else [item for item in targets if item not in self.allowed]
                 if not targets or outside:
                     mine = ", ".join(sorted(self.allowed)) or "none (this brief is read only)"
                     return False, (
@@ -324,9 +371,16 @@ class HelperPool:
         # Helpers never build or test: no one is there to approve a command, and a build runs
         # project code that can reach the network. The coordinator runs those after the reports.
         context = {**(context or {}), "commands": False}
-        futures = [self.submit(brief, cancel=cancel, progress=progress, context=context) for brief in briefs]
+        refused = _over_parallel(briefs, self.base.get("workspace"))
+        futures = [
+            None if index in refused else self.submit(brief, cancel=cancel, progress=progress, context=context)
+            for index, brief in enumerate(briefs)
+        ]
         reports: list[Report] = []
-        for brief, future in zip(briefs, futures):
+        for index, (brief, future) in enumerate(zip(briefs, futures)):
+            if future is None:
+                reports.append(Report(brief["name"], "FAILED", "", error=refused[index]))
+                continue
             while True:
                 try:
                     report = future.result(timeout=0.25)
@@ -351,15 +405,36 @@ class HelperPool:
         progress: Callable[[str], None] | None,
         context: dict[str, Any] | None = None,
     ) -> Report:
-        agent = _agent()
         started = time.monotonic()
         name = brief["name"]
-        files = list(brief.get("files") or [])
         state = TaskState(task=brief["brief"])
         context = dict(context or {})
         commands = bool(context.pop("commands", False))
         fields = {key: value for key, value in self.base.items() if key not in {"session", "on_output", "ask_user", "delegate"}}
         fields.update(context)
+        profile = _AgentRun.start(brief, fields)
+        if profile.error:
+            return Report(name, "FAILED", "", error=profile.error, agent=str(brief.get("agent") or ""))
+        try:
+            return self._run_brief(chat, brief, profile, fields, state, commands, started, cancel, progress)
+        finally:
+            profile.finish()
+
+    def _run_brief(
+        self,
+        chat: Any,
+        brief: dict[str, Any],
+        profile: "_AgentRun",
+        fields: dict[str, Any],
+        state: TaskState,
+        commands: bool,
+        started: float,
+        cancel: threading.Event | None,
+        progress: Callable[[str], None] | None,
+    ) -> Report:
+        agent = _agent()
+        name = brief["name"]
+        files = list(brief.get("files") or [])
         ctx = agent._tool_context(
             **fields,
             state=state,
@@ -374,7 +449,7 @@ class HelperPool:
             sections=self.sections,
             turns=turns,
             show=lambda _text: None,
-            max_rounds=self.max_rounds,
+            max_rounds=profile.max_steps or self.max_rounds,
             max_result_chars=self.max_result_chars,
             check_command=None,
             approve_mode="auto",
@@ -382,12 +457,20 @@ class HelperPool:
             hooks=_QuietHooks(name, progress),
             allowed=set(files),
             commands=commands,
+            tools=profile.tools,
+            agent_name=profile.name,
+            anywhere=profile.worktree is not None,
+            last_step=profile.definition is not None,
         )
-        message = agent.fill(
+        if profile.worktree is not None:
+            may_change = "any file in your own copy of the project (a git worktree); your changes go back as a patch"
+        else:
+            may_change = ", ".join(files) if files else "none: this brief is read only"
+        message = profile.instructions() + agent.fill(
             self.sections["HELPER"],
             name=name,
             brief=brief["brief"],
-            files=", ".join(files) if files else "none: this brief is read only",
+            files=may_change,
             commands=(
                 "You may run builds and tests with run_command; report their result, not their whole output."
                 if commands
@@ -407,10 +490,12 @@ class HelperPool:
         return Report(
             name=name,
             status=status,
-            text=text[:REPORT_CHARS],
-            changed=sorted(state.edits),
+            text=text[: AGENT_REPORT_CHARS if profile.definition is not None else REPORT_CHARS],
+            changed=[] if profile.worktree is not None else sorted(state.edits),
             rounds=state.step,
             seconds=time.monotonic() - started,
+            patch=profile.patch(),
+            agent=profile.name,
         )
 
     def close(self) -> None:
@@ -444,9 +529,13 @@ class InlineHelperPool(HelperPool):
         context: dict[str, Any] | None = None,
     ) -> list[Report]:
         context = {**(context or {}), "commands": False}
+        refused = _over_parallel(briefs, self.base.get("workspace"))
         reports: list[Report] = []
-        for brief in briefs:
+        for index, brief in enumerate(briefs):
             started = time.monotonic()
+            if index in refused:
+                reports.append(Report(brief["name"], "FAILED", "", error=refused[index]))
+                continue
             if cancel is not None and cancel.is_set():
                 reports.append(Report(brief["name"], "INTERRUPTED", ""))
                 continue
@@ -470,6 +559,93 @@ class InlineHelperPool(HelperPool):
         _close_tab(cm, 1)
 
 
+class _AgentRun:
+    """A brief run by a file-defined agent (``delegate(agent=...)``): its tools, steps, instructions,
+    and for an agent that writes, a git worktree of its own whose diff goes back as a patch."""
+
+    def __init__(self) -> None:
+        self.definition: Any = None
+        self.name = ""
+        self.tools: Any = None
+        self.worktree: Any = None
+        self.error = ""
+
+    @classmethod
+    def start(cls, brief: dict[str, Any], fields: dict[str, Any]) -> "_AgentRun":
+        run = cls()
+        wanted = str(brief.get("agent") or "").strip()
+        if not wanted:
+            return run
+        from critique_bot.extensions import agent_files, worktree
+
+        workspace = Path(fields.get("workspace") or ".")
+        found = agent_files.find_agent(wanted, workspace)
+        if found is None:
+            names = ", ".join(sorted(agent_files.load_agents(workspace)[0]))
+            run.error = f"no agent named {wanted!r}; the agents are: {names}"
+            return run
+        run.definition = found
+        run.name = found.name
+        if found.tools is not None or found.deny_tools or found.read_only:
+            registry = agent_tools.registry()
+            run.tools = registry.only(found.allowed_tools(registry.names()))
+        if found.effective_isolation == "worktree":
+            parent = Path(fields.get("cache_dir") or tempfile.gettempdir()) / "worktrees"
+            try:
+                run.worktree = worktree.create(workspace, parent)
+            except (worktree.WorktreeError, OSError) as exc:
+                run.error = f"the {found.name} agent changes files, so it works in a git worktree, and none could be made: {exc}"
+                return run
+            fields["workspace"] = run.worktree.path
+            fields["index_path"] = None
+            fields.pop("checkpoints", None)
+        return run
+
+    @property
+    def max_steps(self) -> int | None:
+        return getattr(self.definition, "max_steps", None)
+
+    def instructions(self) -> str:
+        if self.definition is None:
+            return ""
+        body = self.definition.body.strip()
+        return f"AGENT: {self.definition.name}. {self.definition.description}\n" + (body + "\n\n" if body else "\n")
+
+    def patch(self) -> str:
+        if self.worktree is None:
+            return ""
+        try:
+            return self.worktree.diff()
+        except Exception as exc:  # noqa: BLE001 - the report says so; the worktree is removed anyway
+            log.warn(f"could not read the {self.name} agent's changes: {exc}")
+            return ""
+
+    def finish(self) -> None:
+        if self.worktree is not None:
+            self.worktree.remove()
+            self.worktree = None
+
+
+def _over_parallel(briefs: list[dict[str, Any]], workspace: Any) -> dict[int, str]:
+    """Briefs past an agent's ``max_parallel`` in one delegate call: index -> why they were not run."""
+    refused: dict[int, str] = {}
+    counts: dict[str, int] = {}
+    limits: dict[str, int] = {}
+    for index, brief in enumerate(briefs):
+        wanted = str(brief.get("agent") or "").strip()
+        if not wanted:
+            continue
+        if wanted not in limits:
+            from critique_bot.extensions import agent_files
+
+            found = agent_files.find_agent(wanted, Path(workspace or "."))
+            limits[wanted] = found.max_parallel if found is not None else 6
+        counts[wanted] = counts.get(wanted, 0) + 1
+        if counts[wanted] > limits[wanted]:
+            refused[index] = f"the {wanted} agent runs at most {limits[wanted]} at a time (max_parallel)"
+    return refused
+
+
 def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     """The delegate call's result for the coordinator, and its line in the terminal."""
     changed = sorted({name for report in reports for name in report.changed})
@@ -489,6 +665,14 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
         if report.error:
             lines.append("error: " + report.error)
         lines.append(report.text or "(no report)")
+        if report.patch:
+            shown = report.patch[:PATCH_CHARS]
+            cut = len(report.patch) - len(shown)
+            lines.append(
+                f"Patch from {report.name} (made in its own worktree; nothing in the workspace changed yet). "
+                "Review it, then apply it with apply_patch if it is right:\n" + shown
+                + (f"\n... {cut} more characters of the patch were cut" if cut else "")
+            )
     if changed:
         lines.append("Files changed by helpers: " + ", ".join(changed))
     ok = any(report.status in {"COMPLETED", "FINISHED", "DONE"} for report in reports)

@@ -2730,15 +2730,34 @@ def use_sandbox(
     return _apply_sandbox(session, wanted, offline=offline, home=home, platform_name=platform_name)
 
 
+def _unsandbox_extensions() -> None:
+    from critique_bot.extensions import runner
+
+    runner.use_popen(None)
+
+
+def _sandbox_extensions(session: Any) -> None:
+    """Run extension programs (manifest tools, hooks, stdio MCP servers) under this session's sandbox."""
+    from critique_bot.extensions import runner
+
+    def start(argv: list[str], **kwargs: Any) -> Any:
+        policy = getattr(session, "sandbox", None)  # the current policy, escapes included
+        return sandbox.run(argv, policy=policy, **kwargs)
+
+    runner.use_popen(start)
+
+
 def _apply_sandbox(session: Any, wanted: Any, *, offline: bool, home: Path | None, platform_name: str | None) -> str:
     global _SANDBOX_NOTED
     if wanted.mode == sandbox.FULL:
         session.sandbox = None
+        _unsandbox_extensions()
         audit.record("sandbox", event="session", mode=sandbox.FULL, workspace=str(session.workspace))
         return "sandbox is off (\"sandbox\": \"full\"): commands run with your own rights" if wanted.explicit else ""
     found = sandbox.availability(platform_name)
     if not found.ok:
         session.sandbox = None
+        _unsandbox_extensions()
         audit.record("sandbox", event="unavailable", mode=wanted.mode, backend=found.backend, problem=found.problem)
         if _SANDBOX_NOTED:
             return ""
@@ -2774,6 +2793,7 @@ def _apply_sandbox(session: Any, wanted: Any, *, offline: bool, home: Path | Non
     session._sandbox_build = build
     session.sandbox = build(tuple(getattr(session, "sandbox_escapes", ()) or ()))
     policy = session.sandbox
+    _sandbox_extensions(session)
     audit.record(
         "sandbox", event="session", mode=policy.mode, backend=found.backend, workspace=str(policy.workspace),
         writable=[str(item) for item in policy.writable], masked=len(policy.masked), network=policy.network,

@@ -934,6 +934,9 @@ SUBCOMMANDS = {
     "sessions": "list, show, export, or prune this project's logged sessions (crit sessions --help)",
     "resume": "continue a logged session: crit resume [<id>|--last] [task or options]",
     "fork": "copy a logged session up to an event and continue the copy: crit fork <id> [--at SEQ]",
+    "trust": "approve the project's extension files (tools, hooks, MCP servers) once per content",
+    "tool": "list, show and test manifest tools (crit tool --help)",
+    "mcp": "list MCP servers; approve a server's changed tool definitions",
 }
 
 
@@ -1117,6 +1120,8 @@ def _main(argv: list[str] | None = None) -> int:
             "resume": _main_resume,
             "fork": _main_fork,
         }
+        if command in {"trust", "tool", "mcp"}:
+            return _main_extensions([command, *rest])
         return handlers[command](rest)
     return _main_run(argv)
 
@@ -1203,6 +1208,13 @@ def _main_fork(argv: list[str]) -> int:
     if len(rest) == 2 and not _may_ask():
         return 0  # nothing to do now; crit resume <id> continues it later
     return _main_run(["--mode", MODE_AGENT, "--crit-defaults", *rest])
+def _main_extensions(argv: list[str]) -> int:
+    """``crit trust``, ``crit tool``, ``crit mcp`` (see extensions_cmd)."""
+    from critique_bot import extensions_cmd
+
+    command, rest = argv[0], argv[1:]
+    handler = {"trust": extensions_cmd.main_trust, "tool": extensions_cmd.main_tool, "mcp": extensions_cmd.main_mcp}
+    return handler[command](rest)
 
 
 def _main_eval(argv: list[str]) -> int:

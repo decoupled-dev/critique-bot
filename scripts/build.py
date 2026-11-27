@@ -81,8 +81,8 @@ def _run_pyinstaller() -> Path:
     binary = staged / _binary_name()
     if not binary.is_file():
         raise SystemExit(f"PyInstaller did not produce {binary}")
-    # crit reads prompts, skills and model profiles only from its own bundle: every one must be there.
-    for pattern, sub in (("prompts/*.txt", "prompts"), ("skills/*/SKILL.md", "skills"), ("profiles/**/*.json", "profiles")):
+    # crit reads prompts, skills, model profiles and built-in agents only from its own bundle: every one must be there.
+    for pattern, sub in (("prompts/*.txt", "prompts"), ("skills/*/SKILL.md", "skills"), ("profiles/**/*.json", "profiles"), ("agents/*.md", "agents")):
         for source in sorted((ROOT / "src" / "critique_bot").glob(pattern)):
             shipped = staged / "_internal" / "critique_bot" / source.relative_to(ROOT / "src" / "critique_bot")
             if not shipped.is_file():

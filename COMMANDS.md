@@ -213,7 +213,9 @@ Inside a session (the `>` prompt):
 | `/mode [name]` | List the modes or switch (`/permissions` is the same) |
 | `/plan`, `/auto` | Switch to plan mode or auto mode |
 | `/skills [name ...]` | List skills, or pin some for this session (`/skills off name` unpins) |
-| `/role [name]` | List the roles, or switch this project's role (kept in `.crit/settings.json`; the next task starts a new chat) |
+| `/agent [name]` | List the agents (the built-in roles and `.crit/agents`, `~/.crit/agents`), or switch to one (kept in `.crit/settings.json`; the next task starts a new chat) |
+| `/role [name]` | Same as `/agent` |
+| `/<command> [args]` | A command from `.crit/commands/<command>.md` or `~/.crit/commands/` ([docs/extending.md](docs/extending.md)) |
 | `/status` | Model, shell, folder, mode, role, pinned skills, background commands |
 | `/commands` | Shell commands run this session, with exit codes, times, and retries |
 | `/shell [name]` | List the shells, or switch the default for this session |
@@ -325,6 +327,16 @@ crit setup --config config.json
 
 ```bash
 crit --help
+```
+
+```bash
+# Extensions (docs/extending.md): approve a project's tools/hooks/MCP servers, test a tool, pin MCP tools
+crit trust
+crit trust .crit/tools/adb_logcat.toml
+crit tool list
+crit tool test adb_logcat --args '{"filter": "*:E"}'
+crit mcp list
+crit mcp approve git
 ```
 
 ```bash

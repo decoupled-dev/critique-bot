@@ -39,7 +39,16 @@ REDACTED = _impl.REDACTED
 TaskState = _impl.TaskState
 ToolContext = _impl.ToolContext
 Permission = _impl.Permission
-canonical_tool = _impl.canonical_tool
+def canonical_tool(name: str) -> str:
+    """The tool that actually runs: a built-in (aliases included), or a tool of the installed registry
+    (a manifest or MCP tool merged in with :func:`merge`); "" when there is none."""
+    found = _impl.canonical_tool(name)
+    if found:
+        return found
+    key = str(name).strip().strip("`\"'")
+    return key if key in _registry._specs else ""
+
+
 finished_job_notes = _impl.finished_job_notes
 jira_context = _impl.jira_context
 normalize_args = _impl.normalize_args
@@ -321,11 +330,51 @@ class ToolRegistry:
             [spec for spec in self._specs.values() if spec.name in keep], execute=run, permission=self._permission
         )
 
+    def with_specs(self, specs: Iterable[ToolSpec]) -> ToolRegistry:
+        """The same tools and runners; each of ``specs`` replaces the spec of the same name.
+
+        For a description or schema that depends on the session (delegate listing the agents).
+        A spec for a tool this registry does not have is ignored.
+        """
+        replaced = dict(self._specs)
+        for spec in specs:
+            if spec.name in replaced:
+                replaced[spec.name] = spec
+        return ToolRegistry(replaced.values(), execute=self._execute, permission=self._permission)
+
     def openai_tools(self, *, read_only: bool = False) -> list[dict[str, Any]]:
         return [spec.to_openai() for spec in self.specs(read_only=read_only)]
 
     def mcp_tools(self, *, read_only: bool = False) -> list[dict[str, Any]]:
         return [spec.to_mcp() for spec in self.specs(read_only=read_only)]
+
+
+def merge(base: ToolRegistry, *extras: ToolRegistry) -> ToolRegistry:
+    """One registry: ``base``'s tools, then each extra's (manifest tools, MCP tools, ...).
+
+    A call goes to the registry that declared its tool, for both the permission check and the
+    run, so an extension tool is asked about and run exactly like a built-in. A name ``base``
+    already has stays ``base``'s: an extension cannot replace a built-in tool. The order is
+    fixed when the registry is made (the declared tool list stays cache-stable).
+    """
+    owner: dict[str, ToolRegistry] = {name: base for name in base.names()}
+    specs = list(base.specs())
+    for extra in extras:
+        for spec in extra.specs():
+            if spec.name in owner:
+                continue
+            owner[spec.name] = extra
+            specs.append(spec)
+
+    def route(name: str) -> ToolRegistry:
+        key = str(name).strip().strip("`\"'")
+        return owner.get(key) or owner.get(_impl.canonical_tool(name) or key) or base
+
+    return ToolRegistry(
+        specs,
+        execute=lambda name, arguments, ctx: route(name).execute(name, arguments, ctx),
+        permission=lambda name, arguments, ctx: route(name).permission(name, arguments, ctx),
+    )
 
 
 def builtin_registry() -> ToolRegistry:

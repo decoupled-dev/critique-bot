@@ -151,7 +151,9 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 - **A committed config is refused.** When `.crit/settings.json` names a `config` that git tracks in the project (or git cannot confirm it does not: no git, a timeout, or the project is a subfolder of a repository), crit stops with an error instead of using its `url`, `allowed_hosts`, or `cdp_url`. Use your own untracked copy, or `--config`.
 - **A committed `.crit/settings.json` loses its permission keys** (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`). They count only in your own, untracked settings file. New projects git-ignore `.crit/settings.json`.
 - **The check command asks like any other command**, since it can come from `.crit/AGENT.md`.
-- **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, and the config file named there are refused.
+- **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, the extension files (`tools/`, `agents/`, `commands/`, `hooks.*`, `mcp.json` in `.crit` and `~/.crit`), `~/.crit/trust.json`, `~/.crit/mcp-lock.json`, and the config file named there are refused.
+- **A project's extension tools, hooks and MCP servers run nothing until approved.** `.crit/tools/`, `.crit/hooks.*` and `.crit/mcp.json` stay off until `crit trust <file>` approves that exact content (sha256, kept in `~/.crit/trust.json`); an edit turns the file off again. Project agents and commands are prompts: they load, but cannot loosen the permission mode until approved ([extending.md](extending.md)).
+- **MCP tools are pinned and their output is untrusted.** A tool whose description or schema changes after its first use is left out until `crit mcp approve`; results are wrapped in `<untrusted source="mcp:...">` blocks the content cannot close. Manifest tools run as one argv (no shell); arguments fill whole argv elements and cannot start with `-`.
 
 ## The setup page
 
