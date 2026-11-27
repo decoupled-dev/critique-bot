@@ -157,7 +157,7 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 - **The check command asks like any other command**, since it can come from `.crit/AGENT.md`.
 - **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, the extension files (`tools/`, `agents/`, `commands/`, `hooks.*`, `mcp.json` in `.crit` and `~/.crit`), `~/.crit/trust.json`, `~/.crit/mcp-lock.json`, and the config file named there are refused.
 - **A project's extension tools, hooks and MCP servers run nothing until approved.** `.crit/tools/`, `.crit/hooks.*` and `.crit/mcp.json` stay off until `crit trust <file>` approves that exact content (sha256, kept in `~/.crit/trust.json`); an edit turns the file off again. Project agents and commands are prompts: they load, but cannot loosen the permission mode until approved ([extending.md](extending.md)).
-- **MCP tools are pinned and their output is untrusted.** A tool whose description or schema changes after its first use is left out until `crit mcp approve`; results are wrapped in `<untrusted source="mcp:...">` blocks the content cannot close. Manifest tools run as one argv (no shell); arguments fill whole argv elements and cannot start with `-`.
+- **MCP tools are pinned and their output is untrusted.** A tool whose description or schema changes after its first use is left out until `crit mcp approve`; results are wrapped in `<untrusted source="mcp:...">` blocks the content cannot close, also not with zero-width characters, fullwidth forms or bracket lookalikes (`<\u200b/untrusted>`, `＜/untrusted＞`). Manifest tools run as one argv (no shell); arguments fill whole argv elements and cannot start with `-`.
 
 ## The setup page
 
