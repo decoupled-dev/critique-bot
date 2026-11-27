@@ -236,7 +236,8 @@ an IDE) crit never asks; it names the `crit config --url ... --selector prompt_i
 command to run instead and stops (exit 1).
 
 Which file a command uses: `--config FILE`, else `CRIT_CONFIG`, else the config recorded
-for the project in `.crit/settings.json`, else an untracked `config.json` in the project root,
+for the project in `.crit/settings.json`, else an untracked `config.json` in the project root
+(both only once you approved them: crit asks),
 else your user file. See [config.json.md](config.json.md) for every setting and every
 `crit config` flag.
 

@@ -148,10 +148,24 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 
 ## What the repository may not change
 
-A cloned repository is untrusted input, so it cannot loosen crit's rules:
+A cloned repository, a downloaded archive, or a folder another user can write to is untrusted input, so it cannot loosen crit's rules:
 
+- **Project settings that loosen crit count only once you approve them.** The keys in `project_home.APPROVAL_KEYS` (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`, `lint`, `packs`, and `config`, the model server) are left out of a project's `.crit/settings.json` until you approve the values it sets, whether or not the folder is a git repository. In a terminal, `crit` shows them at start and asks once:
+
+  ```
+  /work/proj/.crit/settings.json sets values that loosen crit or pick the model server:
+    permissions: "auto"  (how much crit does without asking)
+    config: ".crit/model.json"  (the model server your code is sent to)
+  crit did not write them on this PC (or they changed since you approved them), so they are off.
+  Use them only if you wrote them, or trust whoever did: they decide what runs without asking.
+  Use these settings in this project? [y/N]
+  ```
+
+  Without a terminal one line says so and crit goes on without them. Approve later with `crit trust .crit/settings.json`; undo with `crit trust --revoke .crit/settings.json`. The approval is the sha256 of those values (and of the config file `config` names), kept in `~/.crit/trust.json`; other keys (`theme`, `role`, ...) can change without a new question, a change to an approved value turns it off again. Values crit writes itself (`/mode`, an "always allow" rule, `--config`) stay approved, unless the file already held values you had not approved. Settings in `~/.crit/projects/home` (the home folder as a project) are crit's own and need no approval.
+- **An untracked `config.json` in the project root** is used only after the same kind of question ("... came with this project and picks where your code is sent (model server: URL). Use it?") or `crit trust config.json`, and only while its content is unchanged.
+- **crit does not climb into other people's folders.** Looking for `.crit` above the working folder, crit skips one that belongs to another user or that others can write to (a `/tmp/.crit` someone else made), and inside your home folder it stops at the home folder.
 - **A committed config is refused.** When `.crit/settings.json` names a `config` that git tracks in the project (or git cannot confirm it does not: no git, a timeout, or the project is a subfolder of a repository), crit stops with an error instead of using its `url`, `allowed_hosts`, or `cdp_url`. Use your own untracked copy, or `--config`.
-- **A committed `.crit/settings.json` loses its permission keys** (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`). They count only in your own, untracked settings file. New projects git-ignore `.crit/settings.json`.
+- **A committed `.crit/settings.json` loses its permission keys** (`project_home.SECURITY_KEYS`: the list above without `config`), even when approved. They count only in your own, untracked, approved settings file. New projects git-ignore `.crit/settings.json`.
 - **The check command asks like any other command**, since it can come from `.crit/AGENT.md`.
 - **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, the extension files (`tools/`, `agents/`, `commands/`, `hooks.*`, `mcp.json` in `.crit` and `~/.crit`), `~/.crit/trust.json`, `~/.crit/mcp-lock.json`, and the config file named there are refused.
 - **A project's extension tools, hooks and MCP servers run nothing until approved.** `.crit/tools/`, `.crit/hooks.*` and `.crit/mcp.json` stay off until `crit trust <file>` approves that exact content (sha256, kept in `~/.crit/trust.json`); an edit turns the file off again. Project agents and commands are prompts: they load, but cannot loosen the permission mode until approved ([extending.md](extending.md)).

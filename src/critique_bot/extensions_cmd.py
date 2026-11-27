@@ -85,11 +85,15 @@ def main_trust(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.list:
         found = trust.trusted()
-        if not found:
+        values = trust.settings_approvals()
+        if not found and not values:
             print("No approvals yet.")
         for path, entry in sorted(found.items()):
             state = trust.state_of(Path(path)) if Path(path).exists() else "missing"
             print(f"{state:9} {path}  ({entry.get('approved', '?')}, sha256 {str(entry.get('sha256'))[:12]})")
+        for path, entry in sorted(values.items()):
+            keys = ", ".join(entry.get("keys") or []) or "values"
+            print(f"{'settings':9} {path}  ({entry.get('approved', '?')}: {keys})")
         return 0
     code = 0
     for raw in args.revoke:
@@ -101,6 +105,9 @@ def main_trust(argv: list[str]) -> int:
             print(f"No such file: {raw}")
             code = 1
             continue
+        if _is_settings_file(path) or _is_project_config(path):
+            code = _trust_values(path) or code
+            continue
         kind = _kind_of(path)
         item = trust.ExtFile(kind or "tools", "project", path)
         print(f"{path}:")
@@ -111,6 +118,16 @@ def main_trust(argv: list[str]) -> int:
     if args.files or args.revoke:
         return code
     root = _root(args.repo)
+    from critique_bot.project_home import BotHomeError, describe_unapproved, find_bot_home
+
+    try:
+        home = find_bot_home(root)
+    except BotHomeError:
+        home = None
+    if home is not None and home.unapproved:
+        print(f"{'off: not approved':28} {home.settings_path}")
+        for line in describe_unapproved(home):
+            print("    " + line)
     items = [item for item in trust.discover(root) if item.scope == "project"]
     if not items:
         print(f"No extension files in {trust.project_ext_dir(root)}.")
@@ -125,6 +142,38 @@ def main_trust(argv: list[str]) -> int:
         for line in describe(item):
             print("    " + line)
     print("Approve a file with: crit trust <file>")
+    return 0
+
+
+def _is_settings_file(path: Path) -> bool:
+    from critique_bot.project_home import BOT_DIR_NAME, LEGACY_DIR_NAME, SETTINGS_NAME
+
+    return path.name == SETTINGS_NAME and path.parent.name in {BOT_DIR_NAME, LEGACY_DIR_NAME}
+
+
+def _is_project_config(path: Path) -> bool:
+    from critique_bot.config import CONFIG_FILE_NAME
+
+    return path.name == CONFIG_FILE_NAME and path.parent.name not in {".crit", ".bot"}
+
+
+def _trust_values(path: Path) -> int:
+    """``crit trust .crit/settings.json`` / ``crit trust config.json``: approve what they set now."""
+    from critique_bot import project_home
+
+    print(f"{path}:")
+    try:
+        if _is_settings_file(path):
+            keys = project_home.approve_settings_file(path)
+            print("  approved: " + (", ".join(keys) if keys else "nothing in it needs approval")
+                  + ". A change to these values turns them off until you approve them again.")
+        else:
+            project_home.approve_root_config(path)
+            print("  approved as this project's config (the model server it names). "
+                  "An edit turns it off until you approve it again.")
+    except project_home.BotHomeError as exc:
+        print(f"  not approved: {exc}")
+        return 1
     return 0
 
 

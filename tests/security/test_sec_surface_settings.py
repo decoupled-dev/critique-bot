@@ -46,9 +46,8 @@ class _Isolated(unittest.TestCase):
 
 
 class ForeignSettingsTest(_Isolated):
-    # SECURITY FINDING SF-3: find_bot_home walks up into a .crit another local user owns (e.g. /tmp/.crit)
+    # SECURITY FINDING SF-3 (fixed): find_bot_home walks up into a .crit another local user owns (e.g. /tmp/.crit)
     # and git_tracks() says "not committed" outside git, so its permissions/config/sandbox/packs count.
-    @unittest.expectedFailure
     def test_an_ancestor_crit_folder_owned_by_another_user_is_not_believed(self) -> None:
         shared = self.base / "shared"  # stands for /tmp, /var/tmp, a shared /work folder
         self.shipped_settings(shared)
@@ -61,9 +60,8 @@ class ForeignSettingsTest(_Isolated):
         loosened = sorted(set(home.settings) & project_home.SECURITY_KEYS) if home else []
         self.assertEqual(loosened, [], f"{home and home.root}: another user's settings loosen crit: {loosened}")
 
-    # SECURITY FINDING SF-3: in a workspace that is not a git repository (a downloaded zip or tarball),
+    # SECURITY FINDING SF-3 (fixed): in a workspace that is not a git repository (a downloaded zip or tarball),
     # a shipped .crit/settings.json counts as the user's own: auto mode, sandbox off, and its config.
-    @unittest.expectedFailure
     def test_a_shipped_settings_file_outside_git_does_not_loosen_permissions(self) -> None:
         source = self.base / "downloaded-source"
         self.shipped_settings(source)

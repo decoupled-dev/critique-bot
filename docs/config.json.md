@@ -17,8 +17,9 @@ Every command uses the first of these that applies:
 
 1. `--config FILE` on the command line;
 2. the `CRIT_CONFIG` environment variable;
-3. the config recorded for the project in `.crit/settings.json` (`"config"`), if the file exists;
-4. a `config.json` in the project root, if it exists and git does not track it;
+3. the config recorded for the project in `.crit/settings.json` (`"config"`), if the file exists
+   and you approved it (see [security.md](security.md#what-the-repository-may-not-change));
+4. a `config.json` in the project root, if it exists, git does not track it, and you approved it;
 5. your user config: `config.json` in crit's folder, `~/.crit/config.json`
    (`%USERPROFILE%\.crit\config.json` on Windows; `CRIT_HOME` moves the folder). In 1.0.x
    it was `~/.config/critique-bot/config.json` (`%APPDATA%\critique-bot\config.json`); crit

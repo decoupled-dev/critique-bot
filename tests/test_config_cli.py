@@ -20,6 +20,7 @@ from critique_bot.agent_cli import main as crit_main
 from critique_bot.cli import main as bot_main
 from critique_bot.config import load_config, user_config_path
 from critique_bot.config_cmd import main as config_main
+from critique_bot import project_home
 from critique_bot.config_cmd import resolve_config_path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -113,12 +114,15 @@ class ResolutionTests(_Isolated):
         # a config.json in the project root (not committed) wins over the user config
         root_cfg = self.project / "config.json"
         root_cfg.write_text("{}", encoding="utf-8")
+        self.assertEqual(resolve_config_path(None, self.project).source, "user")  # it came with the code
+        project_home.approve_root_config(root_cfg)  # the question at start, or crit trust config.json
         self.assertEqual(resolve_config_path(None, self.project).source, "project-root")
         # the config stored in .crit/settings.json wins over that
         stored = self.root / "stored.json"
         stored.write_text("{}", encoding="utf-8")
         (self.project / ".crit").mkdir()
         (self.project / ".crit" / "settings.json").write_text(json.dumps({"config": str(stored)}), encoding="utf-8")
+        project_home.approve_settings(project_home.find_bot_home(self.project))
         loc = resolve_config_path(None, self.project)
         self.assertEqual((loc.path, loc.source), (stored, "project"))
         # CRITIQUE_CONFIG wins over the project; --config over everything

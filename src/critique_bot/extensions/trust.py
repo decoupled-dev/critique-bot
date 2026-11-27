@@ -20,6 +20,10 @@ servers) stay inactive until the user approves them, once per content hash, with
 approved again. Project agents and commands are prompts: they load without approval,
 but cannot loosen the permission mode unless approved.
 
+The same store holds the approvals of a project's ``.crit/settings.json``: the values that
+loosen crit (``project_home.APPROVAL_KEYS``) count only once the user approved them
+(:func:`approve_digest`), whether or not git tracks anything.
+
 The approvals live in ``~/.crit/trust.json``, never in the project.
 """
 
@@ -37,6 +41,8 @@ from typing import Iterable
 __all__ = [
     "KINDS",
     "ExtFile",
+    "approve_digest",
+    "digest_approved",
     "discover",
     "file_hash",
     "grants_power",
@@ -199,6 +205,7 @@ def trust(path: Path, *, kind: str = "") -> str:
 def untrust(path: Path) -> bool:
     data = _load()
     removed = data["files"].pop(_key(path), None) is not None
+    removed = data.setdefault("settings", {}).pop(_key(path), None) is not None or removed
     if removed:
         _save(data)
     return removed
@@ -215,3 +222,30 @@ def state_of(path: Path) -> str:
     if not isinstance(entry, dict):
         return "new"
     return "approved" if is_trusted(path) else "changed"
+
+
+# --------------------------------------------------------------------------- approvals of values
+
+
+def digest_approved(path: Path, digest: str) -> bool:
+    """True when the user approved ``digest`` for ``path`` (a project's settings file)."""
+    entry = _load().get("settings", {}).get(_key(path))
+    return isinstance(entry, dict) and entry.get("sha256") == digest
+
+
+def approve_digest(path: Path, digest: str, *, kind: str = "settings", keys: Iterable[str] = ()) -> None:
+    """Record that the user approved ``digest`` for ``path``."""
+    data = _load()
+    data.setdefault("settings", {})[_key(path)] = {
+        "sha256": digest,
+        "kind": kind,
+        "keys": sorted(keys),
+        "approved": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _save(data)
+
+
+def settings_approvals() -> dict[str, dict]:
+    """Every approval of project settings values: path -> {sha256, keys, approved}."""
+    found = _load().get("settings")
+    return dict(found) if isinstance(found, dict) else {}

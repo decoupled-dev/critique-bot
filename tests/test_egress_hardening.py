@@ -205,7 +205,9 @@ class CommittedSettingsTests(unittest.TestCase):
         (self.root / "tools").mkdir()
         (self.root / "tools" / "config.json").write_text("{}", encoding="utf-8")
         home = project_home.find_bot_home(self.root)
-        self.assertEqual(home.config_file(), self.root / "tools" / "config.json")  # untracked: the user's own
+        self.assertIsNone(home.config_file())  # not approved yet: crit did not write it on this PC
+        home = project_home.approve_settings(home)
+        self.assertEqual(home.config_file(), self.root / "tools" / "config.json")  # untracked and approved
         self._commit("tools/config.json")
         with self.assertRaises(project_home.BotHomeError):
             home.config_file()
@@ -214,6 +216,8 @@ class CommittedSettingsTests(unittest.TestCase):
         settings = {"permissions": "auto", "web_fetch": True, "web_fetch_hosts": ["evil.example"], "theme": "light"}
         path = self.root / ".crit" / "settings.json"
         path.write_text(json.dumps(settings), encoding="utf-8")
+        self.assertNotIn("permissions", project_home.find_bot_home(self.root).settings)  # not approved yet
+        project_home.approve_settings(project_home.find_bot_home(self.root))
         self.assertEqual(project_home.find_bot_home(self.root).settings["permissions"], "auto")
         self._commit(".crit/settings.json")
         home = project_home.find_bot_home(self.root)

@@ -1757,6 +1757,64 @@ def _main_gitlab_post(argv: list[str]) -> int:
         return 1
 
 
+def _approve_project_settings(home, args: argparse.Namespace):
+    """Ask once per content whether the project's loosening settings (and config.json) count.
+
+    A ``.crit/settings.json`` crit did not write on this PC (a downloaded archive, another
+    user's folder, a teammate's copy) is left out until approved; this is where the person
+    sees what it would change. No terminal: one line says how to approve, and crit goes on
+    without those values.
+    """
+    from critique_bot.config_cmd import _confirm, unapproved_root_config
+    from critique_bot.project_home import (
+        BotHomeError, approve_root_config, approve_settings, describe_unapproved,
+    )
+
+    ask = _may_ask(args)
+    if home.unapproved:
+        path = home.settings_path
+        keys = ", ".join(sorted(home.unapproved))
+        if not ask:
+            log.notice(f"Ignoring {keys} in {path}: not approved on this PC. Check the file, then run: crit trust {path}")
+        else:
+            print(f"{path} sets values that loosen crit or pick the model server:", file=sys.stderr)
+            for line in describe_unapproved(home):
+                print(f"  {line}", file=sys.stderr)
+            print("crit did not write them on this PC (or they changed since you approved them), so they are off.\n"
+                  "Use them only if you wrote them, or trust whoever did: they decide what runs without asking.",
+                  file=sys.stderr)
+            if _confirm("Use these settings in this project?"):
+                try:
+                    home = approve_settings(home)
+                except BotHomeError as exc:
+                    log.notice(f"Not approved: {exc}")
+                else:
+                    print(f"Approved. crit asks again only if they change (undo: crit trust --revoke {path}).",
+                          file=sys.stderr)
+            else:
+                print(f"Left them off for this run. Approve later with: crit trust {path}", file=sys.stderr)
+    if args.config or (env_names.get("CRIT_CONFIG") or "").strip():
+        return home
+    candidate = unapproved_root_config(home.root, home=home)
+    if candidate is not None:
+        url = ""
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            url = str(data.get("url") or "") if isinstance(data, dict) else ""
+        except (OSError, ValueError):
+            pass
+        where = f" (model server: {url})" if url else ""
+        if not ask:
+            log.notice(f"Not using {candidate}{where}: it came with the project and is not approved. "
+                       f"Check it, then run: crit trust {candidate}")
+        elif _confirm(f"{candidate} came with this project and picks where your code is sent{where}. Use it?"):
+            approve_root_config(candidate)
+        else:
+            print(f"Not using it; crit uses your own settings. Approve later with: crit trust {candidate}",
+                  file=sys.stderr)
+    return home
+
+
 def _main_agent(args: argparse.Namespace) -> int:
     """``crit`` / ``--mode agent``: set up the workspace on first run, then run a task."""
     from critique_bot.engine import run_agent
@@ -1812,6 +1870,7 @@ def _main_agent(args: argparse.Namespace) -> int:
             home = init_bot_home(workspace)
         except BotHomeError as exc:
             return _config_error(ConfigError(str(exc)))
+    home = _approve_project_settings(home, args)
     if args.config and not home.settings.get("config"):
         update_settings(home, config=str(Path(args.config).resolve()))
 

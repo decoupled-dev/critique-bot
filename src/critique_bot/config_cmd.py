@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from critique_bot import egress, env_names, redaction
+from critique_bot import egress, env_names, log, redaction
 from critique_bot.config import (
     COMPANY_CONFIG_KEY,
     USER_PREF_KEYS,
@@ -123,15 +123,16 @@ def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path
     ``--config`` > ``CRIT_CONFIG`` > the config stored for the project in
     ``.crit/settings.json`` > an untracked ``config.json`` in the project root > the user
     config (``config.user_config_path()``). The first two count even when the file is
-    missing (the caller reports it or writes it); the project's only when the file exists;
-    the user config may not exist yet (first run).
+    missing (the caller reports it or writes it); the project's only when the file exists
+    and the user approved it (see ``project_home.APPROVAL_KEYS``); the user config may not
+    exist yet (first run).
     """
     if explicit:
         return ConfigLocation(Path(explicit).expanduser(), "flag")
     from_env = (env_names.get(ENV_CONFIG) or "").strip()
     if from_env:
         return ConfigLocation(Path(from_env).expanduser(), "env")
-    from critique_bot.project_home import BotHomeError, find_bot_home, git_tracks
+    from critique_bot.project_home import BotHomeError, find_bot_home
 
     start = Path(repo_dir or ".").resolve()
     home = find_bot_home(start)
@@ -142,11 +143,37 @@ def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path
             raise ConfigError(str(exc)) from exc
         if stored is not None and stored.is_file():
             return ConfigLocation(stored, "project")
-    root = home.root if home is not None else start
-    candidate = root / CONFIG_FILE_NAME
-    if candidate.is_file() and not git_tracks(root, candidate):
+    candidate = unapproved_root_config(repo_dir, home=home, approved=True)
+    if candidate is not None:
         return ConfigLocation(candidate, "project-root")
     return ConfigLocation(user_config_path(), "user")
+
+
+def unapproved_root_config(repo_dir: str | Path | None = None, *, home=None, approved: bool = False) -> Path | None:
+    """The project's untracked ``config.json`` (next to the code) that is not approved yet, or None.
+
+    With ``approved``: the approved one instead. A ``config.json`` that came with the code
+    picks the model server every file is sent to, so it counts only once the user approved
+    that content (the question at start, or ``crit trust config.json``).
+    """
+    from critique_bot.project_home import find_bot_home, git_tracks, root_config_approved
+
+    start = Path(repo_dir or ".").resolve()
+    if home is None:
+        home = find_bot_home(start)
+    if home is not None and home.unapproved.get("config"):
+        return None  # the settings name a config: that is the question to ask
+    root = home.root if home is not None else start
+    candidate = root / CONFIG_FILE_NAME
+    if not candidate.is_file() or git_tracks(root, candidate):
+        return None
+    ok = root_config_approved(candidate)
+    if approved:
+        if not ok:
+            log.warn(f"not using {candidate}: it came with the project and you have not approved it "
+                     f"(crit trust {candidate})")
+        return candidate if ok else None
+    return None if ok else candidate
 
 
 # --------------------------------------------------------------------------- showing

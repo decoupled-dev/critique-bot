@@ -44,8 +44,7 @@ class ProjectSettingsTests(SecBase):
         self.assertIsNotNone(home)
         self.assertFalse(set(home.settings) & set(_LOOSE))
 
-    # SECURITY FINDING PM-9: outside a git repo (a downloaded zip/tarball) a shipped .crit/settings.json is fully trusted
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-9 (fixed): outside a git repo (a downloaded zip/tarball) a shipped .crit/settings.json is fully trusted
     def test_settings_shipped_in_an_archive_do_not_loosen_permissions(self) -> None:
         self.write_settings()  # no .git: the project came as an archive
         home = project_home.find_bot_home(self.root)

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from critique_bot import project_home
 from critique_bot.agent_cli import main as agent_main
 from critique_bot.cli import main
 from critique_bot.config import ConfigError
@@ -50,6 +51,7 @@ class AgentCliTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        project_home.approve_root_config(config)  # the user's own config (the question at start)
         return config
 
     def test_init_from_mode_and_alias(self) -> None:
@@ -84,6 +86,7 @@ class AgentCliTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            project_home.approve_root_config(config)  # the user's own config (the question at start)
             with patch("critique_bot.project_home.rebuild_index") as rebuild:
                 from critique_bot.code_index import IndexStats
 
@@ -360,6 +363,7 @@ class OneCommandTests(unittest.TestCase):
             (root / ".crit" / "settings.json").write_text(
                 json.dumps({"config": str(config)}), encoding="utf-8"
             )
+            project_home.approve_root_config(config)
             with patch("critique_bot.cli.load_config", side_effect=ConfigError("stop")) as load:
                 self.assertEqual(agent_main(["chat", "--repo-dir", str(root)]), 1)
             self.assertEqual(load.call_args.args[0], str(config))
