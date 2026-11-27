@@ -54,6 +54,114 @@ from critique_bot.model_api import COMPLETION_IDLE, ChatError, CloudflareBlocked
 from critique_bot.config import BotConfig
 from critique_bot.output import isoformat, write_output
 
+from critique_bot.engine.parse import (  # noqa: F401
+    ToolCall,
+    _ARG_KEYS,
+    _ATTR_RE,
+    _BARE_RESULT_RE,
+    _BLOCK_RE,
+    _CALL_TAGS,
+    _CHROME_LINES,
+    _CLOSED_TOOL_MARKUP_RE,
+    _FENCED_JSON_RE,
+    _FENCE_RE,
+    _INNER_ARGS_RE,
+    _INNER_NAME_RE,
+    _LIST_KEYS,
+    _NAME_KEYS,
+    _OPEN_RE,
+    _QUOTED_CONTEXT_RE,
+    _RESULT_OPEN_RE,
+    _STATUS_OK,
+    _STATUS_WORDS,
+    _TAIL_PATH_RE,
+    _TAIL_TOOL_RE,
+    _TOOL_TAG_RE,
+    _TRAILING_PROSE_RE,
+    _UNCLOSED_TOOL_RE,
+    _WRAPPER_TYPES,
+    _WRITE_CALL_RE,
+    _WRITE_JSON_HINT,
+    _answer_text,
+    _bare_json_calls,
+    _bare_tool_blobs,
+    _call_from_data,
+    _calls_from_data,
+    _cut_call_label,
+    _cut_call_name,
+    _cut_fabricated,
+    _drop_trailing_prose,
+    _hide_tool_markup,
+    _json_error,
+    _looks_quoted,
+    _openai_reply,
+    _parse_block,
+    _parse_tagged,
+    _strip_chrome,
+    _whole_tail_calls,
+    commentary,
+    format_tool_result,
+    hide_tool_markup,
+    parse_tool_calls,
+)
+from critique_bot.engine.json_repair import (  # noqa: F401
+    _BARE_TOOL_KEY_RE,
+    _JSON_STRING_ESCAPES,
+    _PATH_LEAD,
+    _RAW_WIN_PATH_RE,
+    _TRAILING_COMMA_RE,
+    _closer_is_json,
+    _json_objects,
+    _json_value_at,
+    _key_follows,
+    _loads_lenient,
+    _normalize_json_text,
+    _raw_path_start,
+    _read_json_string,
+    _repair_json,
+    _string_ends,
+)
+from critique_bot.engine.replies import (  # noqa: F401
+    MAX_HAND_BACKS,
+    _ANSWER_TASK_RE,
+    _EDIT_TASK_RE,
+    _FAIL_HEAD,
+    _HAND_BACK_RE,
+    _PERMISSION_MARKERS,
+    _PLAN_RE,
+    _PROMISE_MARKERS,
+    _PROMISE_START_RE,
+    _PROVIDER_ERROR_MAX,
+    _PROVIDER_ERROR_RE,
+    _QUESTION_MARKERS,
+    _REFUSAL_MARKERS,
+    _TEST_MARKERS,
+    _UNTAGGED_PLAN_RE,
+    _answer_only,
+    _asks_for_change,
+    _asks_user,
+    _call_key,
+    _diffstat,
+    _failure_reason,
+    _hands_back,
+    _has_checks,
+    _idle_tool_reply,
+    _keywords,
+    _no_edit_needed,
+    _normalized,
+    _only_promises,
+    _plan_text,
+    _provider_error,
+    _real_question,
+    _refuses,
+    _stalls,
+    _status_code,
+)
+from critique_bot.engine.text import (  # noqa: F401
+    _cap,
+    _one_line,
+)
+
 __all__ = [
     "ALLOWED_TOOLS",
     "ToolCall",
@@ -69,88 +177,12 @@ __all__ = [
     "run_read_only_task",
 ]
 
-# The canonical tag is <tool_call>. Models also print <tool_use>,
-# <function_call>, and <tool_call name="read_files"> with the arguments as
-# the body; all of them are read the same way.
-_CALL_TAGS = r"(?:tool_call|tool_use|function_call|toolcall)"
-_OPEN_RE = re.compile(r"<\s*" + _CALL_TAGS + r"\b[^>]*>", re.IGNORECASE)
-_BLOCK_RE = re.compile(
-    r"<\s*(" + _CALL_TAGS + r")\b([^>]*)>\s*(.*?)\s*<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
-)
-_CLOSED_TOOL_MARKUP_RE = re.compile(
-    r"<\s*(" + _CALL_TAGS + r"|tool_result)\b[^>]*>.*?<\s*/\s*\1\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_TOOL_TAG_RE = re.compile(r"<\s*/?\s*(?:" + _CALL_TAGS + r"|tool_result)\b[^>]*>", re.IGNORECASE)
-_UNCLOSED_TOOL_RE = re.compile(r"<\s*(?:" + _CALL_TAGS + r"|tool_result)\b[^>]*>[\s\S]*\Z", re.IGNORECASE)
-_RESULT_OPEN_RE = re.compile(r"<\s*tool_result\b[^>]*>", re.IGNORECASE)
-# A result written out as bare JSON: {"tool": "read_files", "ok": true, ...}
-_BARE_RESULT_RE = re.compile(r"""\{\s*["']?tool["']?\s*:\s*["'][^"'\n]*["']\s*,\s*["']?ok["']?\s*:""")
-_ATTR_RE = re.compile(r"""\b(name|tool|function)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
-_INNER_NAME_RE = re.compile(
-    r"<\s*(?:name|tool|tool_name|function)\s*>\s*([\w.\-]+)\s*<\s*/\s*(?:name|tool|tool_name|function)\s*>",
-    re.IGNORECASE,
-)
-_INNER_ARGS_RE = re.compile(
-    r"<\s*(arguments|args|parameters|input)\s*>\s*(.*?)\s*<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL
-)
-_TAIL_TOOL_RE = re.compile(r"""["']?(?:tool|name)["']?\s*:\s*["']([\w.\-]+)["']""")
-_TAIL_PATH_RE = re.compile(r"""["']?(?:path|filePath|file_path)["']?\s*:\s*["']([^"'\n]{1,160})["']""")
-_FENCE_RE = re.compile(r"^```[^\n]*\n(.*)\n```$", re.DOTALL)
-_FENCED_JSON_RE = re.compile(
-    r"```(?:json|jsonc|json5|tool|tool_call)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
-)
-# The label and buttons a chat page draws on a code block ("json", "Copy code", "Edit").
-_CHROME_LINES = frozenset(
-    {
-        "json", "jsonc", "json5", "copy", "copy code", "code", "edit", "run", "tool", "tool_call",
-        "javascript", "js", "xml", "html", "text", "plaintext", "python", "bash", "sh", "shell",
-        "powershell", "ps1", "copied!", "copied",
-    }
-)
-# Words just before a JSON object that mean it is quoted, not a call.
-_QUOTED_CONTEXT_RE = re.compile(
-    r"(?i)(\b[\w./\\-]+\.(?:json|jsonc|json5|ya?ml|toml|txt|md|log|cfg|conf|ini)\b"
-    r"|for example|e\.g\.|such as|\bexample\b|contents? of|the file (?:contains|has|is|looks|reads)"
-    r"|currently (?:contains|has|reads)|looks like|is not a tool call|<\s*tool_result)"
-)
-# A Windows path written with single backslashes: C:\new\tools, .\src\app.py
-_RAW_WIN_PATH_RE = re.compile(r"""(?:\b[A-Za-z]:|(?<![\w\\])\.{1,2})\\(?![\\"'/])""")
-_BARE_TOOL_KEY_RE = re.compile(
-    r"""(?:"tool"|'tool'|"name"|'name'|(?<![A-Za-z0-9_$])(?:tool|name)\s*:)"""
-)
-_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
-_PLAN_RE = re.compile(r"<plan>\s*(.*?)\s*</plan>", re.IGNORECASE | re.DOTALL)
-_UNTAGGED_PLAN_RE = re.compile(r"(?is)\bfiles?\s*:.{8,}?\bchange\s*:.{8,}?\bcheck\s*:")
-_EDIT_TASK_RE = re.compile(
-    r"\b(add|create|update|fix|change|remove|delete|rename|write|implement|refactor|"
-    r"replace|edit|modify|insert|append|move|convert|migrate|bump)\b",
-    re.IGNORECASE,
-)
-_ANSWER_TASK_RE = re.compile(
-    r"(?is)^(?:please\s+|can you\s+|could you\s+|would you\s+)?"
-    r"(?:what|why|how|who|when|where|which|explain|describe|summarize|summarise|"
-    r"tell me|define|compare|is|are|does|do|can|could|should|would|what's|whats)\b"
-)
-_PROMISE_START_RE = re.compile(
-    r"(?i)^(i'll|i will|let me|next i|i'm going to|i am going to)\s+"
-    r"(look|read|check|search|edit|update|fix|open|find|run|start|try|use|inspect|review)\b"
-)
 _SECTION_RE = re.compile(r"^<<<([A-Z_]+)>>>\s*$", re.MULTILINE)
 _QUIT = {"exit", "quit", "/exit", "/quit", "/q"}
-_STATUS_WORDS = {
-    "completed": "COMPLETED",
-    "finished": "FINISHED",
-    "done": "DONE",
-    "failed": "FAILED",
-    "blocked": "BLOCKED",
-}
-_STATUS_OK = frozenset({"COMPLETED", "FINISHED", "DONE"})
 #: Helper chat tabs a task can be split across (the delegate tool). 0 turns it off.
 DEFAULT_HELPER_SESSIONS = 2
 MAX_HELPER_SESSIONS = 4
 MAX_PLAN_REVISIONS = 5
-_FAIL_HEAD = re.compile(r"^(FAILED|BLOCKED)\b\s*[:\-—]?\s*(.*)$")
 MAX_REFUSALS = 3
 MAX_FAILED_ROUNDS = 8
 #: Replies in a row whose every call the user denied end the task as BLOCKED.
@@ -200,24 +232,6 @@ _READ_ONLY_FALLBACK = frozenset(
 )
 #: Tools whose result changes over time, so repeating them is not a loop.
 _POLLING = frozenset({"command_output", "ask_user"})
-#: Error text the chat page shows in place of a reply.
-_PROVIDER_ERROR_RE = re.compile(
-    r"(?i)(something went wrong|network error|there was an error generating|"
-    r"an error occurred|error in (?:the )?message stream|you'?ve reached (?:our|the|your)|"
-    r"unusual activity|too many requests|rate limit|conversation not found|"
-    r"request timed out|load failed|failed to fetch|please try again later|"
-    r"hmm\.\.\.\s*something seems to have gone wrong)"
-)
-_PROVIDER_ERROR_MAX = 400
-_PERMISSION_MARKERS = (
-    "may i", "can i proceed", "should i proceed", "should i go ahead", "shall i proceed",
-    "is it ok", "is that ok", "okay to", "ok to proceed", "permission", "confirm", "approve",
-)
-_TEST_MARKERS = (
-    "tests", "test", "__tests__", "spec", "pytest.ini", "tox.ini", "package.json", "gradlew",
-    "gradlew.bat", "build.gradle", "build.gradle.kts", "pom.xml", "Cargo.toml", "go.mod", "Makefile",
-    "CMakeLists.txt", "setup.py", "pyproject.toml",
-)
 
 # Overridable in tests so a retry does not really sleep.
 _sleep = time.sleep
@@ -335,15 +349,6 @@ _FALLBACKS = {
 }
 
 
-@dataclass(frozen=True)
-class ToolCall:
-    tool: str
-    arguments: dict[str, Any]
-    error: str | None = None
-    #: The call_id of an OpenAI-format call; its result goes back with the same id.
-    call_id: str = ""
-
-
 def command_argv(command: str, *, platform_name: str | None = None, cwd: Path | None = None) -> list[str]:
     """Build the argv for ``run_command``. The command is one argument."""
     return agent_shell.command_argv(command, platform_name=platform_name, cwd=cwd)
@@ -376,1013 +381,7 @@ def execute_tool(
 # --------------------------------------------------------------------------- parsing
 
 
-def parse_tool_calls(
-    text: str, *, complete: bool = False, allow_bare: bool = True
-) -> tuple[list[ToolCall], bool]:
-    """Parse tool calls. The bool is True only when the reply has an open tag and no call.
-
-    Complete blocks always run. Text left after them is checked for a
-    dangling ``<tool_call>``: one followed by JSON means a block was cut off;
-    a bare tag (page rendering often leaves one) is ignored. When the page
-    said the reply finished (``complete``), a dangling block whose JSON is
-    whole only lost its closing tag, and it runs.
-
-    A reply with no tags is searched for fenced or bare JSON objects naming a
-    tool, unless ``allow_bare`` is False. JSON introduced as a quote ("the
-    file contains", "for example", a ``.json`` file name) is not a call.
-    """
-    calls: list[ToolCall] = []
-    for match in _BLOCK_RE.finditer(text):
-        calls.extend(_parse_tagged(match.group(2), match.group(3)))
-    rest = _BLOCK_RE.sub("", text)
-    dangling = _OPEN_RE.search(rest)
-    if dangling is not None:
-        tail = rest[dangling.end() :]
-        if complete:
-            recovered = _whole_tail_calls(_TOOL_TAG_RE.sub("", tail))
-            if recovered:
-                return calls + recovered, False
-        if not calls:
-            return [], True
-        if "{" in tail:
-            name = _cut_call_name(tail)
-            calls.append(
-                ToolCall(
-                    tool=name,
-                    arguments={},
-                    error=(
-                        "this tool_call was truncated (cut off) before it closed and did not run; "
-                        "the complete calls before it ran. Resend only this call, complete"
-                    ),
-                )
-            )
-        return calls, False
-    if calls:
-        return calls, False
-    if not allow_bare:
-        return [], False
-    for match in _FENCED_JSON_RE.finditer(text):
-        if _looks_quoted(text, match.start()):
-            continue
-        for call in _parse_block(match.group(1)):
-            if call.tool and not call.error:
-                calls.append(call)
-    if calls:
-        return calls, False
-    return _bare_json_calls(text), False
-
-
-def _parse_tagged(attrs: str, body: str) -> list[ToolCall]:
-    """One block. ``<tool_call name="x">{args}</tool_call>`` and inner XML tags are accepted."""
-    attr = _ATTR_RE.search(attrs or "")
-    inner_name = _INNER_NAME_RE.search(body)
-    name = attr.group(2) if attr else (inner_name.group(1) if inner_name else "")
-    if not name:
-        return _parse_block(body)
-    inner_args = _INNER_ARGS_RE.search(body)
-    raw = inner_args.group(2) if inner_args else (body if not inner_name else "")
-    raw = _strip_chrome(raw.strip())
-    fenced = _FENCE_RE.match(raw)
-    if fenced:
-        raw = fenced.group(1).strip()
-    if not raw.strip():
-        return [_call_from_data({"tool": name, "arguments": {}})]
-    try:
-        data = _loads_lenient(raw)
-    except json.JSONDecodeError as exc:
-        return [ToolCall(tool=name, arguments={}, error=_json_error(f'"tool": "{name}"' + raw, exc))]
-    if isinstance(data, dict) and any(key in data for key in ("tool", "name", "function")):
-        return _calls_from_data(data)
-    return [_call_from_data({"tool": name, "arguments": data})]
-
-
-def _whole_tail_calls(tail: str) -> list[ToolCall]:
-    """Calls in a block that lost only its closing tag: whole JSON, nothing cut."""
-    stripped = _strip_chrome(tail.strip()).rstrip("`").rstrip()
-    if not stripped.endswith("}"):
-        return []
-    blobs = _json_objects(stripped)
-    if not blobs or not stripped.endswith(blobs[-1]):
-        return []
-    calls: list[ToolCall] = []
-    for blob in blobs:
-        try:
-            found = _calls_from_data(_loads_lenient(blob))
-        except json.JSONDecodeError:
-            return []
-        if any(call.error or not canonical_tool(call.tool) for call in found):
-            return []
-        calls.extend(found)
-    return calls
-
-
-def _cut_call_name(tail: str) -> str:
-    match = _TAIL_TOOL_RE.search(tail)
-    return match.group(1) if match else ""
-
-
-def _cut_call_label(tail: str) -> str:
-    """`` for write_files (path a.py)`` from the text of a cut-off block."""
-    name = _cut_call_name(tail)
-    if not name:
-        return ""
-    path = _TAIL_PATH_RE.search(tail)
-    return f" for {name}" + (f" (path {path.group(1)})" if path else "")
-
-
-def _looks_quoted(text: str, start: int) -> bool:
-    """True when the words just before ``start`` introduce a quote, not a call."""
-    lines = [
-        line.strip()
-        for line in text[:start].splitlines()
-        if line.strip() and line.strip().lower() not in _CHROME_LINES and not line.strip().startswith("```")
-    ]
-    context = " ".join(lines[-2:])
-    return bool(context and _QUOTED_CONTEXT_RE.search(context))
-
-
-def _cut_fabricated(reply: str) -> tuple[str, bool]:
-    """Cut the reply at the first tool_result the model wrote itself.
-
-    Only the program writes results. A result inside a tool_call block (an
-    edit that mentions the tag) is file text and stays.
-    """
-    spans = [match.span() for match in _BLOCK_RE.finditer(reply)]
-    starts = [match.start() for match in _RESULT_OPEN_RE.finditer(reply)]
-    starts += [match.start() for match in _BARE_RESULT_RE.finditer(reply)]
-    for start in sorted(starts):
-        if any(begin <= start < end for begin, end in spans):
-            continue
-        return reply[:start].rstrip(), True
-    return reply, False
-
-
-def _bare_json_calls(text: str) -> list[ToolCall]:
-    """JSON objects naming a known tool, including ``{tool:"write_file", ...}``."""
-    calls: list[ToolCall] = []
-    for blob in _bare_tool_blobs(text):
-        position = text.find(blob)
-        if position >= 0 and _looks_quoted(text, position):
-            continue
-        try:
-            data = _loads_lenient(blob)
-        except json.JSONDecodeError:
-            continue
-        for call in _calls_from_data(data):
-            if not call.error and canonical_tool(call.tool):
-                calls.append(call)
-    return calls
-
-
-def _bare_tool_blobs(text: str) -> list[str]:
-    """Raw JSON objects whose tool name this program can run."""
-    if not _BARE_TOOL_KEY_RE.search(text):
-        return []
-    blobs: list[str] = []
-    for blob in _json_objects(text):
-        try:
-            data = _loads_lenient(blob)
-        except json.JSONDecodeError:
-            continue
-        if any(not call.error and canonical_tool(call.tool) for call in _calls_from_data(data)):
-            blobs.append(blob)
-    return blobs
-
-
-def hide_tool_markup(text: str) -> str:
-    """Text with the tool-call protocol removed, as the user should see it.
-
-    A reply in the OpenAI Responses format gives the words of its message items.
-    """
-    from critique_bot import openai_format
-
-    words = openai_format.visible_text(text, loads=_loads_lenient)
-    if words is not None:
-        return words
-    return _hide_tool_markup(text)
-
-
-def _openai_reply(raw: str, complete: bool) -> Any:
-    """A Responses-format reply, parsed; None when the reply is not in that format."""
-    from critique_bot import openai_format
-
-    return openai_format.parse_reply(raw, loads=_loads_lenient, complete=complete)
-
-
-def _hide_tool_markup(text: str) -> str:
-    """Drop tool protocol from text that is about to be printed."""
-    cleaned = _CLOSED_TOOL_MARKUP_RE.sub("", text)
-    unclosed = _UNCLOSED_TOOL_RE.search(cleaned)
-    if unclosed:
-        after = _TOOL_TAG_RE.sub("", cleaned[unclosed.start():], count=1).lstrip()
-        if not after or after[0] in "{[":
-            cleaned = cleaned[: unclosed.start()]
-        else:
-            cleaned = _TOOL_TAG_RE.sub("", cleaned)
-    else:
-        cleaned = _TOOL_TAG_RE.sub("", cleaned)
-    for blob in _bare_tool_blobs(cleaned):
-        cleaned = cleaned.replace(blob, "", 1)
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-
-def commentary(text: str) -> str:
-    return _hide_tool_markup(text)
-
-
-def _answer_text(text: str) -> str:
-    """The words the user should see, without a trailing COMPLETED or DONE."""
-    lines = text.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines:
-        return ""
-    last = re.sub(r"[^a-z]+", " ", lines[-1].lower()).strip()
-    if last in _STATUS_WORDS:
-        lines = lines[:-1]
-    body = "\n".join(lines).strip()
-    if not body or body.upper() in {"READY", *_STATUS_WORDS.values()}:
-        return ""
-    return body
-
-
-def format_tool_result(result: dict[str, Any]) -> str:
-    payload: dict[str, Any] = {"tool": result.get("tool", ""), "ok": bool(result.get("ok"))}
-    if payload["ok"]:
-        payload["output"] = result.get("output", "")
-    else:
-        payload["error"] = result.get("error") or "tool failed"
-        if result.get("output"):
-            payload["output"] = result["output"]
-        if result.get("allowed"):
-            payload["allowed"] = list(result["allowed"])
-    return "<tool_result>\n" + json.dumps(payload, ensure_ascii=False) + "\n</tool_result>"
-
-
-def _strip_chrome(text: str) -> str:
-    """Drop the language label and copy-button text a chat page puts above code."""
-    lines = text.strip().split("\n")
-    while lines and lines[0].strip().lower() in _CHROME_LINES:
-        lines.pop(0)
-    while lines and lines[-1].strip().lower() in _CHROME_LINES:
-        lines.pop()
-    return "\n".join(lines)
-
-
-_TRAILING_PROSE_RE = re.compile(r"[}\]]\s*([A-Za-z][^{}\[\]\"`]*)\Z")
-
-
-def _drop_trailing_prose(text: str) -> str:
-    """``{...} I will read it now.`` -> ``{...}``. A JSON value never ends in a sentence."""
-    match = _TRAILING_PROSE_RE.search(text)
-    if match and " " in match.group(1).strip():
-        return text[: match.start(1)].rstrip()
-    return text
-
-
-_WRITE_CALL_RE = re.compile(r'"(?:tool|name)"\s*:\s*"(?:write_files?|write|edit_file|edit)"')
-_WRITE_JSON_HINT = (
-    ". In contents, old_string, and new_string write a quote as \\\", a newline as \\n, and a backslash as \\\\; "
-    "no raw line breaks inside a string. Send a long file in parts: write_files with the first part, then edit_file"
-)
-
-
-def _json_error(text: str, exc: json.JSONDecodeError) -> str:
-    """The parse error for the model, with the escaping reminder when the call carried file text."""
-    message = f"invalid tool JSON: {exc}"
-    if _WRITE_CALL_RE.search(text):
-        message += _WRITE_JSON_HINT
-    return message
-
-
-def _parse_block(body: str) -> list[ToolCall]:
-    text = body.strip()
-    fenced = _FENCE_RE.match(text)
-    if fenced:
-        text = fenced.group(1).strip()
-    text = _drop_trailing_prose(_strip_chrome(text))
-    objects = _json_objects(_repair_json(_normalize_json_text(text))) or _json_objects(text)
-    if not objects:
-        try:
-            data = _loads_lenient(text)
-        except json.JSONDecodeError as exc:
-            return [ToolCall(tool="", arguments={}, error=_json_error(text, exc))]
-        return _calls_from_data(data)
-    calls: list[ToolCall] = []
-    for blob in objects:
-        try:
-            data = _loads_lenient(blob)
-        except json.JSONDecodeError as exc:
-            calls.append(ToolCall(tool="", arguments={}, error=_json_error(blob, exc)))
-            continue
-        calls.extend(_calls_from_data(data))
-    return calls
-
-
-_NAME_KEYS = ("tool", "name", "tool_name", "recipient_name")
-_ARG_KEYS = ("arguments", "args", "parameters", "params", "input", "tool_input")
-_LIST_KEYS = ("tool_calls", "calls", "tool_uses", "actions")
-_WRAPPER_TYPES = {"function", "tool", "tool_call", "tool_use", "function_call"}
-
-
-def _calls_from_data(data: Any) -> list[ToolCall]:
-    """Calls from one parsed value: an array of calls, ``{"tool_calls": [...]}``,
-    the OpenAI ``{"function": {"name", "arguments"}}`` shape, or one call."""
-    if isinstance(data, list):
-        calls = [call for item in data for call in _calls_from_data(item)]
-        return calls or [ToolCall(tool="", arguments={}, error="tool call must be a JSON object")]
-    if isinstance(data, dict):
-        named = any(isinstance(data.get(key), str) for key in _NAME_KEYS)
-        if not named:
-            for key in _LIST_KEYS:
-                if isinstance(data.get(key), list):
-                    return _calls_from_data(data[key])
-            function = data.get("function")
-            if isinstance(function, dict):
-                return [_call_from_data(function)]
-            if isinstance(function, str):
-                data = {**data, "tool": function}
-                data.pop("function", None)
-            tool = data.get("tool")
-            if isinstance(tool, dict):
-                return [_call_from_data(tool)]
-    return [_call_from_data(data)]
-
-
-def _call_from_data(data: Any) -> ToolCall:
-    if not isinstance(data, dict):
-        return ToolCall(tool="", arguments={}, error="tool call must be a JSON object")
-    name: Any = None
-    name_key = ""
-    for key in _NAME_KEYS:
-        if isinstance(data.get(key), str) and data[key].strip():
-            name, name_key = data[key], key
-            break
-    if not isinstance(name, str) or not name.strip():
-        return ToolCall(tool="", arguments={}, error="tool call needs a tool name")
-    raw_name = name
-    name = re.sub(r"^(?:functions|tools|tool)\.", "", name.strip())
-    if "ok" in data and ("output" in data or "error" in data) and not any(key in data for key in _ARG_KEYS):
-        return ToolCall(
-            tool=name, arguments={}, error="that is a tool_result; only the program writes results"
-        )
-    arg_key = next((key for key in _ARG_KEYS if key in data), None)
-    if arg_key is not None:
-        arguments = data.get(arg_key)
-    else:
-        arguments = {
-            key: value
-            for key, value in data.items()
-            if key != name_key
-            and not (key in _NAME_KEYS and value == raw_name)
-            and not (key == "type" and str(value).lower() in _WRAPPER_TYPES)
-            and key not in {"function"}
-        }
-    if arguments is None:
-        arguments = {}
-    if isinstance(arguments, str):
-        if not arguments.strip():
-            arguments = {}
-        else:
-            try:
-                arguments = _loads_lenient(arguments)
-            except json.JSONDecodeError as exc:
-                return ToolCall(tool=name, arguments={}, error=f"arguments must be a JSON object: {exc}")
-    if not isinstance(arguments, dict):
-        return ToolCall(tool=name, arguments={}, error="arguments must be a JSON object")
-    return ToolCall(tool=name, arguments=arguments)
-
-
-def _loads_lenient(text: str) -> Any:
-    cleaned = _normalize_json_text(text)
-    candidates = [cleaned, _TRAILING_COMMA_RE.sub(r"\1", cleaned)]
-    repaired = _repair_json(cleaned)
-    if _RAW_WIN_PATH_RE.search(cleaned):
-        # C:\new\tools is valid JSON with a newline and a tab in it. The
-        # repair keeps those backslashes, so it goes first.
-        candidates.insert(0, repaired)
-    elif repaired not in candidates:
-        candidates.append(repaired)
-    for blob in _json_objects(repaired):
-        if blob not in candidates:
-            candidates.append(blob)
-    last_error: json.JSONDecodeError | None = None
-    for candidate in candidates:
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-    if last_error is not None:
-        raise last_error
-    raise json.JSONDecodeError("invalid tool JSON", cleaned, 0)
-
-
-def _normalize_json_text(text: str) -> str:
-    cleaned = text.strip().lstrip("\ufeff")
-    return (
-        cleaned.replace("\u201c", '"')
-        .replace("\u201d", '"')
-        .replace("\u2018", "'")
-        .replace("\u2019", "'")
-    )
-
-
-def _repair_json(text: str) -> str:
-    """Turn the JSON models actually emit into text json.loads can read.
-
-    The usual breaks are a missing comma, a raw newline inside a string,
-    an unquoted key, single quotes, and a quote inside a string that the
-    model did not escape (``name = "test-app"``). Those come back as
-    ``Expecting ',' delimiter`` or ``Expecting value``.
-    """
-    source = text
-    out: list[str] = []
-    index = 0
-    length = len(source)
-    stack: list[str] = []
-    after_value = False
-    expect_key = False
-
-    def skip_space(pos: int) -> int:
-        while pos < length and source[pos] in " \t\r\n":
-            pos += 1
-        return pos
-
-    while index < length:
-        char = source[index]
-        if char in " \t\r\n":
-            out.append(char)
-            index += 1
-            continue
-        if char == "/" and index + 1 < length and source[index + 1] == "/":
-            index += 2
-            while index < length and source[index] not in "\r\n":
-                index += 1
-            continue
-        if char == "/" and index + 1 < length and source[index + 1] == "*":
-            index += 2
-            while index + 1 < length and source[index : index + 2] != "*/":
-                index += 1
-            index = min(length, index + 2)
-            continue
-        triple = source[index : index + 3]
-        if triple in ('"""', "'''") or char == "`":
-            # Python triple quotes or a JS template string: raw text to the closer.
-            closer = triple if triple in ('"""', "'''") else ("```" if triple == "```" else "`")
-            start = index + len(closer)
-            end = source.find(closer, start)
-            if end < 0:
-                end = length
-            if after_value and stack:
-                out.append(",")
-            body = source[start:end]
-            if closer == "```" and "\n" in body:
-                first, rest = body.split("\n", 1)
-                if first.strip().isalnum() or not first.strip():
-                    body = rest
-            out.append(json.dumps(body.replace("\r\n", "\n"), ensure_ascii=False))
-            index = min(length, end + len(closer))
-            if expect_key:
-                expect_key = False
-                after_value = False
-            else:
-                after_value = True
-            continue
-        if char in "\"'":
-            if after_value and stack:
-                out.append(",")
-                expect_key = bool(stack and stack[-1] == "{")
-                after_value = False
-            literal, index = _read_json_string(
-                source, index, char, key=expect_key, container=stack[-1] if stack else ""
-            )
-            out.append(literal)
-            if expect_key:
-                nxt = skip_space(index)
-                if nxt < length and source[nxt] != ":":
-                    out.append(":")
-                expect_key = False
-                after_value = False
-            else:
-                after_value = True
-            continue
-        if char in "{[":
-            if after_value and stack:
-                out.append(",")
-            out.append(char)
-            stack.append(char)
-            after_value = False
-            expect_key = char == "{"
-            index += 1
-            continue
-        if char in "}]":
-            while out and out[-1] in " \t\r\n":
-                out.pop()
-            if out and out[-1] == ",":
-                out.pop()
-            out.append(char)
-            if stack:
-                stack.pop()
-            after_value = True
-            expect_key = False
-            index += 1
-            continue
-        if char == ":":
-            out.append(char)
-            after_value = False
-            expect_key = False
-            index += 1
-            continue
-        if char == ",":
-            if not after_value:
-                index += 1
-                continue
-            out.append(char)
-            after_value = False
-            expect_key = bool(stack and stack[-1] == "{")
-            index += 1
-            continue
-        if char.isalpha() or char in "_$":
-            end = index + 1
-            while end < length and (source[end].isalnum() or source[end] in "_$"):
-                end += 1
-            word = source[index:end]
-            if after_value and stack:
-                out.append(",")
-                after_value = False
-            if word in {"true", "false", "null"}:
-                out.append(word)
-            elif word in {"True", "False", "None", "undefined"}:
-                out.append({"True": "true", "False": "false", "None": "null", "undefined": "null"}[word])
-            else:
-                out.append(json.dumps(word))
-            after_value = True
-            index = end
-            continue
-        if char == "-" or char.isdigit():
-            if after_value and stack:
-                out.append(",")
-            end = index + 1
-            while end < length and source[end] in "0123456789.eE+-":
-                end += 1
-            out.append(source[index:end])
-            after_value = True
-            index = end
-            continue
-        index += 1
-    # A reply that ends before its last braces: close what is still open.
-    while out and out[-1] in " \t\r\n,:":
-        out.pop()
-    for opener in reversed(stack):
-        out.append("}" if opener == "{" else "]")
-    return _TRAILING_COMMA_RE.sub(r"\1", "".join(out))
-
-
-_JSON_STRING_ESCAPES = {
-    "n": "\n",
-    "t": "\t",
-    "r": "\r",
-    '"': '"',
-    "'": "'",
-    "\\": "\\",
-    "/": "/",
-    "b": "\b",
-    "f": "\f",
-}
-
-
-_PATH_LEAD = frozenset(" \t\"'=(,;[{")
-
-
-def _raw_path_start(chars: list[str]) -> bool:
-    """True when the text so far ends in ``C:`` or ``.``/``..`` that starts a path."""
-    if len(chars) >= 2 and chars[-1] == ":" and chars[-2].isalpha():
-        return len(chars) == 2 or chars[-3] in _PATH_LEAD
-    if chars and chars[-1] == ".":
-        before = chars[:-1]
-        if before and before[-1] == ".":
-            before = before[:-1]
-        return not before or before[-1] in _PATH_LEAD
-    return False
-
-
-def _read_json_string(
-    source: str, index: int, quote: str, *, key: bool = False, container: str = ""
-) -> tuple[str, int]:
-    """Read one quoted string, keeping interior quotes and raw newlines."""
-    index += 1
-    length = len(source)
-    chars: list[str] = []
-    raw_paths = False
-    while index < length:
-        char = source[index]
-        if char == "\\":
-            if index + 1 >= length:
-                break
-            escaped = source[index + 1]
-            if not raw_paths and escaped not in "\\\"'" and _raw_path_start(chars):
-                # C:\new\tools written without doubled backslashes: from here
-                # on a backslash is part of the path, not an escape.
-                raw_paths = True
-            if raw_paths and escaped not in "\\\"'":
-                chars.append("\\")
-                index += 1
-                continue
-            if escaped == "u" and index + 5 < length:
-                try:
-                    chars.append(chr(int(source[index + 2 : index + 6], 16)))
-                    index += 6
-                    continue
-                except ValueError:
-                    pass
-            # A single backslash in a Windows path (\gradle, \bin) is not a
-            # JSON escape. Dropping it glues the folders together. \b and \f
-            # before a letter are the same: \bin, not a backspace.
-            if escaped in {"b", "f"} and index + 2 < length and (
-                source[index + 2].isalnum() or source[index + 2] in "._"
-            ):
-                chars.append("\\")
-                chars.append(escaped)
-            elif escaped in _JSON_STRING_ESCAPES:
-                chars.append(_JSON_STRING_ESCAPES[escaped])
-            else:
-                chars.append("\\")
-                chars.append(escaped)
-            index += 2
-            continue
-        if char == quote and _string_ends(source, index, quote, key=key, container=container):
-            return json.dumps("".join(chars), ensure_ascii=False), index + 1
-        if char == "\r":
-            index += 1
-            continue
-        chars.append(char)
-        index += 1
-    return json.dumps("".join(chars), ensure_ascii=False), index
-
-
-def _string_ends(source: str, index: int, quote: str, *, key: bool, container: str = "") -> bool:
-    """True when the quote at index closes the string rather than sitting inside it.
-
-    A value may contain source text such as ``name = "test-app"`` or
-    ``include(":app")``. A following letter, digit, or colon is that text.
-    The quote closes the value when the next token continues the JSON
-    (``,``, ``}``, ``]``) or is the next object key. Inside an object, a
-    comma closes the value only when a key follows it, so source text such
-    as ``print("a", "b")`` stays in the string.
-    """
-    pos = index + 1
-    length = len(source)
-    while pos < length and source[pos] in " \t\r\n":
-        pos += 1
-    if pos >= length:
-        return True
-    nxt = source[pos]
-    if nxt == ",":
-        if key or container != "{":
-            return True
-        return _key_follows(source, pos + 1)
-    if nxt in "}]":
-        return _closer_is_json(source, pos)
-    if nxt == ":":
-        return key
-    if nxt != quote:
-        return (not key) and _json_value_at(source, pos)
-    end = pos + 1
-    escaped = False
-    while end < length:
-        char = source[end]
-        if escaped:
-            escaped = False
-        elif char == "\\":
-            escaped = True
-        elif char == quote:
-            break
-        end += 1
-    end += 1
-    while end < length and source[end] in " \t\r\n":
-        end += 1
-    return end < length and source[end] == ":"
-
-
-def _key_follows(source: str, pos: int) -> bool:
-    """True when ``source[pos:]`` starts with an object key and its colon (or the object ends)."""
-    length = len(source)
-    while pos < length and source[pos] in " \t\r\n":
-        pos += 1
-    if pos >= length or source[pos] in "}]":
-        return True
-    char = source[pos]
-    if char in "\"'":
-        end = source.find(char, pos + 1)
-        if end < 0 or "\n" in source[pos + 1 : end]:
-            return False
-        pos = end + 1
-    elif char.isalpha() or char in "_$":
-        while pos < length and (source[pos].isalnum() or source[pos] in "_$"):
-            pos += 1
-    else:
-        return False
-    while pos < length and source[pos] in " \t":
-        pos += 1
-    return pos < length and source[pos] == ":"
-
-
-def _closer_is_json(source: str, pos: int) -> bool:
-    """True when a ``}`` or ``]`` after a quote closes JSON, not source text.
-
-    ``text = "Hello" }`` is Kotlin. The brace is JSON only when what follows
-    it continues the tool call (a comma, another closer, or the end).
-    """
-    index = pos
-    length = len(source)
-    while index < length and source[index] in "}]":
-        index += 1
-    while index < length and source[index] in " \t\r\n":
-        index += 1
-    if index >= length:
-        return True
-    char = source[index]
-    if char in ",:\"'{[":
-        return True
-    if char.isdigit() or char == "-":
-        return True
-    for word in ("true", "false", "null"):
-        if source.startswith(word, index):
-            return True
-    return False
-
-
-def _json_value_at(source: str, pos: int) -> bool:
-    """True when ``source[pos:]`` is a JSON value that can follow a string."""
-    if source[pos] in "{[":
-        return True
-    for word in ("true", "false", "null"):
-        if not source.startswith(word, pos):
-            continue
-        after = pos + len(word)
-        return after >= len(source) or source[after] in ",}] \t\r\n"
-    return False
-
-
-def _json_objects(text: str) -> list[str]:
-    found: list[str] = []
-    depth = 0
-    in_string = False
-    escaped = False
-    start: int | None = None
-    for index, char in enumerate(text):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-            continue
-        if char == "{":
-            if depth == 0:
-                start = index
-            depth += 1
-            continue
-        if char == "}" and depth:
-            depth -= 1
-            if depth == 0 and start is not None:
-                found.append(text[start : index + 1])
-                start = None
-    return found
-
-
 # --------------------------------------------------------------------------- reply classification
-
-
-def _status_code(text: str) -> str | None:
-    """Return a finish code when the reply is that word, starts with FAILED or BLOCKED, or ends with it."""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return None
-    compact = re.sub(r"[^a-z]+", " ", text.lower()).strip()
-    if compact in _STATUS_WORDS:
-        return _STATUS_WORDS[compact]
-    head = _FAIL_HEAD.match(lines[0])
-    if head:
-        return _STATUS_WORDS[head.group(1).lower()]
-    if len(lines) > 4:
-        return None
-    last = re.sub(r"[^a-z]+", " ", lines[-1].lower()).strip()
-    return _STATUS_WORDS.get(last)
-
-
-def _failure_reason(text: str) -> str:
-    """The sentences after FAILED or BLOCKED. Empty when the reply is only the word."""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    kept: list[str] = []
-    for line in lines:
-        match = _FAIL_HEAD.match(line)
-        if match:
-            if match.group(2).strip():
-                kept.append(match.group(2).strip())
-            continue
-        if re.sub(r"[^a-z]+", " ", line.lower()).strip() in _STATUS_WORDS:
-            continue
-        kept.append(line)
-    return " ".join(kept).strip()
-
-
-def _normalized(text: str) -> str:
-    return text.lower().replace("\u2019", "'").replace("\u2018", "'")
-
-
-def _no_edit_needed(text: str) -> bool:
-    """True when the model says the task needs no further edit."""
-    if _status_code(text) in _STATUS_OK:
-        return True
-    normalized = _normalized(text)
-    if any(marker in normalized for marker in ("i'll ", "i will ", "let me ", "going to ", "next i")):
-        return False
-    markers = (
-        "no edit needed", "no edits needed", "no edit is needed", "no further edit",
-        "no further change", "no change needed", "no changes needed", "nothing to change",
-        "nothing to edit", "already present", "already done", "already applied",
-        "already contains", "already in the file", "no modification", "does not need an edit",
-        "does not need to edit", "do not need to edit", "don't need to edit", "no additional change",
-    )
-    return any(marker in normalized for marker in markers)
-
-
-_REFUSAL_MARKERS = (
-    "i can't", "i cannot", "unable", "not able", "aren't available", "are not available",
-    "not available", "isn't available", "not exposed", "not expose", "tool interface",
-    "no tool", "no repository",
-    "file-operation", "file operation", "don't have", "do not have", "i won't", "i will not",
-)
-_QUESTION_MARKERS = (
-    "what would you like", "what should i", "would you like", "let me know", "for example",
-    "shall i", "do you want", "what do you want",
-)
-_PROMISE_MARKERS = ("i'll ", "i will ", "let me ", "next i", "going to ")
-#: The model handing the work back: "build it yourself", "run this in Android Studio".
-_HAND_BACK_RE = re.compile(
-    r"(?:\b(?:yourself|manually)\b"
-    r"|\bon your (?:machine|computer|system|side|end|local)\b"
-    r"|\b(?:please|you can|you could|you should|you(?:'ll| will)? need to|you may need to|you must|kindly)\s+"
-    r"(?:\w+\s+){0,2}(?:run|build|execute|install|open|launch|rebuild|sync|try running)\b"
-    r"|\b(?:open|build|run|sync)\b[^.\n]{0,40}\bin android studio\b"
-    r"|\brun (?:the following|these|this) commands?\b"
-    r"|\bi (?:can(?:no|')t|am unable to|'m unable to|do not have the ability to|don't have the ability to) (?:run|execute|build)\b)",
-    re.I,
-)
-MAX_HAND_BACKS = 2
-
-
-def _hands_back(text: str) -> bool:
-    """True when the reply tells the user to run, build, or install something themselves."""
-    return bool(_HAND_BACK_RE.search(_hide_tool_markup(text or "")))
-
-
-def _refuses(text: str) -> bool:
-    normalized = _normalized(text)
-    return any(marker in normalized for marker in _REFUSAL_MARKERS)
-
-
-def _stalls(text: str) -> bool:
-    """True when the reply asks the user, refuses, or only promises work."""
-    normalized = _normalized(text)
-    if "?" in normalized:
-        return True
-    markers = _QUESTION_MARKERS + _REFUSAL_MARKERS + _PROMISE_MARKERS
-    return any(marker in normalized for marker in markers)
-
-
-def _asks_user(text: str) -> bool:
-    normalized = _normalized(text)
-    return any(marker in normalized for marker in _QUESTION_MARKERS)
-
-
-def _only_promises(text: str) -> bool:
-    """True when the reply only says it will go look, and has not answered yet."""
-    return bool(_PROMISE_START_RE.match(_normalized(text).strip()))
-
-
-def _answer_only(task: str) -> bool:
-    """True when the user asked a question and did not ask for a file change.
-
-    A question that also says to fix or add something is still a task: the
-    answer and the tool calls belong in the same reply.
-    """
-    text = " ".join(task.split())
-    if not text or _asks_for_change(text):
-        return False
-    if text.endswith("?"):
-        return True
-    return bool(_ANSWER_TASK_RE.match(text))
-
-
-def _plan_text(reply: str) -> str | None:
-    parts = [part.strip() for part in _PLAN_RE.findall(reply)]
-    if parts:
-        return "\n".join(part for part in parts if part)
-    bare = _BLOCK_RE.sub("", reply).strip()
-    if bare and _UNTAGGED_PLAN_RE.search(bare):
-        return bare
-    return None
-
-
-def _idle_tool_reply(detail: Any, reply: str) -> bool:
-    """True when an idle reply contains a tool tag that did not finish."""
-    if not isinstance(detail, dict) or detail.get("completion") != COMPLETION_IDLE:
-        return False
-    if "<tool_call" not in reply.lower():
-        return False
-    calls, unclosed = parse_tool_calls(reply)
-    return unclosed or not calls
-
-
-def _asks_for_change(task: str) -> bool:
-    return bool(_EDIT_TASK_RE.search(task))
-
-
-def _provider_error(reply: str) -> str | None:
-    """The chat page's own error text (or nothing) in place of a model reply."""
-    text = (reply or "").strip()
-    if not text:
-        return "the chat page returned an empty reply"
-    if len(text) > _PROVIDER_ERROR_MAX or _OPEN_RE.search(text):
-        return None
-    match = _PROVIDER_ERROR_RE.search(text)
-    if match is None:
-        return None
-    return f"the chat page said: {_one_line(text, 120)}"
-
-
-def _real_question(reply: str) -> str:
-    """The question when a reply genuinely asks the user something, else "".
-
-    Questions that only stall (what should I change, shall I proceed, may I)
-    and refusals are not real questions: the task already says what to do.
-    """
-    text = _hide_tool_markup(reply).strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines or not lines[-1].endswith("?") or len(text) > 1_500:
-        return ""
-    normalized = _normalized(text)
-    if _refuses(text) or any(marker in normalized for marker in _QUESTION_MARKERS + _PERMISSION_MARKERS):
-        return ""
-    return text
-
-
-def _diffstat(diff: str) -> str:
-    """``a.py +3 -1, b.py +10 -0`` from a unified diff."""
-    counts: dict[str, list[int]] = {}
-    current = ""
-    old = ""
-    lines = diff.splitlines()
-    for number, line in enumerate(lines):
-        header = number + 1 < len(lines) and lines[number + 1].startswith("+++ ")
-        if line.startswith("--- ") and header:
-            old = re.sub(r"^--- (?:a/)?", "", line).strip()
-            current = ""
-        elif line.startswith("+++ ") and number > 0 and lines[number - 1].startswith("--- "):
-            current = re.sub(r"^\+\+\+ (?:b/)?", "", line).strip()
-            if current == "/dev/null":
-                current = old if old != "/dev/null" else ""
-            if current:
-                counts.setdefault(current, [0, 0])
-        elif current and line.startswith("+"):
-            counts[current][0] += 1
-        elif current and line.startswith("-"):
-            counts[current][1] += 1
-    return ", ".join(f"{path} +{add} -{rem}" for path, (add, rem) in counts.items())
-
-
-def _has_checks(workspace: Path) -> bool:
-    """True when the workspace has tests or a build the model could run."""
-    try:
-        return any((workspace / marker).exists() for marker in _TEST_MARKERS)
-    except OSError:
-        return False
-
-
-def _call_key(call: ToolCall) -> str:
-    name = canonical_tool(call.tool) or call.tool
-    return name + ":" + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)
-
-
-def _keywords(task: str) -> list[str]:
-    words: list[str] = []
-    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.\-/]{2,}", task):
-        words.append(token)
-        words.extend(code_index.split_ident(Path(token).stem))
-    stop = {"the", "and", "for", "with", "this", "that", "from", "into", "file", "files", "code", "test", "tests"}
-    seen: list[str] = []
-    for word in words:
-        lowered = word.lower()
-        if lowered in stop or len(lowered) < 3 or lowered in seen:
-            continue
-        seen.append(lowered)
-    return seen[:20]
 
 
 # --------------------------------------------------------------------------- prompt file
@@ -4470,20 +3469,6 @@ def use_ui(module: Any) -> None:
     all output, approvals, and questions to ``module``. ``None`` goes back to NullUI.
     """
     globals()["agent_ui"] = module if module is not None else ui_api.NullUI()
-
-
-def _one_line(text: str, limit: int = 120) -> str:
-    compact = " ".join(str(text).split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3] + "..."
-
-
-def _cap(text: str, limit: int) -> str:
-    if limit <= 0 or len(text) <= limit:
-        return text
-    note = "\n...[truncated; narrow with path, offset, or a tighter pattern]"
-    return text[: max(0, limit - len(note))] + note
 
 
 def _paint(text: str, color: str) -> str:

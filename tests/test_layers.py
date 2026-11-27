@@ -70,6 +70,8 @@ LAYERS: dict[str, int] = {
     "extensions": TOOLS,
     # engine: the agent loop; sees models and the UI only through interfaces
     "agent": ENGINE,
+    # engine/ (a package): the loop, dispatch, modes, stop rules, delegate, contracts, the API
+    "engine": ENGINE,
     "agent_helpers": ENGINE,
     "ui_api": ENGINE,
     "openai_format": ENGINE,
