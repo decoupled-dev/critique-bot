@@ -560,7 +560,7 @@ class MemoryStore:
                 f"WHERE id IN ({','.join('?' * len(rows))})", [item for item, _s in rows])}  # nosec B608: marks only
             scored = blend(words, _bm25_to_unit(rows), texts)[:limit]
         else:
-            sql = "SELECT id, task, root_cause, fix_summary, symbols, files_changed FROM episodes e WHERE 1 = 1" + trust
+            sql = "SELECT id, task, root_cause, fix_summary, symbols, files_changed FROM episodes e WHERE 1 = 1" + trust  # nosec B608: trust is fixed text
             docs = [(int(r[0]), " ".join(str(r[k]) for k in range(1, 6))) for r in self.conn.execute(sql)]
             scored = simple_scores(words, docs)[:limit]
         out = []

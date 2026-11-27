@@ -166,7 +166,11 @@ def run(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
             query = str(args.get("query") or args.get("text") or "").strip()
             if not query:
                 return False, "search needs query: words, a symbol, an error text or a path"
-            found = search(store, query, kind=str(args.get("kind") or "").lower(), limit=int(args.get("limit") or 12),
+            try:
+                count = max(1, min(int(args.get("limit") or 12), 50))
+            except (TypeError, ValueError):
+                count = 12
+            found = search(store, query, kind=str(args.get("kind") or "").lower(), limit=count,
                            workspace=workspace, include_untrusted=include_untrusted)
             if not found:
                 return True, f"nothing in project memory for {query[:60]!r}"
