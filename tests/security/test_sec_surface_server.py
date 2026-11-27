@@ -5,7 +5,10 @@ stopped by each test (the harness of tests/test_server.py)."""
 from __future__ import annotations
 
 import socket
+import threading
+import time
 import unittest
+from unittest import mock
 
 import test_00_isolation  # noqa: F401  (this package sorts before it: isolate HOME/CRIT_HOME first)
 from test_server import _ServerCase  # noqa: E402  (a TestCase with no tests of its own)
@@ -33,14 +36,41 @@ class ServerAuthHoldsTest(_ServerCase):
 
 
 class ServerIdleConnectionTest(_ServerCase):
-    # SECURITY FINDING SF-10: no socket timeout; an unauthenticated client holds a server thread forever.
-    @unittest.expectedFailure
+    # SECURITY FINDING SF-10 (fixed): no socket timeout; an unauthenticated client holds a server thread forever.
     def test_an_unauthenticated_idle_connection_is_dropped(self) -> None:
         # Demonstration (manual): connect, send "GET /v1/health HTTP/1.1\r\n" and nothing more; the
         # connection stays open indefinitely, one thread each (ThreadingHTTPServer, no limit).
         handler = self.app.httpd.RequestHandlerClass
         self.assertIsNotNone(getattr(handler, "timeout", None), "the request handler has no socket timeout")
 
+
+    def _connect(self) -> socket.socket:
+        host, port = self.url.split("//", 1)[1].rsplit(":", 1)
+        conn = socket.create_connection((host, int(port)), timeout=10)
+        self.addCleanup(conn.close)
+        return conn
+
+    def test_a_half_sent_request_is_closed_after_the_timeout(self) -> None:
+        handler = self.app.httpd.RequestHandlerClass
+        with mock.patch.object(handler, "timeout", 0.5):
+            conn = self._connect()
+            conn.sendall(b"GET /v1/health HTTP/1.1\r\n")  # and never the rest of the headers
+            started = time.monotonic()
+            self.assertEqual(conn.recv(4096), b"", "the server closes the connection")
+        self.assertLess(time.monotonic() - started, 8)
+
+    def test_an_authorized_client_still_works(self) -> None:
+        status, _ = self.call("GET", "/v1/health")
+        self.assertEqual(status, 200)
+
+    def test_connections_over_the_cap_are_closed_at_once(self) -> None:
+        self.app.httpd.slots = threading.BoundedSemaphore(1)
+        busy = self._connect()
+        busy.sendall(b"GET /v1/health HTTP/1.1\r\n")  # holds the only slot
+        time.sleep(0.3)
+        extra = self._connect()
+        extra.sendall(b"GET /v1/health HTTP/1.1\r\nConnection: close\r\n\r\n")
+        self.assertEqual(extra.recv(4096), b"", "over the cap: closed without an answer")
 
 if __name__ == "__main__":
     unittest.main()

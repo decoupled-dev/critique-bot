@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """macOS backend: ``sandbox-exec -p <profile>`` with a generated Seatbelt (SBPL) profile.
 
-The profile denies by default, then allows running programs, reading files (secret paths
-denied again), writing only in the workspace, caches, and temp folders (crit's own files
+The profile denies by default, then allows running programs, looking up a short list of
+system services (:data:`MACH_SERVICES`, not every daemon), reading files (secret paths denied
+again), writing only in the workspace, caches, and temp folders (crit's own files
 denied again), and network only to the egress proxy on localhost. ``sandbox-exec`` is
 deprecated by Apple but present on every macOS release and used the same way by other
 coding agents; :func:`profile` is unit-tested, the real run needs a Mac.
@@ -48,6 +49,33 @@ def _temp_roots() -> list[str]:
     return list(dict.fromkeys(roots))
 
 
+#: The system services a sandboxed command may look up (mach-lookup). A blanket
+#: ``(allow mach-lookup)`` lets a command ask daemons such as ``nsurlsessiond``, ``mDNSResponder``
+#: (DNS) or ``securityd`` (the keychain) to work for it outside the sandbox, past the network and
+#: secret rules. These are the ones command-line tools need: user and group lookups, logging,
+#: notifications, preferences, temp folders, file events, TLS certificate checks.
+MACH_SERVICES = (
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.system.opendirectoryd.membership",
+    "com.apple.system.DirectoryService.libinfo_v1",
+    "com.apple.system.logger",
+    "com.apple.logd",
+    "com.apple.system.notification_center",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.cfprefsd.agent",
+    "com.apple.bsd.dirhelper",
+    "com.apple.FSEvents",
+    "com.apple.PowerManagement.control",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+)
+#: Never: they act for the caller outside the sandbox (``open`` a URL in the browser, DNS, the
+#: keychain, background downloads). Kept as a list so the tests can say so.
+MACH_DENIED = ("com.apple.coreservices.launchservicesd", "com.apple.lsd.mapdb", "com.apple.dnssd.service",
+               "com.apple.SecurityServer", "com.apple.securityd", "com.apple.nsurlsessiond",
+               "com.apple.nsurlsessiond.NSURLSessionProxyService")
+
+
 def profile(policy: Policy, *, temp_roots: list[str] | None = None) -> str:
     """The Seatbelt profile text for ``policy``."""
     lines = [
@@ -58,7 +86,7 @@ def profile(policy: Policy, *, temp_roots: list[str] | None = None) -> str:
         "(allow signal (target same-sandbox))",
         "(allow process-info* (target same-sandbox))",
         "(allow sysctl-read)",
-        "(allow mach-lookup)",
+        "(allow mach-lookup " + " ".join(f"(global-name {quote(name)})" for name in MACH_SERVICES) + ")",
         "(allow ipc-posix-shm)",
         "(allow ipc-posix-sem)",
         "(allow iokit-open)",

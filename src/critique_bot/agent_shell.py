@@ -2804,7 +2804,13 @@ def _apply_sandbox(session: Any, wanted: Any, *, offline: bool, home: Path | Non
     )
     where = "the workspace and build caches" if policy.mode == sandbox.WORKSPACE_WRITE else "nothing (read-only)"
     net = ("the egress allow-list through crit's proxy" if policy.network == "proxy" else "no network")
-    return f"commands run sandboxed ({policy.mode}, {found.backend}): they may write {where}; {net}"
+    note = f"commands run sandboxed ({policy.mode}, {found.backend}): they may write {where}; {net}"
+    if not policy.env_scan_complete:
+        audit.record("sandbox", event="env_scan_incomplete", workspace=str(policy.workspace))
+        note += (". The project is too big to find every .env file: one the scan did not reach is readable by "
+                 "commands (crit's own file tools still ask before reading any). List them in "
+                 '"sandbox": {"masked": [...]} to hide them')
+    return note
 
 
 # --------------------------------------------------------------------------- compatibility

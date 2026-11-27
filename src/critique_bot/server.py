@@ -123,6 +123,36 @@ def read_server_info() -> dict[str, Any] | None:
     return info if isinstance(info, dict) else None
 
 
+#: Connections served at once; more are closed at once (SF-10: a local client cannot pile up threads).
+MAX_CONNECTIONS = 64
+#: Seconds a connection may sit before it has sent an authorized request (SF-10). Once the token
+#: checks out the connection has no timeout (an event stream stays open as long as it is read).
+IDLE_TIMEOUT_S = 30.0
+
+
+class _BoundedServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that serves at most ``MAX_CONNECTIONS`` connections at once."""
+
+    slots: threading.BoundedSemaphore
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self.slots.acquire(blocking=False):
+            log.warn(f"serve: more than {MAX_CONNECTIONS} connections; one from {client_address} closed")
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 class CritServer:
     """The HTTP server around an :class:`Engine`."""
 
@@ -137,8 +167,8 @@ class CritServer:
         handler = type("Handler", (_Handler,), {"app": self})
         try:
             family = socket.AF_INET6 if ":" in host.strip("[]") else socket.AF_INET
-            server_class = type("Server", (ThreadingHTTPServer,), {"address_family": family,
-                                                                    "daemon_threads": True})
+            server_class = type("Server", (_BoundedServer,), {"address_family": family, "daemon_threads": True,
+                                                               "slots": threading.BoundedSemaphore(MAX_CONNECTIONS)})
             self.httpd = server_class((host.strip("[]"), port), handler)
         except OSError as exc:
             raise ServerError(f"cannot listen on {host}:{port}: {exc}") from exc
@@ -428,6 +458,8 @@ def _int_query(query: dict[str, list[str]], key: str, default: int) -> int:
 
 class _Handler(BaseHTTPRequestHandler):
     app: CritServer
+    #: Until a request is authorized: a client that never finishes its headers is dropped.
+    timeout = IDLE_TIMEOUT_S
     protocol_version = "HTTP/1.1"
     server_version = f"crit/{__version__}"
     sys_version = ""
@@ -458,7 +490,10 @@ class _Handler(BaseHTTPRequestHandler):
             status, payload = result if isinstance(result, tuple) else (200, result)
             self._json(status, payload)
         except HttpError as exc:
-            self._json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
+            try:
+                self._json(exc.status, {"error": {"code": exc.code, "message": exc.message}})
+            except OSError:
+                pass  # the client is gone
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # noqa: BLE001 - a request never takes the server down
@@ -474,6 +509,10 @@ class _Handler(BaseHTTPRequestHandler):
         if scheme.lower() != "bearer" or not hmac.compare_digest(given.strip().encode(), self.app.token.encode()):
             raise HttpError(401, "unauthorized", "a bearer token is required (crit serve wrote it to "
                                                  f"{token_file()})")
+        try:
+            self.connection.settimeout(None)  # the token holder's streams may stay open
+        except OSError:
+            pass
 
     def _body(self) -> Any:
         length = self.headers.get("Content-Length")

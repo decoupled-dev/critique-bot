@@ -13,10 +13,13 @@ Mode                   Filesystem                                          Netwo
 ``full``               the user's own rights (no sandbox)                   the egress policy
 =====================  ==================================================  ===========================
 
-In both sandboxed modes secret paths are masked (``~/.ssh``, ``~/.aws``, ``~/.config/gcloud``,
-``~/.crit``, ``~/.netrc``, the workspace's ``.env*`` files, ...), and crit's own files in the
-workspace (``.crit/settings.json``, ``.crit/skills``) plus ``.git/config`` and ``.git/hooks``
-are read-only, so a command cannot loosen crit's rules or plant code that runs later.
+In both sandboxed modes secret paths are masked (``~/.ssh``, ``~/.aws``, ``~/.npmrc``, ``~/.crit``,
+``~/.netrc``, the workspace's ``.env*`` files at any depth, ...: :data:`SECRET_HOME_PATHS`), and
+crit's own files in the workspace (``.crit/settings.json``, ``.crit/skills``) plus ``.git/config``
+and ``.git/hooks`` are read-only, so a command cannot loosen crit's rules or plant code that runs
+later. For the same reason the files in the writable caches that a tool runs on its next run
+(``~/.gradle/init.gradle``, ``init.d``, ``gradle.properties``, ``~/.m2/settings.xml``,
+``ccache.conf``: :data:`CACHE_AUTORUN`) are read-only and cannot be created.
 
 Backends: Linux uses bubblewrap (:mod:`.linux`), macOS ``sandbox-exec`` with a generated
 profile (:mod:`.macos`). Windows has no backend yet (:mod:`.windows`): commands run as today,
@@ -26,7 +29,7 @@ explains the fix).
 
 Tools layer. Settings come from ``"sandbox"`` in ``.crit/settings.json`` (or config.json):
 ``"workspace-write"`` or ``{"mode": ..., "writable": [...], "preset": "aosp", "env_files": false,
-"ports": [5037]}``. ``sandbox`` is in ``project_home.SECURITY_KEYS``: a committed settings file
+"ports": [5037], "masked": [...], "unmask": [...]}``. ``sandbox`` is in ``project_home.SECURITY_KEYS``: a committed settings file
 cannot set it.
 """
 
@@ -38,6 +41,8 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
+
+from critique_bot.secret_paths import HOME_CREDENTIALS
 
 READ_ONLY = "read-only"
 WORKSPACE_WRITE = "workspace-write"
@@ -59,13 +64,29 @@ PRESETS: dict[str, dict[str, Any]] = {
 #: Loopback ports on the host a sandboxed command may reach (the adb server).
 DEFAULT_PORTS = (5037,)
 
-#: Secret locations in the home folder, masked in both sandboxed modes.
-SECRET_HOME_PATHS = (
-    "~/.ssh", "~/.aws", "~/.azure", "~/.config/gcloud", "~/.gnupg", "~/.kube", "~/.docker",
-    "~/.netrc", "~/.git-credentials", "~/.pypirc", "~/.pgpass", "~/.vault-token", "~/.password-store",
-    "~/.config/gh", "~/.config/glab-cli", "~/.config/hub", "~/.terraform.d", "~/.local/share/keyrings",
-    "~/.mozilla", "~/.config/google-chrome", "~/.config/chromium", "~/.config/microsoft-edge",
-)
+#: Secret locations in the home folder, masked in both sandboxed modes. The list lives in
+#: :mod:`critique_bot.secret_paths` (core) so redaction can share it.
+SECRET_HOME_PATHS = HOME_CREDENTIALS
+#: Files in a writable cache that a tool runs or obeys on its next run, also a run outside the
+#: sandbox (Gradle init scripts and ``org.gradle.jvmargs``, Maven's settings, ccache's config,
+#: whose ``compiler_check`` can be a command). They stay read-only, and cannot be created.
+CACHE_AUTORUN: dict[str, tuple[str, ...]] = {
+    "~/.gradle": ("init.gradle", "init.gradle.kts", "init.d", "gradle.properties"),
+    "~/.m2": ("settings.xml", "settings-security.xml", "toolchains.xml"),
+    "~/.ccache": ("ccache.conf",),
+    "~/.cache/ccache": ("ccache.conf",),
+}
+#: In these caches the top folder itself stays read-only, so a missing auto-run file cannot be
+#: created; each existing entry below it (but the auto-run ones) is writable, and the usual ones
+#: are made up front so a first build can fill them.
+CACHE_SUBDIRS: dict[str, tuple[str, ...]] = {
+    "~/.gradle": ("caches", "wrapper", "daemon", "native", "jdks", "notifications", ".tmp", "kotlin-profile",
+                  "build-scan-data", "workers"),
+    "~/.m2": ("repository", "wrapper"),
+}
+#: The .env scan stops after this many folders or seconds and says so (see :func:`env_files`).
+ENV_SCAN_DIRS = 200_000
+ENV_SCAN_SECONDS = 5.0
 #: Workspace files kept read-only inside the sandbox (crit's own rules, git's code hooks).
 PROTECTED_WORKSPACE = (".crit/settings.json", ".crit/skills", ".crit/AGENT.md", ".git/config", ".git/hooks")
 
@@ -86,6 +107,10 @@ class Settings:
     ports: tuple[int, ...] = DEFAULT_PORTS
     #: Set when the mode was asked for explicitly (not the default).
     explicit: bool = False
+    #: More paths to mask (files or folders; relative ones are in the workspace).
+    masked: tuple[str, ...] = ()
+    #: Credential paths from :data:`SECRET_HOME_PATHS` that stay readable (a build needs ``~/.m2/settings.xml``).
+    unmask: tuple[str, ...] = ()
 
 
 def parse_settings(value: Any, default: Any = None) -> Settings:
@@ -101,9 +126,10 @@ def parse_settings(value: Any, default: Any = None) -> Settings:
         return replace(base, mode=mode, explicit=True)
     if not isinstance(value, Mapping):
         raise ValueError('"sandbox" must be a mode name ("read-only", "workspace-write", "full") or an object')
-    unknown = sorted(set(value) - {"mode", "writable", "preset", "env_files", "ports"})
+    known = {"mode", "writable", "preset", "env_files", "ports", "masked", "unmask"}
+    unknown = sorted(set(value) - known)
     if unknown:
-        raise ValueError(f'"sandbox" has unknown keys: {", ".join(unknown)} (known: mode, writable, preset, env_files, ports)')
+        raise ValueError(f'"sandbox" has unknown keys: {", ".join(unknown)} (known: {", ".join(sorted(known))})')
     mode = _mode(value["mode"]) if value.get("mode") not in (None, "") else base.mode
     writable = value.get("writable", base.writable)
     if isinstance(writable, str):
@@ -119,9 +145,17 @@ def parse_settings(value: Any, default: Any = None) -> Settings:
     ports = value.get("ports", base.ports)
     if not isinstance(ports, (list, tuple)) or not all(isinstance(p, int) and not isinstance(p, bool) and 0 < p < 65536 for p in ports):
         raise ValueError('"sandbox.ports" must be a list of port numbers')
+    lists = {}
+    for key in ("masked", "unmask"):
+        items = value.get(key, getattr(base, key))
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, (list, tuple)) or not all(isinstance(item, str) and item.strip() for item in items):
+            raise ValueError(f'"sandbox.{key}" must be a list of paths')
+        lists[key] = tuple(item.strip() for item in items)
     return Settings(
         mode=mode, writable=tuple(item.strip() for item in writable), preset=preset, env_files=env_files,
-        ports=tuple(ports), explicit=value.get("mode") not in (None, "") or base.explicit,
+        ports=tuple(ports), explicit=value.get("mode") not in (None, "") or base.explicit, **lists,
     )
 
 
@@ -160,6 +194,8 @@ class Policy:
     ports: tuple[int, ...] = ()
     #: Expose USB devices (adb/fastboot to a phone or head unit) in workspace-write.
     usb: bool = False
+    #: False when the workspace was too big to scan for every ``.env`` file (some may be readable).
+    env_scan_complete: bool = True
 
     @property
     def sandboxed(self) -> bool:
@@ -198,14 +234,37 @@ def _expand(item: str, workspace: Path, home: Path) -> Path:
     return path if path.is_absolute() else workspace / path
 
 
-def _env_files(workspace: Path, *, limit_dirs: int = 400) -> list[Path]:
-    """``.env``, ``.env.*``, ``*.env``, ``.envrc`` near the top of the workspace (bounded scan)."""
+_ENV_SKIP = frozenset({".git", "out", "node_modules", "build", ".gradle", ".crit", ".repo", "prebuilts", "external"})
+
+
+def is_env_name(name: str) -> bool:
+    """``.env``, ``.env.*``, ``*.env``, ``.envrc`` (any case)."""
+    lower = name.lower()
+    return lower == ".env" or lower.startswith(".env.") or lower == ".envrc" or lower.endswith(".env")
+
+
+def env_files(
+    workspace: Path, *, limit_dirs: int | None = None, limit_seconds: float | None = None,
+) -> tuple[list[Path], bool]:
+    """The workspace's ``.env`` files at any depth, and whether the scan finished.
+
+    Generated and third-party folders (``out``, ``node_modules``, ``build``, ``prebuilts``,
+    ``external``, ``.git``, ``.repo``) are not entered. The scan stops after ``limit_dirs``
+    folders or ``limit_seconds`` (a huge tree): it then returns False, and the caller says so,
+    since a ``.env`` it did not reach stays readable.
+    """
+    import time
+    from collections import deque
+
+    max_dirs = ENV_SCAN_DIRS if limit_dirs is None else limit_dirs
+    deadline = time.monotonic() + (ENV_SCAN_SECONDS if limit_seconds is None else limit_seconds)
     found: list[Path] = []
-    skip = {".git", "out", "node_modules", "build", ".gradle", ".crit", ".repo", "prebuilts", "external"}
-    queue: list[tuple[Path, int]] = [(workspace, 0)]
+    queue: deque[Path] = deque([workspace])  # breadth first: when it stops, the shallow ones are done
     seen = 0
-    while queue and seen < limit_dirs:
-        folder, depth = queue.pop(0)
+    while queue:
+        if seen >= max_dirs or (seen % 256 == 0 and time.monotonic() > deadline):
+            return found, False
+        folder = queue.popleft()
         seen += 1
         try:
             entries = list(os.scandir(folder))
@@ -218,13 +277,17 @@ def _env_files(workspace: Path, *, limit_dirs: int = 400) -> list[Path]:
             except OSError:
                 continue
             if is_dir:
-                if depth < 2 and name not in skip:
-                    queue.append((Path(entry.path), depth + 1))
+                if name not in _ENV_SKIP:
+                    queue.append(Path(entry.path))
                 continue
-            lower = name.lower()
-            if lower == ".env" or lower.startswith(".env.") or lower == ".envrc" or lower.endswith(".env"):
+            if is_env_name(name):
                 found.append(Path(entry.path))
-    return found
+    return found, True
+
+
+def _env_files(workspace: Path, *, limit_dirs: int | None = None) -> list[Path]:
+    """The ``.env`` files :func:`env_files` finds (compatibility name)."""
+    return env_files(workspace, limit_dirs=limit_dirs)[0]
 
 
 def git_dirs(workspace: Path) -> tuple[list[Path], list[Path]]:
@@ -302,13 +365,17 @@ def build_policy(
             real = _real(item)
             if real.exists() and real not in writable:
                 writable.append(real)
+    autorun = _cache_autorun(home_dir, make=make_caches and settings.mode == WORKSPACE_WRITE)
+    if settings.mode == WORKSPACE_WRITE:
+        writable = _split_caches(writable, home_dir, autorun, make=make_caches)
     git_writable, git_protected = git_dirs(root)
     if settings.mode == WORKSPACE_WRITE:
         writable += [item for item in git_writable if item not in writable and not _within(item, root)]
     masked: list[Path] = []
-    for item in SECRET_HOME_PATHS:
+    unmask = {_real(_expand(item, root, home_dir)) for item in settings.unmask}
+    for item in (*SECRET_HOME_PATHS, *settings.masked):
         path = _expand(item, root, home_dir)
-        if os.path.lexists(path):
+        if os.path.lexists(path) and _real(path) not in unmask:
             masked.append(_real(path))
     crit_home = _crit_home(home_dir)
     if crit_home is not None and os.path.lexists(crit_home) and not _within(root, _real(crit_home)):
@@ -322,10 +389,13 @@ def build_policy(
     run_user = Path(f"/run/user/{os.getuid()}") if hasattr(os, "getuid") else None
     if run_user is not None and run_user.is_dir():
         masked.append(run_user)  # ssh-agent and gpg-agent sockets, the session bus
+    env_complete = True
     if not settings.env_files:
-        masked += [_real(item) for item in _env_files(root)]
+        found_env, env_complete = env_files(root)
+        masked += [_real(item) for item in found_env]
     protected = [_real(root / item) for item in PROTECTED_WORKSPACE if os.path.lexists(root / item)]
     protected += [item for item in git_protected if item not in protected]
+    protected += [item for item in autorun if item not in protected]
     readable: list[Path] = []
     for item in {sys.prefix, sys.base_prefix, str(Path(__file__).resolve().parents[1])}:
         real = _real(item)
@@ -346,7 +416,69 @@ def build_policy(
         proxy_port=proxy_port,
         ports=tuple(dict.fromkeys(ports)) if (proxy_socket or proxy_port) else (),
         usb=settings.mode == WORKSPACE_WRITE and os.path.isdir("/dev/bus/usb"),
+        env_scan_complete=env_complete,
     )
+
+
+def _cache_autorun(home: Path, *, make: bool) -> list[Path]:
+    """The auto-run files of the caches (:data:`CACHE_AUTORUN`), whether they exist or not.
+
+    ``make``: a missing ``ccache.conf`` in an existing ccache folder is made empty (ccache's
+    defaults), so it can be bound read-only; Gradle's and Maven's are kept out by
+    :func:`_split_caches` instead, since an empty file there would change what the tool does.
+    """
+    found: list[Path] = []
+    for cache, names in CACHE_AUTORUN.items():
+        folder = _expand(cache, home, home)
+        for name in names:
+            path = folder / name
+            if make and cache not in CACHE_SUBDIRS and folder.is_dir() and not os.path.lexists(path):
+                try:
+                    with open(path, "x", encoding="utf-8"):
+                        pass
+                except OSError:
+                    pass
+            real = _real(path)
+            if real not in found:
+                found.append(real)
+    return found
+
+
+def _split_caches(writable: list[Path], home: Path, autorun: list[Path], *, make: bool) -> list[Path]:
+    """``writable`` with each cache of :data:`CACHE_SUBDIRS` replaced by the entries below it.
+
+    The cache's own folder stays read-only, so ``init.gradle`` or ``settings.xml`` cannot be
+    created there; every other entry is writable as before. Nothing inside an auto-run path is.
+    """
+    roots = {_real(_expand(cache, home, home)): names for cache, names in CACHE_SUBDIRS.items()}
+    out: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path in out or path == Path("/") or path == home or any(_within(path, item) for item in autorun):
+            return
+        out.append(path)
+
+    for item in writable:
+        names = roots.get(item)
+        if names is None:
+            add(item)
+            continue
+        if make:
+            for name in names:
+                try:
+                    (item / name).mkdir(exist_ok=True)
+                except OSError:
+                    pass
+        try:
+            children = sorted(os.scandir(item), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in children:
+            child = Path(entry.path)
+            if _real(child) in autorun or child in autorun:
+                continue
+            add(_real(child))
+    return out
 
 
 def _crit_home(home: Path) -> Path | None:

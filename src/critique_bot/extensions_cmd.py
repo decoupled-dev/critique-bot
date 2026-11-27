@@ -302,7 +302,11 @@ def main_mcp(argv: list[str]) -> int:
             pinned = mcp_client.pin_tools(server.name, listed)
             blocked = {name for name, _, _ in pinned.changed}
             for tool in listed:
-                state = "CHANGED (crit mcp approve)" if tool["name"] in blocked else "pinned"
+                state = "pinned"
+                if tool["name"] in pinned.added:
+                    state = "NEW (crit mcp approve)"
+                elif tool["name"] in blocked:
+                    state = "CHANGED (crit mcp approve)"
                 first = str(tool.get("description") or "").split("\n", 1)[0][:90]
                 print(f"  {mcp_client.tool_name(server.name, tool['name']):40} {state:26} {first}")
         return 0
@@ -325,7 +329,7 @@ def main_mcp(argv: list[str]) -> int:
         print(f"Nothing changed on {chosen.name}: its tools match the pinned definitions.")
         return 0
     for name, old, new in changed:
-        print(f"--- {chosen.name}/{name}")
+        print(f"--- {chosen.name}/{name}" + (" (new since the server was pinned)" if name in pinned.added else ""))
         print(mcp_client.definition_diff(old, new))
     if not args.yes:
         answer = input("Pin these definitions? Text in a description is read by the model as instructions. [y/N] ")

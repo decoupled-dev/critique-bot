@@ -94,8 +94,25 @@ class McpServer:
         return f"{self.name}: runs {' '.join(self.command)[:200]}"
 
 
+MAX_SERVER_NAME = 40
+
+
 def safe_name(name: str) -> str:
-    return _NAME_RE.sub("_", str(name))[:40] or "server"
+    """The server's part of a tool name. A longer name is cut and ends with a hash of the whole
+    name, so two long names never become the same (SF-8)."""
+    text = _NAME_RE.sub("_", str(name)) or "server"
+    if len(text) > MAX_SERVER_NAME:
+        digest = hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:8]
+        text = text[:MAX_SERVER_NAME - 9] + "_" + digest
+    return text
+
+
+def server_name_problem(name: str) -> str:
+    """Why ``name`` cannot be a server name ("" when it can): ``__`` separates server and tool in
+    ``mcp__<server>__<tool>``, so a server called ``gh__admin`` could pass for server ``gh``."""
+    if "__" in safe_name(name):
+        return f'the name {name!r} contains "__" (after replacing characters other than letters, digits, - and _)'
+    return ""
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -531,8 +548,12 @@ def _save_lock(data: dict[str, Any]) -> None:
 class PinResult:
     allowed: list[dict[str, Any]]
     #: (tool name, the pinned definition, the server's definition now) for each blocked tool.
+    #: A tool added after the server was first pinned is here too, with an empty pinned definition.
     changed: list[tuple[str, dict[str, Any], dict[str, Any]]]
+    #: Tools pinned now, on the server's first connection (trust on first use).
     new: list[str]
+    #: Tools the server added after it was pinned: blocked until ``crit mcp approve`` (SF-7).
+    added: list[str] = field(default_factory=list)
 
 
 def _pinned_entry(tool: dict[str, Any]) -> dict[str, Any]:
@@ -541,14 +562,19 @@ def _pinned_entry(tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def pin_tools(server: str, tools: list[dict[str, Any]]) -> PinResult:
-    """Pin tools seen for the first time; block those whose definition changed since."""
+    """Pin a server's tools on its first connection; block those whose definition changed since,
+    and those it added later (they need ``crit mcp approve`` like a change: SF-7)."""
     data = _load_lock()
     pinned = data["servers"].setdefault(server, {})
-    allowed, changed, new = [], [], []
+    first_use = not any(isinstance(entry, dict) for entry in pinned.values())
+    allowed, changed, new, added = [], [], [], []
     for tool in tools:
         name = tool["name"]
         entry = pinned.get(name)
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) and not first_use:
+            added.append(name)
+            changed.append((name, {}, tool))
+        elif not isinstance(entry, dict):
             pinned[name] = _pinned_entry(tool)
             new.append(name)
             allowed.append(tool)
@@ -559,7 +585,7 @@ def pin_tools(server: str, tools: list[dict[str, Any]]) -> PinResult:
                                    "inputSchema": entry.get("inputSchema", {})}, tool))
     if new:
         _save_lock(data)
-    return PinResult(allowed, changed, new)
+    return PinResult(allowed, changed, new, added)
 
 
 def approve_tools(server: str, tools: list[dict[str, Any]], names: list[str] | None = None) -> list[str]:
@@ -577,6 +603,7 @@ def approve_tools(server: str, tools: list[dict[str, Any]], names: list[str] | N
 
 
 def definition_diff(old: dict[str, Any], new: dict[str, Any]) -> str:
+    """The change from the pinned definition to the server's; ``old`` empty: a tool added since."""
     def lines(tool: dict[str, Any]) -> list[str]:
         shown = {"description": tool.get("description") or "", "inputSchema": tool.get("inputSchema") or {}}
         return json.dumps(shown, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
@@ -641,11 +668,15 @@ class McpTool:
             return {"tool": self.name, "ok": False, "error": "bad arguments: " + "; ".join(problems[:6]),
                     "parameters": self.schema}
         started = time.monotonic()
+        from critique_bot.redaction import redact_secrets
+
         try:
             result = self.client.call_tool(self.remote_name, arguments)
         except McpError as exc:
-            return {"tool": self.name, "ok": False, "error": str(exc)}
-        from critique_bot.redaction import redact_secrets
+            # The message is the server's (its JSON-RPC error, an HTTP error body): untrusted
+            # text like a result, so it is redacted, wrapped, and taints the session (SF-5).
+            message, _ = redact_secrets(str(exc))
+            return untrusted.mark({"tool": self.name, "ok": False, "error": message[:4000]}, source)
 
         text, _ = redact_secrets(result_text(result))
         cap = int(getattr(ctx, "max_chars", 0) or 0) or 16_000

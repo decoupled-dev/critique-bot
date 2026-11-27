@@ -93,11 +93,12 @@ jobs:
           python-version: "3.12"
       - name: Known vulnerabilities in the pinned dependencies
         run: |
-          python -m pip install pip-audit==2.10.1
+          # Hash-pinned with everything it pulls in (scripts/hash_pins.py).
+          python -m pip install --require-hashes --no-deps -r .github/requirements/pip-audit.txt
           pip-audit -r constraints.txt --no-deps --disable-pip
       - name: Python security lint
         run: |
-          python -m pip install bandit==1.9.4
+          python -m pip install --require-hashes --no-deps -r .github/requirements/bandit.txt
           bandit -q -c pyproject.toml -r src/critique_bot -ll
 
   bundle:
@@ -164,7 +165,7 @@ jobs:
       - name: Test the .deb on Ubuntu 20.04 (oldest supported)
         if: runner.os == 'Linux'
         run: |
-          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:20.04 bash -euc '
+          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214 bash -euc '
             export DEBIAN_FRONTEND=noninteractive
             apt-get install -y --no-install-recommends /dist/crit_*.deb
             dpkg -s crit | grep -q "Status: install ok installed"
@@ -175,7 +176,7 @@ jobs:
         # Docker's Ubuntu image leaves out /usr/share/doc (like many server and cloud images).
         if: runner.os == 'Linux'
         run: |
-          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:22.04 bash -euc '
+          docker run --rm --network none -v "$PWD/dist:/dist:ro" ubuntu:22.04@sha256:b000e69a50ff940390233025e7a337fb8469b509e2334fa4d018ac30f3e18cdb bash -euc '
             export DEBIAN_FRONTEND=noninteractive
             apt-get install -y --no-install-recommends /dist/crit_*.deb
             dpkg -s crit | grep -q "Status: install ok installed"
@@ -207,7 +208,7 @@ jobs:
           # The isolated build env (setuptools) follows the same pins.
           PIP_CONSTRAINT: ${{ github.workspace }}/constraints.txt
         run: |
-          python -m pip install -c constraints.txt build
+          python -m pip install --require-hashes --no-deps -r .github/requirements/build.txt
           python -m build --sdist --wheel
       - name: Upload wheel
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -245,9 +246,12 @@ jobs:
       - name: Build provenance
         # Lets anyone check a download came from this workflow:
         #   gh attestation verify crit-<version>-linux-x64.zip --repo decoupled-dev/critique-bot
+        # install.sh and install.ps1 run that check when gh is signed in. SHA256SUMS.txt is a
+        # subject too, so the checksum list itself can be verified.
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
+            artifacts/SHA256SUMS.txt
             artifacts/**/crit-*.zip
             artifacts/**/crit_*.deb
             artifacts/**/install.ps1

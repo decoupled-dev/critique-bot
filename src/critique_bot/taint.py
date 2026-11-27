@@ -8,19 +8,22 @@ happens, instead of trusting the model to ignore injected instructions.
 Sources (each marks the session tainted, with an audit record and a notice):
 
 * ``web_fetch`` results;
-* files read from outside the workspace;
+* files read from outside the workspace (absolute, relative or through a link), and any
+  approved call whose permission says it reads outside the workspace (``cat /tmp/x``);
 * issue text from Jira (and GitLab, MCP tool output later);
 * device logs (the ``log`` tool on a device log, ``adb logcat``, the AOSP pack's ``adb`` and
   ``triage`` tools);
 * any tool result that carries ``"taint"`` (manifest tools with ``taint``, MCP tools; set by
-  ``extensions.untrusted.mark``), observed for extension tools by ``extensions.session``;
+  ``extensions.untrusted.mark``), observed for extension tools by ``extensions.session``,
+  also when the result is an error (its message came from the source);
 * a workspace marked untrusted (``"untrusted_workspace": true`` in settings: a freshly
   cloned third-party repo), which taints from the start.
 
 While the session is tainted **and in auto mode**, :func:`check` denies: fetches and
 other network calls (``web_fetch``, network commands, ``git push``), writes and commands
 outside the workspace; the egress proxy lets sandboxed commands reach only the model
-server. Other modes keep asking as usual (a person sees each such call). ``/trust`` lifts
+server, and closes the forwarded adb port too unless device logs are the only source.
+Other modes keep asking as usual (a person sees each such call). ``/trust`` lifts
 it (:func:`trust`, logged).
 
 The engine calls :func:`check` around its permission decision (one call in
@@ -46,6 +49,8 @@ class State:
     #: The approval mode last seen by check(): restrictions apply in "auto" only.
     mode: str = ""
     lifted: int = 0
+    #: The source kinds behind ``sources`` ("web_fetch", "device_log", ...).
+    kinds: set[str] = field(default_factory=set)
 
 
 _state = State()
@@ -92,6 +97,7 @@ def mark(source: str, detail: str = "") -> bool:
     with _lock:
         first = not _state.tainted
         _state.tainted = True
+        _state.kinds.add(source)
         if label not in _state.sources:
             _state.sources.append(label)
             del _state.sources[:-20]
@@ -112,6 +118,7 @@ def trust(reason: str = "/trust") -> bool:
         sources = list(_state.sources)
         _state.tainted = False
         _state.sources = []
+        _state.kinds = set()
         _state.lifted += 1
     if was:
         audit.record("taint", event="lifted", reason=reason, sources=sources)
@@ -122,6 +129,12 @@ def trust(reason: str = "/trust") -> bool:
 
 def tainted() -> bool:
     return _state.tainted
+
+
+def kinds() -> set[str]:
+    """What tainted the session: source kinds such as ``web_fetch`` or ``device_log`` (empty when untainted)."""
+    with _lock:
+        return set(_state.kinds) if _state.tainted else set()
 
 
 def restricted() -> bool:
@@ -148,10 +161,19 @@ _LOGCAT_RE = re.compile(r"(?:^|[\s;&|(])adb(?:\s+-[sdeHPL]\s*\S+|\s+-[de])*\s+(?
 
 
 def observe(tool: str, args: dict[str, Any] | None, result: dict[str, Any] | None, workspace: Path | None = None) -> str:
-    """Mark the session when a tool result carries untrusted text; the source, or ""."""
-    if not isinstance(result, dict) or not result.get("ok"):
+    """Mark the session when a tool result carries untrusted text; the source, or "".
+
+    A failed result counts too (SF-5): an MCP server's error message, an HTTP error page, a
+    tool flagged ``taint`` that exited non-zero all carry text crit did not write. Only a call
+    that never ran (denied, or held back by the plan) and a failure with no text from the
+    source (crit's own error, no ``output``) are left out.
+    """
+    if not isinstance(result, dict) or result.get("denied") or result.get("planned"):
         return ""
     args = args if isinstance(args, dict) else {}
+    flagged = result.get("taint")
+    if not result.get("ok") and not result.get("output") and not (isinstance(flagged, str) and flagged):
+        return ""
     source = detail = ""
     if tool == "web_fetch":
         source, detail = "web_fetch", str(args.get("url") or "")[:200]
@@ -169,7 +191,6 @@ def observe(tool: str, args: dict[str, Any] | None, result: dict[str, Any] | Non
         outside = _outside_paths(args, workspace)
         if outside:
             source, detail = "outside_read", outside[0]
-    flagged = result.get("taint")
     if not source and isinstance(flagged, str) and flagged:
         # a result marked untrusted by its tool (extensions.untrusted.mark): "device:adb", "tool:x", "mcp:..."
         kind = flagged.split(":", 1)[0]
@@ -203,7 +224,7 @@ def _outside_paths(args: dict[str, Any], workspace: Path) -> list[str]:
             continue
         path = Path(text).expanduser()
         if not path.is_absolute():
-            continue
+            path = root / path  # ../x and a link in the workspace that points out (PM-12)
         try:
             path.resolve().relative_to(root)
         except ValueError:
@@ -249,6 +270,15 @@ def _network(command: str) -> bool:
         return False
 
 
+def _reads_outside(perm: Any) -> bool:
+    try:
+        from critique_bot.agent_tools import OUTSIDE_READ_RISK
+
+        return str(getattr(perm, "risk", "") or "") == OUTSIDE_READ_RISK
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def check(perm: Any, mode: str, approve: Callable[[Any], tuple[bool, str]]) -> tuple[bool, str]:
     """The engine's permission decision with taint applied, recorded in the audit log.
 
@@ -262,6 +292,10 @@ def check(perm: Any, mode: str, approve: Callable[[Any], tuple[bool, str]]) -> t
         allowed, reason = False, refused
     else:
         allowed, reason = approve(perm)
+    if allowed and _reads_outside(perm):
+        # An approved read outside the workspace (a relative path, a link, a command such as
+        # cat /tmp/page.html): its contents are untrusted, however the call names them (PM-12).
+        mark("outside_read", str(getattr(perm, "summary", "") or "")[:200])
     if kind != "read":
         audit.record(
             "permission", tool=str(getattr(perm, "tool", "") or ""), perm_kind=kind, mode=_state.mode,

@@ -85,8 +85,7 @@ class SecretMaskingPolicyTests(unittest.TestCase):
         except ValueError:
             return False
 
-    # SECURITY FINDING SB-1: ~/.npmrc, ~/.cargo, ~/.gem, ~/.m2/settings.xml etc. are not masked
-    @unittest.expectedFailure
+    # SECURITY FINDING SB-1 (fixed): ~/.npmrc, ~/.cargo, ~/.gem, ~/.m2/settings.xml etc. are not masked
     def test_common_credential_files_are_masked(self) -> None:
         policy = self._policy()
         unmasked = [rel for rel in SECRET_FILES if not self._is_masked(policy, rel)]
@@ -119,8 +118,7 @@ class SecretReadUnderBwrapTests(unittest.TestCase):
         out, _ = proc.communicate(timeout=60)
         return out.decode("utf-8", "replace")
 
-    # SECURITY FINDING SB-1: a sandboxed command can read ~/.npmrc (npm auth token)
-    @unittest.expectedFailure
+    # SECURITY FINDING SB-1 (fixed): a sandboxed command can read ~/.npmrc (npm auth token)
     def test_npmrc_token_is_not_readable(self) -> None:
         out = self._run(["/bin/sh", "-c", "cat ~/.npmrc 2>&1"])
         self.assertNotIn("FAKE-NPM-TOKEN", out, "sandboxed command read the npm auth token")

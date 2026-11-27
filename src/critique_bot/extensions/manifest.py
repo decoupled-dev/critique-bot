@@ -37,7 +37,9 @@ Rules that keep it safe:
   env value); a placeholder inside a longer element is a manifest error. So ``; rm -rf /``
   or ``$(...)`` in an argument is one literal argv element.
 - A string value that starts with ``-`` is refused unless ``[run] allow_dash_values = true``,
-  so an argument cannot turn into an option of the program (``--output=/etc/passwd``).
+  so an argument cannot turn into an option of the program (``--output=/etc/passwd``). A
+  negative number is refused the same way, unless the parameter's schema has a negative
+  ``minimum`` (``kill -TERM {pid}`` with ``pid = -1`` signals every process).
 - An optional argument with no value and no default drops its element.
 - JSON manifests have the same fields; they work on every Python (TOML needs 3.11+).
 
@@ -221,7 +223,21 @@ class ManifestTool:
                     f"{name} starts with '-', which the program would read as an option; "
                     "this tool does not take option-like values"
                 )
+            elif self._negative_refused(name, value):
+                problems.append(
+                    f"{name} is negative ({text}): as an argument it starts with '-', which the program would read "
+                    "as an option or a special value (kill -1 is every process); this tool does not take negative numbers"
+                )
         return problems
+
+    def _negative_refused(self, name: str, value: Any) -> bool:
+        """A negative number becomes ``-1``: refused like a dash string (SF-11), unless the manifest
+        allows dash values or the parameter's schema has a negative ``minimum``."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value < 0 or self.allow_dash_values:
+            return False
+        prop = (self.parameters.get("properties") or {}).get(name) if isinstance(self.parameters, dict) else None
+        minimum = prop.get("minimum") if isinstance(prop, dict) else None
+        return not (isinstance(minimum, (int, float)) and not isinstance(minimum, bool) and minimum < 0)
 
     def command_line(self, args: dict[str, Any]) -> list[str]:
         action = self.action_of(args)
