@@ -95,7 +95,9 @@ Templating rules:
   `"--lines={lines}"` is an error; write `"--lines", "{lines}"`.
 - Whatever the model passes, including `; rm -rf /` or `$(...)`, becomes exactly one argv element.
 - A string value that starts with `-` is refused, so an argument cannot become an option
-  (`--output=...`), unless you set `allow_dash_values = true`.
+  (`--output=...`), unless you set `allow_dash_values = true`. A negative number is refused
+  too (`kill -TERM {pid}` with `-1` would signal every process), unless the parameter's schema
+  sets a negative `minimum` or you set `allow_dash_values = true`.
 - An optional argument with no value and no default drops its element.
 - The program runs in the workspace with your environment minus secrets (tokens and keys
   are removed, as for `run_command`). Output is capped, and secrets in it are redacted.
@@ -183,21 +185,25 @@ In a session the tool shows up in `/tools`, and the model calls it like any othe
 - **Transports:** stdio (`command` and `args`, optionally `env` and `cwd`) and streamable
   HTTP (`"type": "http"`, `url`, `headers`). crit uses its own small JSON-RPC client, so
   no extra package is needed. With `"offline": true` in the settings, HTTP servers are skipped.
-- **Names:** tools appear as `mcp__<server>__<tool>`, for example `mcp__git__git_log`.
+- **Names:** tools appear as `mcp__<server>__<tool>`, for example `mcp__git__git_log`. A server
+  name may not contain `__` (it would read as another server's tool), a name over 40 characters
+  is cut and ends with a short hash, and when two tools would get the same name the later one is
+  left out with a note.
 - **Approvals:** each call asks like a command and shows the full arguments. Tools you list
   in `read_only_tools` run without asking. The server's own `readOnlyHint` is only a claim,
   so crit does not trust it.
 - **Pinning:** the first time crit sees a tool, it stores a sha256 of the tool's name, description and
   input schema in `~/.crit/mcp-lock.json`. If the server later describes the tool
-  differently, the tool is left out of the session until you look at the change:
+  differently, or adds a tool after its first connection, that tool is left out of the session
+  until you look at it:
 
   ```
-  $ crit mcp list                  # servers, tools, and which ones changed
+  $ crit mcp list                  # servers, tools, and which ones changed or are new
   $ crit mcp approve git           # shows the diff of each changed tool, then pins it
   ```
 - **Untrusted output:** results come back inside `<untrusted source="mcp:git/git_log">…</untrusted>`
-  and carry a taint flag that the Stage 4 taint tracking reads. Text inside a result cannot
-  close that block.
+  and carry a taint flag that the Stage 4 taint tracking reads; so does a server's error
+  message. Text inside a result cannot close that block.
 - **Many tools:** when the session has more than `max_loaded_tools` tools in total (default
   20, set in `.crit/settings.json`), MCP tools are listed only by name and one line, and a
   `tool_search` tool returns their full schemas. Because crit's built-in tools already
