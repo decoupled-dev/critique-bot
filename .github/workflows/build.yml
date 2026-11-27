@@ -56,7 +56,8 @@ jobs:
           - { os: ubuntu-22.04, python: "3.13", experimental: false }
           - { os: windows-2022, python: "3.12", experimental: false }
           # New in the matrix: does not block until it has been green once (then set false).
-          - { os: macos-14, python: "3.12", experimental: true }
+          # macos-latest: GitHub retires pinned macOS images (macos-14 is no longer offered).
+          - { os: macos-latest, python: "3.12", experimental: true }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
     name: test (${{ matrix.os }}, Python ${{ matrix.python }})
