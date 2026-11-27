@@ -159,10 +159,7 @@ def _compact_at_boundary(run: "_TaskRun") -> bool:
     from critique_bot import compaction
 
     chat = run.chat
-    session = chat.session
-    history = getattr(session, "history", None)
-    replace = getattr(session, "replace_history", None)
-    if chat.compactor is None or not callable(history) or not callable(replace):
+    if chat.compactor is None or chat.messages is None:
         return False
     detail = chat.last_detail if isinstance(chat.last_detail, dict) else {}
     used = int(detail.get("prompt_eval_count") or 0) + int(detail.get("eval_count") or 0)
@@ -184,13 +181,13 @@ def _compact_at_boundary(run: "_TaskRun") -> bool:
         facts=facts,
     )
     try:
-        result = chat.compactor.compact(history(), ctx)
+        result = chat.compactor.compact(list(chat.messages), ctx)
     except Exception as exc:  # a failed compaction leaves the conversation as it was
         log.warn(f"compaction failed: {exc}")
         return False
     if result is None:
         return False
-    replace(result.messages)
+    chat.set_history(result.messages)
     chat.log.write(
         "compaction",
         strategy=result.strategy,
@@ -221,9 +218,8 @@ def _resume_from_log(chat: _Chat, slog: Any) -> tuple[bool, str]:
     events = slog.events()
     projection = session_log_mod.history_from_events(events, slog.folder)
     chat.history = projection.tasks[-8:]
-    replace = getattr(chat.session, "replace_history", None)
-    if projection.has_wire and projection.messages and callable(replace):
-        replace(projection.messages)
+    if projection.has_wire and projection.messages and chat.messages is not None:
+        chat.set_history(projection.messages)
         chat.map_sent = True
         slog.write("session_resumed", strategy="history", messages=len(projection.messages))
         note = "This session was resumed: crit restored the conversation from its log."

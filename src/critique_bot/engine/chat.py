@@ -150,6 +150,17 @@ class _Chat:
         self.replies = 0
         #: Notes for the next message: a mid-session change (role) on an append-only conversation.
         self.pending_notes: list[str] = []
+        #: A model API session's conversation (OpenAI chat messages), owned by the engine: it
+        #: is installed in the session before every request and grows by what the exchange
+        #: added, and compaction and resume replace it. None for a web chat, whose page holds
+        #: the conversation.
+        self.messages: list[dict[str, Any]] | None = None
+        if callable(getattr(session, "history", None)) and callable(getattr(session, "replace_history", None)):
+            try:
+                found = session.history()
+            except Exception:  # noqa: BLE001 - a session that cannot say starts empty
+                found = []
+            self.messages = [dict(item) for item in found] if isinstance(found, list) else []
 
     @property
     def last_detail(self) -> Any:
@@ -175,6 +186,7 @@ class _Chat:
             if not self.quiet:
                 ui._waiting(True)
             stalled = False
+            self.install_history()
             mark = self.log.request(self.session, outgoing, attempt=attempt or None)
             try:
                 reply = self.session.send(outgoing)
@@ -197,6 +209,7 @@ class _Chat:
             if problem is None:
                 self.sends += 1
                 self.replies += 1
+                self.take_history()
                 self.log.reply(self.session, mark, reply)
                 return reply
             self.note_reply(bad=True)
@@ -227,6 +240,28 @@ class _Chat:
                     continue
             self._note("note", f"{problem[:1].upper()}{problem[1:]}. Sending again in {delay:.0f}s ({attempt}/{self.retries}).")
             _sleep(delay)
+
+    def install_history(self) -> None:
+        """Give the session the engine's message list before a request (a model API session)."""
+        if self.messages is not None:
+            self.session.replace_history(self.messages)
+
+    def take_history(self) -> None:
+        """Add what the exchange appended to the session's list (the request and the reply)."""
+        if self.messages is None:
+            return
+        found = self.session.history()
+        if isinstance(found, list) and len(found) >= len(self.messages):
+            self.messages.extend(dict(item) for item in found[len(self.messages):])
+        elif isinstance(found, list):  # the session shortened its list itself: follow it
+            self.messages = [dict(item) for item in found]
+
+    def set_history(self, messages: list[dict[str, Any]]) -> None:
+        """Replace the conversation (compaction, resume); the session gets it with the next request."""
+        if self.messages is None:
+            return
+        self.messages = [dict(item) for item in messages if isinstance(item, dict)]
+        self.session.replace_history(self.messages)
 
     def _note(self, kind: str, message: str) -> None:
         if not self.quiet:
@@ -306,6 +341,8 @@ class _Chat:
         run_stats.count("compactions")
         self.log.write("compaction", strategy="new_chat", reason=reason)
         self.log.sync()
+        if self.messages is not None:
+            self.messages = []
         self.chars = 0
         self.violations = 0
         self.health.clear()
