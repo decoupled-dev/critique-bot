@@ -12,7 +12,8 @@ from pathlib import Path
 
 from rich.console import Console
 
-from critique_bot import agent, agent_helpers, agent_tools, agent_ui
+from critique_bot import agent, agent_tools, agent_ui
+from critique_bot.engine import delegate as agent_helpers
 from critique_bot.agent import run_agent_loop
 
 

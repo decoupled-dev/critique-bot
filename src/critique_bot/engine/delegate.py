@@ -31,7 +31,15 @@ from typing import Any, Callable
 
 from critique_bot import log
 from critique_bot import tool_api as agent_tools
-from critique_bot.tool_api import TaskState, ToolContext, canonical_tool
+from critique_bot.engine import ui
+from critique_bot.engine.chat import _Chat
+from critique_bot.engine.dispatch import _rule_denied, _tool_context
+from critique_bot.engine.parse import _hide_tool_markup
+from critique_bot.engine.prompts import task_message
+from critique_bot.engine.task import _TaskRun
+from critique_bot.engine.ui import _activity
+from critique_bot.prompt_build import without_ready as _without_ready
+from critique_bot.tool_api import TaskState, ToolContext, canonical_tool, fill
 
 #: Rounds one brief may take before its helper stops and reports.
 HELPER_MAX_ROUNDS = 40
@@ -59,12 +67,6 @@ class Report:
     agent: str = ""
 
 
-def _agent():
-    from critique_bot import agent
-
-    return agent
-
-
 class _QuietHooks:
     """A helper's progress goes to one callback line; nothing else reaches the terminal."""
 
@@ -84,7 +86,7 @@ class _QuietHooks:
             self._say(message)
 
     def tool_start(self, call: Any) -> None:
-        self._say(_agent()._activity(call))
+        self._say(_activity(call))
 
     def tool_done(self, call: Any, result: dict[str, Any]) -> None:
         if not result.get("ok"):
@@ -95,9 +97,8 @@ class _QuietHooks:
 
 
 def _helper_run_class():
-    agent = _agent()
 
-    class HelperRun(agent._TaskRun):
+    class HelperRun(_TaskRun):
         """A task run that never asks: it may read anything and change only its own files."""
 
         def __init__(
@@ -164,7 +165,7 @@ def _helper_run_class():
                                f"its tools: {', '.join(self.tools.names())}")
             if name == "delegate":
                 return False, "a helper cannot delegate; do the brief yourself"
-            denied = agent._rule_denied(self.ctx, perm)
+            denied = _rule_denied(self.ctx, perm)
             if denied:
                 return False, denied
             if kind == "read":
@@ -223,18 +224,17 @@ class _Job:
 
 def _open_tab(pool: "HelperPool") -> tuple[Any, Any, Any]:
     """A helper tab from ``pool.factory``: (context manager, session, chat)."""
-    agent = _agent()
     cm = pool.factory()
     enter = getattr(cm, "__enter__", None)
     session = enter() if callable(enter) else cm
-    chat = agent._Chat(
+    chat = _Chat(
         session,
         seed=pool.seed,
         retries=pool.retries,
         compact_after=pool.compact_after,
         quiet=True,
     )
-    chat.prefix = agent._without_ready(pool.seed) if pool.seed else ""
+    chat.prefix = _without_ready(pool.seed) if pool.seed else ""
     return cm, session, chat
 
 
@@ -432,10 +432,9 @@ class HelperPool:
         cancel: threading.Event | None,
         progress: Callable[[str], None] | None,
     ) -> Report:
-        agent = _agent()
         name = brief["name"]
         files = list(brief.get("files") or [])
-        ctx = agent._tool_context(
+        ctx = _tool_context(
             **fields,
             state=state,
             cancel=cancel,
@@ -466,7 +465,7 @@ class HelperPool:
             may_change = "any file in your own copy of the project (a git worktree); your changes go back as a patch"
         else:
             may_change = ", ".join(files) if files else "none: this brief is read only"
-        message = profile.instructions() + agent.fill(
+        message = profile.instructions() + fill(
             self.sections["HELPER"],
             name=name,
             brief=brief["brief"],
@@ -477,11 +476,11 @@ class HelperPool:
                 else "Do not run builds or tests (other helpers work at the same time); read-only commands are fine."
             ),
         )
-        status = run.run(agent.task_message(message))
+        status = run.run(task_message(message))
         text = ""
         for turn in reversed(turns):
             if turn.get("role") == "assistant":
-                text = agent._hide_tool_markup(turn.get("content") or "").strip()
+                text = _hide_tool_markup(turn.get("content") or "").strip()
                 break
         if text.upper().startswith(("COMPLETED", "FINISHED", "DONE")):
             text = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
@@ -691,3 +690,87 @@ def format_reports(reports: list[Report], seconds: float) -> dict[str, Any]:
     if not ok:
         result["error"] = "no helper finished its brief"
     return result
+
+
+class SessionHelpers:
+    """The delegate tool's runner for one session: briefs go to helper chats, all at once.
+
+    The helper pool opens on the first delegate call (``factory`` opens a helper chat) and
+    closes with the session. ``inline``: one extra chat on this thread, briefs in turn (a
+    web chat without remote debugging).
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[], Any] | None,
+        count: int,
+        *,
+        inline: bool,
+        seed: Callable[[], str],
+        sections: dict[str, str],
+        base: dict[str, Any],
+        max_result_chars: int,
+        retries: int,
+        compact_after: int,
+    ) -> None:
+        self.factory = factory
+        self.count = count
+        self.inline = inline
+        self.seed = seed
+        self.sections = sections
+        self.base = base
+        self.max_result_chars = max_result_chars
+        self.retries = retries
+        self.compact_after = compact_after
+        self.pool: Any = None
+
+    def for_task(
+        self, cancel: threading.Event, checkpoints: Any, state: TaskState
+    ) -> Callable[[list[dict[str, Any]]], dict[str, Any]] | None:
+        """The delegate tool's runner for one task, or None when the session has no helpers."""
+        if self.factory is None or self.count < 1:
+            return None
+        show = ui.current()
+
+        def delegate(briefs: list[dict[str, Any]]) -> dict[str, Any]:
+            if self.pool is None:
+                pool_class = InlineHelperPool if self.inline else HelperPool
+                self.pool = pool_class(
+                    self.factory,
+                    self.count,
+                    seed=self.seed(),
+                    sections=self.sections,
+                    base=self.base,
+                    max_result_chars=self.max_result_chars,
+                    retries=self.retries,
+                    compact_after=self.compact_after,
+                )
+            started = time.monotonic()
+            setter = getattr(show, "set_active", None)
+            if callable(setter):
+                setter("delegate", len(briefs))
+            try:
+                reports = self.pool.run(
+                    briefs,
+                    cancel=cancel,
+                    progress=lambda line: show.tool_output(line + "\n"),
+                    context={"checkpoints": checkpoints},
+                )
+            finally:
+                if callable(setter):
+                    setter("delegate", 1)
+            result = format_reports(reports, time.monotonic() - started)
+            for name in result.get("changed") or []:
+                # The coordinator's task owns these changes: the diff, the check, and undo cover them.
+                state.edits[name] = state.edits.get(name, 0) + 1
+            return result
+
+        return delegate
+
+    def close(self) -> None:
+        if self.pool is None:
+            return
+        try:
+            self.pool.close()
+        except Exception as exc:  # the session is over; a stuck tab must not hang the exit
+            log.debug(f"closing helper tabs failed: {exc}")

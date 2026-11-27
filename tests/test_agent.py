@@ -1434,7 +1434,7 @@ class RobustLoopTests(unittest.TestCase):
 
         tasks = ["what is 3 + 3?"]
         session = _Scripted(["4.", "6."])
-        with mock.patch.object(agent, "_prepare_index", lambda *_args: "MAP-TEXT"):
+        with mock.patch("critique_bot.engine.loop._prepare_index", lambda *_args: "MAP-TEXT"):
             _loop(session, Path(tempfile.mkdtemp()), "what is 2 + 2?", read_message=lambda: tasks.pop(0) if tasks else None)
         self.assertIn("MAP-TEXT", session.sent[0])
         self.assertNotIn("MAP-TEXT", session.sent[1])

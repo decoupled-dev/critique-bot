@@ -72,7 +72,6 @@ LAYERS: dict[str, int] = {
     "agent": ENGINE,
     # engine/ (a package): the loop, dispatch, modes, stop rules, delegate, contracts, the API
     "engine": ENGINE,
-    "agent_helpers": ENGINE,
     "ui_api": ENGINE,
     "openai_format": ENGINE,
     "session_log": ENGINE,
