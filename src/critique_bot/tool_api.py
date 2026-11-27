@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 from critique_bot import agent_tools as _impl
+from critique_bot import env_snapshot as _env
 from critique_bot import tool_output as _output
 
 # --------------------------------------------------------------------------- shared types
@@ -59,6 +60,8 @@ _paths_of = _impl._paths_of
 #: tail within the budget, the whole text under .crit/cache/out, never an empty result.
 shape_output = _output.shape_output
 output_budget = _output.budget_chars
+#: The first-turn environment note: OS, shell, cwd, git, languages, test command, tools, jobs.
+environment_snapshot = _env.environment_snapshot
 
 
 # --------------------------------------------------------------------------- specs
@@ -187,7 +190,7 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
         "run_command",
         "Run one command like a terminal; the working folder and environment carry over between calls. "
         "background true starts a server or watcher and returns a job_id.",
-        _obj({"command": _S, "timeout": _i("seconds", 1, 600), "cwd": _PATH,
+        _obj({"command": _S, "timeout": _i("seconds", 1, 1800), "cwd": _PATH,
               "shell": {"type": "string", "enum": ["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash"]},
               "background": _b("run in the background")}, ["command"]),
     ),

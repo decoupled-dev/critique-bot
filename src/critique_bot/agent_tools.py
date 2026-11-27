@@ -91,8 +91,13 @@ READ_ONLY = frozenset(
 SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
 
 DEFAULT_TOOL_CHARS = 16_000
-DEFAULT_COMMAND_TIMEOUT = 120
-MAX_COMMAND_TIMEOUT = 600
+#: A command's timeout when the call gives none (setting shell_timeout_s). A command still
+#: running then is not killed: it carries on as a background job (ShellSession.detach_on_timeout).
+DEFAULT_COMMAND_TIMEOUT = 60
+#: The longest timeout a call may ask for: 30 minutes.
+MAX_COMMAND_TIMEOUT = 1800
+#: A timeout above MAX_COMMAND_TIMEOUT at least this big was given in milliseconds (Claude Code, opencode).
+_MILLISECOND_TIMEOUT = 10_000
 #: A file this short is read whole when no range is given...
 WHOLE_READ_LINES = 300
 #: ...a longer one in a window of this many lines ("lines 1-100 of 2,431").
@@ -439,7 +444,7 @@ _BOOL_KEYS = frozenset(
 _NUMBER_KEYS = frozenset(
     {
         "offset", "limit", "count", "end_line", "start_line", "line", "max_entries", "depth",
-        "head_limit", "context", "timeout", "max_chars", "wait", "lines",
+        "head_limit", "context", "timeout", "max_chars", "wait", "lines", "timeout_s",
     }
 )
 _JSON_KEYS = frozenset({"paths", "files", "edits", "todos", "items", "options", "arguments", "args", "patterns"})
@@ -572,7 +577,12 @@ def normalize_args(tool: str, args: dict[str, Any] | str) -> dict[str, Any]:
             out["background"] = out["run_in_background"]
         timeout = out.get("timeout")
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > MAX_COMMAND_TIMEOUT:
-            out["timeout"] = float(timeout) / 1000.0
+            out["timeout"] = float(timeout) / 1000.0 if timeout >= _MILLISECOND_TIMEOUT else MAX_COMMAND_TIMEOUT
+        if "timeout" not in out:
+            for src in ("timeout_s", "timeout_seconds", "timeout_sec"):
+                if isinstance(out.get(src), (int, float)) and not isinstance(out.get(src), bool):
+                    out["timeout"] = out[src]
+                    break
     if tool == "command_input":
         for src in ("text", "data", "line", "keys", "command"):
             if "input" not in out and src in out:
@@ -2755,7 +2765,7 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not isinstance(command, str) or not command.strip():
         return err("run_command", "command is required")
     try:
-        timeout = float(args.get("timeout") or ctx.command_timeout)
+        timeout = float(args.get("timeout") or ctx.int_setting("shell_timeout_s", int(ctx.command_timeout), 1))
     except (TypeError, ValueError):
         return err("run_command", "timeout must be a number")
     timeout = min(max(timeout, 1), MAX_COMMAND_TIMEOUT)
