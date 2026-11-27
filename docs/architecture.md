@@ -14,7 +14,8 @@ wires the concrete pieces together.
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
-             log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
+             log_tools (the log tool), soong (Android.bp module lookup, lunch targets),
+             indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              webchat/ (optional: the web page in Edge; browser, chat_client, provider, setup_ui)

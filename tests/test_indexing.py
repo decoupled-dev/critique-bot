@@ -191,5 +191,253 @@ def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True, env=env).stdout
 
 
+def make_project(root: Path) -> None:
+    """A small multi-language project with a git history."""
+    files = {
+        "app/__init__.py": "",
+        "app/units.py": (
+            "def to_display(value, unit):\n"
+            "    if unit == 'F':\n"
+            "        return value * 9 / 5 + 32\n"
+            "    return value\n"
+        ),
+        "app/panel.py": (
+            "import logging\n"
+            "from app.units import to_display\n\n"
+            "log = logging.getLogger('hvac')\n\n\n"
+            "class Panel:\n"
+            "    def show(self, value, unit):\n"
+            "        if value is None:\n"
+            "            log.error('temperature sensor returned nothing for zone %s', unit)\n"
+            "            return ''\n"
+            "        return str(to_display(value, unit))\n"
+        ),
+        "app/main.py": "from app.panel import Panel\n\n\ndef run():\n    return Panel().show(20, 'C')\n",
+        "tests/__init__.py": "",
+        "tests/test_panel.py": (
+            "import unittest\n"
+            "from app.panel import Panel\n\n\n"
+            "class PanelTest(unittest.TestCase):\n"
+            "    def test_celsius(self):\n"
+            "        self.assertEqual(Panel().show(20, 'C'), '20')\n\n"
+            "    def test_fahrenheit(self):\n"
+            "        self.assertEqual(Panel().show(100, 'F'), '212')\n"
+        ),
+        "native/CMakeLists.txt": "add_library(fan fan.c)\ntarget_link_libraries(fan log)\n",
+        "native/fan.c": '#define LOG_TAG "fanctl"\nint fan_set(int level) {\n  if (level > 9) { ALOGE("fan level too high: %d", level); return -1; }\n  return 0;\n}\n',
+        "svc/Android.bp": 'java_library {\n    name: "hvac-svc",\n    srcs: ["src/**/*.java"],\n    static_libs: ["hvac-units"],\n}\n',
+        "svc/src/com/x/HvacService.java": (
+            "package com.x;\n\nimport com.x.util.Units;\n\n"
+            "public class HvacService extends BaseService {\n"
+            "    private static final String TAG = \"HvacSvc\";\n"
+            "    public void setTemp(int t) {\n        Log.w(TAG, \"temp out of range\");\n        Units.convert(t);\n    }\n}\n"
+        ),
+        "svc/src/com/x/util/Units.java": "package com.x.util;\n\npublic class Units {\n    public static int convert(int t) { return t; }\n}\n",
+    }
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "first version of the hvac panel")
+    (root / "app" / "units.py").write_text((root / "app" / "units.py").read_text() + "\n\ndef clamp(v):\n    return v\n")
+    (root / "app" / "panel.py").write_text((root / "app" / "panel.py").read_text() + "\n# fahrenheit\n")
+    git(root, "commit", "-q", "-am", "fix fahrenheit rounding in the display")
+
+
+def dump(db: Path) -> dict:
+    conn = sqlite3.connect(db)
+    try:
+        return {
+            "files": sorted(conn.execute("SELECT path, language, hash, module FROM files").fetchall()),
+            "symbols": sorted(conn.execute("SELECT name, kind, path, line, end_line, parent, signature FROM symbols").fetchall()),
+            "edges": sorted(conn.execute("SELECT src_path, src_symbol, kind, dst_name, coalesce(dst_path, ''), line FROM edges").fetchall()),
+            "strings": sorted(conn.execute("SELECT path, line, kind, value, tag, container FROM strings").fetchall()),
+            "modules": sorted(conn.execute("SELECT name, system, type, build_file, dir, srcs, deps FROM modules").fetchall()),
+            "refs": sorted(conn.execute("SELECT name, path, line, count FROM refs").fetchall()),
+        }
+    finally:
+        conn.close()
+
+
+class ProjectCase(unittest.TestCase):
+    def setUp(self) -> None:
+        from critique_bot import file_catalog
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "proj"
+        self.root.mkdir()
+        make_project(self.root)
+        file_catalog.forget()
+        self.db = self.root / ".crit" / "cache" / "index.db"
+        self.db.parent.mkdir(parents=True)
+        code_index.refresh_index(self.root, self.db)
+        from types import SimpleNamespace
+
+        self.ctx = SimpleNamespace(workspace=self.root, index_path=self.db, max_chars=8000, state=None)
+
+    def tearDown(self) -> None:
+        from critique_bot import file_catalog
+        from critique_bot.indexing import engine
+
+        engine.wait_all(30)
+        file_catalog.forget()
+        self.tmp.cleanup()
+
+    def tool(self, tool_name: str, **args) -> str:
+        from critique_bot.indexing import tools
+
+        ok, text = tools.run(tool_name, args, self.ctx)
+        self.assertTrue(ok, text)
+        return text
+
+
+class IncrementalTests(ProjectCase):
+    def test_incremental_matches_a_full_rebuild(self) -> None:
+        from critique_bot import file_catalog
+
+        # modify, add, rename and delete files, refreshing in between
+        (self.root / "app" / "units.py").write_text("def to_display(value, unit):\n    return round(value)\n")
+        (self.root / "app" / "extra.py").write_text("from app.units import to_display\n\ndef twice(v):\n    return to_display(v, 'C') * 2\n")
+        code_index.refresh_index(self.root, self.db)
+        (self.root / "app" / "main.py").rename(self.root / "app" / "entry.py")
+        (self.root / "native" / "CMakeLists.txt").unlink()
+        (self.root / "svc" / "src" / "com" / "x" / "util" / "Units.java").unlink()
+        file_catalog.forget()
+        code_index.refresh_index(self.root, self.db)
+        code_index.refresh_path(self.root, self.db, self.root / "app" / "extra.py")
+        fresh = Path(self.tmp.name) / "fresh.db"
+        file_catalog.forget()
+        code_index.rebuild_index(self.root, fresh)
+        self.assertEqual(dump(self.db), dump(fresh))
+
+    def test_unchanged_bytes_are_not_parsed_again(self) -> None:
+        path = self.root / "app" / "units.py"
+        os.utime(path, None)  # a new mtime, same content
+        later = path.stat().st_mtime_ns + 5_000_000_000
+        os.utime(path, ns=(later, later))
+        stats = code_index.refresh_index(self.root, self.db)
+        self.assertEqual(stats.changed, 0)
+
+    def test_imports_resolve_and_follow_added_files(self) -> None:
+        conn = store.connect(self.db)
+        try:
+            row = conn.execute("SELECT dst_path FROM edges WHERE src_path = 'app/panel.py' AND dst_name = 'app.units.to_display'").fetchone()
+            self.assertEqual(row[0], "app/units.py")
+            row = conn.execute("SELECT dst_path FROM edges WHERE src_path LIKE '%HvacService.java' AND kind = 'imports'").fetchone()
+            self.assertEqual(row[0], "svc/src/com/x/util/Units.java")
+        finally:
+            conn.close()
+
+
+class ToolTests(ProjectCase):
+    def test_find_symbol_and_refs(self) -> None:
+        text = self.tool("find_symbol", name="to_display")
+        self.assertIn("app/units.py:1-4 function to_display", text)
+        refs = self.tool("symbol_refs", name="to_display")
+        self.assertIn("app/panel.py: 2, 12", refs)
+        self.assertIn("app/units.py: 1", refs)
+
+    def test_calls_and_imports(self) -> None:
+        self.assertIn("app/panel.py:12 Panel.show", self.tool("who_calls", symbol="to_display"))
+        callees = self.tool("callees", symbol="Panel.show")
+        self.assertIn("to_display -> app/units.py:1", callees)
+        self.assertIn("app.units.to_display -> app/units.py", self.tool("imports_of", path="app/panel.py"))
+        self.assertIn("app/main.py", self.tool("imported_by", path="app/panel.py"))
+
+    def test_module_of(self) -> None:
+        text = self.tool("module_of", path="svc/src/com/x/HvacService.java")
+        self.assertIn("hvac-svc", text)
+        self.assertIn("hvac-units", text)
+        self.assertIn("module fan (cmake library)", self.tool("module_of", path="native/fan.c"))
+
+    def test_find_strings_from_a_log_line(self) -> None:
+        text = self.tool("find_strings", text="E fanctl : fan level too high: 12")
+        self.assertIn("native/fan.c:3 log tag=fanctl in fan_set", text)
+        text = self.tool("find_strings", text="temperature sensor returned nothing for zone 3")
+        self.assertTrue(text.startswith("app/panel.py:10 log in Panel.show"), text)
+
+    def test_repo_map_is_ranked_within_budget_and_stable(self) -> None:
+        first = self.tool("repo_map", budget_tokens=100)
+        self.assertLessEqual(len(first), 100 * 4 + 200)
+        self.assertEqual(first, self.tool("repo_map", budget_tokens=100))
+        self.assertIn("app/units.py", first)
+
+    def test_history_tools(self) -> None:
+        text = self.tool("git_history", path="app/units.py")
+        self.assertIn("2 commit(s)", text)
+        self.assertIn("fix fahrenheit rounding", text)
+        self.assertIn("app/panel.py  2x", self.tool("cochanged", path="app/units.py"))
+        self.assertIn("fix fahrenheit rounding", self.tool("git_history", query="fahrenheit"))
+        self.assertIn("first version", self.tool("git_blame", path="app/units.py", lines="1-2"))
+        self.assertIn("clamp", self.tool("git_history", changed="def clamp"))
+        self.assertIn("to_display (app/units.py:1-4)", self.tool("git_history", symbol="to_display"))
+
+    def test_history_is_incremental(self) -> None:
+        from critique_bot.indexing import history
+
+        conn = store.connect(self.db)
+        try:
+            self.assertEqual(history.update(conn, self.root), 2)
+            (self.root / "app" / "main.py").write_text("x = 1\n")
+            git(self.root, "commit", "-q", "-am", "third")
+            self.assertEqual(history.update(conn, self.root), 1)
+            self.assertEqual(history.update(conn, self.root), 0)
+        finally:
+            conn.close()
+
+    def test_locate_fuses_log_and_names(self) -> None:
+        text = self.tool("locate", description="The panel shows an empty value; the log says "
+                                               "\"temperature sensor returned nothing for zone 2\"")
+        first = text.splitlines()[1]
+        self.assertIn("app/panel.py", first)
+        self.assertIn("strings", first)
+        trace = self.tool("locate", description="crash", evidence='Traceback (most recent call last):\n'
+                                                                  '  File "app/units.py", line 3, in to_display\n')
+        self.assertIn("app/units.py:3 to_display", trace)
+
+    def test_locate_expands_abbreviations(self) -> None:
+        text = self.tool("locate", description="tmp converts wrong in the disp")
+        self.assertIn("expanded terms", text)
+
+    def test_coverage_locate_ranks_the_fault(self) -> None:
+        import sys
+
+        py = sys.executable
+        failing = f"{py} -m unittest tests.test_panel.PanelTest.test_fahrenheit"
+        passing = [f"{py} -m unittest tests.test_panel.PanelTest.test_celsius"]
+        text = self.tool("coverage_locate", command=failing, passing=passing)
+        ranked = [line for line in text.splitlines() if line.startswith("  1.00")]
+        self.assertTrue(ranked, text)
+        self.assertIn("app/units.py", ranked[0])
+
+    def test_partial_results_are_labelled(self) -> None:
+        from critique_bot.indexing import engine, tools
+
+        missing = Path(self.tmp.name) / "other" / "index.db"
+        release = __import__("threading").Event()
+        original = engine._build_main
+
+        def slow(workspace, index_path):
+            release.wait(10)
+            original(workspace, index_path)
+
+        engine._build_main = slow
+        try:
+            from types import SimpleNamespace
+
+            ctx = SimpleNamespace(workspace=self.root, index_path=missing, max_chars=4000, state=None)
+            ok, text = tools.run("find_symbol", {"name": "to_display"}, ctx)
+            self.assertTrue(text.startswith("partial:"), text)
+        finally:
+            release.set()
+            engine.wait_all(30)
+            engine._build_main = original
+        ok, text = tools.run("find_symbol", {"name": "to_display"}, ctx)
+        self.assertFalse(text.startswith("partial:"), text)
+        self.assertIn("app/units.py", text)
+
+
 if __name__ == "__main__":
     unittest.main()

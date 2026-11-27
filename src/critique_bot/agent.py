@@ -190,6 +190,9 @@ READY_LINE = "Reply with exactly READY."
 #: Read-only tools that may run side by side within one reply.
 _PARALLEL_SAFE = frozenset(
     {"list_files", "find_files", "read_files", "search_code", "git_status", "git_diff", "git_log", "git_show"}
+    # the read-only index tools (Stage 8)
+    | {"find_symbol", "symbol_refs", "who_calls", "callees", "imports_of", "imported_by", "module_of", "repo_map",
+       "git_blame", "git_history", "cochanged", "find_strings", "locate"}
 )
 _READ_ONLY_FALLBACK = frozenset(
     _PARALLEL_SAFE | {"skill", "todo", "command_output", "ask_user", "web_fetch"}

@@ -255,6 +255,125 @@ BUILTIN_SPECS: tuple[ToolSpec, ...] = (
         _obj({"question": _S, "options": {"type": "array", "items": _S}}, ["question"]),
         read_only=True,
     ),
+    # ---- the index tools (Stage 8, critique_bot.indexing.tools): structure, history, evidence
+    ToolSpec(
+        "find_symbol",
+        "Where a class, function or method is defined: path:line-end, kind, signature; exact names first, then "
+        "names that contain it. Not for text in bodies (search_code). Example: {\"name\": \"CarPropertyService.setProperty\"}.",
+        _obj({"name": _s("a name, Parent.name, or part of a name"),
+              "kind": _s("class, interface, function, method, struct, enum, ..."),
+              "path": _s("only under this folder, or in this build module"), "limit": _i("cap on results", 1, 200)},
+             ["name"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "symbol_refs",
+        "Every use of a name, grouped by file with line numbers (definitions included). Use before renaming or "
+        "changing a signature. Example: {\"name\": \"setFanSpeed\"} or {\"name\": \"src/Fan.kt:42\"}.",
+        _obj({"name": _s("a name, Parent.name, or path:line of its definition"), "path": _s("only under this folder"),
+              "limit": _i("files to list", 1, 200)}, ["name"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "who_calls",
+        "Functions that call a symbol, best matches first; depth 2 adds their callers. Calls match by name, so "
+        "check them (symbol_refs lists every use). Example: {\"symbol\": \"HvacController.setTemp\", \"depth\": 2}.",
+        _obj({"symbol": _s("function or Parent.method"), "depth": _i("1 or 2", 1, 2), "path": _s("its file or folder"),
+              "limit": _i("cap", 1, 200)}, ["symbol"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "callees",
+        "What a function calls and where each callee is defined (likely, by name); depth 2 goes one level further. "
+        "Example: {\"symbol\": \"Parser.parse\"}.",
+        _obj({"symbol": _s("function or Parent.method"), "path": _s("its file"), "depth": _i("1 or 2", 1, 2),
+              "limit": _i("cap", 1, 200)}, ["symbol"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "imports_of",
+        "The imports/includes of one file and the files they resolve to. Example: {\"path\": \"app/src/main/Foo.kt\"}.",
+        _obj({"path": _PATH}, ["path"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "imported_by",
+        "Files that import or include one file (who depends on it). Example: {\"path\": \"src/util/units.py\"}.",
+        _obj({"path": _PATH, "limit": _i("cap", 1, 200)}, ["path"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "module_of",
+        "The build module (Soong Android.bp, Gradle, CMake, Bazel) that builds a file, its deps and the modules that "
+        "use it: what to build or test after a change. Example: {\"path\": \"packages/services/Car/service/src/.../CarService.java\"}.",
+        _obj({"path": _PATH}, ["path"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "repo_map",
+        "A ranked outline of a folder or module (files by import/call rank, with their main definitions), within a "
+        "token budget; files read this task rank higher. For orientation, not search. Example: {\"scope\": \"service/src\"}.",
+        _obj({"scope": _s("folder or module name (default: the project)"),
+              "budget_tokens": _i("size of the map (default 1000)", 100, 8000),
+              "focus": {"type": "array", "items": _S, "description": "files to center the map on"}}),
+        read_only=True,
+    ),
+    ToolSpec(
+        "git_blame",
+        "Who last changed some lines, and in which commit (grouped runs). Example: {\"path\": \"src/a.py\", \"lines\": \"120-160\"}.",
+        _obj({"path": _PATH, "lines": _s("a range such as 120-160 (at most 400 lines)")}, ["path", "lines"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "git_history",
+        "Commits about a file (path), one function (symbol), words in commit messages (query), or code changes that "
+        "added/removed a pattern (changed: git log -G). Example: {\"query\": \"fahrenheit display\"}.",
+        _obj({"path": _PATH, "symbol": _s("function or class: commits that changed its lines"),
+              "query": _s("words to find in commit messages"), "changed": _s("regex for git log -G"),
+              "limit": _i("commits", 1, 50)}),
+        read_only=True,
+    ),
+    ToolSpec(
+        "cochanged",
+        "Files that usually change in the same commits as one file (what else a change may need). "
+        "Example: {\"path\": \"types.hal\"}.",
+        _obj({"path": _PATH, "limit": _i("cap", 1, 50)}, ["path"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "find_strings",
+        "Find the code that emits a log line, error message, UI string, log tag, resource or property key "
+        "(ro.*, persist.*) or SELinux type; a whole logcat line works, numbers may differ. "
+        "Example: {\"text\": \"E CarSvc: fan level too high: 12\"}.",
+        _obj({"text": _s("the message, tag or key as seen"), "path": _s("only under this folder"),
+              "kind": {"type": "string", "enum": ["log", "error", "tag", "resource", "property", "selinux", "literal"]},
+              "limit": _i("cap", 1, 100)}, ["text"]),
+        read_only=True,
+    ),
+    ToolSpec(
+        "coverage_locate",
+        "Run a failing Python test command under line tracing (or read a coverage report: coverage.py JSON, JaCoCo XML, "
+        "LCOV from llvm-cov/gcov) and rank the functions it executed; passing commands sharpen it (Ochiai). trace "
+        "resolves a stack trace to code. Runs commands like run_command. Example: "
+        "{\"command\": \"python -m pytest tests/test_x.py::test_bad\", \"passing\": [\"python -m pytest tests/test_x.py::test_ok\"]}.",
+        _obj({"command": _s("the failing test command"),
+              "passing": {"type": "array", "items": _S, "description": "passing test commands"},
+              "report": _s("coverage report of the failing run"),
+              "passing_reports": {"type": "array", "items": _S, "description": "reports of passing runs"},
+              "trace": _s("a stack trace or tombstone backtrace"), "timeout": _i("seconds per run", 5, 1800),
+              "limit": _i("functions to list", 1, 50)}),
+    ),
+    ToolSpec(
+        "locate",
+        "Start here for a bug report or vague task: fuses stack frames, log/error strings, test names, identifiers "
+        "(split and abbreviations expanded), file names, commit messages and the call graph into ranked file/function "
+        "candidates with reasons. A hypothesis to check by reading. Example: {\"description\": \"temperature shows "
+        "in F after reboot\", \"evidence\": \"<log lines or trace>\"}.",
+        _obj({"description": _s("the task or bug report"), "evidence": _s("log lines, stack trace, failing test output"),
+              "path": _s("only this module/folder (AOSP: indexes it on first use)"), "limit": _i("candidates", 1, 30)},
+             ["description"]),
+        read_only=True,
+    ),
     ToolSpec(
         "delegate",
         "Hand self-contained parts of the task to helper chats that report back; at most 6 briefs.",

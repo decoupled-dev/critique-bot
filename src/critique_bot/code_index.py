@@ -25,6 +25,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -132,7 +133,23 @@ def _file_hash(path: Path) -> str:
         return ""
 
 
+_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_REFRESH_GUARD = threading.Lock()
+
+
+def _refresh_lock(index_path: Path) -> threading.Lock:
+    """One refresh per database at a time in this process (the engine and a background build)."""
+    key = str(Path(index_path).resolve())
+    with _REFRESH_GUARD:
+        return _REFRESH_LOCKS.setdefault(key, threading.Lock())
+
+
 def refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | None = None) -> IndexStats:
+    with _refresh_lock(index_path):
+        return _refresh_index(workspace, index_path, only=only)
+
+
+def _refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | None = None) -> IndexStats:
     """Reparse only files that changed; drop missing files.
 
     A file counts as changed when its mtime or size differs; when only the mtime moved, its
@@ -349,6 +366,13 @@ def add_scope(workspace: Path, index_path: Path, folder: str) -> IndexStats | No
 
 def refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
     """Reparse one file after a write, edit, or delete. Missing files are dropped."""
+    if not Path(index_path).is_file():
+        return
+    with _refresh_lock(index_path):
+        _refresh_path(workspace, index_path, path)
+
+
+def _refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
     workspace = Path(workspace).resolve()
     index_path = Path(index_path)
     if not index_path.is_file():

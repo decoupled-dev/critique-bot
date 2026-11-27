@@ -8,6 +8,7 @@ they stay right after any file changes; they are name matches and are reported a
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -326,15 +327,38 @@ def callees(conn: sqlite3.Connection, symbol: str, *, path: str = "", limit: int
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     out: list[tuple[Edge, list[str]]] = []
+    imported: dict[str, set[str]] = {}
+    external: dict[str, set[str]] = {}
     for r in rows:
         edge = Edge(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4] or ""), int(r[5]))
+        if edge.src_path not in imported:
+            found = imports_of(conn, edge.src_path)
+            imported[edge.src_path] = {e.dst_path for e in found if e.dst_path}
+            # names imported from outside the index (pathlib.Path): calls to them stay outside
+            external[edge.src_path] = {re.split(r"[.:/]", e.dst_name)[-1] for e in found if not e.dst_path}
+        near = imported[edge.src_path]
         defs = conn.execute(
             "SELECT path, line FROM symbols WHERE name = ? AND kind NOT IN ('class','interface','struct','enum','trait','object','impl','union') "
-            "ORDER BY (path = ?) DESC, path LIMIT 4",
-            (edge.dst_name, edge.src_path),
+            "LIMIT 40",
+            (edge.dst_name,),
         ).fetchall()
-        out.append((edge, [f"{d[0]}:{d[1]}" for d in defs]))
+        if not defs:  # a constructor call: the class itself
+            defs = conn.execute("SELECT path, line FROM symbols WHERE name = ? LIMIT 10", (edge.dst_name,)).fetchall()
+        ranked = sorted(((str(d[0]), int(d[1])) for d in defs),
+                        key=lambda d: (d[0] != edge.src_path, not _near(d[0], near), d[0], d[1]))
+        close = [d for d in ranked if d[0] == edge.src_path or _near(d[0], near)]
+        if not close and edge.dst_name in external[edge.src_path]:
+            ranked = []
+        chosen = close or ranked
+        out.append((edge, [f"{path}:{line}" for path, line in chosen[:4]]))
     return out
+
+
+def _near(path: str, imported: set[str]) -> bool:
+    if path in imported:
+        return True
+    folder = str(PurePosixPath(path).parent) + "/"
+    return folder in imported
 
 
 def inherits(conn: sqlite3.Connection, name: str, *, limit: int = 50) -> tuple[list[Edge], list[Edge]]:
