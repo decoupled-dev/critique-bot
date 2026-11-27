@@ -1,0 +1,3 @@
+ro.hvac.unit=celsius
+# comment
+persist.car.fan_unit=1

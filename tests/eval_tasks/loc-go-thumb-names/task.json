@@ -1,0 +1,13 @@
+{
+  "prompt": "Users of the gallery say that thumbnails of photos whose names contain extra dots overwrite each other. For example trip.day1.jpg and trip.day2.jpg end up with one and the same thumbnail file, showing whichever photo was processed last. Photos with plain names are fine. Find the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*naming\\.go)(?=.*thumbName)",
+  "reference_answer": "thumbs/naming.go, thumbName: strings.Split(base, \".\")[0] keeps only the text before the first dot, so trip.day1.jpg and trip.day2.jpg both become trip; it should strip only the extension.",
+  "fault": {"file": "thumbs/naming.go", "function": "thumbName"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "go", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

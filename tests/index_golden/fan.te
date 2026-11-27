@@ -1,0 +1,4 @@
+type fand, domain;
+type fand_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(fand)
+allow fand sysfs_fan:file rw_file_perms;

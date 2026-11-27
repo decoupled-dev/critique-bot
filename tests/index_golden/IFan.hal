@@ -1,0 +1,8 @@
+package android.hardware.fan@1.0;
+
+import android.hardware.base@1.0::IBase;
+
+interface IFan extends @1.0::IBase {
+    setSpeed(int32_t level) generates (Status status);
+    getSpeed() generates (int32_t level);
+};

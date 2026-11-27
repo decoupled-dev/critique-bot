@@ -1,0 +1,88 @@
+{
+ "aosp-car-treesitter": {
+  "repo": "/home/dc/Abhinav/aosp-17/packages/services/Car",
+  "mode": "module group",
+  "treesitter": true,
+  "python": "3.12.3",
+  "build_seconds": 18.0,
+  "rows": {
+   "files": 9859,
+   "symbols": 53382,
+   "refs": 0,
+   "edges": 293670,
+   "strings": 113189,
+   "modules": 668
+  },
+  "files": 9859,
+  "source_bytes": 58356014,
+  "db_bytes": 170614784,
+  "db_share_of_source": 2.924,
+  "incremental_10_seconds": 2.477,
+  "incremental_changed": 10,
+  "noop_refresh_seconds": 0.543,
+  "history_seconds": 0.06,
+  "history_commits": 1,
+  "queries": {
+   "find_symbol": {
+    "p50_ms": 27.6,
+    "p95_ms": 29.7,
+    "n": 30
+   },
+   "symbol_refs": {
+    "p50_ms": 7.3,
+    "p95_ms": 47.9,
+    "n": 30
+   },
+   "who_calls": {
+    "p50_ms": 1.1,
+    "p95_ms": 106.3,
+    "n": 30
+   },
+   "callees": {
+    "p50_ms": 2.8,
+    "p95_ms": 9.7,
+    "n": 30
+   },
+   "imports_of": {
+    "p50_ms": 1.7,
+    "p95_ms": 2.1,
+    "n": 30
+   },
+   "imported_by": {
+    "p50_ms": 1.5,
+    "p95_ms": 1.8,
+    "n": 30
+   },
+   "module_of": {
+    "p50_ms": 1.7,
+    "p95_ms": 3.4,
+    "n": 30
+   },
+   "find_strings": {
+    "p50_ms": 99.9,
+    "p95_ms": 183.3,
+    "n": 30
+   },
+   "repo_map": {
+    "p50_ms": 736.3,
+    "p95_ms": 823.7,
+    "n": 30
+   },
+   "locate": {
+    "p50_ms": 537.4,
+    "p95_ms": 656.1,
+    "n": 30
+   },
+   "cochanged": {
+    "p50_ms": 4.7,
+    "p95_ms": 5.7,
+    "n": 30
+   },
+   "git_history": {
+    "p50_ms": 4.7,
+    "p95_ms": 5.8,
+    "n": 30
+   }
+  }
+ }
+}

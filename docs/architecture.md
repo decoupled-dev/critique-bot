@@ -28,6 +28,7 @@ wires the concrete pieces together.
              egress_proxy (the only network path out of the sandbox), taint (untrusted content)
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
              extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
+             indexing/ (the code index: index.db layers, the index tools; docs/indexing.md)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              tool_parse (fallback tool-call parser), profiles (model profiles, server presets),

@@ -1,0 +1,28 @@
+{
+ "language": "rc",
+ "symbols": [],
+ "edges": [],
+ "strings": [
+  [
+   1,
+   "literal",
+   "service fand /vendor/bin/fand",
+   "fand",
+   ""
+  ],
+  [
+   3,
+   "property",
+   "1",
+   "sys.boot_completed",
+   ""
+  ],
+  [
+   4,
+   "property",
+   "3",
+   "persist.vendor.fan.level",
+   ""
+  ]
+ ]
+}

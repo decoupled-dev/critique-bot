@@ -1,0 +1,13 @@
+{
+  "prompt": "Customers report that a coupon whose last valid day is today is rejected at checkout with the message \"coupon expired\". Coupons are meant to work through the end of their expiry date. Coupons that expire tomorrow or later work fine. Find the fault. Answer with the file and the method that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*CouponValidator\\.java)(?=.*isExpired)",
+  "reference_answer": "src/shop/CouponValidator.java, isExpired: !today.isBefore(expiry) is true on the expiry day itself; it should be today.isAfter(expiry).",
+  "fault": {"file": "src/shop/CouponValidator.java", "function": "isExpired"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "java", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

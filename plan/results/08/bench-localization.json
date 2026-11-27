@@ -1,0 +1,620 @@
+{
+ "localization": {
+  "tasks": [
+   {
+    "task": "loc-aosp-display-units",
+    "variant": "original",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.011
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-aosp-display-units-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-aosp-display-units-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-aosp-power-policy",
+    "variant": "original",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.011
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.006
+    }
+   },
+   {
+    "task": "loc-aosp-power-policy-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.011
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.007
+    }
+   },
+   {
+    "task": "loc-aosp-power-policy-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.01
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.007
+    }
+   },
+   {
+    "task": "loc-c-fan-ctl",
+    "variant": "original",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 3,
+     "function_rank": 3,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-c-fan-ctl-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-c-fan-ctl-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": 2,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-cpp-audio-zone",
+    "variant": "original",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 7,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-cpp-audio-zone-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.009
+    },
+    "names_only": {
+     "file_rank": 5,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-cpp-audio-zone-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 5,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-go-thumb-names",
+    "variant": "original",
+    "fused": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.003
+    }
+   },
+   {
+    "task": "loc-go-thumb-names-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-go-thumb-names-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.006
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.003
+    }
+   },
+   {
+    "task": "loc-java-coupon-expiry",
+    "variant": "original",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-java-coupon-expiry-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 3,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-java-coupon-expiry-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-js-cache-ttl",
+    "variant": "original",
+    "fused": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-js-cache-ttl-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-js-cache-ttl-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 4,
+     "function_rank": null,
+     "seconds": 0.006
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.003
+    }
+   },
+   {
+    "task": "loc-kotlin-seat-heat",
+    "variant": "original",
+    "fused": {
+     "file_rank": 3,
+     "function_rank": 3,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 1,
+     "function_rank": 1,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 3,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 3,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": null,
+     "function_rank": null,
+     "seconds": 0.003
+    }
+   },
+   {
+    "task": "loc-py-thermostat-unit",
+    "variant": "original",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   },
+   {
+    "task": "loc-py-thermostat-unit-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-py-thermostat-unit-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 2,
+     "function_rank": null,
+     "seconds": 0.003
+    }
+   },
+   {
+    "task": "loc-rust-csv-quotes",
+    "variant": "original",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.008
+    },
+    "names_only": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-rust-csv-quotes-obf",
+    "variant": "obf",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.005
+    }
+   },
+   {
+    "task": "loc-rust-csv-quotes-obf-nc",
+    "variant": "obf-nc",
+    "fused": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.007
+    },
+    "names_only": {
+     "file_rank": 1,
+     "function_rank": null,
+     "seconds": 0.004
+    }
+   }
+  ],
+  "summary": {
+   "original/fused": {
+    "tasks": 10,
+    "file_acc@1": 0.4,
+    "file_acc@5": 1.0,
+    "function_acc@5": 0.4,
+    "p95_seconds": 0.011
+   },
+   "original/names_only": {
+    "tasks": 10,
+    "file_acc@1": 0.3,
+    "file_acc@5": 0.7,
+    "function_acc@5": 0.3,
+    "p95_seconds": 0.006
+   },
+   "obf/fused": {
+    "tasks": 10,
+    "file_acc@1": 0.4,
+    "file_acc@5": 1.0,
+    "function_acc@5": 0.3,
+    "p95_seconds": 0.011
+   },
+   "obf/names_only": {
+    "tasks": 10,
+    "file_acc@1": 0.1,
+    "file_acc@5": 0.5,
+    "function_acc@5": 0.1,
+    "p95_seconds": 0.007
+   },
+   "obf-nc/fused": {
+    "tasks": 10,
+    "file_acc@1": 0.5,
+    "file_acc@5": 0.8,
+    "function_acc@5": 0.3,
+    "p95_seconds": 0.01
+   },
+   "obf-nc/names_only": {
+    "tasks": 10,
+    "file_acc@1": 0.1,
+    "file_acc@5": 0.5,
+    "function_acc@5": 0.1,
+    "p95_seconds": 0.007
+   },
+   "log_lines": {
+    "lines": 18,
+    "emitting_line_top1": 1.0
+   }
+  },
+  "log_lines": [
+   {
+    "task": "loc-aosp-display-units",
+    "line": "I ClusterUnits: display units from property: metric",
+    "top": "packages/apps/Car/Cluster/src/com/android/car/cluster/DisplayUnitsReader.java:13",
+    "value": "display units from property: ",
+    "score": 0.911,
+    "emits": true
+   },
+   {
+    "task": "loc-aosp-display-units-obf",
+    "line": "I ClusterUnits: display units from property: metric",
+    "top": "packages/apps/Car/Cluster/src/com/android/car/cluster/Mgr2.java:13",
+    "value": "display units from property: ",
+    "score": 0.911,
+    "emits": true
+   },
+   {
+    "task": "loc-aosp-display-units-obf-nc",
+    "line": "I ClusterUnits: display units from property: metric",
+    "top": "packages/apps/Car/Cluster/src/com/android/car/cluster/Mgr2.java:13",
+    "value": "display units from property: ",
+    "score": 0.911,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl",
+    "line": "I thermal: cabin at 47 C: full fan",
+    "top": "fan/thermal.c:11",
+    "value": "cabin at %d C: full fan",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl",
+    "line": "E fanctl: fan level too high: 9",
+    "top": "fan/fan.c:8",
+    "value": "fan level too high: %d",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl-obf",
+    "line": "I thermal: cabin at 47 C: full fan",
+    "top": "fan/thermal.c:11",
+    "value": "cabin at %d C: full fan",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl-obf",
+    "line": "E fanctl: fan level too high: 9",
+    "top": "fan/fan.c:8",
+    "value": "fan level too high: %d",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl-obf-nc",
+    "line": "I thermal: cabin at 47 C: full fan",
+    "top": "fan/thermal.c:11",
+    "value": "cabin at %d C: full fan",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-c-fan-ctl-obf-nc",
+    "line": "E fanctl: fan level too high: 9",
+    "top": "fan/fan.c:8",
+    "value": "fan level too high: %d",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-cpp-audio-zone",
+    "line": "W CarAudio: no zone for id -1",
+    "top": "audio/ZoneRouter.cpp:13",
+    "value": "no zone for id %d",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-cpp-audio-zone-obf",
+    "line": "W CarAudio: no zone for id -1",
+    "top": "audio/ZoneRouter.cpp:13",
+    "value": "no zone for id %d",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-cpp-audio-zone-obf-nc",
+    "line": "W CarAudio: no zone for id -1",
+    "top": "audio/ZoneRouter.cpp:13",
+    "value": "no zone for id %d",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat",
+    "line": "I SeatHeatVM: seat heat request level=3 zone=DRIVER",
+    "top": "app/src/main/java/com/example/seat/SeatHeatViewModel.kt:11",
+    "value": "seat heat request level=$level zone=$zone",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat",
+    "line": "D SeatProp: write SEAT_HEAT level=2 zone=1",
+    "top": "app/src/main/java/com/example/seat/VehiclePropertyBridge.kt:10",
+    "value": "write SEAT_HEAT level=$level zone=${zone.areaId}",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf",
+    "line": "I SeatHeatVM: seat heat request level=3 zone=DRIVER",
+    "top": "app/src/main/java/com/example/seat/SeatHeatViewModel.kt:11",
+    "value": "seat heat request level=$a4 zone=$a8",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf",
+    "line": "D SeatProp: write SEAT_HEAT level=2 zone=1",
+    "top": "app/src/main/java/com/example/seat/VehiclePropertyBridge.kt:10",
+    "value": "write SEAT_HEAT level=$a4 zone=${a8.areaId}",
+    "score": 1.0,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf-nc",
+    "line": "I SeatHeatVM: seat heat request level=3 zone=DRIVER",
+    "top": "app/src/main/java/com/example/seat/SeatHeatViewModel.kt:11",
+    "value": "seat heat request level=$a4 zone=$a8",
+    "score": 0.98,
+    "emits": true
+   },
+   {
+    "task": "loc-kotlin-seat-heat-obf-nc",
+    "line": "D SeatProp: write SEAT_HEAT level=2 zone=1",
+    "top": "app/src/main/java/com/example/seat/VehiclePropertyBridge.kt:10",
+    "value": "write SEAT_HEAT level=$a4 zone=${a8.areaId}",
+    "score": 1.0,
+    "emits": true
+   }
+  ]
+ }
+}

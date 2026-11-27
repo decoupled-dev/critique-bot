@@ -1,0 +1,35 @@
+{
+ "language": "sepolicy",
+ "symbols": [],
+ "edges": [],
+ "strings": [
+  [
+   1,
+   "selinux",
+   "type fand",
+   "fand",
+   ""
+  ],
+  [
+   2,
+   "selinux",
+   "type fand_exec",
+   "fand_exec",
+   ""
+  ],
+  [
+   3,
+   "selinux",
+   "init_daemon_domain(fand)",
+   "fand",
+   ""
+  ],
+  [
+   4,
+   "selinux",
+   "allow fand sysfs_fan:file rw_file_perms;",
+   "fand",
+   ""
+  ]
+ ]
+}

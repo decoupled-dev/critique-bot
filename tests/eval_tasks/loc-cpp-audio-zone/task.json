@@ -1,0 +1,13 @@
+{
+  "prompt": "In a car with two audio zones, raising the volume for the rear-seat zone (zone 1) changes the volume of the driver's zone instead, and volume changes for the driver's zone (zone 0) do nothing at all. The log shows, when the driver turns the knob:\nW CarAudio: no zone for id -1\nFind the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*ZoneRouter\\.cpp)(?=.*routeFor)",
+  "reference_answer": "audio/ZoneRouter.cpp, ZoneRouter::routeFor: zone ids already start at 0, but it subtracts 1, so zone 0 is rejected and zone 1 maps to zone 0.",
+  "fault": {"file": "audio/ZoneRouter.cpp", "function": "routeFor"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "cpp", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

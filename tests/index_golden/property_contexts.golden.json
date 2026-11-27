@@ -1,0 +1,14 @@
+{
+ "language": "sepolicy",
+ "symbols": [],
+ "edges": [],
+ "strings": [
+  [
+   1,
+   "property",
+   "persist.vendor.fan. u:object_r:vendor_fan_prop:s0",
+   "persist.vendor.fan.",
+   ""
+  ]
+ ]
+}

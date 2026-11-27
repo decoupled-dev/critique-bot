@@ -58,6 +58,8 @@ LAYERS: dict[str, int] = {
     "big_file": TOOLS,
     "log_tools": TOOLS,
     "soong": TOOLS,
+    # the indexing engine (Stage 8): a package, one module
+    "indexing": TOOLS,
     "gitlab_access": TOOLS,
     "jira": TOOLS,
     "workspace": TOOLS,

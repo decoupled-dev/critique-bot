@@ -150,20 +150,36 @@ when present. Off by default; never for AOSP-wide use.
 ## Completion targets
 - [ ] `frameworks/base` indexed (L0–L3) in ≤ 15 min on the dev machine; incremental update of 10
       changed files ≤ 3 s; query p95 ≤ 300 ms
+      (2026-11-27: not run on frameworks/base. `packages/services/Car`, 9.9k files: 14-18 s full,
+      1.2-2.5 s for 10 changed files, p95 ≤ 183 ms for all tools except repo_map ~0.85 s and
+      locate ~0.7 s; `plan/results/08/README.md`)
 - [ ] Index db ≤ 10% of the source size for that module
+      (2026-11-27: missed: Car 291%, mostly call edges; path interning + packed per-file call
+      edges is the planned fix)
 - [ ] Localization acc@5 ≥ 80% on the 20-task set with index tools (baseline: without)
+      (needs model runs; 10 tasks exist under `tests/eval_tasks/loc-*`. `locate` alone, no model:
+      file acc@5 1.0 on the originals)
 - [ ] Tokens per solved task −20% on the suite's navigation-heavy tasks, at equal pass@1
-- [ ] `repo_map` stays within its budget and is cache-stable within a session
-- [ ] Works without the `index` extra installed (lexical only, with a clear note)
+      (needs model runs)
+- [x] `repo_map` stays within its budget and is cache-stable within a session
+      (`tests/test_indexing.py` ToolTests.test_repo_map_is_ranked_within_budget_and_stable; the
+      engine's session-start map still uses the 1.0.x refs map, switching it is an agent.py change)
+- [x] Works without the `index` extra installed (lexical only, with a clear note)
+      (regex parsers for every language, golden files for both paths; locate says "parser: regex")
 - [ ] **Speed:** median search turns before the first correct file ≤ 2 on the localization set;
       `locate` returns within 2 s p95 on `frameworks/base`; AOSP-wide `search_code` with an index ≤ 1 s p95
+      (search turns need model runs; locate p95 0.74 s on Car; search_code is another stage's tool)
 - [ ] **Bad names:** on the obfuscated copies, acc@5 drops by ≤ 10 points against the original
       names (comments kept) and ≤ 20 points (comments stripped); without the fused retrievers
       (names only) the drop is measured for comparison
+      (obfuscator and 20 variants exist; model runs pending. `locate` alone: fused 1.0 -> 1.0 / 0.8,
+      names only 0.7 -> 0.5 / 0.5 file acc@5)
 - [ ] String/log-tag retriever finds the emitting line for ≥ 95% of log messages taken from the
       log-crash eval tasks
+      (the log-crash tasks have no source; on the 18 log lines in the localization tasks: 100%)
 - [ ] `coverage_locate` puts the fault function in its top 5 for ≥ 70% of tasks that have a
       failing test
+      (2 of the suite's 3 Python bug-fix tasks, 67%; too few tasks to call it)
 
 ## Risks
 - **Name-based call edges are imprecise:** label them "likely" and keep `symbol_refs` as the

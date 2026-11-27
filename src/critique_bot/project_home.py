@@ -276,7 +276,7 @@ def _load(root: Path, settings_path: Path) -> BotHome:
         settings_path=settings_path,
         cache_dir=bot_dir / "cache",
         sessions_dir=bot_dir / "sessions",
-        index_path=bot_dir / "cache" / "index.sqlite",
+        index_path=bot_dir / "cache" / "index.db",
         settings=raw,
     )
 

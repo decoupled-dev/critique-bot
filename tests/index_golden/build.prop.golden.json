@@ -1,0 +1,21 @@
+{
+ "language": "prop",
+ "symbols": [],
+ "edges": [],
+ "strings": [
+  [
+   1,
+   "property",
+   "celsius",
+   "ro.hvac.unit",
+   ""
+  ],
+  [
+   3,
+   "property",
+   "1",
+   "persist.car.fan_unit",
+   ""
+  ]
+ ]
+}

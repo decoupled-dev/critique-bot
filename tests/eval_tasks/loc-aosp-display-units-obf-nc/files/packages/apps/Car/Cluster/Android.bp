@@ -1,0 +1,6 @@
+android_app {
+    name: "CarClusterUnits",
+    srcs: ["src/**/*.java"],
+    static_libs: ["car-cluster-renderer"],
+    init_rc: ["etc/init.car_cluster.rc"],
+}

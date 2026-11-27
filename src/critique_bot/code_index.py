@@ -1,35 +1,42 @@
-"""Code catalog under ``.crit/cache/index.sqlite``.
+"""Code catalog in the project's index database (``.crit/cache/index.db``).
 
 Stdlib only by default. ``tree_sitter`` plus a language wheel is used when it
 is importable, otherwise a regex pass per language. The catalog holds:
 
-``files``    path, mtime, size, language. Used to refresh only changed files
-             and as the file list for ``find_files``.
+``files``    path, mtime, size, language, content hash, the nearest build file. Used to
+             refresh only changed files and as the file list for ``find_files``.
 ``symbols``  definitions with start and end line, enclosing parent, and the
              signature line. ``read_files`` can read one symbol by name.
 ``refs``     identifier uses per file with a count. Feeds the repo map.
 ``content``  FTS5 trigram index of file text when SQLite has FTS5. It narrows
              a regex search to the files that contain its literal part.
+
+The same refresh also writes the indexing engine's layers (imports, calls, inheritance,
+strings, build modules; see :mod:`critique_bot.indexing`). The schema and its migrations
+live in :mod:`critique_bot.indexing.store`; this module keeps its public API.
 """
 
 from __future__ import annotations
 
-import ast
+import hashlib
 import json
 import math
 import os
 import re
 import sqlite3
 import subprocess
-import warnings
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from critique_bot import log
+from critique_bot.indexing import store as _store_mod
+from critique_bot.indexing.langs import language_of
+from critique_bot.indexing.symbols import Symbol, extract_symbols  # noqa: F401 (public API)
 from critique_bot.patch import looks_binary_bytes, looks_binary_path
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = str(_store_mod.current_version())
 
 SKIP_DIR_NAMES = frozenset(
     {
@@ -67,66 +74,6 @@ SKIP_DIR_NAMES = frozenset(
 _MAX_FILE_BYTES = 1_000_000
 _MAX_FTS_BYTES = 400_000
 
-_LANG_BY_SUFFIX = {
-    ".py": "python",
-    ".java": "java",
-    ".kt": "kotlin",
-    ".kts": "kotlin",
-    ".go": "go",
-    ".rs": "rust",
-    ".c": "c",
-    ".h": "c",
-    ".cc": "cpp",
-    ".cpp": "cpp",
-    ".cxx": "cpp",
-    ".hpp": "cpp",
-    ".hh": "cpp",
-    ".cs": "csharp",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-}
-
-_CLASS_RE = re.compile(
-    r"\b(?:class|interface|enum|record|struct|trait|object|type)\s+([A-Za-z_]\w*)"
-)
-_FUNC_RE = {
-    "java": re.compile(
-        r"^\s*(?:(?:public|private|protected|static|final|synchronized|native|abstract|default)\s+)+"
-        r"(?!class\b|interface\b|enum\b|record\b)[\w.<>,\[\]]+\s+([A-Za-z_]\w*)\s*\(",
-        re.M,
-    ),
-    "kotlin": re.compile(
-        r"^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline|operator)\s+)*"
-        r"fun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?([A-Za-z_]\w*)\s*\(",
-        re.M,
-    ),
-    "go": re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(", re.M),
-    "rust": re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(", re.M),
-    "c": re.compile(
-        r"^\s*(?:[\w*]+\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{",
-        re.M,
-    ),
-    "cpp": re.compile(
-        r"^\s*(?:[\w:*&<>]+\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const\s*)?\{",
-        re.M,
-    ),
-    "csharp": re.compile(
-        r"^\s*(?:(?:public|private|protected|internal|static|async|virtual|override|sealed)\s+)+"
-        r"(?!class\b|interface\b|enum\b|struct\b|record\b)[\w.<>,\[\]]+\s+([A-Za-z_]\w*)\s*\(",
-        re.M,
-    ),
-    "javascript": re.compile(
-        r"(?:function\s+([A-Za-z_]\w*)\s*\(|(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\()",
-    ),
-    "typescript": re.compile(
-        r"(?:function\s+([A-Za-z_]\w*)\s*\(|(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\()",
-    ),
-}
-
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 _KEYWORDS = frozenset(
     """
@@ -142,77 +89,6 @@ _KEYWORDS = frozenset(
     """.split()
 )
 
-# Tree-sitter node types that define a symbol, per language. ``name`` is the
-# field read from that node. Anything missing falls back to the regex pass.
-_TS_MODULES = {
-    "python": "tree_sitter_python",
-    "java": "tree_sitter_java",
-    "kotlin": "tree_sitter_kotlin",
-    "go": "tree_sitter_go",
-    "rust": "tree_sitter_rust",
-    "c": "tree_sitter_c",
-    "cpp": "tree_sitter_cpp",
-    "csharp": "tree_sitter_c_sharp",
-    "javascript": "tree_sitter_javascript",
-    "typescript": "tree_sitter_typescript",
-}
-_TS_DEFS: dict[str, dict[str, str]] = {
-    "python": {"class_definition": "class", "function_definition": "function"},
-    "java": {
-        "class_declaration": "class",
-        "interface_declaration": "class",
-        "enum_declaration": "class",
-        "record_declaration": "class",
-        "annotation_type_declaration": "class",
-        "method_declaration": "function",
-        "constructor_declaration": "function",
-    },
-    "kotlin": {
-        "class_declaration": "class",
-        "object_declaration": "class",
-        "function_declaration": "function",
-    },
-    "go": {
-        "function_declaration": "function",
-        "method_declaration": "function",
-        "type_spec": "class",
-    },
-    "rust": {
-        "function_item": "function",
-        "struct_item": "class",
-        "enum_item": "class",
-        "trait_item": "class",
-        "impl_item": "class",
-    },
-    "c": {"function_definition": "function", "struct_specifier": "class"},
-    "cpp": {
-        "function_definition": "function",
-        "class_specifier": "class",
-        "struct_specifier": "class",
-    },
-    "csharp": {
-        "class_declaration": "class",
-        "interface_declaration": "class",
-        "struct_declaration": "class",
-        "enum_declaration": "class",
-        "record_declaration": "class",
-        "method_declaration": "function",
-        "constructor_declaration": "function",
-    },
-    "javascript": {
-        "class_declaration": "class",
-        "function_declaration": "function",
-        "method_definition": "function",
-    },
-    "typescript": {
-        "class_declaration": "class",
-        "interface_declaration": "class",
-        "function_declaration": "function",
-        "method_definition": "function",
-    },
-}
-_ts_cache: dict[str, object] = {}
-
 
 @dataclass(frozen=True)
 class IndexStats:
@@ -220,21 +96,6 @@ class IndexStats:
     symbols: int
     changed: int = 0
     removed: int = 0
-
-
-@dataclass(frozen=True)
-class Symbol:
-    path: str
-    line: int
-    end_line: int
-    kind: str
-    name: str
-    parent: str
-    signature: str
-
-    @property
-    def qualified(self) -> str:
-        return f"{self.parent}.{self.name}" if self.parent else self.name
 
 
 def rebuild_index(workspace: Path, index_path: Path) -> IndexStats:
@@ -247,42 +108,80 @@ def rebuild_index(workspace: Path, index_path: Path) -> IndexStats:
 
 def _remove_db(index_path: Path) -> None:
     """Delete the database and its WAL sidecar files."""
-    for item in (index_path, Path(f"{index_path}-wal"), Path(f"{index_path}-shm")):
-        item.unlink(missing_ok=True)
+    _store_mod.remove_db(index_path)
+
+
+def _open_current(index_path: Path) -> sqlite3.Connection:
+    """A connection to an up-to-date schema: migrated in place, or rebuilt when it cannot be."""
+    conn = _connect(index_path)
+    try:
+        if _store_mod.migrate(conn):
+            return conn
+    except sqlite3.DatabaseError as exc:
+        log.debug(f"index {index_path} unreadable, rebuilding: {exc}")
+    conn.close()
+    _remove_db(index_path)
+    conn = _connect(index_path)
+    _store_mod.migrate(conn)
+    return conn
+
+
+def _file_hash(path: Path) -> str:
+    try:
+        return hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
+    except OSError:
+        return ""
+
+
+_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_REFRESH_GUARD = threading.Lock()
+
+
+def _refresh_lock(index_path: Path) -> threading.Lock:
+    """One refresh per database at a time in this process (the engine and a background build)."""
+    key = str(Path(index_path).resolve())
+    with _REFRESH_GUARD:
+        return _REFRESH_LOCKS.setdefault(key, threading.Lock())
 
 
 def refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | None = None) -> IndexStats:
-    """Reparse only files whose mtime or size changed; drop missing files.
+    with _refresh_lock(index_path):
+        return _refresh_index(workspace, index_path, only=only)
+
+
+def _refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | None = None) -> IndexStats:
+    """Reparse only files that changed; drop missing files.
+
+    A file counts as changed when its mtime or size differs; when only the mtime moved, its
+    content hash decides (a checkout or ``touch`` that kept the bytes costs no parse). Files
+    that ``git diff`` names since the last indexed commit are hash-checked even when their
+    mtime and size look the same.
 
     On a ``repo``-tool tree (AOSP) only the projects in the index's *scope* are walked:
     the ones the agent has worked in (:func:`add_scope`). Indexing all of AOSP would take
     hours and many GB; text search covers the rest. ``only`` limits this refresh to some
     folders (workspace-relative), for example the one project just added.
 
-    Missing or outdated catalogs are rebuilt in full. The walk uses ``git
-    ls-files`` when the workspace is a checkout so ignored files are skipped.
+    Outdated catalogs are migrated (a 1.0.x catalog is parsed again in full). The walk uses
+    ``git ls-files`` when the workspace is a checkout so ignored files are skipped.
     """
     workspace = Path(workspace).resolve()
     index_path = Path(index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _connect(index_path)
+    _store_mod.remove_legacy(index_path)
+    conn = _open_current(index_path)
     try:
-        if not _schema_current(conn):
-            conn.close()
-            _remove_db(index_path)
-            conn = _connect(index_path)
-            _create_schema(conn)
         known = {
-            str(row["path"]): (int(row["mtime_ns"]), int(row["size"]))
-            for row in conn.execute("SELECT path, mtime_ns, size FROM files")
+            str(row["path"]): (int(row["mtime_ns"]), int(row["size"]), str(row["hash"] or ""))
+            for row in conn.execute("SELECT path, mtime_ns, size, hash FROM files")
         }
         prefixes = _refresh_prefixes(conn, workspace, only)
         if prefixes is not None:
             known = {rel: value for rel, value in known.items() if _under(rel, prefixes)}
+        suspects = _git_changed(workspace, conn, prefixes)
         seen: set[str] = set()
         jobs: list[tuple[Path, str, int, int]] = []
-        changed = 0
-        symbols = 0
+        touched: list[tuple[int, str]] = []
         own = {str(index_path.resolve()) + suffix for suffix in ("", "-wal", "-shm", "-journal")}
         for path, rel in _walk(workspace, prefixes):
             if looks_binary_path(rel) or str(path) in own:
@@ -295,34 +194,111 @@ def refresh_index(workspace: Path, index_path: Path, *, only: Iterable[str] | No
             if stat.st_size > _MAX_FILE_BYTES:
                 continue
             previous = known.get(rel)
-            if previous == (stat.st_mtime_ns, stat.st_size):
-                continue
+            if previous is not None and previous[1] == stat.st_size:
+                if previous[0] == stat.st_mtime_ns and rel not in suspects:
+                    continue
+                if previous[2] and _file_hash(path) == previous[2]:
+                    if previous[0] != stat.st_mtime_ns:
+                        touched.append((stat.st_mtime_ns, rel))
+                    continue
             jobs.append((path, rel, stat.st_mtime_ns, stat.st_size))
+        if touched:
+            conn.executemany("UPDATE files SET mtime_ns = ? WHERE path = ?", touched)
         # A repo tree is searched with rg (or a scan); trigram text of whole AOSP
         # projects would make the index many GB.
-        fts = _has_fts(conn) and prefixes is None
+        lean = prefixes is not None
+        fts = _has_fts(conn) and not lean
+        changed = 0
+        changed_paths: list[str] = []
+        build_changed = False
         for rel, mtime_ns, size, parsed in _parse_many(jobs):
             if rel in known:  # new files have nothing to forget (the FTS delete scans the table)
-                _forget(conn, rel)
+                build_changed |= _forget(conn, rel)
             if parsed is None:
                 continue
             # refs only feed the PageRank map, which a scoped index does not use; on
             # frameworks/base they were 10M rows and most of the database
-            symbols += _store(conn, rel, mtime_ns, size, parsed, fts, refs_too=prefixes is None)
+            build_changed |= _store(conn, workspace, rel, mtime_ns, size, parsed, fts, refs_too=not lean)
             changed += 1
+            changed_paths.append(rel)
             if changed % 500 == 0:  # short write transactions, so other writers are not starved
                 conn.commit()
         removed = 0
         for rel in known:
             if rel not in seen:
-                _forget(conn, rel)
+                build_changed |= _forget(conn, rel)
                 removed += 1
+        added = any(rel not in known for rel in changed_paths)
+        _link(conn, changed_paths, everything=bool(removed or added), build_changed=build_changed)
+        _note_head(workspace, conn, prefixes)
         conn.commit()
         total_files = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
         total_symbols = int(conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0])
     finally:
         conn.close()
     return IndexStats(files=total_files, symbols=total_symbols, changed=changed, removed=removed)
+
+
+def _link(conn: sqlite3.Connection, changed: list[str], *, everything: bool, build_changed: bool) -> None:
+    """Resolve imports and owning build files after a refresh.
+
+    Adding or removing a file can change what other files' imports resolve to, so then
+    every import is resolved again (dictionary lookups; fast); otherwise only the changed
+    files' own imports. The result equals a full rebuild either way.
+    """
+    from critique_bot.indexing import graph, modules
+
+    if everything:
+        graph.resolve_imports(conn)
+    elif changed:
+        graph.resolve_imports(conn, sources=changed)
+    if build_changed:
+        modules.assign(conn)
+    elif changed:
+        modules.assign(conn, changed)
+
+
+def _git_project(workspace: Path, prefixes: list[str] | None) -> Path | None:
+    if prefixes is None:
+        return workspace if (workspace / ".git").exists() else None
+    if len(prefixes) == 1 and prefixes[0] and (workspace / prefixes[0] / ".git").exists():
+        return workspace / prefixes[0]
+    return None
+
+
+def _git_out(folder: Path, *args: str, timeout: float = 20) -> str | None:
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"}
+    try:
+        proc = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True,
+                              errors="replace", timeout=timeout, env=env, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _git_changed(workspace: Path, conn: sqlite3.Connection, prefixes: list[str] | None) -> set[str]:
+    """Files ``git diff`` names between the last indexed commit and HEAD (workspace-relative)."""
+    folder = _git_project(workspace, prefixes)
+    last = _store_mod.get_meta(conn, "head")
+    if folder is None or not last:
+        return set()
+    head = (_git_out(folder, "rev-parse", "HEAD") or "").strip()
+    if not head or head == last:
+        return set()
+    names = _git_out(folder, "diff", "--name-only", "--no-renames", last, head)
+    if names is None:
+        return set()
+    base = "" if folder == workspace else folder.relative_to(workspace).as_posix()
+    return {f"{base}/{name}" if base else name for name in names.splitlines() if name}
+
+
+def _note_head(workspace: Path, conn: sqlite3.Connection, prefixes: list[str] | None) -> None:
+    folder = _git_project(workspace, prefixes)
+    if folder is None:
+        return
+    head = (_git_out(folder, "rev-parse", "HEAD") or "").strip()
+    if head:
+        _store_mod.set_meta(conn, "head", head)
 
 
 def _under(rel: str, prefixes: list[str]) -> bool:
@@ -390,6 +366,13 @@ def add_scope(workspace: Path, index_path: Path, folder: str) -> IndexStats | No
 
 def refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
     """Reparse one file after a write, edit, or delete. Missing files are dropped."""
+    if not Path(index_path).is_file():
+        return
+    with _refresh_lock(index_path):
+        _refresh_path(workspace, index_path, path)
+
+
+def _refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
     workspace = Path(workspace).resolve()
     index_path = Path(index_path)
     if not index_path.is_file():
@@ -406,14 +389,20 @@ def refresh_path(workspace: Path, index_path: Path, path: Path) -> None:
     try:
         if not _schema_current(conn):
             return
-        _forget(conn, rel)
+        existed = conn.execute("SELECT 1 FROM files WHERE path = ?", (rel,)).fetchone() is not None
+        build_changed = _forget(conn, rel)
+        stored = None
         if target.is_file() and not looks_binary_path(rel):
             try:
                 stat = target.stat()
             except OSError:
                 stat = None
             if stat is not None and stat.st_size <= _MAX_FILE_BYTES:
-                _index_file(conn, target, rel, stat.st_mtime_ns, stat.st_size)
+                stored = _index_file(conn, workspace, target, rel, stat.st_mtime_ns, stat.st_size)
+        build_changed |= bool(stored)
+        # a new or deleted file can change what other files' imports resolve to
+        _link(conn, [rel] if stored is not None else [], everything=existed != (stored is not None),
+              build_changed=build_changed)
         conn.commit()
     finally:
         conn.close()
@@ -860,80 +849,32 @@ def _symbol_from_row(row: sqlite3.Row) -> Symbol:
 
 
 def _connect(index_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(index_path), timeout=30)
-    conn.row_factory = sqlite3.Row
-    try:  # readers keep working while a background refresh writes
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        pass
-    return conn
+    return _store_mod.connect(index_path)
 
 
 def _schema_current(conn: sqlite3.Connection) -> bool:
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
-    except sqlite3.OperationalError:
-        return False
-    return row is not None and str(row[0]) == SCHEMA_VERSION
+    return _store_mod.is_current(conn)
 
 
 def _has_fts(conn: sqlite3.Connection) -> bool:
-    row = conn.execute("SELECT value FROM meta WHERE key = 'fts'").fetchone()
-    return row is not None and str(row[0]) == "1"
-
-
-def _create_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS files (
-            path TEXT PRIMARY KEY,
-            mtime_ns INTEGER NOT NULL,
-            size INTEGER NOT NULL,
-            language TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS symbols (
-            name TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            path TEXT NOT NULL,
-            line INTEGER NOT NULL,
-            end_line INTEGER NOT NULL,
-            parent TEXT NOT NULL DEFAULT '',
-            signature TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-        CREATE INDEX IF NOT EXISTS idx_symbols_path ON symbols(path);
-        CREATE TABLE IF NOT EXISTS refs (
-            name TEXT NOT NULL,
-            path TEXT NOT NULL,
-            line INTEGER NOT NULL,
-            count INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
-        CREATE INDEX IF NOT EXISTS idx_refs_path ON refs(path);
-        """
-    )
-    fts = "0"
     try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS content USING fts5("
-            "path UNINDEXED, body, tokenize='trigram')"
-        )
-        fts = "1"
-    except sqlite3.OperationalError:
-        fts = "0"
-    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)", (SCHEMA_VERSION,))
-    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts', ?)", (fts,))
-    conn.commit()
+        return _store_mod.get_meta(conn, "fts") == "1"
+    except sqlite3.DatabaseError:
+        return False
 
 
-def _forget(conn: sqlite3.Connection, rel: str) -> None:
+def _forget(conn: sqlite3.Connection, rel: str) -> bool:
+    """Drop everything indexed for ``rel``. True when it was a build file (modules changed)."""
     conn.execute("DELETE FROM symbols WHERE path = ?", (rel,))
     conn.execute("DELETE FROM refs WHERE path = ?", (rel,))
     conn.execute("DELETE FROM files WHERE path = ?", (rel,))
+    conn.execute("DELETE FROM edges WHERE src_path = ?", (rel,))
+    conn.execute("UPDATE edges SET dst_path = NULL WHERE dst_path = ?", (rel,))
+    conn.execute("DELETE FROM strings WHERE path = ?", (rel,))
     if _has_fts(conn):
         conn.execute("DELETE FROM content WHERE path = ?", (rel,))
+    gone = conn.execute("DELETE FROM modules WHERE build_file = ?", (rel,)).rowcount
+    return bool(gone)
 
 
 def _walk(workspace: Path, prefixes: list[str] | None = None):
@@ -986,32 +927,48 @@ def _git_files(workspace: Path) -> list[str] | None:
 
 
 def _parse_file(path: str, size: int) -> tuple | None:
-    """Read and parse one file: (language, symbols, refs, fts text or None). Picklable,
-    so a process pool can run it; the database writes stay in the parent."""
+    """Read and parse one file: (language, symbols, refs, fts text or None, edges, strings,
+    hash). Picklable, so a process pool can run it; the database writes stay in the parent."""
+    from critique_bot.indexing import facts
+
     try:
         data = Path(path).read_bytes()
     except OSError:
         return None
     if looks_binary_bytes(data):
         return None
+    digest = hashlib.blake2b(data, digest_size=16).hexdigest()
     text = data.decode("utf-8", "replace")
-    language = _LANG_BY_SUFFIX.get(Path(path).suffix.lower(), "text")
-    with warnings.catch_warnings():  # odd escapes in parsed Python files are not ours to report
-        warnings.simplefilter("ignore", SyntaxWarning)
-        symbols = extract_symbols(text, language)
+    language = language_of(path)
+    try:
+        found = facts.parse_text(text, language, path)
+    except (RecursionError, ValueError, MemoryError) as exc:  # a pathological file: keep it, unparsed
+        log.debug(f"could not parse {path}: {exc}")
+        found = facts.Facts(language)
+    symbols = found.symbols
     rows = [(item.name, item.kind, item.line, item.end_line, item.parent, item.signature) for item in symbols]
     defined = {item.name for item in symbols}
     refs = [(name, line, count) for name, (line, count) in _references(text, language, defined).items()]
-    return language, rows, refs, text if size <= _MAX_FTS_BYTES else None
+    return (language, rows, refs, text if size <= _MAX_FTS_BYTES else None, found.edges, found.strings, digest)
 
 
 def _store(
-    conn: sqlite3.Connection, rel: str, mtime_ns: int, size: int, parsed: tuple, fts: bool, refs_too: bool = True
-) -> int:
-    language, rows, refs, text = parsed
+    conn: sqlite3.Connection,
+    workspace: Path,
+    rel: str,
+    mtime_ns: int,
+    size: int,
+    parsed: tuple,
+    fts: bool,
+    refs_too: bool = True,
+) -> bool:
+    """Write one parsed file. True when it is a build file (its modules were stored)."""
+    from critique_bot.indexing import modules
+
+    language, rows, refs, text, edges, strings, digest = parsed
     conn.execute(
-        "INSERT OR REPLACE INTO files (path, mtime_ns, size, language) VALUES (?, ?, ?, ?)",
-        (rel, mtime_ns, size, language),
+        "INSERT OR REPLACE INTO files (path, mtime_ns, size, language, hash, module) VALUES (?, ?, ?, ?, ?, '')",
+        (rel, mtime_ns, size, language, digest),
     )
     conn.executemany(
         "INSERT INTO symbols (name, kind, path, line, end_line, parent, signature) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1022,23 +979,38 @@ def _store(
             "INSERT INTO refs (name, path, line, count) VALUES (?, ?, ?, ?)",
             [(name, rel, line, count) for name, line, count in refs],
         )
+    conn.executemany(
+        "INSERT INTO edges (src_path, src_symbol, kind, dst_name, dst_path, line) VALUES (?, ?, ?, ?, NULL, ?)",
+        [(rel, src_symbol, kind, dst, line) for kind, src_symbol, dst, line in edges],
+    )
+    conn.executemany(
+        "INSERT INTO strings (path, line, kind, value, tag, container) VALUES (?, ?, ?, ?, ?, ?)",
+        [(rel, line, kind, value, tag, container) for line, kind, value, tag, container in strings],
+    )
     if fts and text is not None:
         conn.execute("INSERT INTO content (path, body) VALUES (?, ?)", (rel, text))
-    return len(rows)
+    if modules.is_build_file(rel) and text is not None:
+        try:
+            modules.store(conn, rel, modules.parse_build_file(workspace, rel, text))
+        except (OSError, ValueError, RecursionError) as exc:
+            log.debug(f"could not read the modules of {rel}: {exc}")
+        return True
+    return False
 
 
 def _index_file(
     conn: sqlite3.Connection,
+    workspace: Path,
     path: Path,
     rel: str,
     mtime_ns: int,
     size: int,
-) -> int | None:
+) -> bool | None:
     parsed = _parse_file(str(path), size)
     if parsed is None:
         return None
     scoped = bool(scope(conn))
-    return _store(conn, rel, mtime_ns, size, parsed, _has_fts(conn) and not scoped, refs_too=not scoped)
+    return _store(conn, workspace, rel, mtime_ns, size, parsed, _has_fts(conn) and not scoped, refs_too=not scoped)
 
 
 # Parse in worker processes when at least this many files changed.
@@ -1063,227 +1035,6 @@ def _parse_many(jobs: list[tuple[Path, str, int, int]]):
         yield rel, mtime_ns, size, _parse_file(str(path), size)
 
 
-def extract_symbols(text: str, language: str) -> list[Symbol]:
-    """Definitions in ``text``. Path is left empty; the caller fills it."""
-    if language == "python":
-        found = _python_symbols(text)
-        if found:
-            return found
-    if language in _TS_MODULES:
-        found = _treesitter_symbols(text, language)
-        if found is not None:
-            return found
-    return _regex_symbols(text, language)
-
-
-def _regex_symbols(text: str, language: str) -> list[Symbol]:
-    found: list[Symbol] = []
-    if language == "text":
-        return found
-    lines = text.split("\n")
-    brace = language in {"java", "kotlin", "go", "rust", "c", "cpp", "csharp", "javascript", "typescript"}
-    for match in _CLASS_RE.finditer(text):
-        line = _line_of(text, match.start())
-        if _in_comment(lines[line - 1], text, match.start()):
-            continue
-        end = _brace_end(text, match.end(), line) if brace else line
-        found.append(
-            Symbol("", line, end, "class", match.group(1), "", lines[line - 1].strip())
-        )
-    func_re = _FUNC_RE.get(language)
-    if func_re is not None:
-        for match in func_re.finditer(text):
-            name = next((group for group in match.groups() if group), None)
-            if not name or name in {"if", "for", "while", "switch", "catch", "return"}:
-                continue
-            line = _line_of(text, match.start())
-            if _in_comment(lines[line - 1], text, match.start()):
-                continue
-            end = _brace_end(text, match.end(), line) if brace else line
-            parent = _enclosing(found, line)
-            found.append(Symbol("", line, end, "function", name, parent, lines[line - 1].strip()))
-    found.sort(key=lambda item: item.line)
-    return found
-
-
-def _in_comment(line_text: str, text: str, offset: int) -> bool:
-    """True when a regex match sits in a comment (a doc line, or after ``//``)."""
-    stripped = line_text.lstrip()
-    if stripped.startswith(("*", "//", "/*")):
-        return True
-    start = text.rfind("\n", 0, offset) + 1
-    return "//" in text[start:offset]
-
-
-def _enclosing(classes: list[Symbol], line: int) -> str:
-    inner = ""
-    for item in classes:
-        if item.kind == "class" and item.line < line <= item.end_line:
-            inner = item.name
-    return inner
-
-
-def _brace_end(text: str, start: int, line: int) -> int:
-    """Line of the brace that closes the first ``{`` at or after ``start``."""
-    open_at = text.find("{", start)
-    newline = text.find("\n", start)
-    if open_at < 0 or (newline >= 0 and open_at > newline + 200):
-        return line
-    depth = 0
-    index = open_at
-    length = len(text)
-    while index < length:
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return _line_of(text, index)
-        elif char in "\"'":
-            quote = char
-            index += 1
-            while index < length and text[index] != quote:
-                if text[index] == "\\":
-                    index += 1
-                if text[index : index + 1] == "\n":
-                    break
-                index += 1
-        elif char == "/" and text[index : index + 2] == "//":
-            index = text.find("\n", index)
-            if index < 0:
-                break
-        elif char == "/" and text[index : index + 2] == "/*":
-            index = text.find("*/", index + 2)
-            if index < 0:
-                break
-            index += 1
-        index += 1
-    return line
-
-
-def _python_symbols(text: str) -> list[Symbol]:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
-    lines = text.split("\n")
-    found: list[Symbol] = []
-
-    def visit(node: ast.AST, parent: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.ClassDef):
-                found.append(
-                    Symbol(
-                        "",
-                        child.lineno,
-                        int(getattr(child, "end_lineno", child.lineno) or child.lineno),
-                        "class",
-                        child.name,
-                        parent,
-                        lines[child.lineno - 1].strip(),
-                    )
-                )
-                visit(child, child.name)
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                line = child.lineno
-                found.append(
-                    Symbol(
-                        "",
-                        line,
-                        int(getattr(child, "end_lineno", line) or line),
-                        "function",
-                        child.name,
-                        parent,
-                        lines[line - 1].strip(),
-                    )
-                )
-                visit(child, parent)
-            else:
-                visit(child, parent)
-
-    visit(tree, "")
-    found.sort(key=lambda item: item.line)
-    return found
-
-
-def _treesitter_language(language: str):
-    if language in _ts_cache:
-        return _ts_cache[language]
-    result = None
-    module_name = _TS_MODULES.get(language)
-    if module_name:
-        try:
-            import importlib
-
-            from tree_sitter import Language, Parser  # type: ignore
-
-            module = importlib.import_module(module_name)
-            if language == "typescript":
-                lang = Language(module.language_typescript())
-            else:
-                lang = Language(module.language())
-            result = (Parser(lang), lang)
-        except Exception:
-            result = None
-    _ts_cache[language] = result
-    return result
-
-
-def _treesitter_symbols(text: str, language: str) -> list[Symbol] | None:
-    loaded = _treesitter_language(language)
-    if loaded is None:
-        return None
-    parser, _lang = loaded
-    kinds = _TS_DEFS.get(language, {})
-    try:
-        tree = parser.parse(text.encode("utf-8"))
-    except Exception:
-        return None
-    lines = text.split("\n")
-    found: list[Symbol] = []
-
-    def name_of(node) -> str:
-        field = node.child_by_field_name("name")
-        if field is None and node.type in {"impl_item"}:
-            field = node.child_by_field_name("type")
-        if field is None and node.type == "function_definition":
-            declarator = node.child_by_field_name("declarator")
-            while declarator is not None and declarator.type not in {"identifier", "field_identifier", "qualified_identifier"}:
-                nxt = declarator.child_by_field_name("declarator")
-                if nxt is None:
-                    break
-                declarator = nxt
-            field = declarator
-        if field is None:
-            return ""
-        try:
-            return field.text.decode("utf-8", "replace")
-        except Exception:
-            return ""
-
-    def visit(node, parent: str) -> None:
-        for child in node.children:
-            kind = kinds.get(child.type)
-            if kind:
-                name = name_of(child)
-                if name:
-                    line = child.start_point[0] + 1
-                    end = child.end_point[0] + 1
-                    found.append(
-                        Symbol("", line, end, kind, name, parent, lines[line - 1].strip() if line - 1 < len(lines) else name)
-                    )
-                    visit(child, name if kind == "class" else parent)
-                    continue
-            visit(child, parent)
-
-    visit(tree.root_node, "")
-    if not found:
-        return None
-    found.sort(key=lambda item: item.line)
-    return found
-
-
 def _references(text: str, language: str, defined: set[str]) -> dict[str, tuple[int, int]]:
     """Identifier uses that are not defined in this file: name -> (first line, count)."""
     del language
@@ -1301,7 +1052,3 @@ def _references(text: str, language: str, defined: set[str]) -> dict[str, tuple[
         top = sorted(found.items(), key=lambda item: -item[1][1])[:4000]
         found = dict(top)
     return found
-
-
-def _line_of(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1

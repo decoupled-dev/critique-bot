@@ -178,7 +178,7 @@ crit --yes "fix the failing test"
 crit undo
 ```
 
-The first `crit` creates `.crit/` (settings, a symbol index in `.crit/cache/index.sqlite`, and session transcripts) and records `config.json` when that file is in the repo. `crit init` rebuilds the index without replacing settings. A task run from a subdirectory finds `.crit` by walking upward. A project's old `.bot/` folder is renamed to `.crit/` on first use (when both exist, `.crit` is used). When the project is your home folder itself, its data lives in `~/.crit/projects/home/`. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
+The first `crit` creates `.crit/` (settings, a code index in `.crit/cache/index.db`, and session transcripts) and records `config.json` when that file is in the repo. `crit init` rebuilds the index without replacing settings. A task run from a subdirectory finds `.crit` by walking upward. A project's old `.bot/` folder is renamed to `.crit/` on first use (when both exist, `.crit` is used). When the project is your home folder itself, its data lives in `~/.crit/projects/home/`. The index works with the standard library alone; `pip install -e .[index]` adds tree-sitter parsers for more exact symbol spans in Python, Java, Kotlin, Go, Rust, C, C++, C#, JavaScript, and TypeScript.
 
 In an IDE: `crit --acp` runs crit as an Agent Client Protocol agent, so Android Studio (Bring Your Own Agent), the other JetBrains IDEs, and Zed can use it as their coding agent. Setup and details: [`docs/acp.md`](docs/acp.md).
 

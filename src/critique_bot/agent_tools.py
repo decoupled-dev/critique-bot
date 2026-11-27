@@ -68,6 +68,21 @@ ALLOWED_TOOLS = (
     "delegate",
     "log",
     "jira",
+    # the index tools (Stage 8; critique_bot.indexing.tools)
+    "find_symbol",
+    "symbol_refs",
+    "who_calls",
+    "callees",
+    "imports_of",
+    "imported_by",
+    "module_of",
+    "repo_map",
+    "git_blame",
+    "git_history",
+    "cochanged",
+    "find_strings",
+    "coverage_locate",
+    "locate",
 )
 MUTATING = frozenset({"write_files", "edit_file", "delete_file", "apply_patch", "move_file"})
 READ_ONLY = frozenset(
@@ -87,6 +102,20 @@ READ_ONLY = frozenset(
         "kill_command",
         "log",
         "jira",
+        # the index tools, except coverage_locate (it runs the failing test)
+        "find_symbol",
+        "symbol_refs",
+        "who_calls",
+        "callees",
+        "imports_of",
+        "imported_by",
+        "module_of",
+        "repo_map",
+        "git_blame",
+        "git_history",
+        "cochanged",
+        "find_strings",
+        "locate",
     }
 )
 SHELL_NAMES = ("bash", "sh", "zsh", "pwsh", "powershell", "cmd", "gitbash")
@@ -4530,6 +4559,20 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
         if not owned:
             return Permission("read", label + " (read only)", "delegate", detail)
         return Permission("edit", label + "; they may change " + ", ".join(owned[:6]) + (" ..." if len(owned) > 6 else ""), "edit", detail)
+    if tool == "coverage_locate":
+        commands = [str(args.get("command") or "").strip()] + [str(item).strip() for item in (args.get("passing") or [])
+                                                               if isinstance(args.get("passing"), list)]
+        if isinstance(args.get("passing"), str):
+            commands.append(str(args.get("passing")).strip())
+        commands = [item for item in commands if item]
+        if outside:
+            shown = ", ".join(str(item) for item in outside[:3])
+            return Permission("outside", f"Coverage: read outside the workspace: {shown}", "", risk=OUTSIDE_READ_RISK)
+        if not commands:
+            return Permission("read", "Coverage: rank a report or trace", tool)
+        perm = _permission_for("run_command", {"command": " && ".join(commands)}, ctx)
+        perm.summary = "Coverage: " + perm.summary
+        return perm
     if tool == "web_fetch":
         url = str(args.get("url") or "").strip().strip("<>\"'` ")
         if url and "://" not in url:
@@ -5407,6 +5450,12 @@ def read_only_command(command: str) -> bool:
     return True
 
 
+_INDEX_PATH_TOOLS = frozenset({
+    "find_symbol", "symbol_refs", "who_calls", "callees", "imports_of", "imported_by", "module_of", "repo_map",
+    "git_blame", "git_history", "cochanged", "find_strings", "coverage_locate", "locate",
+})
+
+
 def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:
     """Resolved paths a call would read or change (for the outside-workspace check)."""
     raws: list[Any] = []
@@ -5414,6 +5463,10 @@ def _paths_of(tool: str, args: dict[str, Any], ctx: ToolContext) -> list[Path]:
         raws.append(args.get("path"))
     elif tool == "log":
         raws += [args.get("path"), args.get("good")]
+    elif tool in _INDEX_PATH_TOOLS:
+        from critique_bot.indexing import tools as index_tools
+
+        raws += index_tools.paths_of(tool, args)
     elif tool == "read_files":
         paths = args.get("paths")
         if paths is None:
@@ -5526,3 +5579,18 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], dict[str, Any]]] = 
     "log": _log,
     "jira": _jira,
 }
+
+
+def _index_tool(name: str) -> Callable[[dict[str, Any], ToolContext], dict[str, Any]]:
+    """A handler that runs one index tool (critique_bot.indexing.tools) and wraps its text."""
+
+    def run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        from critique_bot.indexing import tools as index_tools
+
+        done, text = index_tools.run(name, args, ctx)
+        return ok(name, text, ctx) if done else err(name, text, ctx=ctx)
+
+    return run
+
+
+_HANDLERS.update({name: _index_tool(name) for name in ALLOWED_TOOLS if name not in _HANDLERS})

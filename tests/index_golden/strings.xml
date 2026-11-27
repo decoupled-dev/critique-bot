@@ -1,0 +1,4 @@
+<resources>
+    <string name="hvac_title">Climate control</string>
+    <string name="fan_error">Fan could not be set</string>
+</resources>

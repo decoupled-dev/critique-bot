@@ -1,0 +1,32 @@
+{
+ "language": "aidl",
+ "symbols": [
+  [
+   "interface",
+   "IVehicle",
+   6,
+   9
+  ],
+  [
+   "method",
+   "IVehicle.get",
+   7,
+   7
+  ],
+  [
+   "method",
+   "IVehicle.set",
+   8,
+   8
+  ]
+ ],
+ "edges": [
+  [
+   "imports",
+   "",
+   "android.hardware.automotive.vehicle.VehiclePropValue",
+   2
+  ]
+ ],
+ "strings": []
+}

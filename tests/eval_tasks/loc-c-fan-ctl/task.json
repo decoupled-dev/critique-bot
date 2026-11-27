@@ -1,0 +1,13 @@
+{
+  "prompt": "On hot days (cabin at 45 C or more) the cabin fan does not go to full speed; it keeps its previous level. The head unit log shows:\nI thermal: cabin at 47 C: full fan\nE fanctl: fan level too high: 9\nFull speed is level 9 and is a valid level. Find the fault. Answer with the file and the function that contain it, and one sentence on why. Do not change any file.",
+  "fixture": "files",
+  "answer": "(?=.*fan\\.c)(?=.*fan_set)",
+  "reference_answer": "fan/fan.c, fan_set: it rejects level >= FAN_MAX, so the valid maximum level 9 is refused; the check should be level > FAN_MAX.",
+  "fault": {"file": "fan/fan.c", "function": "fan_set"},
+  "requires": [],
+  "timeout": 600,
+  "tags": ["localization", "c", "quick"],
+  "category": "localization",
+  "difficulty": "easy",
+  "source": "synthetic"
+}

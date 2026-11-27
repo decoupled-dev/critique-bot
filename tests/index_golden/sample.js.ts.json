@@ -1,0 +1,83 @@
+{
+ "language": "javascript",
+ "symbols": [
+  [
+   "class",
+   "Loader",
+   3,
+   10
+  ],
+  [
+   "method",
+   "Loader.load",
+   4,
+   9
+  ],
+  [
+   "function",
+   "boot",
+   12,
+   14
+  ]
+ ],
+ "edges": [
+  [
+   "calls",
+   "",
+   "require",
+   1
+  ],
+  [
+   "calls",
+   "Loader.load",
+   "Error",
+   6
+  ],
+  [
+   "calls",
+   "Loader.load",
+   "resolve",
+   8
+  ],
+  [
+   "calls",
+   "boot",
+   "Loader",
+   13
+  ],
+  [
+   "calls",
+   "boot",
+   "load",
+   13
+  ],
+  [
+   "imports",
+   "",
+   "./paths",
+   1
+  ],
+  [
+   "inherits",
+   "Loader",
+   "Base",
+   3
+  ]
+ ],
+ "strings": [
+  [
+   6,
+   "error",
+   "missing module name",
+   "",
+   "Loader.load"
+  ],
+  [
+   13,
+   "literal",
+   "main",
+   "",
+   "boot"
+  ]
+ ]
+}
