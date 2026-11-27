@@ -7,8 +7,9 @@ path pattern (``"read(~/.gradle/**)"``, ``"edit(docs/**)"``), like Claude Code's
 inside one folder and ``**`` crosses folders.
 
 Deny rules apply in every mode and in helper chats. Allow rules skip the question for a
-matching step, but never for a network command, a risky command, a secret file, or a
-file the task just wrote: those keep asking (see ``Agent._approved``).
+matching step, but never for a network command, a risky command, a secret file, a file
+the task just wrote, an option that writes a file or runs a program (``git log --output``,
+``git -c``, ``sort -o``), or a git alias: those keep asking (see ``Agent._approved``).
 """
 
 from __future__ import annotations
@@ -50,6 +51,20 @@ _INTERPRETER_RE = re.compile(
 _EVAL_FLAGS = {"-c", "-e", "-m", "--eval", "--command", "-command", "/c", "-encodedcommand", "--exec"}
 _SCRIPT_RUNNERS = {"npm", "yarn", "pnpm", "bun"}
 _HARMLESS_REDIRECT = re.compile(r"(?<![^\s])(?:[12*]?>&[12]|[12*]?>\s*(?:/dev/null|nul|\$null))(?=\s|$)", re.I)
+# Where a deny rule looks for another command: every chain separator, and the inside of a
+# subexpression, a group, or a script block (``echo $(touch x)``, ``(rm -rf y)``).
+_DENY_SPLIT_RE = re.compile(r"&&|\|\||[;|&\r\n]|\$\(|[`(){}]")
+_DENY_PREFIXES = {"env", "time", "nice", "nohup", "timeout", "sudo", "doas", "xargs", "command", "exec", "stdbuf",
+                  "ionice", "builtin", "call", "&", "."}
+
+
+def _one_line_spaces(command: str) -> str:
+    """``command`` with runs of spaces and tabs folded to one space, and line breaks kept.
+
+    A shell runs each line as its own command, so a newline is a separator like ``;``.
+    Folding it into a space would let ``git status\nrm -rf src`` pass as one ``git status*`` part.
+    """
+    return re.sub(r"[^\S\r\n]+", " ", str(command or "")).strip()
 
 
 @dataclass(frozen=True)
@@ -138,7 +153,7 @@ def command_segments(command: str) -> list[str] | None:
     output filter after a pipe need no rule. A subexpression (``$(...)``, backticks), a
     script block, or a redirection into a file makes the command uncheckable: None.
     """
-    text = " ".join(str(command or "").split())
+    text = _one_line_spaces(command)
     if not text or "`" in text or "$(" in text:
         return None
     bare = _HARMLESS_REDIRECT.sub(" ", text)
@@ -183,24 +198,63 @@ def _harmless_filter(segment: str) -> bool:
     return bool(program) and agent_tools._segment_read_only(program, args, segment)
 
 
+def _unsafe_segment(segment: str) -> str:
+    """Why no allow rule may cover ``segment`` (an option that writes or runs something), or ""."""
+    from critique_bot import agent_tools
+
+    program, args = agent_tools._split_program(segment)
+    return agent_tools.unsafe_options(program, args) if program else ""
+
+
+def _rule_names_subcommand(rule: Rule, segment: str) -> bool:
+    """False when ``segment`` runs a git alias or an external ``git-x`` the rule does not name.
+
+    ``git log*`` covers ``git log -5`` but not ``git logx``, which runs whatever
+    ``alias.logx`` in a config says. A rule that spells the word out (``git lfs*``) covers it.
+    """
+    from critique_bot import agent_tools
+
+    program, args = agent_tools._split_program(segment)
+    if program != "git":
+        return True
+    sub = agent_tools.git_subcommand(args)
+    if not sub or sub in agent_tools._GIT_BUILTINS:
+        return True
+    words = rule.pattern.split()
+    for index, word in enumerate(words[:-1]):
+        if re.split(r"[\\/]", word.lower())[-1].removesuffix(".exe") == "git":
+            return words[index + 1].lower().rstrip("*") == sub and "*" not in words[index + 1][:-1]
+    return False
+
+
+def _segment_covered(segment: str, rule: Rule, glob: re.Pattern[str]) -> bool:
+    return bool(glob.match(segment)) and _rule_names_subcommand(rule, segment)
+
+
 def _command_matches(command: str, rule: Rule) -> bool:
     glob = _command_glob(rule.pattern)
     segments = command_segments(command)
-    if segments is None:
+    if segments is None or any(_unsafe_segment(segment) for segment in segments):
         return False
-    return all(glob.match(segment) for segment in segments)
+    return all(_segment_covered(segment, rule, glob) for segment in segments)
 
 
 def _command_denied(command: str, rule: Rule) -> bool:
     glob = _command_glob(rule.pattern)
-    text = " ".join(str(command or "").split())
+    text = _one_line_spaces(command)
     if glob.match(text):
         return True
-    # Every piece of a chain is checked, whatever joins it: "cd x && rm -rf y" hits "rm -rf*".
-    for part in _SPLIT_RE.split(text)[::2]:
-        part = part.strip().lstrip("({").strip()
-        if part and glob.match(part):
-            return True
+    # Every piece of a chain is checked, whatever joins it: "cd x && rm -rf y" hits "rm -rf*",
+    # and so do a second line, a subexpression, and a wrapper in front ("echo $(touch x)", "env touch x").
+    for part in _DENY_SPLIT_RE.split(text):
+        part = part.strip()
+        while part:
+            if glob.match(part):
+                return True
+            head, _, rest = part.partition(" ")
+            if not (_ASSIGNMENT_RE.match(head) or head.lower() in _DENY_PREFIXES):
+                break
+            part = rest.strip()
     return False
 
 
@@ -216,6 +270,8 @@ def suggest_rule(command: str) -> str:
     segments = command_segments(command)
     if not segments or len({_program(segment) for segment in segments}) != 1:
         return ""
+    if any(_unsafe_segment(segment) for segment in segments):
+        return ""  # no rule could cover it, so none is offered
     exact = " ".join(segments[0].split())
     try:
         tokens = shlex.split(segments[0], posix=False)
@@ -316,12 +372,12 @@ def allowed_by(rules: Rules, *, tool: str, perm_kind: str, command: str, paths: 
     if kind == "command":
         # Each part of a chain needs a rule, not necessarily the same one.
         segments = command_segments(command)
-        if segments is None:
-            return None
+        if segments is None or any(_unsafe_segment(segment) for segment in segments):
+            return None  # an option that writes a file or runs a program: always asked
         globs = [(rule, _command_glob(rule.pattern)) for rule in rules.allow if rule.kind == "command"]
         used: Rule | None = None
         for segment in segments:
-            hit = next((rule for rule, glob in globs if glob.match(segment)), None)
+            hit = next((rule for rule, glob in globs if _segment_covered(segment, rule, glob)), None)
             if hit is None:
                 return None
             used = used or hit

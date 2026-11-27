@@ -106,6 +106,9 @@ class Modes:
         if name in _read_only_tools():
             return True  # a read outside the workspace still asks
         if name in {"run_command", "command_input"}:
+            judged = getattr(perm, "read_only", None)
+            if isinstance(judged, bool):
+                return judged
             check = getattr(agent_tools, "read_only_command", None)
             command = str(call.arguments.get("command") or call.arguments.get("input") or "")
             return bool(callable(check) and check(command))

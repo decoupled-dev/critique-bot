@@ -356,12 +356,17 @@ def run_agent_loop(
             slog.write("checkpoint", undo=checkpoints.task_dir.name)
         cancel = threading.Event()
         task_state = TaskState(task=task)
+        # The run is made below; helpers read its mode when the model delegates (it can change mid-task).
+        current_run: list[Any] = []
         ctx = _tool_context(
             **base,
             state=task_state,
             checkpoints=checkpoints,
             cancel=cancel,
-            delegate=helpers.for_task(cancel, checkpoints, task_state),
+            delegate=helpers.for_task(
+                cancel, checkpoints, task_state,
+                mode=lambda box=current_run, now=mode_now: box[0]._approve_mode() if box else now,
+            ),
         )
         run = _TaskRun(
             chat,
@@ -382,6 +387,7 @@ def run_agent_loop(
             read_only=read_only,
             answer=answer,
         )
+        current_run.append(run)
         if read_only or mode_now != "plan" or _answer_only(task):
             run.plan_done = True
         run.handoff = handoff_notes

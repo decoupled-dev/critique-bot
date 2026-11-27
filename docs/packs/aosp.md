@@ -96,6 +96,7 @@ wildcards, no macros that grant more. When the target is a generic label (`sysfs
 | `bugreport`, `pull` | like a command: they write a file in the workspace |
 | `push`, `install`, `uninstall`, `reboot`, `settings_put`, `flash` (fastboot) | **every time, in every mode, auto included, even with `confirm_risky: false`** |
 
+- `adb` typed through `run_command` follows the same rule: only a fixed list of read-only forms runs unasked (`adb devices`, `adb logcat -d`, `adb shell getprop`/`dumpsys <service>`/`pm list`/`settings get`/`ls`/`cat`, ...; no quotes or shell characters, which the device's shell would run). Any other adb command that reaches the device asks every time, in every mode; `pull` and `bugreport` ask like a command.
 - `serial` picks a device when several are connected (it sets `ANDROID_SERIAL`).
 - `logcat` dumps the log (`-d`, newest `lines`, 5000 by default) into
   `.crit/cache/device/logcat-<time>.txt` and returns a summary of its crashes, ANRs and

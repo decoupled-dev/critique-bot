@@ -320,6 +320,12 @@ class Permission:
     #: The command runs inside the OS sandbox (workspace writes only, network through the egress
     #: proxy), so auto mode runs it without asking unless it is risky.
     contained: bool = False
+    #: The command runs code from the project (a test runner, a build, a package script, an
+    #: interpreter, a script by path): after the task changes files it asks again, rule or not.
+    runs_code: bool = False
+    #: For a command: whether it only reads, judged with its folder (a git command in a repository
+    #: whose config names a program is not). None: not judged; callers check the command text.
+    read_only: bool | None = None
 
 
 def execute(name: str, arguments: dict[str, Any] | None, ctx: ToolContext) -> dict[str, Any]:
@@ -2890,8 +2896,14 @@ def _run_command(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             f"{gitlab_note}. git clone, fetch, pull, and push work for the projects your GitLab token can reach. "
             "Read documentation with web_fetch; builds may still download their dependencies",
         )
+    if not reach and read_only_command(command) and "git" in {
+        _program_of(part) for part in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", command))[::2]
+    }:
+        # A read-only git command runs unasked in auto mode and in helpers: the repository's
+        # config must not make it run a program (fsmonitor, pager, external diff, hooks).
+        extra_env = {**git_command_env(), **(extra_env or {})}
     if ctx.session is None:
-        return _run_plain(args, ctx, command, timeout, wanted, bool(background))
+        return _run_plain(args, ctx, command, timeout, wanted, bool(background), extra_env=extra_env)
     command, refused = _aosp_defaults(ctx, command)
     if refused is not None:
         return refused
@@ -3332,7 +3344,8 @@ def _same_dir(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool) -> dict[str, Any]:
+def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: float, wanted: str, background: bool,
+               *, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """One process per call (no ShellSession): the runner= fakes and old callers."""
     shell = ctx.shell or agent_shell.detect_shell()
     if wanted and not _same_shell(wanted, shell):
@@ -3354,7 +3367,9 @@ def _run_plain(args: dict[str, Any], ctx: ToolContext, command: str, timeout: fl
         cwd = resolve(ctx.workspace, raw_cwd)
         if not cwd.is_dir():
             return err("run_command", f"cwd is not a folder: {raw_cwd}" + _path_hint(ctx, raw_cwd))
-    extra = {} if ctx.runner is not None else {"on_output": ctx.on_output, "cancel": ctx.cancel}
+    extra: dict[str, Any] = {} if ctx.runner is not None else {"on_output": ctx.on_output, "cancel": ctx.cancel}
+    if extra_env and ctx.runner is None:
+        extra["extra_env"] = extra_env
     code, stdout, stderr, seconds = agent_shell.run(
         command, cwd=cwd, timeout=timeout, shell=shell, runner=ctx.runner, **extra
     )
@@ -3657,7 +3672,8 @@ def _git_diff(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if not isinstance(raw, str):
             return err("git_diff", "path must be a string")
         git_args.extend(["--", raw])
-    return _git(ctx, git_args, tool="git_diff")
+    # A secret file the call names was asked about first (permission_for); any other one is hidden.
+    return _git(ctx, git_args, tool="git_diff", hide_secrets=not (raw and sensitive_file(raw)))
 
 
 # Subcommands that take --no-ext-diff and --no-textconv.
@@ -3696,7 +3712,59 @@ def _git_names_blob(ctx: ToolContext, rev: Any) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == b"blob"
 
 
-def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
+_DIFF_HEADER_RE = re.compile(r"^diff --(?:git (?P<pair>.+)|cc (?P<cc>.+)|combined (?P<combined>.+))$")
+_DIFF_FILE_RE = re.compile(r"^(?:---|\+\+\+) (?P<name>.+?)\t?$")
+
+
+def _diff_names(text: str) -> list[str]:
+    """``a/x b/y`` (or ``"a/x y" "b/x y"``) -> every name it could hold, prefixes off."""
+    names = [text]
+    try:
+        names += shlex.split(text)
+    except ValueError:
+        names += text.split()
+    names += [part for part in re.split(r"\s+[ab]/", " " + text) if part.strip()]
+    out = []
+    for name in names:
+        name = name.strip().strip('"')
+        out.append(name[2:] if name[:2] in {"a/", "b/"} else name)
+    return out
+
+
+def hide_secret_diffs(text: str) -> str:
+    """``text`` (git diff or show output) with the changes of files that usually hold secrets
+    replaced by a note: those files are read only after the user's yes (``read_files``).
+    Their names and the diff headers stay, so the model knows they changed."""
+    out: list[str] = []
+    hiding = False
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        header = _DIFF_HEADER_RE.match(bare)
+        if header is not None:
+            names = _diff_names(header.group("pair") or header.group("cc") or header.group("combined") or "")
+            hiding = any(sensitive_file(name) for name in names if name)
+            out.append(line)
+            if hiding:
+                out.append(f"{_SECRET_DIFF_NOTE}; read_files shows it after the user's yes\n")
+            continue
+        if hiding:
+            if bare.startswith("commit ") and re.fullmatch(r"commit [0-9a-f]{7,64}.*", bare):
+                hiding = False  # the next commit of a multi-commit show
+            else:
+                continue
+        named = _DIFF_FILE_RE.match(bare)
+        if named is not None and named.group("name") != "/dev/null" and any(
+            sensitive_file(name) for name in _diff_names(named.group("name"))
+        ):
+            hiding = True
+            out.append(line)
+            out.append(f"{_SECRET_DIFF_NOTE}; read_files shows it after the user's yes\n")
+            continue
+        out.append(line)
+    return "".join(out)
+
+
+def _git(ctx: ToolContext, git_args: list[str], *, tool: str, hide_secrets: bool = False) -> dict[str, Any]:
     run = ctx.runner or subprocess.run
     try:
         proc = run(
@@ -3712,6 +3780,8 @@ def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
         return err(tool, "git timed out")
     code = int(getattr(proc, "returncode", 1) or 0)
     stdout = agent_shell.tidy(agent_shell.decode(getattr(proc, "stdout", b"")))
+    if hide_secrets:
+        stdout = hide_secret_diffs(stdout)
     stderr = agent_shell.tidy(agent_shell.decode(getattr(proc, "stderr", b"")))
     output = "\n".join(part for part in (f"exit {code}", stdout, stderr) if part)
     if code != 0:
@@ -3777,7 +3847,9 @@ def _git_show(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if shown is None:
             return err("git_show", "path must be a file inside the workspace")
         git_args.extend(["--", shown])
-    return _git(ctx, git_args, tool="git_show")
+    # A secret file the call names (path, or rev HEAD:.env) was asked about first; any other one is hidden.
+    named = bool(raw and sensitive_file(str(raw))) or any(sensitive_file(item) for item in _rev_paths(rev))
+    return _git(ctx, git_args, tool="git_show", hide_secrets=not named)
 
 
 def _git_path(ctx: ToolContext, raw: object) -> str | None:
@@ -4464,6 +4536,17 @@ def permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) -> 
             from critique_bot.agent_rules import suggest_rule
 
             perm.rule = suggest_rule(str(normalized.get("command") or ""))
+            if not perm.rule:
+                # "Don't ask again" remembers the rule the prompt shows. With no rule to show, it is
+                # not offered: a whole program (every git or adb command) is wider than what was asked.
+                perm.key = ""
+        if tool == "run_command":
+            command = str(normalized.get("command") or "")
+            started = _paths_of(tool, normalized, ctx)
+            folder = _command_cwd(ctx, started[0] if started else None)
+            perm.read_only = read_only_command(command, cwd=folder)
+            if perm.kind == "command":
+                perm.runs_code = not perm.read_only and runs_project_code(command)
         if perm.kind == "command" and tool in {"run_command", "command_input"}:
             policy = getattr(ctx.session, "sandbox", None)
             perm.contained = bool(policy is not None and getattr(policy, "sandboxed", False))
@@ -4549,6 +4632,10 @@ def _permission_for(name: str, args: dict[str, Any] | None, ctx: ToolContext) ->
             far = _command_outside_paths(command, ctx, base)
             if far:
                 return Permission("outside", f"{label} (it reads {far[0]}, outside the workspace)", "", command, risk=OUTSIDE_READ_RISK)
+        device = adb_device_change(command)
+        if device:
+            # Never "always"-able, never covered by a rule, asked even with "confirm_risky": false.
+            return Permission("command", label, "device:adb", command, risk=device)
         written = _command_runs_written(command, ctx)
         if written:
             program = command_key(command)
@@ -4762,6 +4849,48 @@ def _command_runs_written(command: str, ctx: ToolContext) -> str:
             if inside(ctx.workspace, path) and rel(ctx.workspace, path) in state.edits:
                 return word
     return ""
+
+
+# Programs that run code from the project they are pointed at: test runners, build tools,
+# package scripts, task runners. A file the task wrote (a test, a Makefile, build.gradle,
+# package.json, conftest.py) runs through them without the command naming it.
+_CODE_RUNNERS = frozenset({
+    "make", "gmake", "nmake", "ninja", "cmake", "ctest", "meson", "scons", "bazel", "bazelisk", "buck", "buck2",
+    "gradle", "gradlew", "mvn", "mvnw", "ant", "sbt", "cargo", "go", "dotnet", "msbuild", "swift", "xcodebuild",
+    "npm", "npx", "yarn", "pnpm", "pnpx", "bun", "bunx", "deno", "rake", "bundle", "composer", "mix", "flutter",
+    "dart", "pytest", "py.test", "tox", "nox", "uv", "uvx", "poetry", "pipenv", "hatch", "pdm", "pre-commit",
+    "jest", "vitest", "mocha", "karma", "playwright", "rspec", "phpunit", "just", "task", "invoke",
+    "m", "mm", "mmm", "mma", "mmma", "atest", "soong_ui", "tradefed", "lunch",
+})
+
+
+def runs_project_code(command: str) -> bool:
+    """True when ``command`` runs code from the project: a test runner, a build, a package
+    script, an interpreter, or a script by path (``./run.sh``, ``tools/check``).
+
+    Such a command runs files the task may have written without naming them
+    (``pytest`` picks up a new ``test_x.py``, ``make`` reads the Makefile), so the
+    approval logic asks again after the task changes files.
+    """
+    from critique_bot.agent_rules import _INTERPRETER_RE
+
+    for segment in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command or "")))[::2]:
+        if not segment.strip():
+            continue
+        program, _args = _split_program(segment)
+        if not program:
+            return True  # VAR=x in front, env -S, ...: what runs cannot be told
+        if program in _CD_PROGRAMS:
+            continue
+        if program in _CODE_RUNNERS or _INTERPRETER_RE.match(program):
+            return True
+        try:
+            first = shlex.split(segment.strip(), posix=False)[0].strip("\"'")
+        except (ValueError, IndexError):
+            first = segment.strip().split()[0] if segment.strip() else ""
+        if re.search(r"[\\/]", first) and not os.path.isabs(first):
+            return True  # ./run.sh, tools/check: a file in the project
+    return False
 
 
 def _command_outside_paths(command: str, ctx: ToolContext, cwd: Path | None = None) -> list[str]:
@@ -5084,7 +5213,8 @@ def risky_command(command: str) -> str:
     if not text:
         return ""
     lowered = text.lower()
-    deleting = _broad_delete(text)
+    # Line breaks kept: each line is its own command, so "echo ok\nrm -rf ." deletes the tree.
+    deleting = _broad_delete(re.sub(r"[^\S\r\n]+", " ", str(command)))
     if deleting:
         return deleting
     for pattern, reason in _RISKY_PATTERNS:
@@ -5094,7 +5224,7 @@ def risky_command(command: str) -> str:
 
 
 def _broad_delete(command: str) -> str:
-    for segment in re.split(r"&&|\|\||[;|&\n]", command):
+    for segment in re.split(r"&&|\|\||[;|&\r\n]", command):
         try:
             tokens = shlex.split(segment, posix=False)
         except ValueError:
@@ -5360,26 +5490,95 @@ def _segment_options_ok(program: str, args: list[str]) -> bool:
     return True
 
 
-def _git_read_only(args: list[str]) -> bool:
-    """True for a git command that only reads this repository (``git log``, ``git config --get x``)."""
+# Every subcommand git ships. Anything else is an alias (``alias.x = !sh -c ...``) or a
+# ``git-x`` program on PATH, so a rule that names a built-in subcommand never covers it.
+_GIT_BUILTINS = frozenset({
+    "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bugreport", "bundle", "cat-file",
+    "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout-index", "cherry",
+    "cherry-pick", "citool", "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config",
+    "count-objects", "credential", "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-tree",
+    "difftool", "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo",
+    "format-patch", "fsck", "gc", "get-tar-commit-id", "grep", "gui", "hash-object", "help", "index-pack", "init",
+    "instaweb", "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit",
+    "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-tree", "mergetool", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-refs", "prune", "prune-packed", "pull",
+    "push", "range-diff", "read-tree", "rebase", "reflog", "remote", "repack", "replace", "replay", "request-pull",
+    "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "shortlog", "show",
+    "show-branch", "show-index", "show-ref", "sparse-checkout", "stash", "status", "stripspace", "submodule",
+    "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index", "update-ref",
+    "update-server-info", "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged",
+    "worktree", "write-tree",
+})
+
+
+def git_subcommand(args: list[str]) -> str:
+    """``["-P", "log", "-5"]`` -> ``"log"``: the subcommand after git's own options ("" when there is none)."""
+    for arg in args:
+        if not arg.startswith("-"):
+            return arg.lower()
+    return ""
+
+
+def _git_option_problem(args: list[str]) -> str:
+    """Why git's options let it write a file, run a program, or work on another repository, or "".
+
+    An option before the subcommand other than the harmless ones (``-c``, ``-C``,
+    ``--git-dir``, ``--exec-path``, ``-p``, ...), or one after it that writes or runs
+    something (``--output``, ``--ext-diff``, ``--textconv``, ``--exec``, ``--upload-pack``,
+    ``-O``), abbreviations included.
+    """
+    if args and all(arg.lower() in _VERSION_FLAGS for arg in args):
+        return ""
     index = 0
     while index < len(args) and args[index].startswith("-"):
         if args[index] not in _GIT_GLOBAL_OK:
-            return False  # -C, -c, --git-dir, --work-tree, --exec-path, -p, ...
+            return f"git {args[index]} changes what git runs or where it works"
         index += 1
-    if index >= len(args):
-        return False
-    sub, rest = args[index].lower(), args[index + 1 :]
-    for arg in rest:
+    for arg in args[index + 1 :]:
         if arg == "--":
             break
         name = _long_name(arg)
         if name and name not in _GIT_HARMLESS_SHORT and len(name) > 2 and any(
             name == bad or bad.startswith(name) for bad in _GIT_BAD_OPTIONS
         ):
-            return False
+            return f"git {name} writes a file or runs a program"
         if arg.startswith("-O"):
-            return False  # git grep -O opens a pager; diff -O reads an order file
+            return "git -O opens a pager or reads an order file"
+    return ""
+
+
+def unsafe_options(program: str, args: list[str]) -> str:
+    """Why an option in ``args`` makes ``program`` write a file or run a program, or "".
+
+    The same per-option checks the read-only test uses (``git log --output``, ``git -c``,
+    ``sort -o``, ``find -exec``, ``rg --pre``, ...). A saved allow rule never covers such
+    a command: ``git log*`` was saved for reading history, not for writing ``~/.bashrc``.
+    """
+    if program == "git":
+        return _git_option_problem(args)
+    if program == "repo":
+        if any(arg == "-o" or arg.startswith("--output") for arg in args):
+            return "repo --output writes a file"
+        return ""
+    if program == "rg":
+        if any(_long_name(arg) in {"--pre", "--search-zip"} or "z" in _short_bundle(arg) for arg in args):
+            return "rg --pre and --search-zip run programs"
+        return ""
+    if program in {"sort", "uniq", "find", "fd", "xxd", "tree", "less", "file"} and not _segment_options_ok(program, args):
+        return f"{program} with an option that writes a file or runs a program"
+    return ""
+
+
+def _git_read_only(args: list[str]) -> bool:
+    """True for a git command that only reads this repository (``git log``, ``git config --get x``)."""
+    if _git_option_problem(args):
+        return False
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 1
+    if index >= len(args):
+        return False
+    sub, rest = args[index].lower(), args[index + 1 :]
     words = [arg.lower() for arg in rest if not arg.startswith("-")]
     flags = set(rest)
     if sub in _GIT_LOOK:
@@ -5403,6 +5602,124 @@ def _git_read_only(args: list[str]) -> bool:
             return False
         return True
     return False
+
+
+# adb joins the words after ``shell`` and the device's shell parses them again, so a quote,
+# a backslash, or a shell character the host shell let through (``ls '>' /sdcard/x``) redirects,
+# chains, or expands on the device. A read-only adb command holds none of them.
+_ADB_UNSAFE_CHARS = re.compile(r"[;&|<>$`'\"\\(){}!\r\n]")
+_ADB_WORD = re.compile(r"^[\w.:/,@%=+*?~-]+$")
+# Words after a dumpsys service that make it change state (``battery set``, ``deviceidle force-idle``).
+_DUMPSYS_CHANGES = (
+    "set", "reset", "unplug", "force", "unforce", "enable", "disable", "step", "whitelist", "tempwhitelist",
+    "except-idle-whitelist", "sys-whitelist", "put", "delete", "remove", "clear", "kill", "start", "stop",
+    "restart", "reload", "write", "trim", "suspend", "unsuspend", "run", "schedule", "override", "toggle",
+    "inject", "dump-heap", "add", "update", "apply", "grant", "revoke",
+)
+_LOGCAT_FLAGS = {"-d", "-s", "-D", "--dividers"}
+_LOGCAT_VALUE = {"-v", "-b", "-t", "-T", "-e", "-m", "--pid", "--uid", "--format", "--buffer", "--regex", "--max-count"}
+_LOGCAT_FILTER = re.compile(r"^[\w.*-]+(?::[VDIWEFS*])?$")
+
+
+def _adb_read_only(args: list[str], segment: str = "") -> bool:
+    """True for an adb command from a fixed list of forms that only read the device.
+
+    ``devices``, ``get-state``, ``logcat -d`` (no ``-c``, ``-G``, ``-P``, ``-f``), and
+    ``shell`` with ``getprop``, ``dumpsys <service>`` (nothing like ``set``/``reset``/``force-idle``),
+    ``pm list``/``path``/``dump``, ``cmd package list``, ``ls``, ``cat``, ``ps``, ``df``, ``id``,
+    ``uname``, ``wm size``/``density`` with no value, ``settings get``/``list``, ``service list``.
+    Anything else changes or may change the device, and asks.
+    """
+    if _ADB_UNSAFE_CHARS.search(segment) or any(_ADB_UNSAFE_CHARS.search(arg) for arg in args):
+        return False
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] in {"-d", "-e"}:
+            index += 1
+        elif args[index] in {"-s", "-t"} and index + 1 < len(args):
+            index += 2
+        else:
+            return False  # -H, -P, -L: another adb server
+    if index >= len(args):
+        return False
+    command, rest = args[index].lower(), args[index + 1 :]
+    if command == "devices":
+        return all(arg == "-l" for arg in rest)
+    if command in {"get-state", "get-serialno", "get-devpath", "version"}:
+        return not rest
+    if command == "logcat":
+        return _logcat_read_only(rest)
+    if command != "shell" or not rest or not all(_ADB_WORD.match(arg) for arg in rest):
+        return False
+    tool, words = rest[0].lower(), [arg.lower() for arg in rest[1:]]
+    if tool == "getprop":
+        return len(words) <= 1
+    if tool == "dumpsys":
+        return not any(
+            word.lstrip("-") == change or word.lstrip("-").startswith(change + "-") or word.startswith("+")
+            for word in words[1:]
+            for change in _DUMPSYS_CHANGES
+        )
+    if tool == "pm":
+        return bool(words) and words[0] in {"list", "path", "dump"}
+    if tool == "cmd":
+        return words[:2] == ["package", "list"]
+    if tool in {"ls", "cat", "ps", "df", "id", "uname", "whoami"}:
+        return True
+    if tool == "wm":
+        return words in (["size"], ["density"])
+    if tool == "settings":
+        return (len(words) == 3 and words[0] == "get") or (len(words) == 2 and words[0] == "list")
+    if tool == "service":
+        return words == ["list"] or (len(words) == 2 and words[0] == "check")
+    return False
+
+
+def _logcat_read_only(args: list[str]) -> bool:
+    """``logcat -d`` dumps and exits; ``-c`` clears the log, ``-G``/``-P`` change buffers, ``-f`` writes a file."""
+    if "-d" not in args:
+        return False  # without -d it streams until stopped
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        name = arg.split("=", 1)[0]
+        if arg in _LOGCAT_FLAGS:
+            continue
+        if name in _LOGCAT_VALUE:
+            skip = "=" not in arg
+            continue
+        if arg.startswith("-") or not _LOGCAT_FILTER.match(arg):
+            return False
+    return True
+
+
+#: adb commands that only touch this PC (a file pulled into the workspace, a report): asked like any command.
+_ADB_HOST_SIDE = {"pull", "bugreport", "wait-for-device", "start-server", "kill-server", "help", "version",
+                  "devices", "get-state", "get-serialno", "get-devpath"}
+#: logcat options that clear the log, resize or prune buffers, or write files on the device.
+_LOGCAT_CHANGES = {"-c", "--clear", "-G", "--buffer-size", "-P", "--prune", "-f", "--file", "-r", "--rotate-kbytes",
+                   "-n", "--rotate-count"}
+
+
+def adb_device_change(command: str) -> str:
+    """Why ``command`` may change a connected device through adb, or "" when every adb part only reads.
+
+    Such a command asks every time, in every mode, like the AOSP pack's device actions.
+    """
+    for segment in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command or "")))[::2]:
+        program, args = _split_program(segment)
+        if program != "adb" or _adb_read_only(args, segment):
+            continue
+        words = [arg.lower() for arg in args if not arg.startswith("-")]
+        if words and words[0] == "logcat":
+            if not any(arg.split("=", 1)[0] in _LOGCAT_CHANGES for arg in args):
+                continue  # streams or filters the log; it changes nothing on the device
+        elif words and words[0] in _ADB_HOST_SIDE:
+            continue
+        return "may change the connected device (adb), which always asks"
+    return ""
 
 
 def _dumps_environment(program: str, args: list[str]) -> bool:
@@ -5434,16 +5751,13 @@ def _segment_read_only(program: str, args: list[str], segment: str = "") -> bool
             arg == "-o" or arg.startswith("--output") for arg in args
         )
     if program == "adb":
-        joined = " ".join(arg.lower() for arg in args)
-        return bool(
-            re.match(r"^(?:-s \S+ )?(?:devices|get-state|get-serialno|logcat -d\b|shell (?:getprop|dumpsys|pm list|cmd package list|ls|cat|ps|df|id|uname|wm size|wm density|settings get))", joined)
-        )
+        return _adb_read_only(args, segment)
     if program not in _LOOK_PROGRAMS:
         return False
     return _segment_options_ok(program, args)
 
 
-def read_only_command(command: str) -> bool:
+def read_only_command(command: str, *, cwd: Path | None = None) -> bool:
     """True when ``command`` only reads: ``ls``, ``git log``, ``grep x a.py``, ``Get-Content a.txt``, ``x --version``.
 
     Every part of a chain is checked, filters after a pipe included, and each program's
@@ -5451,7 +5765,72 @@ def read_only_command(command: str) -> bool:
     variable in front (``PATH=x ls``) are not read-only. A recursive search (``grep -r``,
     ``rg`` on a folder) is not either: it would read secret files too. Paths are not
     checked here; :func:`permission_for` asks for ones outside the workspace or secret.
+
+    With ``cwd`` (the folder it runs in), a git command is read-only only when that
+    repository's own config names no program that :func:`git_command_env` cannot switch
+    off (a ``filter`` or ``diff`` driver), and when no ``cd`` moves it to another one.
     """
+    if not _read_only_text(command):
+        return False
+    if cwd is None:
+        return True
+    programs = [_program_of(part) for part in _SEGMENT_RE.split(_HARMLESS_REDIRECT.sub(" ", str(command)))[::2]]
+    if "git" not in programs:
+        return True
+    if any(program in _CD_PROGRAMS for program in programs):
+        return False  # the repository it reads cannot be told here
+    return not git_repo_runs_code(Path(cwd))
+
+
+#: Settings crit sets for a git command run_command runs as read-only, so a repository's
+#: ``.git/config`` (or an included file) cannot make it run a program: the same switches
+#: as crit's own git calls (:func:`git_argv`). They win over every config file.
+_GIT_READ_SETTINGS = (
+    ("core.fsmonitor", ""),
+    ("core.hooksPath", "NUL" if sys.platform == "win32" else "/dev/null"),
+    ("diff.external", ""),
+    ("core.pager", "cat"),
+    ("log.showSignature", "false"),
+)
+# Config a repository can carry that runs a program on a plain read and that no setting
+# above switches off: clean/smudge filters (git status, git diff) and diff drivers.
+_GIT_PROGRAM_KEY_RE = re.compile(r"^(?:filter\..+\.(?:clean|smudge|process)|diff\..+\.(?:textconv|command)|merge\..+\.driver)$", re.I)
+
+
+def git_command_env() -> dict[str, str]:
+    """Environment for a read-only git command run through run_command (see :data:`_GIT_READ_SETTINGS`)."""
+    params = " ".join("'" + f"{key}={value}".replace("'", "'\\''") + "'" for key, value in _GIT_READ_SETTINGS)
+    return {
+        "GIT_CONFIG_PARAMETERS": params,
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_PAGER": "cat",
+    }
+
+
+def git_repo_runs_code(folder: Path) -> bool:
+    """True when the repository at ``folder`` has its own config (not the user's) naming a
+    filter or diff driver program, or when that cannot be checked."""
+    try:
+        proc = subprocess.run(
+            git_argv(Path(folder), ["config", "--list", "--show-scope", "--includes"]),
+            capture_output=True, check=False, timeout=10, env=_git_environment(), stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False  # no git: the command will not run git's config either
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if proc.returncode != 0:
+        return False  # not a repository: there is no repository config
+    for line in agent_shell.decode(proc.stdout).splitlines():
+        scope, _, entry = line.partition("\t")
+        if scope in {"local", "worktree"} and _GIT_PROGRAM_KEY_RE.match(entry.split("=", 1)[0]):
+            return True
+    return False
+
+
+def _read_only_text(command: str) -> bool:
+    """:func:`read_only_command` on the command text alone."""
     text = str(command or "").strip()
     if not text or risky_command(text):
         return False
