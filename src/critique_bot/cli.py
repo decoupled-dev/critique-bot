@@ -778,6 +778,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--flow",
+        choices=("verified", "plain", "auto"),
+        default=None,
+        help=(
+            "agent mode: verified runs reproduce, fix, test and review for every change; plain never; auto "
+            '(the default) verifies bug fixes and tests and reviews features and refactors ("flow" in .crit/settings.json)'
+        ),
+    )
+    parser.add_argument(
         "--tool-set",
         choices=("full", "minimal"),
         default=None,
@@ -1184,7 +1193,7 @@ def _main_doctor(argv: list[str]) -> int:
 def _headless_run_argv(rest: list[str]) -> bool:
     """``crit run`` is the headless command when it has one of its own flags; otherwise the words
     are a task for the agent, as before (``crit run the tests``)."""
-    flags = {"--agent", "--json", "--url", "-h", "--help"}
+    flags = {"--agent", "--json", "--url", "--flow", "-h", "--help"}
     return any(arg in flags or arg.split("=", 1)[0] in flags for arg in rest)
 
 
@@ -1295,11 +1304,16 @@ def _main_headless(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="events as JSON lines on stdout")
     parser.add_argument("--mode", default=None, help="ask, edits, auto or plan (default: the agent's, else the settings')")
     parser.add_argument("--url", default=None, help="run on this crit serve instead of in this process")
+    parser.add_argument("--flow", choices=("verified", "plain", "auto"), default=None,
+                        help="the verified flow: verified, plain, or auto (by task class; the default)")
     parser.add_argument("--repo-dir", default=".", help="the project (default: this folder)")
     parser.add_argument("--config", default=None, help="the config file")
     parser.add_argument("--model", default=None, help="the model")
     args = parser.parse_args(argv)
     task = " ".join(args.task).strip()
+    if args.url and args.flow:
+        log.notice("crit run: --flow works in this process only; set \"flow\" in the server project's .crit/settings.json")
+        return 2
     if args.url:
         try:
             client = api_client.Client.from_server_file(args.url)
@@ -1319,6 +1333,8 @@ def _main_headless(argv: list[str]) -> int:
     from critique_bot.extensions import agent_files
 
     definition = agent_files.find_agent(args.agent, home.root) if args.agent else None
+    if args.flow and isinstance(home.settings, dict):
+        home.settings["_flow_flag"] = args.flow
     engine = Engine(config, home)
     try:
         handle = engine.create_session(
@@ -1999,6 +2015,9 @@ def _apply_tool_flags(args: argparse.Namespace, home) -> None:
         home.settings["tool_format"] = args.tool_format
     if getattr(args, "tool_set", None):
         home.settings["tool_set"] = args.tool_set
+    if getattr(args, "flow", None):
+        # Wins over the agent file's flow: and the "flow" setting (engine/loop.py).
+        home.settings["_flow_flag"] = args.flow
 
 
 def _use_terminal_ui() -> None:

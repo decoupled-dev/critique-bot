@@ -34,6 +34,48 @@ _MODE_NOTES = {
 MAX_PLAN_REVISIONS = 5
 
 
+#: Plan triggers (Stage 7): more files than this to change suggests a plan first.
+PLAN_FILES_THRESHOLD = 5
+
+
+_ACROSS_MODULES_RE = re.compile(
+    r"\b(migrat(?:e|es|ing|ion)|port(?:ing)? (?:\w+ )?(?:to|from)|refactor\w*|rename\w*|move \w+ (?:to|into)|replace \w+ with)\b"
+    r"[^.]*\b(across|all|every|each|throughout|modules?|packages?|services?|the (?:code ?base|project|repo))\b",
+    re.I,
+)
+_PATHISH_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w-]+\.(?:py|java|kt|kts|go|rs|c|cc|cpp|h|hpp|js|jsx|ts|tsx|cs|rb|php|swift|"
+                         r"xml|aidl|bp|mk|gradle|json|yaml|yml|toml|sql|sh))\b")
+
+
+def plan_trigger(task: str, *, files: int = 0) -> str:
+    """Why this task should start with a plan ("" when it should not): many files, or a cross-module migration.
+
+    ``files`` is the estimated number of files to change (:func:`estimate_files`).
+    """
+    text = " ".join(str(task or "").split())
+    if files > PLAN_FILES_THRESHOLD:
+        return f"about {files} files to change"
+    if _ACROSS_MODULES_RE.search(text):
+        return "the task is a migration or refactor across modules"
+    return ""
+
+
+def estimate_files(task: str, *, refs: Any = None) -> int:
+    """A quick estimate of the files a task changes: the paths it names, plus the files that use the
+    identifiers it names (``refs(name)`` returns their paths: the index, or a word search)."""
+    text = str(task or "")
+    files = {match.group(1) for match in _PATHISH_RE.finditer(text)}
+    if callable(refs):
+        names = re.findall(r"`([A-Za-z_][\w.]*)\(?\)?`", text)
+        names += re.findall(r"\b([a-z]+_[a-z0-9_]+|[a-z]+[A-Z]\w*|[A-Z][a-z]+[A-Z]\w*)\b", text)
+        for name in list(dict.fromkeys(names))[:5]:
+            try:
+                files.update(refs(name.rpartition(".")[2]) or [])
+            except Exception:  # noqa: BLE001 - an estimate only
+                continue
+    return len(files)
+
+
 def _current_mode(default: str, at_start: str | None = None) -> str:
     """``default`` (the session's mode), unless the UI switched to another one since ``at_start``."""
     live = ui._ui_approve_mode()
@@ -83,7 +125,11 @@ class Modes:
             self._send_message("PLAN_NEEDED")
             return None
         self.plans += 1
-        choice, feedback = ui._review_plan()
+        if getattr(self, "plan_auto", False):
+            # Entered by a trigger in auto mode: the plan goes ahead without a review.
+            choice, feedback = "auto", ""
+        else:
+            choice, feedback = ui._review_plan()
         if choice in {"auto", "edits", "ask"}:
             self.plan_done = True
             self.approve_mode = choice
@@ -95,6 +141,31 @@ class Modes:
         self.hooks.ui("note", "Plan only; no files were changed. Switch modes with Shift+Tab or /mode to carry it out.")
         self.hooks.status("COMPLETED")
         return "COMPLETED"
+
+    def _suggest_plan(self, reason: str) -> bool:
+        """A plan trigger fired: in auto mode enter plan mode, otherwise ask. True when plan mode is on now."""
+        mode = self._approve_mode()
+        if mode == "plan" or getattr(self, "read_only", False) or getattr(self, "answer", None) is not None:
+            return False
+        slog = getattr(getattr(self, "chat", None), "log", None)
+        if mode == "auto":
+            accepted = True
+            self.plan_auto = True
+        else:
+            answer = ui._ask_user(f"Plan first? {reason[:1].upper() + reason[1:]}. Switch to plan mode for this task?",
+                                  ["yes", "no"])
+            accepted = str(answer or "").strip().lower() in {"yes", "y", "plan"}
+        if slog is not None:
+            slog.write("mode_changed", old=mode, new="plan" if accepted else mode, trigger=reason, accepted=accepted)
+        if not accepted:
+            return False
+        self.hooks.ui("note", f"Plan mode: {reason}.")
+        self.approve_mode = "plan"
+        self.plan_done = False
+        self.mode_seen = "plan"
+        text = (self.sections.get("PLAN_MODE") or "") + f"\n(Plan triggered: {reason}.)"
+        self.payload = text.strip() + "\n\n" + (self.payload or "")
+        return True
 
     def _note_mode_change(self) -> None:
         """A mode switched mid-task (/mode, Shift+Tab) goes to the model as a short appended note."""

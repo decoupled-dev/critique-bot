@@ -186,9 +186,15 @@ def run_headless(
     out: IO[str] | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
-    """Print a one-task session's events (JSON lines, or the words and the outcome). The exit code."""
+    """Print a one-task session's events (JSON lines, or the words and the outcome). The exit code.
+
+    With ``json_lines`` the last line is the final object: ``{"type": "final", "code": ...,
+    "changed": [...], "evidence": {...}}``; ``evidence`` is the verified flow's checklist and
+    numbers (Stage 7), null for a plain task.
+    """
     out = out or sys.stdout
     code = ""
+    final: dict[str, Any] = {}
     for event in events:
         if on_event is not None:
             on_event(event)
@@ -201,8 +207,17 @@ def run_headless(
             out.flush()
         if kind == "task_finished":
             code = str(event.get("code") or "")
+            final = {"type": "final", "code": code, "changed": event.get("changed") or [],
+                     "evidence": event.get("evidence")}
             if not json_lines:
+                evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else None
+                for line in (evidence or {}).get("checklist") or []:
+                    print(f"  {line}", file=sys.stderr)
                 print(code, file=sys.stderr)
         elif kind == "session_closed":
             break
+    if json_lines:
+        out.write(json.dumps(final or {"type": "final", "code": code, "changed": [], "evidence": None},
+                             ensure_ascii=False, separators=(",", ":")) + "\n")
+        out.flush()
     return 0 if code in OK_CODES else 1

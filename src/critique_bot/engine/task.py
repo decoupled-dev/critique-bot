@@ -168,6 +168,12 @@ class _TaskRun(Dispatch, Modes, StopRules):
         self.denied_reason = ""
         #: The mode the model was last told about (a switch mid-task is appended as a note).
         self.mode_seen = self._approve_mode()
+        #: The verified flow on this task (engine/flows), or None for a plain run.
+        self.flow: Any = None
+        #: The impact list (engine/impact.py): signature changes and their call sites, or None.
+        self.impact: Any = None
+        #: Plan mode was entered by a trigger in auto mode: the plan is approved without asking.
+        self.plan_auto = False
 
     def _present(self, text: str) -> None:
         visible = _present_text(text)
@@ -198,9 +204,15 @@ class _TaskRun(Dispatch, Modes, StopRules):
             except _ProviderFailed as exc:
                 return self._end("FAILED", str(exc))
             self.turns.append({"role": "assistant", "content": reply})
+            if self.flow is not None:
+                self.flow.count_turn(self.payload, reply)
             code = self._handle(reply)
             if code is not None:
                 return code
+            if self.flow is not None:
+                code = self.flow.limits()
+                if code is not None:
+                    return code
         return self._end("STOPPED", f"stopped after {self.max_rounds} tool rounds")
 
     def _handle(self, raw_reply: str) -> str | None:
@@ -261,6 +273,12 @@ class _TaskRun(Dispatch, Modes, StopRules):
             return None
         if self.answer is not None:
             return self._contract_reply(reply)
+        if self.flow is not None and not fabricated:
+            from critique_bot.engine.flows import PASS
+
+            verdict = self.flow.on_reply(reply, status)
+            if verdict is not PASS:
+                return verdict
         if fabricated and not status:
             self._send_message("FABRICATED")
             self.last_failed = True

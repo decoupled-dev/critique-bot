@@ -293,6 +293,14 @@ class Dispatch:
                 slots[index] = result
                 plan_blocked = True
                 continue
+            flow = getattr(self, "flow", None)
+            blocked = flow.blocks(call, perm) if flow is not None else ""
+            if blocked:
+                result = {"tool": canonical_tool(call.tool) or call.tool, "ok": False, "error": blocked, "planned": True}
+                self.hooks.tool_start(call)
+                self.hooks.tool_done(call, result)
+                slots[index] = result
+                continue
             key = _call_key(call)
             if key in self.denials:
                 # Asked and denied already in this task: do not ask the user again.
@@ -319,7 +327,16 @@ class Dispatch:
                 self.hooks.tool_done(call, result)
                 slots[index] = result
                 continue
+            impact = getattr(self, "impact", None)
+            snapshot = impact.before(call, self.ctx) if impact is not None else None
             slots[index] = self._execute_one(call)
+            if snapshot and slots[index].get("ok"):
+                try:
+                    impact.after(snapshot, self.state)
+                except Exception as exc:  # noqa: BLE001 - the impact list is a help, never a failed call
+                    log.debug(f"impact list failed: {exc}")
+            if flow is not None:
+                flow.observe(call, slots[index])
         flush()
         results = [item for item in slots if item is not None]
         self.state.step += 1

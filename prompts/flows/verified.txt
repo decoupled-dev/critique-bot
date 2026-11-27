@@ -1,0 +1,59 @@
+<<<REPRODUCE>>>
+VERIFIED FLOW, step 1 of 4: REPRODUCE. Before you change any source file, prove the problem.
+1. Read the code the task is about.
+2. Write a minimal repro: a test in the project's test tree, or a script under .crit/repro/. Only those paths can be written in this step.
+3. Reply, with no tool_call, with these two lines:
+REPRO: <one command that runs the repro from the project folder>
+EXPECTED: <the error type and message it shows on the unmodified code, e.g. ValueError: price must be positive, or AssertionError: 3 != 4>
+crit runs the command on the unmodified code. The repro counts only when it fails for the reason you state.
+<<<REPRO_NEEDED>>>
+The REPRODUCE step needs two lines in a reply with no tool_call:
+REPRO: <the command that runs the repro>
+EXPECTED: <error type: message it shows now>
+If the repro is not written yet, write it first (test tree or .crit/repro/ only).
+<<<REPRO_REJECTED>>>
+The repro was not accepted: {reason}.
+Its output ended with:
+{output}
+Fix the repro (not the source code), then reply again with REPRO: and EXPECTED: lines and no tool_call.
+<<<REPRO_ACCEPTED>>>
+The repro is accepted: `{command}` fails on the unmodified code for the stated reason.
+VERIFIED FLOW, step 2 of 4: FIX. Change the source so the repro passes, without breaking other tests. Keep the change small. When you are done, reply COMPLETED: crit then runs the repro and the tests that touch the files you changed, and an independent reviewer reads the diff.
+<<<REPRO_UNTRUSTED>>>
+No trusted repro ({reason}). Continue without one: the fix will be checked by the tests and the reviewer only.
+VERIFIED FLOW, step 2 of 4: FIX. Change the source to fix the problem; keep the change small. When you are done, reply COMPLETED: crit then runs the tests that touch the files you changed, and an independent reviewer reads the diff.
+<<<FIX>>>
+VERIFIED FLOW: when you reply COMPLETED, crit runs the tests that touch the files you changed (before and after your change) and an independent reviewer reads the diff. Keep the change focused on the task.
+<<<REPAIR>>>
+Not done yet: {why}.
+{output}
+This is repair round {round} of {max} for this attempt. Find the cause, fix it, and reply COMPLETED again.
+<<<NEW_ATTEMPT>>>
+That attempt was rejected after {max} repair rounds. Start attempt {attempt}: take a different approach. First undo what did not work (edit the files back), then fix the problem another way.
+Rejected patches (do not repeat these):
+{rejected}
+<<<REVIEW_BLOCKING>>>
+An independent reviewer read your diff and the test evidence and found blocking problems:
+{findings}
+Fix them (or, if a finding is wrong, change nothing for it and say why in one line), then reply COMPLETED again.
+<<<REPRODUCE_BUDGET>>>
+The REPRODUCE step used its budget without an accepted repro. Continue without one.
+<<<PLAN_TRIGGERED>>>
+Plan first: {reason}. Investigate with read-only tools, then reply with a plan and no tool_call: the files to change and the change in each, in order, and how you will verify.
+<<<REVIEW_TASK>>>
+VERIFY TASK (read-only). Another chat changed this project for the task below. You did not write the change; judge it on the evidence.
+Task:
+{task}
+
+The change (unified diff):
+{diff}
+
+Evidence (crit ran these; before = the unmodified code, after = with the change):
+{evidence}
+
+Read what you need with read-only tools (the changed files as they are now, callers, tests). Look for defects the tests would not catch: wrong results on other inputs, missed call sites, error paths, broken contracts, security. Do not report style.
+Then reply with no tool_call: one line "Risk: safe|moderate|risky|blocker", a short summary, and a ```json fence:
+{"risk": "safe", "comments": [{"path": "src/a.py", "line": 12, "side": "new", "severity": "must-fix", "body": "what goes wrong, with a concrete input, and the smallest fix"}]}
+severity is one of: blocker, must-fix, security (blocking), should-fix, test, compat (not blocking). No findings: "comments": [].
+<<<REVIEW_NUDGE>>>
+Reply now with the verdict only: the Risk line, the summary, and the ```json fence with "risk" and "comments". No tool calls.

@@ -255,7 +255,9 @@ class HeadlessRunTest(_ServerCase):
         self.assertEqual(kinds[0], "session_started")
         self.assertIn("assistant_text", kinds)
         self.assertEqual([e["code"] for e in events if e["type"] == "task_finished"], ["COMPLETED"])
-        self.assertEqual(kinds[-1], "session_closed")
+        self.assertEqual(kinds[-2], "session_closed")
+        # The final object (Stage 7): the outcome and the verified flow's evidence (none for a question).
+        self.assertEqual(events[-1], {"type": "final", "code": "COMPLETED", "changed": [], "evidence": None})
 
     def test_crit_run_without_its_flags_is_still_a_task(self) -> None:
         from critique_bot import cli
@@ -293,7 +295,8 @@ class KilledServerTest(unittest.TestCase):
             (root / "note.txt").write_text("one\n", encoding="utf-8")
             (root / ".crit").mkdir()
             (root / ".crit" / "settings.json").write_text(json.dumps(
-                {"tool_format": "tags", "helper_sessions": 0, "environment_snapshot": False, "role": "generic"}),
+                {"tool_format": "tags", "helper_sessions": 0, "environment_snapshot": False, "role": "generic",
+                 "flow": "plain"}),  # the replies are a fixed script: no task-class question, no verified flow
                 encoding="utf-8")
             edit = _edit_call("note.txt", "one", "two")
             model = _FakeModel([edit, edit, "COMPLETED"])
