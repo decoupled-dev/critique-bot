@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Custom slash commands: ``.crit/commands/<name>.md`` (or ``~/.crit/commands``) becomes ``/<name>``.
 
 ```markdown

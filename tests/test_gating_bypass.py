@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Bypasses of the read-only, secret-file, and outside-workspace gates, one test per hole."""
 
 from __future__ import annotations

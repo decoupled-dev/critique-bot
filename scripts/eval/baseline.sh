@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
 # The Stage 0 baseline in one command, for the machine that can reach the model server.
 #
 #   scripts/eval/baseline.sh CRIT_CONFIG OPENCODE_MODEL [RUNS] [OUT] [NOTE]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The egress proxy: the only way sandboxed commands reach the network.
 
 A small HTTP proxy (``CONNECT`` tunnels and plain ``http://`` requests) on 127.0.0.1, run by

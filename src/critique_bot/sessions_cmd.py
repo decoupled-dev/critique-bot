@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit sessions``, ``crit resume`` and ``crit fork``: the logged sessions of a project.
 
 ``crit sessions``                    list them (id, when, status, turns, tokens, title)

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The local model server's API key (asked only when needed, never shown or logged) and the
 context window read from the server."""
 

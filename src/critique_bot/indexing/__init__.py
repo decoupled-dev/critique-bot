@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The indexing engine (plan Stage 8): one SQLite database per project, layered.
 
 ====  ==========================================  ==============================

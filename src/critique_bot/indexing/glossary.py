@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Identifier splitting, abbreviations, synonyms, and stemming for finding badly named code.
 
 ``expand("tmpMgr")`` gives the exact parts (``tmp``, ``mgr``), their expansions

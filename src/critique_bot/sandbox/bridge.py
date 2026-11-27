@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Runs inside the Linux sandbox, in front of the command: the only way out of its network namespace.
 
 Usage: ``python -I -S bridge.py <unix socket> <proxy port> <ports> -- <command...>``

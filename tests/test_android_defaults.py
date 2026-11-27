@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """AOSP and device defaults: module lookup, lunch targets, envsetup, bare m, logcat, adb hints.
 
 The tree, m, lunch, and adb here are fakes, so no AOSP checkout or device is needed.

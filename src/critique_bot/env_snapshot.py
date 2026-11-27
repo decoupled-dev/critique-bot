@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A short picture of the machine and the project, for the model's first turn.
 
 :func:`environment_snapshot` gives the OS, the shell, the working folder, the git branch

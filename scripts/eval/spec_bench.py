@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Speculative-decoding benchmark: decode speed for a whole-file rewrite vs a normal short turn.
 
 Whole-file rewrites mostly copy text already in the prompt, which n-gram / prompt-lookup

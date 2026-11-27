@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The prompt is typed only into the configured chat site, never into a page the browser was sent to."""
 
 from __future__ import annotations

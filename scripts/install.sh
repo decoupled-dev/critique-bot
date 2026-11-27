@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
 # Install crit for this Linux user (no root needed).
 #
 #   curl -fsSL https://github.com/decoupled-dev/critique-bot/releases/latest/download/install.sh | sh

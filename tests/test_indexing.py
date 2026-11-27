@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The indexing engine (Stage 8): storage and migrations, per-language extraction (golden
 files), the graph, history, incremental updates, and the index tools.
 

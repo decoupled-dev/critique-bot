@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Attempt limits, dead-lettering, retention, and queue introspection."""
 
 from __future__ import annotations

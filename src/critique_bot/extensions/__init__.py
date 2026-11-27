@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Extensions: tools, MCP servers, agents, slash commands and hooks defined in files.
 
 Part of the tools layer (``docs/architecture.md``): everything here reaches the engine as

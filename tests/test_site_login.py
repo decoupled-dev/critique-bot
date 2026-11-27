@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The chat site's own sign-in (HTTP or Windows Negotiate/NTLM) on machines without SSO.
 
 On Windows the signed-in account answers such a sign-in; on Linux the browser crit drives

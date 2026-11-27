@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``locate``: find the code a description is about by fusing many signals.
 
 Each retriever takes the parsed :class:`Query` and one database and returns ranked

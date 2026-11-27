@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """L2: definitions (kind, signature, line range, container) and the calls inside them.
 
 Three ways, best first:

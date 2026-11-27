@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A small MCP client: JSON-RPC 2.0 over stdio or streamable HTTP, no extra packages.
 
 What crit needs from an MCP server is ``initialize``, ``tools/list`` and ``tools/call``.

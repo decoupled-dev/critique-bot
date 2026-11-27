@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Marking text that came from outside crit (an MCP server, a tool that reads the network).
 
 The model sees it inside ``<untrusted source="...">...</untrusted>`` so instructions in it

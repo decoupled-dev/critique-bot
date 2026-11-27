@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The harness is layered; this test keeps it that way.
 
 Each module belongs to one layer. A module may import from its own layer and the layers

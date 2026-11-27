@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Text editing for the agent: matching, line endings, diffs, undo.
 
 The web chat copies code imperfectly. ``old_string`` arrives with ``N|``

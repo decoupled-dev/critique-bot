@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Compaction for model API sessions, driven by measured context pressure.
 
 The budget is the context window ``B`` (``local.num_ctx``, else what the server reports).

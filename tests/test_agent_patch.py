@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """apply_patch without git: crit's own parser for unified diffs and V4A patches.
 
 Hunks are found by context through the edit match ladder, so wrong line numbers and

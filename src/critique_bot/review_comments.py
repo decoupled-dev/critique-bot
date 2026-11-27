@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Parse the chat model's review JSON and map comments onto unified-diff lines."""
 
 from __future__ import annotations

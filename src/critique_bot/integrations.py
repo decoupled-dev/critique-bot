@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The GitLab and Jira instances crit may use, and their tokens.
 
 ``config.load_config`` sets them once per process (like the egress policy); the review,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hooks: programs crit runs at fixed points of a session, with a say in what happens.
 
 ``hooks.toml`` (or ``hooks.json``) in ``~/.crit`` or, once approved with ``crit trust``,

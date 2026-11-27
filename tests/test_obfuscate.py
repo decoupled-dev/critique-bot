@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """scripts/eval/obfuscate.py: identifiers renamed, behavior, strings and line numbers kept."""
 
 from __future__ import annotations

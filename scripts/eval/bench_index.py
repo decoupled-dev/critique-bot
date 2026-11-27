@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Benchmarks for the code index (plan 8, work item 9) and locate's localization accuracy.
 
 Index a tree (read-only: the database goes to --db, never into the tree) and measure:

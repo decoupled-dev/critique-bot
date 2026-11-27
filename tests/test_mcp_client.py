@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The MCP client against a fake stdio server and a fake streamable-HTTP server."""
 
 from __future__ import annotations

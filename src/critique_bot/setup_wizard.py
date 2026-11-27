@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """First-run questions: how crit reaches the model, and what it needs to do that.
 
 A config file found without a question (``CRIT_CONFIG_FILE`` or the system location:

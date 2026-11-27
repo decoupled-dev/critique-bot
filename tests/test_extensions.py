@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Extensions: trust store, manifest tools, the merged registry, hooks, agent and command files."""
 
 from __future__ import annotations

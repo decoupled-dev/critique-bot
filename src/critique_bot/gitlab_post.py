@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Post summary and inline discussion threads on a GitLab merge request."""
 
 from __future__ import annotations

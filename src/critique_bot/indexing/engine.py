@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Which index databases answer a question, and building them in the background.
 
 - A plain project has one database (``.crit/cache/index.db``), refreshed by the engine at

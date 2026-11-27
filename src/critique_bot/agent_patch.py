@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Patches without ``git apply``: a parser for unified diffs and V4A patches, and hunk application.
 
 Models trained on patches (gpt-oss and others in the OpenAI family) write one of two

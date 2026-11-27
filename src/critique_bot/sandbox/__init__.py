@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Run the agent's commands inside an OS sandbox.
 
 Every command crit runs for the model (``run_command``, background jobs, the check

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """L3: the code graph. Import resolution per language, callers and callees, the repo map.
 
 Import edges are resolved to files when the index is refreshed (:func:`resolve_imports`).

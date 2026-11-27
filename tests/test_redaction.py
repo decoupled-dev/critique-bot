@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """What redaction hides before text leaves this machine, and which files count as secret."""
 
 from __future__ import annotations

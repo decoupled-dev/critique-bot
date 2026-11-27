@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Local setup UI: pick selectors by clicking, then test a live round trip.
 
 Serves a small page on 127.0.0.1 using only the standard library. The hard part
@@ -869,7 +870,7 @@ PAGE_HTML = """<!doctype html>
     <div id="allowedList" class="sub"></div>
     <div class="field">
       <label for="url">url</label>
-      <input type="text" id="url" placeholder="https://ai.company.com/" />
+      <input type="text" id="url" placeholder="https://ai.example.com/" />
       <span></span>
     </div>
     <div class="field">

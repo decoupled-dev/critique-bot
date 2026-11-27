@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Copy a code tree (or an eval task) with meaningless identifier names, keeping behavior.
 
 The bad-naming test set (plan 8, work item 11): every class, function, method, field,

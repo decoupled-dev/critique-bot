@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import json
@@ -215,11 +216,11 @@ class JobLabelTests(unittest.TestCase):
         self.assertEqual(
             job_label(
                 {
-                    "CI_PROJECT_PATH": "decoupled-group/critique-bot",
+                    "CI_PROJECT_PATH": "example-group/critique-bot",
                     "CI_MERGE_REQUEST_IID": "12",
                 }
             ),
-            "decoupled-group-critique-bot-mr12",
+            "example-group-critique-bot-mr12",
         )
 
     def test_explicit_and_local(self) -> None:

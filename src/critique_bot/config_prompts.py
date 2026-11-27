@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Settings crit asks for while it works, the first time they are needed.
 
 Only in a terminal session that ``enable`` switched on (the command line does that for an
@@ -148,7 +149,7 @@ def ensure_gitlab_url(current: str = "") -> str:
     _say("crit needs your GitLab address for this (asked once; saved in your settings).")
     for _ in range(3):
         try:
-            answer = ask("GitLab address, for example https://gitlab.company.com (Enter to skip): ").strip()
+            answer = ask("GitLab address, for example https://gitlab.example.com (Enter to skip): ").strip()
         except (EOFError, KeyboardInterrupt):
             return ""
         if not answer:

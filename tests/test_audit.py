@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The audit log and crit audit."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The sign-in window is a plain browser; sandbox flags only where they are needed."""
 
 from __future__ import annotations
@@ -135,12 +136,12 @@ class GuardTests(unittest.TestCase):
 
         from critique_bot import egress
 
-        url = "https://ai-chat.company.net/"
+        url = "https://ai-chat.example.net/"
         self.addCleanup(setattr, egress, "_policy", egress.policy())
         egress.configure("open", url)  # the chat's whole site is allowed only with "egress": "open"
-        self.assertTrue(browser.request_is_allowed("https://ai-chat.company.net/api", url))
-        # The chat's own site (company.net) is allowed, as docs/security.md describes.
-        self.assertTrue(browser.request_is_allowed("https://api.company.net/v1", url))
+        self.assertTrue(browser.request_is_allowed("https://ai-chat.example.net/api", url))
+        # The chat's own site (example.net) is allowed, as docs/security.md describes.
+        self.assertTrue(browser.request_is_allowed("https://api.example.net/v1", url))
         self.assertFalse(browser.request_is_allowed("https://api.other.net/v1", url))
         try:
             browser.set_allowed_hosts(_host_list(["https://api.other.net/x", "*.cdn.example.org"]))

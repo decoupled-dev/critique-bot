@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Worker time limits, attempt ceilings, retention, and completion metadata."""
 
 from __future__ import annotations

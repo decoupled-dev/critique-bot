@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Windows: no OS sandbox yet (best effort).
 
 Commands run as before, with crit's permission prompts: in ``auto`` a command that is not

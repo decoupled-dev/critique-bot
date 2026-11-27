@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Run a Python program and record which lines of the workspace it executed.
 
 Used by ``coverage_locate`` so it needs no coverage.py: ``python pytrace.py OUT ROOT -- ARGS``

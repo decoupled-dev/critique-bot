@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Terminal-like sessions: environment that carries over, and typing into background jobs."""
 
 from __future__ import annotations

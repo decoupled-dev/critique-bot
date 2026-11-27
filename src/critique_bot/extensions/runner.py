@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Running an extension's program: one argv, never a shell.
 
 Every extension process (a manifest tool, a hook, a stdio MCP server's launch line goes

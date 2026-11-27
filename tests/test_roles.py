@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """roles: names, spellings, skills, and the prompt sections behind each role."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Run the core test suite on a copy of crit without critique_bot/webchat/.
 
 Test modules that import the web chat are left out (they test it); every other test must

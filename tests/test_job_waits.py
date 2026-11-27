@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Background jobs that are waited on and reported, so the model never has to poll."""
 
 from __future__ import annotations

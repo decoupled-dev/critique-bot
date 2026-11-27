@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A chat page under crit's filter cannot reach any other host, by any channel (needs Chrome or Edge).
 
 chat.test serves a page that tries every way out; tracker.test records what arrives.

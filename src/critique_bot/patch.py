@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Cap, skip, and summarize huge / binary input so the chat UI does not crash."""
 
 from __future__ import annotations

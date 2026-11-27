@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """File-defined agents: a markdown file with frontmatter is an agent profile.
 
 ```markdown

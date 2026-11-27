@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit --acp: the Agent Client Protocol front end (Android Studio, JetBrains IDEs, Zed)."""
 
 from __future__ import annotations

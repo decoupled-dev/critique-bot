@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Build a Windows or Linux deployment zip with PyInstaller.
 
 Must be run on the OS you want to ship (Linux build != Windows .exe).

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit doctor sandbox``: can this machine sandbox the agent's commands, and if not, how to fix it.
 
 It probes the backend (bubblewrap on Linux, sandbox-exec on macOS), then runs four real

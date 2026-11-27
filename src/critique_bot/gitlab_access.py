@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Which GitLab projects crit may use: the ones the person's access token can reach.
 
 There is no separate list to keep: the token decides. crit asks GitLab for the projects

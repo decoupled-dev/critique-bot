@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit`` is the one command for everything crit does.
 
 The first word picks the mode; with no mode word crit runs the local coding agent:

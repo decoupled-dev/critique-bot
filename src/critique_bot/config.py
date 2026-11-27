@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import json
@@ -267,7 +268,7 @@ def _host_list(value: object) -> tuple[str, ...]:
         return ()
     items = [value] if isinstance(value, str) else value
     if not isinstance(items, list):
-        raise ConfigError("allowed_hosts must be a list of host names, for example [\"api.company.net\"]")
+        raise ConfigError("allowed_hosts must be a list of host names, for example [\"api.example.net\"]")
     hosts: list[str] = []
     for item in items:
         text = str(item or "").strip().lower()
@@ -449,7 +450,7 @@ def load_config(
         if not selectors.prompt_input:
             raise ConfigError(
                 "selectors.prompt_input is required: crit does not know the page's message box yet. "
-                "Run crit setup to point at it (after crit config --url https://ai.company.com/)"
+                "Run crit setup to point at it (after crit config --url https://ai.example.com/)"
             )
         if not selectors.assistant_messages:
             raise ConfigError(
@@ -458,13 +459,13 @@ def load_config(
             )
         if not url:
             raise ConfigError(
-                "no url is set. Run crit config --config-file /path/to/crit.json or crit config --url https://ai.company.com/ "
+                "no url is set. Run crit config --config-file /path/to/crit.json or crit config --url https://ai.example.com/ "
                 "(or set CRIT_URL)"
             )
         if PLACEHOLDER_URL in url:
             raise ConfigError(
                 "url is still a placeholder. Set it with "
-                "crit config --url https://ai.company.com/."
+                "crit config --url https://ai.example.com/."
             )
 
     egress_mode = _egress_mode(raw.get("egress"))

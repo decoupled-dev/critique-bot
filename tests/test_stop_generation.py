@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A reply still being written must be finished or stopped before the next send."""
 
 from __future__ import annotations

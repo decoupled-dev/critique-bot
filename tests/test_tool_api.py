@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The tool layer on its own: specs, schemas, exports, and the registry the engine calls."""
 
 from __future__ import annotations

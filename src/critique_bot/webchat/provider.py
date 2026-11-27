@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The web-chat backend: a chat page in Edge behind the model layer's interface.
 
 :class:`BrowserProvider` opens Edge and hands out :class:`ChatSession` objects (one per
@@ -65,8 +66,8 @@ _CONVERSATION_RE = re.compile(r"^(.*?)/c/[^/]+/?$")
 def fresh_chat_url(url: str) -> str:
     """The URL of an empty chat for ``url``: a conversation link loses its ``/c/<id>``.
 
-    ``https://ai.company.com/c/abc`` -> ``https://ai.company.com/``;
-    ``https://ai.company.com/g/g-x/c/abc`` -> ``https://ai.company.com/g/g-x`` (the assistant or project stays).
+    ``https://ai.example.com/c/abc`` -> ``https://ai.example.com/``;
+    ``https://ai.example.com/g/g-x/c/abc`` -> ``https://ai.example.com/g/g-x`` (the assistant or project stays).
     """
     try:
         parts = urllib.parse.urlsplit(url)

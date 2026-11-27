@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Model profiles: the built-ins load and validate, names resolve (OpenRouter, Hugging Face,
 Ollama, GGUF spellings), user overrides, local.profile, the doctor cache behind
 ``tool_mode: auto``, and how the local client and the engine apply a profile."""

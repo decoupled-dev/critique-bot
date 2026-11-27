@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit trust``, ``crit tool`` and ``crit mcp``: look at, approve and test extensions.
 
 - ``crit trust``                list the project's extension files and whether each is on

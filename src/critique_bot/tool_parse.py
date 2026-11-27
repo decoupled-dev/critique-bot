@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tool calls a model wrote as text, for servers whose native tool-call parser missed them.
 
 With native tool calling the server turns the model's call template into structured

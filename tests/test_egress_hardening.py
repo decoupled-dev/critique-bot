@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Data may leave the PC only through the chat: the checks added after the egress review."""
 
 from __future__ import annotations

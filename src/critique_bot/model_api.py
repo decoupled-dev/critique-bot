@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The model layer's interface: everything above it talks to a model through this module.
 
 A backend (a model served on this PC, or the optional web chat page in Edge) implements

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """For tests that exercise the optional web chat (critique_bot.webchat)."""
 
 from __future__ import annotations

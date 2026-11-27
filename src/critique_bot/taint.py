@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Taint: untrusted content entered the session, so the agent's reach shrinks.
 
 The lethal trifecta is private data + untrusted content + a way to send data out. crit

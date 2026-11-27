@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Keep the whole test run away from the real user folders.
 
 Imported first by ``unittest discover`` (the name sorts first), before any test runs:

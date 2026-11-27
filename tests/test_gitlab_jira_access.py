@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """GitLab projects decided by the token, git network commands to them, and read-only Jira.
 
 A local HTTP server plays GitLab and Jira, so nothing leaves this machine.
@@ -115,7 +116,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(_Handler.seen[0]["query"]["membership"], ["true"])
 
     def test_a_bad_token_is_an_access_error(self) -> None:
-        integrations.configure(gitlab_url=self.server.url, gitlab_token="glpat-not-the-right-one-00000")
+        integrations.configure(gitlab_url=self.server.url, gitlab_token="glpat-not-the-right-one-00000")  # gitleaks:allow (fake token)
         with self.assertRaises(gitlab_access.AccessError):
             gitlab_access.accessible_projects()
 
@@ -223,20 +224,20 @@ class AccessTests(unittest.TestCase):
 
 class SecretSourceTests(unittest.TestCase):
     def test_tokens_never_come_from_a_shared_file(self) -> None:
-        own = {"gitlab": {"token": "glpat-fromfile-111111111111"}}
+        own = {"gitlab": {"token": "glpat-fromfile-111111111111"}}  # gitleaks:allow (fake token)
         with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(config, "user_config_path",
                                                                              return_value=Path("/nonexistent/c.json")):
             for name in config.ENV_GITLAB_TOKENS:
                 os.environ.pop(name, None)
-            self.assertEqual(config._user_secret(own, None, False, "gitlab", "token", config.ENV_GITLAB_TOKENS, "--x"), "glpat-fromfile-111111111111")
+            self.assertEqual(config._user_secret(own, None, False, "gitlab", "token", config.ENV_GITLAB_TOKENS, "--x"), "glpat-fromfile-111111111111")  # gitleaks:allow (fake token)
             self.assertEqual(config._user_secret(own, None, True, "gitlab", "token", config.ENV_GITLAB_TOKENS, "--x"), "")
-            os.environ["CRIT_GITLAB_TOKEN"] = "glpat-fromenv-2222222222222"
-            self.assertEqual(config._user_secret(own, None, True, "gitlab", "token", config.ENV_GITLAB_TOKENS, "--x"), "glpat-fromenv-2222222222222")
+            os.environ["CRIT_GITLAB_TOKEN"] = "glpat-fromenv-2222222222222"  # gitleaks:allow (fake token)
+            self.assertEqual(config._user_secret(own, None, True, "gitlab", "token", config.ENV_GITLAB_TOKENS, "--x"), "glpat-fromenv-2222222222222")  # gitleaks:allow (fake token)
 
     def test_tokens_are_not_in_the_config_repr(self) -> None:
-        self.assertNotIn("glpat-repr-check-33333333333", repr(config.GitLabConfig(base_url="https://g", token="glpat-repr-check-33333333333")))
-        self.assertNotIn("glpat-repr-check-33333333333", repr(config.JiraConfig(base_url="https://j", token="glpat-repr-check-33333333333")))
-        self.assertNotIn("glpat-repr-check-33333333333", repr(integrations.Integrations(gitlab_token="glpat-repr-check-33333333333", jira_token="glpat-repr-check-33333333333")))
+        self.assertNotIn("glpat-repr-check-33333333333", repr(config.GitLabConfig(base_url="https://g", token="glpat-repr-check-33333333333")))  # gitleaks:allow (fake token)
+        self.assertNotIn("glpat-repr-check-33333333333", repr(config.JiraConfig(base_url="https://j", token="glpat-repr-check-33333333333")))  # gitleaks:allow (fake token)
+        self.assertNotIn("glpat-repr-check-33333333333", repr(integrations.Integrations(gitlab_token="glpat-repr-check-33333333333", jira_token="glpat-repr-check-33333333333")))  # gitleaks:allow (fake token)
 
 
 if __name__ == "__main__":

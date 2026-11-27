@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Run crit on the eval suite: the same as ``crit eval`` (see ``critique_bot/eval_harness.py``).
 
     python3 scripts/eval/run_eval.py --config ~/.crit/qwen.json --runs 3

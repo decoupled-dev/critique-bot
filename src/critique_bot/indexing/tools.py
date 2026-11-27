@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The index tools: what the model calls to navigate code by structure, history and evidence.
 
 Every handler takes the tool arguments and the tool context and returns ``(ok, text)``.

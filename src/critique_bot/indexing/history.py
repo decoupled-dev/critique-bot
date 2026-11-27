@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """L4: git history. Commits per file, co-change pairs, commit-message search, blame, ``log -G``.
 
 ``update`` reads ``git log --name-only`` from the last indexed commit to HEAD (the first run

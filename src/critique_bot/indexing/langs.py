@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Which language (or build/config format) a file is, from its name."""
 
 from __future__ import annotations

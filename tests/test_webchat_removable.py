@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The web chat is a removable module: crit works with critique_bot.webchat gone.
 
 A child process blocks the package from importing (as if the folder were deleted), then

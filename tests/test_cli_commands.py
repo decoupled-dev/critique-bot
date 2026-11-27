@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Routing and output for the queue-status and setup subcommands."""
 
 from __future__ import annotations

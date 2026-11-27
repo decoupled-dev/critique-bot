@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Output shaping: head and tail within the budget, the full text saved, never empty; read
 windows, multi-pattern search with counts first, and response_format."""
 

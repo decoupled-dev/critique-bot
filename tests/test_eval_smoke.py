@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """End to end: crit eval runs the real crit process against a scripted model server."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Per-file facts beyond definitions: imports, likely calls, inheritance, and strings.
 
 One pass over a file's text gives a :class:`Facts`:

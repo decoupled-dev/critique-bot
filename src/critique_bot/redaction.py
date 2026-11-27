@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Secret handling shared by every layer: what is redacted before text leaves this machine,
 and which files usually hold credentials.
 

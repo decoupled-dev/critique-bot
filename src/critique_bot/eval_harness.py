@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``crit eval``: run a coding agent on a suite of real tasks and measure the harness.
 
 A task is a folder with a ``task.json``::

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The tool layer's interface: what the engine and the front ends may use from the tools.
 
 Two parts:

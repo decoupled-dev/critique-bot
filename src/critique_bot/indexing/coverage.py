@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """``coverage_locate``: rank functions by what a failing run executed (spectrum-based).
 
 Sources of coverage, per run:

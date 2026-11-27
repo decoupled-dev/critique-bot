@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# SPDX-License-Identifier: Apache-2.0
 """PyInstaller spec for crit (Windows and Linux).
 
 Build from the repo root:

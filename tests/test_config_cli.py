@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """crit's settings without hand-editing JSON: the user config, ``crit config``, the first-run
 questions, and the questions asked later (blocked sites, the GitLab address)."""
 
@@ -368,7 +369,7 @@ class FirstRunTests(_Isolated):
         with patch("critique_bot.welcome.stdio_is_tty", return_value=False):
             code, out, err = _capture(crit_main, ["ask", "--prompt", "hi", "--repo-dir", str(self.project)])
         self.assertEqual(code, 1)
-        self.assertIn("crit config --url https://ai.company.com/ --selector prompt_input=", err)
+        self.assertIn("crit config --url https://ai.example.com/ --selector prompt_input=", err)
         self.assertIn("crit config --backend local --local-url http://IP:PORT", err)
         self.assertNotIn("Traceback", err)
         self.assertFalse(self.user.exists())

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A project's ``.crit`` folder: settings, notes, cache, sessions, and the code index.
 
 Versions up to 1.0.4 called it ``.bot``: a project with ``.bot`` and no ``.crit`` gets its folder

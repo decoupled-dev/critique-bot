@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The local setup UI: config merging, endpoints, and the browser bridge."""
 
 from __future__ import annotations

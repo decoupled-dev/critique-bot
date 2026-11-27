@@ -4023,3 +4023,35 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
+
+## Optional extras (not in the release bundles)
+
+The `[index]` extra (tree-sitter and its grammars) is installed from PyPI only when
+asked for; each package carries its own license text. Pinned in `constraints.txt`.
+
+| Package | Version | License | Source |
+| --- | --- | --- | --- |
+| tree-sitter | 0.25.2 | MIT | https://github.com/tree-sitter/py-tree-sitter |
+| tree-sitter-python | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-python |
+| tree-sitter-java | 0.23.5 | MIT | https://github.com/tree-sitter/tree-sitter-java |
+| tree-sitter-kotlin | 1.1.0 | MIT | https://github.com/fwcd/tree-sitter-kotlin |
+| tree-sitter-go | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-go |
+| tree-sitter-rust | 0.24.2 | MIT | https://github.com/tree-sitter/tree-sitter-rust |
+| tree-sitter-c | 0.24.2 | MIT | https://github.com/tree-sitter/tree-sitter-c |
+| tree-sitter-cpp | 0.23.4 | MIT | https://github.com/tree-sitter/tree-sitter-cpp |
+| tree-sitter-c-sharp | 0.24.0 | MIT | https://github.com/tree-sitter/tree-sitter-c-sharp |
+| tree-sitter-javascript | 0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter-javascript |
+| tree-sitter-typescript | 0.23.2 | MIT | https://github.com/tree-sitter/tree-sitter-typescript |
+
+## In the release bundles only (zip, .deb)
+
+The PyInstaller bundles also carry:
+
+- **CPython**, the Python runtime: PSF-2.0 (https://docs.python.org/3/license.html).
+- **The PyInstaller bootloader**: GPL-2.0-or-later WITH the PyInstaller bootloader
+  exception, which allows shipping it with programs under any license
+  (https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt).
+- **Node.js**, inside Playwright's driver: MIT and the licenses of its bundled
+  components. Its full text is the Node.js part of Playwright's license above, and the
+  bundle keeps it as `playwright/driver/LICENSE`, with Playwright's own notices in
+  `playwright/driver/package/ThirdPartyNotices.txt`.

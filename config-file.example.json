@@ -1,5 +1,5 @@
 {
-  "url": "https://ai.company.com/",
+  "url": "https://ai.example.com/",
   "selectors": {
     "prompt_input": "textarea, div[contenteditable='true'][role='textbox']",
     "send_button": "button[type='submit'], button[aria-label*='Send' i]",

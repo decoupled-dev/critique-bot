@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The role crit plays in a repository: a persona the system prompt is shaped around.
 
 The first ``crit`` in a folder picks one from the project's files (:func:`detect_role`)

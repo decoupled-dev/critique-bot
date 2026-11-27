@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Modes (ask, edits, auto, plan), risky commands, and built-in skills."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tool calls written as text (when the server's parser misses them) and schema checks."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """L0 build modules: which module owns a file and what it depends on.
 
 Reads Soong ``Android.bp`` (through :mod:`critique_bot.soong`), Gradle (``build.gradle``,

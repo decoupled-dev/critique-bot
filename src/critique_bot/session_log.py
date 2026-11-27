@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Every agent session as an append-only event log, and what is rebuilt from it.
 
 A session lives in ``.crit/sessions/<id>/``::

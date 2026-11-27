@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Telemetry, usage analytics, and update checks: off for crit and everything it starts.
 
 The only data that may leave the PC is the conversation with the configured chat

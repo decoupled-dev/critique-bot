@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The index database: connection, schema, migrations, and where each database lives.
 
 The schema version is an integer in ``meta``. A database at an older version is migrated in

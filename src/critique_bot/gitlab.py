@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """GitLab API targeting, HTTP, and merge-request context for the review prompt."""
 
 from __future__ import annotations

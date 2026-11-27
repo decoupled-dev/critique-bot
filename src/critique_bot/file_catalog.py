@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A cached list of workspace files that scales to AOSP-size trees.
 
 Listing files was a full ``git ls-files`` (or an ``os.walk``) on every tool call. On a

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Long command output: the middle is saved to a file the model can read."""
 
 from __future__ import annotations
