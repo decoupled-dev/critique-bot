@@ -70,7 +70,7 @@ The service at `url` in `config.json` receives the instructions, your tasks, and
 - AWS, GitHub, GitLab, Slack, Google, OpenAI, and Anthropic tokens
 - JWTs
 - a password inside a URL
-- `password=`, `token=`, and `api_key=` style values in config and properties files
+- `password=`, `token=`, and `api_key=` style values in config and properties files, and keys named like `..._PASS`, `pw:`, `passphrase`, `credentials`, `cookie`, `session_key`, `signing_key`, `encryption_key`, or `master_key`
 - secret entries in `strings.xml`
 - `Authorization: Bearer`/`Basic` headers, npm, Stripe, SendGrid, Hugging Face, PyPI, Slack webhook, and Google OAuth tokens, Azure `AccountKey=`/SAS signatures, JDBC and Redis passwords, PGP private keys, kubeconfig key data, and GCP service-account JSON
 - a private key cut off by a size limit (redaction runs before any truncation)
@@ -90,7 +90,7 @@ Files that usually hold secrets need your yes before they are read or edited (mo
 - shell histories, and the browser profile's `Cookies` and `Login Data`
 - anything under `.ssh`, `.aws`, `.docker`, `.kube`, `.gnupg`, or the browser profile folder
 
-A workspace-wide search leaves those files out of its results. Review mode never attaches them whole; their diff hunks still go, redacted.
+A workspace-wide search leaves those files out of its results. `git_diff` and `git_show` keep their names and diff headers but leave out their changes, with a note, unless the call names the file (`path`), which asks first like `read_files`. Review mode never attaches them whole; their diff hunks still go, redacted.
 
 Anything outside the workspace (a read, a write, or a command run there) also needs your yes in every mode.
 

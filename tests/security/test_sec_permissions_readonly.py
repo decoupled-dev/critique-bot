@@ -252,8 +252,7 @@ class GitSecretTests(SecBase):
         self.assertEqual(len(approvals.asked), 1)
         self.assertNotIn(self.SECRET, "\n".join(session.sent))
 
-    # SECURITY FINDING PM-11: git_diff (a "read", unasked in every mode) shows a tracked .env's new contents to the model
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-11 (fixed): git_diff (a "read", unasked in every mode) shows a tracked .env's new contents to the model
     def test_git_diff_does_not_show_a_secret_file_unasked(self) -> None:
         approvals = Approvals()
         session = Scripted([call("git_diff"), "COMPLETED"])
@@ -262,8 +261,7 @@ class GitSecretTests(SecBase):
         self.assertTrue(approvals.asked or self.SECRET not in "\n".join(session.sent),
                         "the secret went to the model with no question")
 
-    # SECURITY FINDING PM-11: git_show patch=true shows a committed .env the same way
-    @unittest.expectedFailure
+    # SECURITY FINDING PM-11 (fixed): git_show patch=true shows a committed .env the same way
     def test_git_show_patch_does_not_show_a_secret_file_unasked(self) -> None:
         git(self.root, "commit", "-q", "-am", "rotate")
         approvals = Approvals()
@@ -272,6 +270,41 @@ class GitSecretTests(SecBase):
             self.loop(session, approve_mode="ask")
         self.assertTrue(approvals.asked or self.SECRET not in "\n".join(session.sent),
                         "the secret went to the model with no question")
+
+
+class GitSecretFilterTests(SecBase):
+    """Regression tests for PM-11: only the secret file's hunks are hidden, and redaction knows more key names."""
+
+    def test_other_files_in_the_same_diff_stay(self) -> None:
+        diff = (
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a\n+b\n"
+            "diff --git a/config/.env.local b/config/.env.local\n--- a/config/.env.local\n+++ b/config/.env.local\n"
+            "@@ -1 +1 @@\n-X=1\n+X=fake-not-real-333\n"
+            'diff --git "a/odd name.py" "b/odd name.py"\n--- "a/odd name.py"\n+++ "b/odd name.py"\n@@ -1 +1 @@\n+c\n'
+        )
+        shown = agent_tools.hide_secret_diffs(diff)
+        self.assertNotIn("fake-not-real-333", shown)
+        self.assertIn("+b", shown)
+        self.assertIn("+c", shown)
+        self.assertIn("config/.env.local", shown)
+
+    def test_git_diff_of_the_secret_file_itself_asks_and_then_shows_it(self) -> None:
+        (self.root / ".env").write_text("NAME=one\n", encoding="utf-8")
+        git_repo(self.root)
+        (self.root / ".env").write_text("NAME=fake-visible-after-yes\n", encoding="utf-8")
+        approvals = Approvals(default="yes")
+        session = Scripted([call("git_diff", path=".env"), "COMPLETED"])
+        with approvals.patch():
+            self.loop(session, approve_mode="plan")
+        self.assertEqual(len(approvals.asked), 1)
+        self.assertIn("fake-visible-after-yes", "\n".join(session.sent))
+
+    def test_secret_ish_keys_are_redacted(self) -> None:
+        from critique_bot import redaction
+
+        for line in ("MY_DB_PASS=fake-not-real-1x", "pw: fake-not-real-2x", "SIGNING_KEY=fakenotreal333"):
+            self.assertNotIn("fake", redaction.redact_secrets(line)[0].lower().split("=", 1)[-1].split(":", 1)[-1])
+        self.assertEqual(redaction.redact_secrets("BYPASS_CACHE=abcdefgh1")[0], "BYPASS_CACHE=abcdefgh1")
 
 
 if __name__ == "__main__":

@@ -3658,7 +3658,8 @@ def _git_diff(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if not isinstance(raw, str):
             return err("git_diff", "path must be a string")
         git_args.extend(["--", raw])
-    return _git(ctx, git_args, tool="git_diff")
+    # A secret file the call names was asked about first (permission_for); any other one is hidden.
+    return _git(ctx, git_args, tool="git_diff", hide_secrets=not (raw and sensitive_file(raw)))
 
 
 # Subcommands that take --no-ext-diff and --no-textconv.
@@ -3697,7 +3698,59 @@ def _git_names_blob(ctx: ToolContext, rev: Any) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == b"blob"
 
 
-def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
+_DIFF_HEADER_RE = re.compile(r"^diff --(?:git (?P<pair>.+)|cc (?P<cc>.+)|combined (?P<combined>.+))$")
+_DIFF_FILE_RE = re.compile(r"^(?:---|\+\+\+) (?P<name>.+?)\t?$")
+
+
+def _diff_names(text: str) -> list[str]:
+    """``a/x b/y`` (or ``"a/x y" "b/x y"``) -> every name it could hold, prefixes off."""
+    names = [text]
+    try:
+        names += shlex.split(text)
+    except ValueError:
+        names += text.split()
+    names += [part for part in re.split(r"\s+[ab]/", " " + text) if part.strip()]
+    out = []
+    for name in names:
+        name = name.strip().strip('"')
+        out.append(name[2:] if name[:2] in {"a/", "b/"} else name)
+    return out
+
+
+def hide_secret_diffs(text: str) -> str:
+    """``text`` (git diff or show output) with the changes of files that usually hold secrets
+    replaced by a note: those files are read only after the user's yes (``read_files``).
+    Their names and the diff headers stay, so the model knows they changed."""
+    out: list[str] = []
+    hiding = False
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        header = _DIFF_HEADER_RE.match(bare)
+        if header is not None:
+            names = _diff_names(header.group("pair") or header.group("cc") or header.group("combined") or "")
+            hiding = any(sensitive_file(name) for name in names if name)
+            out.append(line)
+            if hiding:
+                out.append(f"{_SECRET_DIFF_NOTE}; read_files shows it after the user's yes\n")
+            continue
+        if hiding:
+            if bare.startswith("commit ") and re.fullmatch(r"commit [0-9a-f]{7,64}.*", bare):
+                hiding = False  # the next commit of a multi-commit show
+            else:
+                continue
+        named = _DIFF_FILE_RE.match(bare)
+        if named is not None and named.group("name") != "/dev/null" and any(
+            sensitive_file(name) for name in _diff_names(named.group("name"))
+        ):
+            hiding = True
+            out.append(line)
+            out.append(f"{_SECRET_DIFF_NOTE}; read_files shows it after the user's yes\n")
+            continue
+        out.append(line)
+    return "".join(out)
+
+
+def _git(ctx: ToolContext, git_args: list[str], *, tool: str, hide_secrets: bool = False) -> dict[str, Any]:
     run = ctx.runner or subprocess.run
     try:
         proc = run(
@@ -3713,6 +3766,8 @@ def _git(ctx: ToolContext, git_args: list[str], *, tool: str) -> dict[str, Any]:
         return err(tool, "git timed out")
     code = int(getattr(proc, "returncode", 1) or 0)
     stdout = agent_shell.tidy(agent_shell.decode(getattr(proc, "stdout", b"")))
+    if hide_secrets:
+        stdout = hide_secret_diffs(stdout)
     stderr = agent_shell.tidy(agent_shell.decode(getattr(proc, "stderr", b"")))
     output = "\n".join(part for part in (f"exit {code}", stdout, stderr) if part)
     if code != 0:
@@ -3778,7 +3833,9 @@ def _git_show(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if shown is None:
             return err("git_show", "path must be a file inside the workspace")
         git_args.extend(["--", shown])
-    return _git(ctx, git_args, tool="git_show")
+    # A secret file the call names (path, or rev HEAD:.env) was asked about first; any other one is hidden.
+    named = bool(raw and sensitive_file(str(raw))) or any(sensitive_file(item) for item in _rev_paths(rev))
+    return _git(ctx, git_args, tool="git_show", hide_secrets=not named)
 
 
 def _git_path(ctx: ToolContext, raw: object) -> str | None:
