@@ -77,6 +77,7 @@ LAYERS: dict[str, int] = {
     "config_cmd": APPS,
     "installer": APPS,
     "eval_harness": APPS,
+    "doctor": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,
