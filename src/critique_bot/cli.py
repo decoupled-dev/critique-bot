@@ -731,6 +731,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="agent mode: continue a logged session (an id from crit sessions, or last); same as crit resume",
     )
     parser.add_argument(
+        "--no-memory",
+        dest="no_memory",
+        action="store_true",
+        help='agent mode: no project memory for this run: no hunch at task start, nothing recorded ("memory": "off")',
+    )
+    parser.add_argument(
         "--max-rounds",
         type=int,
         default=None,
@@ -938,6 +944,7 @@ SUBCOMMANDS = {
     "trust": "approve the project's extension files (tools, hooks, MCP servers) once per content",
     "tool": "list, show and test manifest tools (crit tool --help)",
     "mcp": "list MCP servers; approve a server's changed tool definitions",
+    "memory": "the project memory: status, show, review proposed conventions, export, prune (crit memory --help)",
 }
 
 
@@ -1120,6 +1127,7 @@ def _main(argv: list[str] | None = None) -> int:
             "sessions": _main_sessions,
             "resume": _main_resume,
             "fork": _main_fork,
+            "memory": _main_memory,
         }
         if command in {"trust", "tool", "mcp"}:
             return _main_extensions([command, *rest])
@@ -1173,6 +1181,12 @@ def _main_doctor(argv: list[str]) -> int:
         return DOCTOR_TOPICS[argv[0]][1](argv[1:])
     args = parser.parse_args(argv)
     return DOCTOR_TOPICS[args.topic][1](list(args.rest))
+def _main_memory(argv: list[str]) -> int:
+    from critique_bot.memory_cmd import main as memory_main
+
+    return memory_main(argv)
+
+
 def _main_sessions(argv: list[str]) -> int:
     from critique_bot.sessions_cmd import main_sessions
 
@@ -1825,13 +1839,15 @@ def _welcome_login(config: BotConfig) -> bool:
 
 
 def _apply_tool_flags(args: argparse.Namespace, home) -> None:
-    """--tool-format / --tool-set win over .crit/settings.json for this run (not saved)."""
+    """--tool-format / --tool-set / --no-memory win over .crit/settings.json for this run (not saved)."""
     if not isinstance(home.settings, dict):
         return
     if getattr(args, "tool_format", None):
         home.settings["tool_format"] = args.tool_format
     if getattr(args, "tool_set", None):
         home.settings["tool_set"] = args.tool_set
+    if getattr(args, "no_memory", False):
+        home.settings["memory"] = "off"
 
 
 def _use_terminal_ui() -> None:

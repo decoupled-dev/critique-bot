@@ -102,6 +102,7 @@ LAYERS: dict[str, int] = {
     "sandbox_doctor": APPS,
     "sessions_cmd": APPS,
     "extensions_cmd": APPS,
+    "memory_cmd": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,
