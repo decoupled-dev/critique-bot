@@ -304,7 +304,7 @@ Each session opens with a box that shows the folder, model (and, for a local mod
 | `/plan` | Plan mode for the next tasks. |
 | `/auto` | Auto mode for the rest of the session. |
 | `/skills [name ...]` | List the skills, or pin some for every task this session. `/skills off name` unpins. |
-| `/role [name]` | Show the roles, or switch this project's role (see [Roles](#roles)). The choice is kept in `.crit/settings.json`, and the next task starts a new conversation with the role's instructions. |
+| `/agent [name]` or `/role [name]` | Show the agents (the roles, plus agent files: [extending.md](extending.md#agents)), or switch this project's role (see [Roles](#roles)). The choice is kept in `.crit/settings.json`, and the next task starts a new conversation with the role's instructions. |
 | `/status` | Model, shell, folder, mode, role, pinned skills, and background commands. |
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |

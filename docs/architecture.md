@@ -15,6 +15,7 @@ wires the concrete pieces together.
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
              log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
+             extensions/ (manifest tools, MCP client, hooks, agent and command files, trust store)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              webchat/ (optional: the web page in Edge; browser, chat_client, provider, setup_ui)
@@ -70,7 +71,23 @@ tools.
   `prompts/agent_openai.txt`). Not built yet: a backend that sends `tools` through a native API
   (the local backend already talks to `/v1/chat/completions`) and returns structured calls.
 - **MCP.** `ToolSpec.to_mcp()` gives `tools/list` entries, so crit's tools can be served
-  over MCP, and MCP tools from other servers (for example the `mcpServers` an ACP client
-  offers) can be added as a `ToolRegistry`. Not built yet.
+  over MCP (not built yet). MCP tools from other servers (`mcp.json`, and the `mcpServers`
+  an ACP client offers) are a client in `extensions/mcp_client.py`, merged into the session's
+  `ToolRegistry`.
+
+## Extensions
+
+`extensions/` (a package, part of the tools layer's interface) reads tools, MCP servers,
+agents, slash commands and hooks from `~/.crit` and the project's `.crit`
+([extending.md](extending.md)). `extensions.load_session` runs once at session start, and
+its `registry(base)` returns one `ToolRegistry` built with `tool_api.merge`: an extension
+tool's permission and execution go through the same registry calls as a built-in's, and
+the `pre_tool`/`post_tool` hooks wrap that registry. The engine sees no special cases. It
+gets one registry, plus `run_hook` for the hooks that sit in the loop (`user_prompt`,
+`task_finished`, `pre_compact`). Every extension process starts in `extensions.runner.run_argv`,
+which the sandbox replaces. File-defined agents are profiles: `/agent` (alias `/role`)
+seeds the main chat with one, and `delegate(agent=...)` runs one in a helper chat
+(`agent_helpers`), with its allowlist enforced through `ToolRegistry.only` and a git
+worktree for an agent that writes.
 - **ACP.** `crit --acp` already runs crit as an Agent Client Protocol agent
   ([acp.md](acp.md)); `agent_acp` is one more front end behind `ui_api`.
