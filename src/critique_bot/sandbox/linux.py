@@ -135,7 +135,8 @@ def bwrap_args(policy: Policy, *, cwd: Path, tmp: Path = Path(PRIVATE_TMP)) -> l
             if any(_inside(item, masked) for masked in dirs):
                 args += ["--bind", str(item), str(item)]
     for item in policy.protected:
-        if os.path.exists(item):
+        # A protected file that is also a masked secret (~/.m2/settings.xml) stays masked.
+        if os.path.exists(item) and not any(_inside(item, masked) for masked in policy.masked):
             args += ["--ro-bind", str(item), str(item)]
     for item in dirs:
         args += ["--remount-ro", str(item)]

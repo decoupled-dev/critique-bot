@@ -67,7 +67,8 @@ class SettingsTests(unittest.TestCase):
     def test_bad_values_say_what_is_wrong(self) -> None:
         for bad, words in [("sometimes", "mode must be one of"), ({"mode": "x"}, "mode must be one of"),
                            ({"writable": "a", "nope": 1}, "unknown keys: nope"), ({"preset": "nasa"}, "preset"),
-                           ({"ports": ["5037"]}, "port numbers"), ({"env_files": "yes"}, "true or false"), (3, "mode name")]:
+                           ({"ports": ["5037"]}, "port numbers"), ({"env_files": "yes"}, "true or false"), (3, "mode name"),
+                           ({"masked": [1]}, "list of paths"), ({"unmask": {}}, "list of paths")]:
             with self.assertRaises(ValueError) as caught:
                 sandbox.parse_settings(bad)
             self.assertIn(words, str(caught.exception))
@@ -121,7 +122,8 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(policy.can_write(self.ws / "app" / "main.py"))
 
     def test_caches_are_writable_only_in_workspace_write(self) -> None:
-        self.assertIn((self.home / ".gradle").resolve(), self.policy().writable)
+        (self.home / ".gradle" / "caches").mkdir()
+        self.assertIn((self.home / ".gradle" / "caches").resolve(), self.policy().writable)
         self.assertNotIn((self.home / ".m2").resolve(), self.policy().writable, "a missing cache is not invented")
         read_only = self.policy("read-only")
         self.assertEqual(read_only.writable, ())
@@ -152,6 +154,81 @@ class PolicyTests(unittest.TestCase):
         self.assertIn(str((self.home / ".ccache").resolve()), writable)
         self.assertIn(str((self.home / ".cache" / "bazel").resolve()), writable, "made on first use")
         self.assertIn(5037, policy.ports)
+
+    def test_credential_files_are_masked_and_can_be_unmasked(self) -> None:
+        # SB-1: package-registry and forge tokens; "unmask" keeps one readable for a build that needs it.
+        for rel in (".npmrc", ".cargo/credentials.toml", ".config/gh/hosts.yml", ".s3cfg", ".m2/settings.xml"):
+            (self.home / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.home / rel).write_text("FAKE", encoding="utf-8")
+        masked = set(self.policy().masked)
+        for rel in (".npmrc", ".cargo/credentials.toml", ".config/gh", ".s3cfg", ".m2/settings.xml"):
+            self.assertIn((self.home / rel).resolve(), masked, rel)
+        loose = set(self.policy({"unmask": ["~/.m2/settings.xml"], "masked": ["~/.gradle/gradle.properties"]}).masked)
+        self.assertNotIn((self.home / ".m2" / "settings.xml").resolve(), loose)
+        (self.home / ".gradle" / "gradle.properties").write_text("signingPassword=x", encoding="utf-8")
+        loose = set(self.policy({"masked": ["~/.gradle/gradle.properties"]}).masked)
+        self.assertIn((self.home / ".gradle" / "gradle.properties").resolve(), loose)
+
+    def test_the_credential_list_is_shared_with_the_core_layer(self) -> None:
+        from critique_bot import secret_paths
+
+        self.assertIs(sandbox.SECRET_HOME_PATHS, secret_paths.HOME_CREDENTIALS)
+
+    def test_cache_auto_run_files_are_read_only_and_cannot_be_created(self) -> None:
+        # SB-2: the cache folders below ~/.gradle and ~/.m2 are writable, its auto-run files are not.
+        (self.home / ".gradle" / "init.d").mkdir()
+        (self.home / ".gradle" / "custom-cache").mkdir()
+        policy = sandbox.build_policy(sandbox.Settings(), self.ws, home=self.home, make_caches=True)
+        for rel in (".gradle/caches/modules-2/x.jar", ".gradle/wrapper/dists/x", ".gradle/custom-cache/x",
+                    ".m2/repository/org/x.jar"):
+            self.assertTrue(policy.can_write(self.home / rel), rel)
+        for rel in (".gradle/init.gradle", ".gradle/init.gradle.kts", ".gradle/init.d/x.gradle",
+                    ".gradle/gradle.properties", ".gradle/new-top-level", ".m2/settings.xml", ".m2/toolchains.xml"):
+            self.assertFalse(policy.can_write(self.home / rel), rel)
+        self.assertNotIn((self.home / ".gradle").resolve(), policy.writable)
+        self.assertFalse((self.home / ".gradle" / "init.gradle").exists(), "no placeholder is left in ~/.gradle")
+        self.assertIsNone(sandbox.escape_target(str(self.home / ".gradle" / "init.gradle"), policy),
+                          "the cache folder is never offered as an escape")
+        # Listed in "writable" by hand, or allowed as an escape: still split the same way.
+        again = sandbox.build_policy(sandbox.parse_settings({"writable": ["~/.gradle"]}), self.ws, home=self.home,
+                                     make_caches=False, extra_writable=(self.home / ".gradle",))
+        self.assertFalse(again.can_write(self.home / ".gradle" / "init.gradle"))
+        self.assertTrue(again.can_write(self.home / ".gradle" / "caches" / "x"))
+
+    def test_ccache_config_is_made_empty_and_kept_read_only(self) -> None:
+        (self.home / ".ccache").mkdir()
+        policy = sandbox.build_policy(sandbox.parse_settings({"preset": "aosp"}), self.ws, home=self.home)
+        conf = self.home / ".ccache" / "ccache.conf"
+        self.assertEqual(conf.read_text(encoding="utf-8"), "", "an empty config is ccache's defaults")
+        self.assertFalse(policy.can_write(conf))
+        self.assertTrue(policy.can_write(self.home / ".ccache" / "0" / "x"))
+        args = linux.bwrap_args(policy, cwd=self.ws)
+        self.assertIn(["--ro-bind", str(conf.resolve()), str(conf.resolve())],
+                      [args[i:i + 3] for i in range(len(args) - 2)])
+
+    def test_a_masked_file_that_is_also_protected_stays_masked(self) -> None:
+        (self.home / ".m2").mkdir()
+        (self.home / ".m2" / "settings.xml").write_text("<password>FAKE</password>", encoding="utf-8")
+        policy = self.policy()
+        real = str((self.home / ".m2" / "settings.xml").resolve())
+        args = linux.bwrap_args(policy, cwd=self.ws)
+        triples = [args[i:i + 3] for i in range(len(args) - 2)]
+        self.assertIn(["--ro-bind", "/dev/null", real], triples)
+        self.assertNotIn(["--ro-bind", real, real], triples)
+
+    def test_env_files_at_any_depth_are_masked(self) -> None:
+        # SB-3: no depth limit; a scan that stops early says so.
+        deep = self.ws / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / ".env").write_text("X=1", encoding="utf-8")
+        (deep / "prod.env").write_text("X=1", encoding="utf-8")
+        policy = self.policy()
+        self.assertIn((deep / ".env").resolve(), policy.masked)
+        self.assertIn((deep / "prod.env").resolve(), policy.masked)
+        self.assertTrue(policy.env_scan_complete)
+        found, complete = sandbox.env_files(self.ws, limit_dirs=2)
+        self.assertFalse(complete)
+        self.assertIn(self.ws / ".env", found, "breadth first: the top level is done before it stops")
 
     def test_full_mode_has_nothing_to_wrap(self) -> None:
         policy = self.policy("full")
@@ -351,6 +428,14 @@ class UseSandboxTests(unittest.TestCase):
         self.assertEqual(second, "", "said once per process")
         self.assertEqual(self.records[0]["event"], "unavailable")
 
+    def test_an_incomplete_env_scan_is_said_and_audited(self) -> None:
+        with mock.patch.object(sandbox, "availability", return_value=sandbox.Availability(True, "bwrap")), \
+                mock.patch.object(sandbox, "ENV_SCAN_DIRS", 0):
+            note = agent_shell.use_sandbox(self.session, {}, offline=True)
+        self.assertFalse(self.session.sandbox.env_scan_complete)
+        self.assertIn("every .env file", note)
+        self.assertIn("env_scan_incomplete", [item.get("event") for item in self.records])
+
     def test_full_mode_turns_it_off(self) -> None:
         note = agent_shell.use_sandbox(self.session, {"sandbox": "full"})
         self.assertIsNone(self.session.sandbox)
@@ -397,10 +482,14 @@ class EscapeTests(unittest.TestCase):
         cls.ws = cls.base / "ws"
         (cls.home / ".ssh").mkdir(parents=True)
         (cls.home / ".ssh" / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n", encoding="utf-8")
-        (cls.home / ".gradle").mkdir()
+        (cls.home / ".gradle" / "caches").mkdir(parents=True)
+        (cls.home / ".m2" / "repository").mkdir(parents=True)
+        (cls.home / ".npmrc").write_text("//registry.npmjs.org/:_authToken=FAKE-NPM", encoding="utf-8")
         (cls.ws / ".crit").mkdir(parents=True)
         (cls.ws / ".crit" / "settings.json").write_text("{}", encoding="utf-8")
         (cls.ws / ".env").write_text("API_TOKEN=abc", encoding="utf-8")
+        (cls.ws / "services" / "api" / "config").mkdir(parents=True)
+        (cls.ws / "services" / "api" / "config" / ".env").write_text("DEEP_TOKEN=abc", encoding="utf-8")
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -436,10 +525,26 @@ class EscapeTests(unittest.TestCase):
         return self.run_in([sys.executable, "-I", "-c", code], **kwargs)
 
     def test_writes_in_the_workspace_and_caches_work(self) -> None:
-        code, out = self.run_in(["/bin/sh", "-c", f"echo ok > built.txt && echo c > '{self.home}/.gradle/cache.bin' && cat built.txt"])
+        code, out = self.run_in(["/bin/sh", "-c", f"echo ok > built.txt && echo c > '{self.home}/.gradle/caches/cache.bin' "
+                                 f"&& mkdir -p '{self.home}/.m2/repository/org/x' && cat built.txt"])
         self.assertEqual(code, 0, out)
         self.assertTrue((self.ws / "built.txt").exists())
-        self.assertTrue((self.home / ".gradle" / "cache.bin").exists())
+        self.assertTrue((self.home / ".gradle" / "caches" / "cache.bin").exists())
+        self.assertTrue((self.home / ".m2" / "repository" / "org" / "x").is_dir())
+
+    def test_auto_run_files_in_caches_cannot_be_planted(self) -> None:
+        # SB-2: Gradle init scripts, gradle.properties and Maven's settings.xml run or steer a later build.
+        for target in (".gradle/init.gradle", ".gradle/init.d/x.gradle", ".gradle/gradle.properties", ".m2/settings.xml"):
+            code, out = self.run_in(["/bin/sh", "-c", f"mkdir -p \"$(dirname '{self.home}/{target}')\"; "
+                                     f"echo planted > '{self.home}/{target}'"])
+            self.assertNotEqual(code, 0, target)
+            self.assertFalse((self.home / target).exists(), target)
+
+    def test_credential_files_and_deep_env_files_read_empty(self) -> None:
+        # SB-1 and SB-3.
+        code, out = self.run_in(["/bin/sh", "-c", "cat ~/.npmrc services/api/config/.env 2>&1; true"])
+        self.assertNotIn("FAKE-NPM", out)
+        self.assertNotIn("DEEP_TOKEN", out)
 
     def test_write_outside_the_workspace_fails(self) -> None:
         code, out = self.run_in(["/bin/sh", "-c", f"echo x > '{self.home}/x'"])
@@ -563,7 +668,7 @@ class EscapeTests(unittest.TestCase):
 class AutoModeTests(unittest.TestCase):
     """In auto mode a sandboxed command runs without a prompt; unsandboxed, the same command asks."""
 
-    def run_loop(self, sandboxed: bool) -> tuple[list[str], Path]:
+    def run_loop(self, sandboxed: bool, available: bool = True) -> tuple[list[str], Path]:
         import io
 
         taint.reset()
@@ -578,7 +683,9 @@ class AutoModeTests(unittest.TestCase):
         session = agent_shell.ShellSession(root)
         self.addCleanup(session.close)
         if sandboxed:
-            agent_shell.use_sandbox(session, {}, offline=True, home=root / "home")
+            found = sandbox.availability() if available else sandbox.Availability(False, "bwrap", "not installed")
+            with mock.patch.object(sandbox, "availability", return_value=found):
+                agent_shell.use_sandbox(session, {}, offline=True, home=root / "home")
         agent.use_ui(agent_ui)
         self.addCleanup(agent.use_ui, None)
         agent_ui.reset()
@@ -601,6 +708,12 @@ class AutoModeTests(unittest.TestCase):
 
     def test_unsandboxed_command_still_asks(self) -> None:
         asked, root = self.run_loop(sandboxed=False)
+        self.assertEqual(len(asked), 1)
+        self.assertFalse((root / "made.txt").exists())
+
+    def test_a_missing_backend_keeps_auto_mode_asking(self) -> None:
+        # The sandbox fails open (commands run unwrapped), so auto mode must not treat them as contained.
+        asked, root = self.run_loop(sandboxed=True, available=False)
         self.assertEqual(len(asked), 1)
         self.assertFalse((root / "made.txt").exists())
 
