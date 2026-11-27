@@ -1134,7 +1134,7 @@ def _main_resume(argv: list[str]) -> int:
     if isinstance(found, str):
         log.notice(f"crit resume: {found}")
         return 1
-    return _main_run(found)
+    return _main_run(["--mode", MODE_AGENT, "--crit-defaults", *found])
 
 
 def _main_fork(argv: list[str]) -> int:
@@ -1152,7 +1152,7 @@ def _main_fork(argv: list[str]) -> int:
     print(line, file=sys.stderr)
     if len(rest) == 2 and not _may_ask():
         return 0  # nothing to do now; crit resume <id> continues it later
-    return _main_run(rest)
+    return _main_run(["--mode", MODE_AGENT, "--crit-defaults", *rest])
 
 
 def _main_eval(argv: list[str]) -> int:

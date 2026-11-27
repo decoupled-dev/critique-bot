@@ -307,6 +307,7 @@ def git_status_line(workspace: Path, *, timeout: float = 5.0) -> str:
     branch = ""
     if lines and lines[0].startswith("## "):
         branch = lines.pop(0)[3:].split("...", 1)[0].strip()
+        branch = re.sub(r"^(?:No commits yet|Initial commit) on ", "", branch)
     changed = [line[3:].strip() for line in lines if len(line) > 3]
     text = f"branch {branch}" if branch else "git repository"
     if changed:
