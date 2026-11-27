@@ -63,6 +63,30 @@ class DecideTests(unittest.TestCase):
         self.assertFalse(self.proxy.decide("pypi.org", 443).allowed)
         self.assertTrue(self.proxy.decide("127.0.0.1", 5037).allowed, "adb still works offline")
 
+    def test_tainted_auto_closes_the_forwarded_port_unless_only_device_logs_tainted(self) -> None:
+        # sandbox-egress.md residual: adb can carry data to a device with its own network.
+        for kinds, allowed in (({"web_fetch"}, False), ({"device_log", "mcp"}, False), ({"device_log"}, True),
+                               (set(), False)):
+            proxy = egress_proxy.EgressProxy(ports=(5037,), restricted=lambda: True, taint_kinds=lambda k=kinds: set(k))
+            decision = proxy.decide("127.0.0.1", 5037)
+            self.assertEqual(decision.allowed, allowed, kinds)
+            if not allowed:
+                self.assertIn("/trust", decision.reason)
+        untainted = egress_proxy.EgressProxy(ports=(5037,), restricted=lambda: False, taint_kinds=lambda: {"web_fetch"})
+        self.assertTrue(untainted.decide("127.0.0.1", 5037).allowed, "ask and edits modes keep adb")
+
+    def test_taint_kinds_follow_the_sources(self) -> None:
+        from critique_bot import taint
+
+        taint.reset()
+        self.addCleanup(taint.reset)
+        self.assertEqual(taint.kinds(), set())
+        taint.mark("device_log", "adb logcat")
+        taint.mark("web_fetch", "https://x.example")
+        self.assertEqual(taint.kinds(), {"device_log", "web_fetch"})
+        taint.trust()
+        self.assertEqual(taint.kinds(), set())
+
     def test_tainted_auto_reaches_only_the_model(self) -> None:
         proxy = egress_proxy.EgressProxy(restricted=lambda: True, model_host=lambda: "chat.example.com")
         self.assertTrue(proxy.decide("chat.example.com", 443).allowed)

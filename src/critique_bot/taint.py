@@ -22,7 +22,8 @@ Sources (each marks the session tainted, with an audit record and a notice):
 While the session is tainted **and in auto mode**, :func:`check` denies: fetches and
 other network calls (``web_fetch``, network commands, ``git push``), writes and commands
 outside the workspace; the egress proxy lets sandboxed commands reach only the model
-server. Other modes keep asking as usual (a person sees each such call). ``/trust`` lifts
+server, and closes the forwarded adb port too unless device logs are the only source.
+Other modes keep asking as usual (a person sees each such call). ``/trust`` lifts
 it (:func:`trust`, logged).
 
 The engine calls :func:`check` around its permission decision (one call in
@@ -48,6 +49,8 @@ class State:
     #: The approval mode last seen by check(): restrictions apply in "auto" only.
     mode: str = ""
     lifted: int = 0
+    #: The source kinds behind ``sources`` ("web_fetch", "device_log", ...).
+    kinds: set[str] = field(default_factory=set)
 
 
 _state = State()
@@ -94,6 +97,7 @@ def mark(source: str, detail: str = "") -> bool:
     with _lock:
         first = not _state.tainted
         _state.tainted = True
+        _state.kinds.add(source)
         if label not in _state.sources:
             _state.sources.append(label)
             del _state.sources[:-20]
@@ -114,6 +118,7 @@ def trust(reason: str = "/trust") -> bool:
         sources = list(_state.sources)
         _state.tainted = False
         _state.sources = []
+        _state.kinds = set()
         _state.lifted += 1
     if was:
         audit.record("taint", event="lifted", reason=reason, sources=sources)
@@ -124,6 +129,12 @@ def trust(reason: str = "/trust") -> bool:
 
 def tainted() -> bool:
     return _state.tainted
+
+
+def kinds() -> set[str]:
+    """What tainted the session: source kinds such as ``web_fetch`` or ``device_log`` (empty when untainted)."""
+    with _lock:
+        return set(_state.kinds) if _state.tainted else set()
 
 
 def restricted() -> bool:

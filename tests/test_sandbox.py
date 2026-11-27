@@ -355,6 +355,18 @@ class MacProfileTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["ls", "-l"])
 
 
+class MacMachLookupTests(unittest.TestCase):
+    def test_mach_lookup_is_an_allow_list(self) -> None:
+        # sandbox-egress.md residual (SB-5): a blanket mach-lookup reaches daemons that work outside the sandbox.
+        policy = sandbox.Policy(mode=sandbox.WORKSPACE_WRITE, workspace=Path("/w"), home=Path("/h"))
+        text = macos.profile(policy, temp_roots=[])
+        self.assertNotIn("(allow mach-lookup)", text)
+        self.assertIn('(global-name "com.apple.system.opendirectoryd.libinfo")', text)
+        for name in macos.MACH_DENIED:
+            self.assertNotIn(f'"{name}"', text, name)
+            self.assertNotIn(name, macos.MACH_SERVICES)
+
+
 class WindowsTests(unittest.TestCase):
     def test_reports_best_effort(self) -> None:
         found = windows.probe()
