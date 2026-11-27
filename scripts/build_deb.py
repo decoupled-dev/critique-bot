@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -131,6 +132,15 @@ def _normalize_modes(root: Path) -> None:
             path.chmod(0o755 if executable else 0o644)
 
 
+def debian_version(version: str) -> str:
+    """A Python version as Debian orders it: a pre-release (2.0.0b1, 2.0.0rc2) gets ``~``.
+
+    dpkg sorts ``2.0.0b1`` after ``2.0.0``, so the final release would never upgrade a beta;
+    ``2.0.0~b1`` sorts before it. Final versions are unchanged.
+    """
+    return re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"~\1\2", version)
+
+
 def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
     if shutil.which("dpkg-deb") is None:
         raise SystemExit("dpkg-deb is required (Debian/Ubuntu: it ships with dpkg)")
@@ -156,12 +166,12 @@ def build_deb(bundle: Path, version: str, arch: str, out_dir: Path) -> Path:
         _normalize_modes(root)
         control = root / "DEBIAN"
         control.mkdir()
-        _write(control / "control", _CONTROL.format(version=version, arch=arch, glibc=_build_glibc()), 0o644)
+        _write(control / "control", _CONTROL.format(version=debian_version(version), arch=arch, glibc=_build_glibc()), 0o644)
         _write(control / "conffiles", "/lib/systemd/system/crit-worker.service\n", 0o644)
         _write(control / "postinst", _POSTINST, 0o755)
         _write(control / "prerm", _PRERM, 0o755)
         out_dir.mkdir(parents=True, exist_ok=True)
-        deb = out_dir / f"crit_{version}_{arch}.deb"
+        deb = out_dir / f"crit_{debian_version(version)}_{arch}.deb"
         env = {**os.environ, "SOURCE_DATE_EPOCH": os.environ.get("SOURCE_DATE_EPOCH") or _commit_time()}
         subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "--build", str(root), str(deb)], check=True, env=env)
     print(f"wrote {deb} ({deb.stat().st_size} bytes)")

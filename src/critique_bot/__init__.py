@@ -8,4 +8,4 @@ the harness. The optional web chat (``critique_bot.webchat``) drives a chat page
 instead. See docs/architecture.md for the layers.
 """
 
-__version__ = "1.0.7"
+__version__ = "2.0.0b1"

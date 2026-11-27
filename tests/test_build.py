@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -85,8 +88,33 @@ class BuildScriptTests(unittest.TestCase):
     def test_package_version_dunder(self) -> None:
         from critique_bot import __version__
 
-        self.assertEqual(__version__, "1.0.7")
+        self.assertEqual(__version__, "2.0.0b1")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DebianVersionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import importlib.util
+
+        root = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(root / "scripts"))
+        self.addCleanup(sys.path.remove, str(root / "scripts"))
+        spec = importlib.util.spec_from_file_location("build_deb", root / "scripts" / "build_deb.py")
+        self.deb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.deb)
+
+    def test_pre_releases_sort_before_the_final_release(self) -> None:
+        self.assertEqual(self.deb.debian_version("2.0.0b1"), "2.0.0~b1")
+        self.assertEqual(self.deb.debian_version("2.0.0rc2"), "2.0.0~rc2")
+        self.assertEqual(self.deb.debian_version("2.0.0a3"), "2.0.0~a3")
+        self.assertEqual(self.deb.debian_version("2.0.0"), "2.0.0")
+        self.assertEqual(self.deb.debian_version("1.0.7"), "1.0.7")
+
+    @unittest.skipUnless(shutil.which("dpkg"), "needs dpkg")
+    def test_dpkg_agrees(self) -> None:
+        for older, newer in (("1.0.7", "2.0.0~b1"), ("2.0.0~b1", "2.0.0~rc1"), ("2.0.0~rc1", "2.0.0")):
+            result = subprocess.run(["dpkg", "--compare-versions", older, "lt", newer])
+            self.assertEqual(result.returncode, 0, f"{older} < {newer}")
