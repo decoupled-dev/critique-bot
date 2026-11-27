@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -477,6 +478,7 @@ class RepoTreeGroupTests(unittest.TestCase):
         (self.root / ".repo" / "project.list").write_text("packages/services/Car\nframeworks/base\n")
         for project, files in {
             "packages/services/Car": {"service/src/CarSvc.java": "class CarSvc { void boot() { Log.e(TAG, \"car boot failed\"); } }\n",
+                                      "service/src/Q.java": "// throttles the compressor when the cabin overheats\nclass Q { void a() {} }\n",
                                       "Android.bp": 'android_app { name: "CarService", srcs: ["service/src/**/*.java"] }\n'},
             "frameworks/base": {"core/Foo.java": "class Foo { void bar() {} }\n"},
         }.items():
@@ -516,6 +518,10 @@ class RepoTreeGroupTests(unittest.TestCase):
         self.assertFalse(store.group_db_path(self.index, "frameworks/base").exists())
         ok, text = tools.run("code_nav", {"action": "module_of", "path": "packages/services/Car/service/src/CarSvc.java"}, ctx)
         self.assertIn("CarService", text)
+        if shutil.which("rg"):  # a module group keeps no text: comments are searched with one rg pass
+            ok, text = tools.run("locate", {"description": "compressor overheats", "path": "packages/services/Car"}, ctx)
+            self.assertIn("packages/services/Car/service/src/Q.java", text)
+            self.assertIn("lexical", text)
         # without a path: the project database and every group built so far
         ok, text = tools.run("code_nav", {"action": "find_symbol", "name": "CarSvc"}, ctx)
         self.assertIn("CarSvc.java", text)

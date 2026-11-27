@@ -440,7 +440,7 @@ def build_repo_map(conn: sqlite3.Connection, *, scope: str = "", budget_tokens: 
         rel = paths[number]
         rows = conn.execute(
             "SELECT line, kind, name, parent, signature FROM symbols WHERE path = ? ORDER BY "
-            f"(kind IN {_CONTAINERS}) DESC, (substr(name, 1, 1) = '_') ASC, line LIMIT 9",
+            f"(kind IN {_CONTAINERS}) DESC, (substr(name, 1, 1) = '_') ASC, line LIMIT 9",  # nosec B608: a constant
             (rel,),
         ).fetchall()
         block = [rel + ":"]
@@ -665,7 +665,8 @@ def locate(args: dict[str, Any], ctx: Any) -> tuple[bool, str]:
             return _out(dbs, [], ctx, "")
         pair = dbs.pairs()[0]
         engine.ensure_history(Path(ctx.workspace), pair[0], wait=0.0)  # commits help next time
-        found = _locate.locate(dbs_paths, description, evidence, budget=min(max(budget, 0.2), 10.0), limit=limit)
+        found = _locate.locate(dbs_paths, description, evidence, budget=min(max(budget, 0.2), 10.0), limit=limit,
+                               workspace=str(Path(ctx.workspace).resolve()))
         lines = []
         for number, candidate in enumerate(found.candidates, start=1):
             where = f"{candidate.path}:{candidate.line}" if candidate.line else candidate.path
