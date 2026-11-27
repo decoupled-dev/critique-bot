@@ -1,0 +1,18 @@
+{
+  "id": "vllm",
+  "name": "vLLM",
+  "kind": "local",
+  "detect": "GET /version",
+  "default_url": "http://127.0.0.1:8000",
+  "launch": "vllm serve {model} --max-model-len {context} --enable-auto-tool-choice {parsers} --port 8000",
+  "native_tools": "--enable-auto-tool-choice --tool-call-parser <family parser> (the profile's parsers.vllm), plus --reasoning-parser where the family has one.",
+  "kv_cache": "auto (the model dtype); --kv-cache-dtype fp8 halves it with little loss on recent GPUs.",
+  "cache": "Automatic prefix caching (on by default in the V1 engine; --enable-prefix-caching on older versions).",
+  "speculation": {
+    "ngram": "--speculative-config '{\"method\": \"ngram\", \"num_speculative_tokens\": 5, \"prompt_lookup_max\": 4}' (vLLM 0.8+; older releases used --speculative-model '[ngram]' --num-speculative-tokens --ngram-prompt-lookup-max)",
+    "draft_model": "--speculative-config with a small same-family \"model\"",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "Parser names change between releases (for example deepseek_v3 vs deepseek_v31): vllm serve --help lists the ones your version has."
+}

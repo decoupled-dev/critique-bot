@@ -1,0 +1,33 @@
+{
+  "profiles": [
+    {
+      "id": "llama3",
+      "match": ["llama-3*", "llama3*", "meta-llama-3*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 0.6, "top_p": 0.9},
+      "parallel_tool_calls": false,
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "llama3_json"},
+        "sglang": {"tool_call_parser": "llama3"}
+      },
+      "source": "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct (generation_config.json)",
+      "notes": "generation_config: temperature 0.6, top_p 0.9. The JSON tool format calls one tool per turn, so parallel_tool_calls is off. vLLM also needs the llama3 JSON tool chat template (examples/tool_chat_template_llama3.1_json.jinja in its repo)."
+    },
+    {
+      "id": "llama4",
+      "match": ["llama-4*", "llama4*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 0.6, "top_p": 0.9},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "llama4_pythonic"},
+        "sglang": {"tool_call_parser": "pythonic"}
+      },
+      "source": "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct (generation_config.json)",
+      "notes": "Llama 4 Scout/Maverick: pythonic tool calls. Weaker at long multi-step tool use than the coding-tuned families."
+    }
+  ]
+}

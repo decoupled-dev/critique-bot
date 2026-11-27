@@ -1,0 +1,17 @@
+{
+  "id": "ollama",
+  "name": "Ollama",
+  "kind": "local",
+  "detect": "GET /api/version",
+  "default_url": "http://127.0.0.1:11434",
+  "launch": "OLLAMA_CONTEXT_LENGTH={context} OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve   # then: ollama pull {model}",
+  "native_tools": "The model's Ollama template must include tools (ollama show --template {model}); crit uses the OpenAI-compatible endpoint (url http://127.0.0.1:11434).",
+  "kv_cache": "OLLAMA_KV_CACHE_TYPE f16 (default) or q8_0 (needs OLLAMA_FLASH_ATTENTION=1); avoid q4_0.",
+  "cache": "keep_alive keeps the model loaded; Ollama's default 2048/4096-token context is too small for an agent: set OLLAMA_CONTEXT_LENGTH.",
+  "speculation": {
+    "notes": "Not offered by Ollama.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "Environment variable names are from Ollama releases of 2025; older ones need num_ctx in a Modelfile instead of OLLAMA_CONTEXT_LENGTH."
+}

@@ -1,0 +1,22 @@
+{
+  "profiles": [
+    {
+      "id": "gemma3",
+      "match": ["gemma-3*", "gemma3*", "gemma-3n*", "gemma3n*"],
+      "tool_mode": "prompted",
+      "sampling": {"temperature": 1.0, "top_k": 64, "top_p": 0.95, "min_p": 0.0},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "source": "https://huggingface.co/google/gemma-3-27b-it (generation_config.json) and the Gemma team's recommended settings",
+      "notes": "Gemma team: temperature 1.0, top_k 64, top_p 0.95, min_p 0. Gemma 3 has no tool-call tokens, so tools are described in the prompt (prompted mode). Some templates fold the system role into the first user turn."
+    },
+    {
+      "id": "gemma4",
+      "match": ["gemma-4*", "gemma4*"],
+      "tool_mode": "auto",
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "notes": "Gemma 4: not yet checked against its model card; tool_mode auto lets crit doctor model decide native vs prompted. Sampling is left to the server."
+    }
+  ]
+}

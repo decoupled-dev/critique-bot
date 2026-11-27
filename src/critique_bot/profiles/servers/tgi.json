@@ -1,0 +1,16 @@
+{
+  "id": "tgi",
+  "name": "Hugging Face TGI",
+  "kind": "local",
+  "detect": "GET /info",
+  "default_url": "http://127.0.0.1:8080",
+  "launch": "text-generation-launcher --model-id {model} --max-total-tokens {context} --port 8080",
+  "native_tools": "Tool calling through /v1/chat/completions uses TGI's guided generation; the flags and supported models differ by version: check text-generation-launcher --help. Prompted mode is the safe choice when the doctor probe fails.",
+  "cache": "Prefix caching in recent versions.",
+  "speculation": {
+    "notes": "--speculate N enables n-gram / Medusa speculation in versions that have it; check your version.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "Usually run from the official container image."
+}

@@ -1,0 +1,25 @@
+{
+  "profiles": [
+    {
+      "id": "devstral",
+      "match": ["devstral*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 0.15},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "mistral", "tokenizer_mode": "mistral", "config_format": "mistral", "load_format": "mistral"},
+        "sglang": {"tool_call_parser": "mistral"}
+      },
+      "source": "https://huggingface.co/mistralai/Devstral-Small-2507 (vLLM usage)",
+      "notes": "Model card: temperature 0.15 in its examples; vLLM needs --tokenizer-mode mistral --config-format mistral --load-format mistral --tool-call-parser mistral --enable-auto-tool-choice. Calls are [TOOL_CALLS]; tool-call ids are 9 characters (the server makes them)."
+    },
+    {
+      "id": "mistral-small",
+      "extends": "devstral",
+      "match": ["mistral-small*", "magistral-small*", "codestral*"],
+      "source": "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "notes": "Mistral Small 3.x model card: low temperature (0.15) recommended; same mistral tool parser as Devstral. Codestral matches here too; older Codestral builds may lack tool tokens: run crit doctor model."
+    }
+  ]
+}

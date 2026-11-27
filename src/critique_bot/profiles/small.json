@@ -1,0 +1,24 @@
+{
+  "profiles": [
+    {
+      "id": "granite",
+      "match": ["granite-*", "granite3*", "granite4*", "ibm-granite/*"],
+      "tool_mode": "auto",
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "granite"}
+      },
+      "source": "https://huggingface.co/ibm-granite",
+      "notes": "Granite 3.x/4: tool calling is in the chat template, but the parser differs by version; tool_mode auto lets crit doctor model decide. Sampling is left to the server (not stated on the cards checked)."
+    },
+    {
+      "id": "phi4",
+      "match": ["phi-4*", "phi4*"],
+      "tool_mode": "auto",
+      "edit_format": "whole_file",
+      "source": "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+      "notes": "Phi-4-mini has function calling (vLLM tool parser phi4_mini_json); Phi-4 (14B) has no tool tokens. tool_mode auto: crit doctor model decides per model."
+    }
+  ]
+}

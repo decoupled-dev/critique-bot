@@ -1,0 +1,19 @@
+{
+  "id": "llama.cpp",
+  "name": "llama.cpp llama-server",
+  "kind": "local",
+  "detect": "GET /props",
+  "default_url": "http://127.0.0.1:8080",
+  "launch": "llama-server -m {model} --jinja -c {context} -ngl 99 --cache-type-k q8_0 --cache-type-v q8_0 --port 8080",
+  "native_tools": "--jinja is required for tool calls. Add --chat-template-file <file.jinja> when the GGUF's built-in template has no tools section (crit doctor model warns when /props shows such a template).",
+  "kv_cache": "f16 (default) or q8_0. Avoid q4_0: tool-call arguments and long code degrade. A quantized V cache needs flash attention (-fa; newer builds take -fa on|off|auto).",
+  "reasoning": "--reasoning-format deepseek puts thinking in reasoning_content (the default in recent builds); crit reads both that and <think> blocks.",
+  "cache": "crit sends cache_prompt and keeps one slot per conversation; keep -np (parallel slots) at or above the number of helper chats.",
+  "speculation": {
+    "draft_model": "-md <small same-family draft.gguf> with --draft-max / --draft-min (older builds: --draft N)",
+    "ngram": "Prompt-lookup / n-gram speculation exists in some builds; the option names change between releases: check llama-server --help in your build.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "Flags are from llama.cpp builds of late 2025; run llama-server --help to confirm them for yours."
+}

@@ -1,0 +1,16 @@
+{
+  "id": "lmstudio",
+  "name": "LM Studio",
+  "kind": "local",
+  "detect": "GET /api/v0/models",
+  "default_url": "http://127.0.0.1:1234",
+  "launch": "lms server start --port 1234 && lms load {model} --context-length {context}",
+  "native_tools": "Use a model LM Studio marks as tool-use capable; others get tools through a generic prompt, which works less well than crit's prompted mode.",
+  "cache": "Prompt cache per loaded model.",
+  "speculation": {
+    "notes": "LM Studio offers draft-model speculative decoding in its UI/API for supported engines; options vary by version.",
+    "verified": false
+  },
+  "tested_version": null,
+  "notes": "/api/v0/models reports each model's max_context_length; crit doctor model shows it."
+}

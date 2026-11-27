@@ -1,0 +1,18 @@
+{
+  "profiles": [
+    {
+      "id": "gpt-oss",
+      "match": ["gpt-oss*", "openai/gpt-oss*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 1.0, "top_p": 1.0},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "openai"},
+        "sglang": {"tool_call_parser": "gpt-oss", "reasoning_parser": "gpt-oss"}
+      },
+      "source": "https://huggingface.co/openai/gpt-oss-20b and the gpt-oss harmony guide",
+      "notes": "OpenAI recommends temperature 1.0, top_p 1.0. Harmony format (analysis/commentary/final channels) is handled by the server. Reasoning effort is set in the system prompt ('Reasoning: high'); crit does not set it yet. The harmony guide says to send earlier reasoning back between tool calls of one turn; whether a server accepts reasoning_content in requests varies, so preserve_thinking is left off until the doctor shows it works."
+    }
+  ]
+}

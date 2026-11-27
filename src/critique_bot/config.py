@@ -157,6 +157,9 @@ class LocalConfig:
     #: default). Hosted gateways such as OpenRouter reserve credit for the model's whole
     #: output window when it is missing, so set it there (8192 is plenty for one turn).
     max_tokens: int = 0
+    #: The model profile to use (an id from ``crit doctor model`` / docs/local-models.md), or ""
+    #: to pick one by the model's name. Profiles set sampling, tool mode and context limits.
+    profile: str = ""
     #: The server's API key (``llama-server --api-key``, vLLM, a gateway): only from the user's own
     #: config or ``CRIT_API_KEY``, never from a shared config file. Sent only to this server.
     api_key: str = field(default="", repr=False)
@@ -1248,6 +1251,7 @@ def _load_local(raw: object, url: str) -> LocalConfig:
         num_ctx=_positive_int("local.num_ctx", raw.get("num_ctx"), 0) if _clean(raw.get("num_ctx")) else 0,
         temperature=temperature,
         max_tokens=_positive_int("local.max_tokens", raw.get("max_tokens"), 0) if _clean(raw.get("max_tokens")) else 0,
+        profile=_clean(raw.get("profile")),
     )
 
 

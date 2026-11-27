@@ -39,10 +39,18 @@ __all__ = [
     "context_tokens",
     "list_models",
     "model_label",
+    "model_profile",
+    "native_tools_ok",
     "open_provider",
+    "probe_tool_turn",
+    "profiles_dir",
+    "record_probe",
+    "server_presets",
     "probe_server",
     "probe_site",
     "save_failure",
+    "server_info",
+    "tool_mode",
 ]
 
 #: The backend said generation had finished. The reply is whole.
@@ -248,5 +256,73 @@ def context_tokens(config: BotConfig) -> int | None:
     from critique_bot.local_model import DEFAULT_NUM_CTX, server_context_window
 
     if config.local.num_ctx:
-        return config.local.num_ctx
-    return server_context_window(config.url, config.model, config.local.api_key) or DEFAULT_NUM_CTX
+        return config.local.num_ctx  # the person's own number wins over the profile
+    window = server_context_window(config.url, config.model, config.local.api_key) or DEFAULT_NUM_CTX
+    limit = model_profile(config).effective_context
+    return min(window, limit) if limit else window
+
+
+def model_profile(config: BotConfig) -> Any:
+    """The model profile (:class:`critique_bot.profiles.Profile`) for ``config``: ``local.profile``,
+    else the one matching ``model``, else ``generic``. A broken profile set falls back to generic."""
+    from critique_bot import log, profiles
+
+    try:
+        return profiles.resolve(config.model or "", config.local.profile)
+    except profiles.ProfileError as exc:
+        log.warn(f"model profiles: {exc}; using the generic profile")
+        return profiles.Profile(id=profiles.GENERIC)
+
+
+def tool_mode(config: BotConfig) -> str:
+    """``native`` (the server's tool calling) or ``prompted`` (tools described in the prompt,
+    calls written as text) for a local model; the profile decides, and ``auto`` trusts the
+    last ``crit doctor model`` probe for this server and model. ``prompted`` for the web chat."""
+    if not config.is_local:
+        return "prompted"
+    from critique_bot import profiles
+
+    return profiles.effective_tool_mode(model_profile(config), config.url, config.model or "")
+
+
+def native_tools_ok(config: BotConfig) -> bool:
+    """Whether the engine should send tools natively (a local model whose profile allows it)."""
+    return config.is_local and tool_mode(config) == "native"
+
+
+def server_info(config: BotConfig) -> dict[str, Any]:
+    """What the local server says about itself (type, version, context, KV cache; see
+    local_model.detect_server). For ``crit doctor model``."""
+    from critique_bot.local_model import detect_server
+
+    return detect_server(config.url, config.local.api_key, config.model or "")
+
+
+def probe_tool_turn(
+    config: BotConfig, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, model: str | None = None,
+) -> dict[str, Any]:
+    """One native tool-call request and how its calls came back (see local_model.probe_turn)."""
+    from critique_bot.local_model import probe_turn
+
+    return probe_turn(config, messages, tools, model=model)
+
+
+def record_probe(config: BotConfig, model: str, result: dict[str, Any]) -> Path:
+    """Cache a ``crit doctor model`` result for this server and model (``tool_mode: auto`` reads it)."""
+    from critique_bot import profiles
+
+    return profiles.save_probe(config.url, model, result)
+
+
+def server_presets() -> list[Any]:
+    """The built-in server presets (critique_bot.profiles.ServerPreset), by id."""
+    from critique_bot import profiles
+
+    return profiles.server_presets()
+
+
+def profiles_dir() -> Path:
+    """Where a person's own model profiles go (``~/.crit/profiles``)."""
+    from critique_bot import profiles
+
+    return profiles.user_dir()

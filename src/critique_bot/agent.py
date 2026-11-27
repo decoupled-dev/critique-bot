@@ -3440,7 +3440,7 @@ def run_agent(
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
-    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=config.is_local)
+    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=model_api.native_tools_ok(config))
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
@@ -3643,7 +3643,7 @@ def run_read_only_task(
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
-    setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS), native_ok=config.is_local)
+    setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS), native_ok=model_api.native_tools_ok(config))
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:

@@ -1,0 +1,32 @@
+{
+  "profiles": [
+    {
+      "id": "deepseek-v3",
+      "match": ["deepseek-v3*", "deepseek-chat*", "deepseek-v3.*"],
+      "tool_mode": "native",
+      "sampling": {"temperature": 0.3},
+      "edit_format": "str_replace",
+      "edit_fallback": "whole_file",
+      "parsers": {
+        "vllm": {"tool_call_parser": "deepseek_v3"},
+        "sglang": {"tool_call_parser": "deepseekv3"}
+      },
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V3-0324 (Temperature)",
+      "notes": "Model card: the API maps temperature 1.0 to 0.3 internally; for local serving use 0.3. V3.1 and later have their own parsers (vLLM deepseek_v31, SGLang deepseekv31); set local.profile or a user profile with those for V3.1+. Large MoE: usually served on another machine on the LAN."
+    },
+    {
+      "id": "deepseek-r1-distill",
+      "match": ["deepseek-r1-distill*", "deepseek-r1:*", "deepseek-r1"],
+      "tool_mode": "prompted",
+      "sampling": {"temperature": 0.6, "top_p": 0.95},
+      "preserve_thinking": false,
+      "edit_format": "whole_file",
+      "parsers": {
+        "vllm": {"reasoning_parser": "deepseek_r1"},
+        "sglang": {"reasoning_parser": "deepseek-r1"}
+      },
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B (Usage Recommendations)",
+      "notes": "Model card: temperature 0.5-0.7 (0.6 recommended), top_p 0.95, no system prompt, and earlier reasoning must not be sent back. Distills inherit the base model's (Qwen2.5 / Llama 3) template and were not trained for tool calls, so prompted mode."
+    }
+  ]
+}
