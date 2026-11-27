@@ -309,6 +309,7 @@ Each session opens with a box that shows the folder, model (and, for a local mod
 | `/shell [name]` | List the shells, or switch the default for this session. |
 | `/tools` | The tools the model can call. |
 | `/commands` | The shell commands run this session: exit code, time, shell, and whether one was retried or moved to the background. |
+| `/trust` | Lift the taint restrictions after untrusted content was read (see [Modes](#modes)); logged in the audit log. |
 | `/theme` | Change the text style. |
 | `/exit` | Leave (`exit` and `quit` work too). |
 
@@ -350,8 +351,12 @@ Shift+Tab cycles through four modes, as in Claude Code. The line under the input
 | --- | --- | --- |
 | **ask** (default) | Every edit, command, web fetch, and path outside the project. | `crit`, or `"permissions": "ask"` |
 | **edits** (accept edits) | Commands, fetches, and outside paths. File edits in the project run at once. | `--permission-mode edits` |
-| **auto** | Commands that are not read-only (once per program with "don't ask again"), and risky commands (below). Edits, reads, and read-only commands run, and questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
+| **auto** | Risky commands (below), and commands that are not read-only when they run outside the OS sandbox (once per program with "don't ask again"). Edits, reads, read-only commands, and every command inside the sandbox run; questions from the model are answered with "decide yourself". | `crit --yes` (also `--auto`, `-y`), `/auto` |
 | **plan** | Nothing changes. The model reads the code and sends a plan, then you approve it. | `crit --plan`, `/plan` |
+
+**The sandbox.** On Linux (bubblewrap) and macOS (sandbox-exec) commands run in an OS sandbox by default (`"sandbox": "workspace-write"`): they may write the project, `.crit`, temp folders, and build caches, see no secrets (`~/.ssh`, `~/.aws`, `.env` files, ...), and reach the network only through crit's egress proxy, which applies the `egress` allow-list. That is why auto mode runs them without asking. When a command needs more (a folder outside the project, a host off the list), crit asks once with the exact path or host and remembers the answer for the session. `crit doctor sandbox` checks the machine; without bubblewrap, or on Windows, commands run as before and auto mode keeps asking. Details: [security.md](security.md#the-sandbox).
+
+**Taint.** When untrusted text enters the session (a `web_fetch` page, a file outside the project, a Jira issue, a device log), the status line shows `tainted`, and in auto mode crit refuses network calls, pushes, and writes outside the project without asking, since that text may be steering the model. `/trust` lifts it.
 
 **Risky commands** ask in every mode, auto included. These are deletes of a whole tree (`rm -rf /`, `~`, `.`, `.git`, a drive root), `git reset --hard`, `git clean -f`, `git checkout -- .`, any `git push`, `repo upload`, `fastboot flash`/`erase`, `dd`, `mkfs`, `format`, `sudo`, shutdown or restart, publishing a package, piping a download into a shell, reading a file that usually holds secrets, anything outside the workspace, and running a file this task wrote. That box has only Yes and No; "don't ask again" does not cover them. `"confirm_risky": false` lets auto mode run them too.
 
@@ -558,6 +563,8 @@ On Linux and macOS the same lines use `./gradlew`.
 | `web_fetch` | `true` lets `web_fetch` read documentation sites (off by default: nothing leaves the PC but the conversation). |
 | `web_fetch_hosts` | More documentation sites `web_fetch` may read once it is on, for example `["docs.example.com"]`. |
 | `offline` | `true`: commands reach no other machine. Package managers run offline, the Gradle wrapper gets `--offline`, git uses local repositories only, and `web_fetch` stays off. Builds then need their dependencies already cached. See [security.md](security.md). |
+| `sandbox` | The OS sandbox for commands: `"workspace-write"` (the default), `"read-only"`, `"full"` (off), or an object `{"mode": ..., "writable": ["~/sdk", "/opt/cache"], "preset": "aosp", "env_files": false, "ports": [5037]}`. `preset` `aosp` makes `out/`, ccache, and Bazel's cache writable; `ports` are host loopback ports commands may reach (the adb server). Ignored in a committed settings file. `config.json` may set a default. See [security.md](security.md#the-sandbox). |
+| `untrusted_workspace` | `true` treats the project itself as untrusted (a freshly cloned third-party repo): the session starts tainted. |
 | `helper_sessions` | Helper conversations a task may hand parts to with `delegate` (see [Helper conversations](#helper-conversations-small-sessions-for-parts-of-a-task)). Default 2, at most 4; 0 turns it off. |
 | `tool_format` | How the model calls tools. `"openai"` (default): the first message gives the tools as an OpenAI Responses `tools` array, the model replies with `{"output": [...]}` holding `function_call` and `message` items, and results go back as `function_call_output` items with the same `call_id`; the instructions are about a fifth as long. It works the same with the web page and a local model. `"tags"`: the older `<tool_call>` blocks, kept as a fallback. `--tool-format` sets it for one run. With `"openai"`, a reply that uses `<tool_call>` blocks anyway is still understood. |
 | `tool_set` | `"minimal"`: the model gets the shell (`run_command` and its background-job tools) plus `read_files`, `edit_file`, `write_files`, `todo`, and `ask_user`, and searches, lists, and runs git through the shell. Default `"full"`: all tools. With the default OpenAI format, the tool list then has only those tools. `--tool-set` sets it for one run. |

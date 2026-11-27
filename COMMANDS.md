@@ -24,6 +24,8 @@ Line continuation: bash uses `\`, PowerShell uses `` ` ``.
 | --- | --- |
 | `crit setup --config PATH` | Local setup page on `127.0.0.1`; click elements in the chat UI to fill `selectors` |
 | `crit queue-status --config PATH` | Worker liveness, waiting/processing jobs, recent results |
+| `crit doctor sandbox` | Can the agent's commands run in the OS sandbox here? Probes bubblewrap / sandbox-exec, runs four escape checks, and prints the fix when it cannot |
+| `crit audit [--session ID] [--since 2h] [--kind command] [--json]` | What crit did: commands, file writes, network requests, permission decisions, taint (`~/.crit/logs/audit.jsonl`) |
 
 **setup** serves a page with the standard library (no extra dependencies) and drives a real Edge window next to it. Click the prompt box, send button, a reply, and the stop button; it ranks candidate CSS selectors, writes them to your config, and can run a test prompt before you leave.
 

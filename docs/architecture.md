@@ -10,15 +10,18 @@ wires the concrete pieces together.
 4  apps      review_agent, review_session, review_comments   (review)
              queue, worker, gitlab, gitlab_post               (CI)
              agent_ui, agent_acp, welcome, setup_wizard   (terminal and IDE front ends)
+             audit_cmd, sandbox_doctor                    (crit audit, crit doctor sandbox)
 3  engine    agent (the loop), agent_helpers (helper conversations), ui_api, openai_format
 2  tools     tool_api (interface), agent_tools (implementation),
              agent_shell, agent_edit, agent_rules, agent_build, code_index, workspace, project_home,
              file_catalog (cached file lists, repo trees), big_file (windowed reads),
-             log_tools (the log tool), soong (Android.bp module lookup, lunch targets)
+             log_tools (the log tool), soong (Android.bp module lookup, lunch targets),
+             sandbox/ (OS sandbox for commands: linux bwrap, macos sandbox-exec, windows),
+             egress_proxy (the only network path out of the sandbox), taint (untrusted content)
 1  models    model_api (interface and backend registry),
              local_model (OpenAI-compatible server: llama.cpp, LM Studio, vLLM),
              webchat/ (optional: the web page in Edge; browser, chat_client, provider, setup_ui)
-0  core      config, log, patch (input limits), redaction, output, roles
+0  core      config, log, audit (audit.jsonl), patch (input limits), redaction, output, roles
 ```
 
 A module imports only from its own layer and the layers below. `tests/test_layers.py`
@@ -31,6 +34,7 @@ its `LAYERS` table.
 | --- | --- | --- |
 | models | `model_api` | `ChatProvider` / `ChatSession` (`send`, optional `new_chat`, `stop_generation`, `save_failure`), `open_provider`, the errors (`ModelError`, `BackendError`, `ChatError`, ...), completion constants, `model_label`, `context_tokens` |
 | tools | `tool_api` | `ToolRegistry`: one `ToolSpec` per tool (description, JSON Schema arguments, read-only flag), `permission`, `execute`; `use_registry` installs another registry. Also the shared types (`TaskState`, `ToolContext`, `Permission`) and the workspace services the engine drives (shell sessions, edit checkpoints, rules, index, `.crit` state). |
+| tools → OS | `sandbox.run` | Every command the agent runs: `ShellSession` passes its `sandbox.Policy` (set by `agent_shell.use_sandbox`) to `sandbox.run`, which wraps the argv for the platform and returns a `Popen`. The engine sees only `Permission.contained` (auto mode runs contained commands unasked) and `taint.check` around its permission decision. |
 | engine → UI | `ui_api` | `NullUI` lists what a front end implements: output (`note`, `tool_start`, `tool_done`, ...), questions (`approve`, `ask_question`, `review_plan`, `read_message`), and UI-side changes (`take_shell_change`, `take_role_change`). `agent.use_ui(...)` installs one. |
 | engine → apps | `agent.run_agent_loop`, `agent.run_read_only_task`, `AnswerContract` | An app gives a task, and for a read-only task the contract its final answer must meet (the review supplies "has the review JSON"). |
 
