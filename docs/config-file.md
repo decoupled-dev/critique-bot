@@ -15,7 +15,7 @@ it at `/usr/share/crit/examples/`. Copy it, set the `url`, check the selectors o
 
 ```json
 {
-  "url": "https://ai.company.com/",
+  "url": "https://ai.example.com/",
   "selectors": {
     "prompt_input": "textarea, div[contenteditable='true'][role='textbox']",
     "send_button": "button[type='submit'], button[aria-label*='Send' i]",

@@ -597,7 +597,7 @@ The tool protocol is long. Sending it as the first message works, but the model 
 2. Point `url` in `config.json` at that project.
 3. Set `"seed_instructions": false` in `.crit/settings.json`.
 
-`/new` and compaction open an empty conversation inside the same project: a conversation link such as `https://ai.company.com/g/g-x/c/abc` becomes `https://ai.company.com/g/g-x`.
+`/new` and compaction open an empty conversation inside the same project: a conversation link such as `https://ai.example.com/g/g-x/c/abc` becomes `https://ai.example.com/g/g-x`.
 
 ### Tools
 

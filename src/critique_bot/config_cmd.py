@@ -4,7 +4,7 @@
 them, for scripts, CI, and IT rollout as much as for people:
 
     crit config --config-file /path/to/crit.json
-    crit config --url https://ai.company.com/ --redact "Acme, Globex"
+    crit config --url https://ai.example.com/ --redact "Acme, Globex"
     crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b
 
 With a config file (``config_file``, ``CRIT_CONFIG_FILE``, or the system location), the
@@ -73,7 +73,7 @@ CONFIG_FILE_NAME = "config.json"
 #: Told when a command needs settings and cannot ask (no terminal).
 NOT_SET_UP = (
     "crit is not set up yet. Run crit in a terminal to answer the setup questions, or set it up in one line: "
-    "crit config --url https://ai.company.com/ --selector prompt_input=CSS --selector assistant_messages=CSS (Web UI), "
+    "crit config --url https://ai.example.com/ --selector prompt_input=CSS --selector assistant_messages=CSS (Web UI), "
     "or crit config --backend local --local-url http://IP:PORT (local model), "
     "or crit config --config-file /path/to/crit.json. See the settings with: crit config"
 )
@@ -197,7 +197,7 @@ def describe(location: ConfigLocation) -> list[str]:
         lines.append(f"API key: {'set' if has_key else 'not set'}")
     else:
         lines.append("Model runs in: a web page in the browser (backend browser)" + mark("backend"))
-        lines.append(f"url: {url or 'not set (crit config --url https://ai.company.com/)'}" + mark("url"))
+        lines.append(f"url: {url or 'not set (crit config --url https://ai.example.com/)'}" + mark("url"))
         selectors = data.get("selectors") if isinstance(data.get("selectors"), dict) else {}
         if not selectors.get("prompt_input"):
             lines.append("Page elements: not set (run crit setup to point at the message box)")
@@ -346,13 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  crit config --config-file /path/to/crit.json\n"
-            "  crit config --url https://ai.company.com/ --redact \"Acme, Globex\"\n"
+            "  crit config --url https://ai.example.com/ --redact \"Acme, Globex\"\n"
             "  crit config --backend local --local-url http://127.0.0.1:8080 --model qwen2.5-coder-14b\n"
             "  crit config --selector prompt_input=textarea --selector send_button=\n"
             "  crit config --api-key            (asks for the model server's key)\n"
             "  crit config --check\n"
-            "  crit config --allow-host static.company-cdn.net\n"
-            "  crit config --gitlab-url https://gitlab.company.com"
+            "  crit config --allow-host static.example.net\n"
+            "  crit config --gitlab-url https://gitlab.example.com"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -667,7 +667,7 @@ def check(location: ConfigLocation, *, probe_server: Callable | None = None, pro
         print(f"Problem: {exc}", file=sys.stderr)
         return 1
     if not config.url:
-        print("Nothing to check: no url is set (crit config --url https://ai.company.com/).", file=sys.stderr)
+        print("Nothing to check: no url is set (crit config --url https://ai.example.com/).", file=sys.stderr)
         return 1
     probe = (probe_server or local_model.probe_server) if config.is_local else (probe_site or local_model.probe_site)
     print(f"Checking {config.url} ...")

@@ -368,7 +368,7 @@ class FirstRunTests(_Isolated):
         with patch("critique_bot.welcome.stdio_is_tty", return_value=False):
             code, out, err = _capture(crit_main, ["ask", "--prompt", "hi", "--repo-dir", str(self.project)])
         self.assertEqual(code, 1)
-        self.assertIn("crit config --url https://ai.company.com/ --selector prompt_input=", err)
+        self.assertIn("crit config --url https://ai.example.com/ --selector prompt_input=", err)
         self.assertIn("crit config --backend local --local-url http://IP:PORT", err)
         self.assertNotIn("Traceback", err)
         self.assertFalse(self.user.exists())

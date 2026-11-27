@@ -215,7 +215,7 @@ changes it), and the terminal style is asked once per user (`crit config --theme
 
 ```bash
 crit config --config-file /srv/team/crit.json                        # a config file for many people
-crit config --url https://ai.company.com/ --selector prompt_input=textarea --selector assistant_messages=.reply
+crit config --url https://ai.example.com/ --selector prompt_input=textarea --selector assistant_messages=.reply
 crit config --backend local --local-url 192.168.1.50:8080 --model qwen2.5-coder-14b   # allows that host too
 crit config --api-key                                                # the local server's API key (not shown; - reads stdin, none removes)
 crit config --redact "Acme, Globex"                                  # names to hide (--unredact removes)

@@ -869,7 +869,7 @@ PAGE_HTML = """<!doctype html>
     <div id="allowedList" class="sub"></div>
     <div class="field">
       <label for="url">url</label>
-      <input type="text" id="url" placeholder="https://ai.company.com/" />
+      <input type="text" id="url" placeholder="https://ai.example.com/" />
       <span></span>
     </div>
     <div class="field">

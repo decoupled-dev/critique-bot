@@ -103,9 +103,9 @@ file from loading is refused with the reason (exit code 2). A file that is not c
 (for example only `--redact` so far) is saved with a "Not ready yet" note.
 
 ```bash
-crit config --url https://ai.company.com/ --redact "Acme, Globex"
-crit config --url https://ai.company.com/ --allow-host static.company-cdn.net
-crit config --pii on --egress strict --gitlab-url https://gitlab.company.com
+crit config --url https://ai.example.com/ --redact "Acme, Globex"
+crit config --url https://ai.example.com/ --allow-host static.example.net
+crit config --pii on --egress strict --gitlab-url https://gitlab.example.com
 ```
 
 ### Asked later, when needed
@@ -212,7 +212,7 @@ A real `url` (not the `YOUR_CHAT_UI` placeholder) and two selectors:
 
 ```json
 {
-  "url": "https://ai.company.com/",
+  "url": "https://ai.example.com/",
   "selectors": {
     "prompt_input": "textarea, [contenteditable='true'][role='textbox']",
     "assistant_messages": "[data-message-author-role='assistant'], .assistant-message"
@@ -255,7 +255,7 @@ Comma-separated lists are OR: the first matching node is used.
 | Env | `CRIT_URL` |
 | Default | none |
 
-Full URL of the page crit should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://ai.company.com/`.
+Full URL of the page crit should open. Must not contain `YOUR_CHAT_URL` / `YOUR_CHAT_UI`. Example: `https://ai.example.com/`.
 
 The page runs as it does in a normal browser: crit does not filter its requests, so a page that calls other hosts behind the scenes keeps working. crit controls what leaves on its own side, by what it types into the page (see [security.md](security.md)).
 
@@ -275,8 +275,8 @@ The worker navigates here at session start. Login/SSO pages are detected and log
 The browser may reach only the url's host and its subdomains. Everything else is blocked: page loads in any frame, scripts, API calls, WebSockets, and popups. An internal AI site often needs neighbouring hosts, such as its API, its static files, or the company sign-in. List them here; each also covers its subdomains:
 
 ```json
-"url": "https://ai.company.net/",
-"allowed_hosts": ["api.company.net", "static.company.net", "login.microsoftonline.com"]
+"url": "https://ai.example.net/",
+"allowed_hosts": ["api.example.net", "static.example.net", "login.microsoftonline.com"]
 ```
 
 When crit blocks a host, the log file `~/.crit/logs/crit.log` names the host and this setting. Add only hosts the page needs. See [security.md](security.md).
@@ -706,7 +706,7 @@ browser crit drives fails with `net::ERR_INVALID_AUTH_CREDENTIALS`. The address 
 
 Two ways to sign in:
 
-- **A Kerberos ticket**, if your company has one for Linux: run `kinit you@COMPANY.COM`. crit's browser
+- **A Kerberos ticket**, if your company has one for Linux: run `kinit you@EXAMPLE.COM`. crit's browser
   is started with `--auth-server-allowlist` naming the url's host (and `site_login.host`), so Chromium
   uses the ticket like Windows SSO.
 - **Your username and password:** `crit config --site-user NAME --site-password`. The browser gives them
@@ -714,7 +714,7 @@ Two ways to sign in:
 
 | Key | Meaning |
 | --- | --- |
-| `username` | your sign-in name (for a Windows domain often `DOMAIN\name` or `name@company.com`). Env: `CRIT_SITE_USER` |
+| `username` | your sign-in name (for a Windows domain often `DOMAIN\name` or `name@example.com`). Env: `CRIT_SITE_USER` |
 | `password` | your user config only (`crit config --site-password`), or `CRIT_SITE_PASSWORD`. Redacted from everything crit sends or logs; `crit config` only shows whether it is set |
 | `host` | the host that asks for the sign-in, when it is not the url's own host (for example an ADFS server) |
 
@@ -777,7 +777,7 @@ Adjust `url` / `selectors` to your page. Keep paths absolute.
 ```json
 {
   "backend": "browser",
-  "url": "https://ai.company.com/",
+  "url": "https://ai.example.com/",
   "selectors": {
     "model_dropdown": "",
     "model_dropdown_identifier": "",

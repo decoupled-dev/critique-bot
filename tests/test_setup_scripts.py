@@ -154,7 +154,7 @@ class SetupCritShTests(unittest.TestCase):
     def test_install_writes_wrappers_and_config(self) -> None:
         proc = self._run("--no-path")
         self.assertIn("==> Writing commands", proc.stdout)
-        self.assertIn("crit config --url https://ai.company.com/", proc.stdout)
+        self.assertIn("crit config --url https://ai.example.com/", proc.stdout)
         self.assertIn("PONG", proc.stdout)
 
         expected = {

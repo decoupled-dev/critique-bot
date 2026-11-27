@@ -61,7 +61,7 @@ Choose 1 or 2:
 Then the names to hide, a line about personal data, `Saved to <path>.`, and your command carries on. Ctrl+C at any question writes nothing. Without a terminal (CI, pipes) crit asks nothing and names the one-line command instead. Every answer has a `crit config` flag:
 
 ```bash
-crit config --url https://ai.company.com/ --selector prompt_input=textarea --selector assistant_messages=.reply
+crit config --url https://ai.example.com/ --selector prompt_input=textarea --selector assistant_messages=.reply
 crit config --backend local --local-url 192.168.1.50:8080 --model qwen2.5-coder-14b
 crit config --redact "Acme, Globex"                      # names to hide
 crit config --check                                      # does the server (or the page's site) answer?
