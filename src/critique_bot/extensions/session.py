@@ -20,7 +20,7 @@ from typing import Any, Iterable
 
 from critique_bot import log
 from critique_bot.extensions import hooks as hooks_mod
-from critique_bot.extensions import manifest, mcp_client, trust
+from critique_bot.extensions import agent_files, manifest, mcp_client, trust
 
 __all__ = ["ExtensionSession", "load_session", "offer_client_servers", "DEFAULT_MAX_LOADED_TOOLS"]
 
@@ -63,6 +63,8 @@ class ExtensionSession:
     #: Sentences for the user: inactive files, broken manifests, blocked MCP tools.
     notes: list[str] = field(default_factory=list)
     deferred: bool = False
+    #: File-defined agents by name (built-in, user, project), for delegate(agent=...).
+    agents: dict[str, agent_files.AgentDef] = field(default_factory=dict)
     _denials: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -138,11 +140,33 @@ class ExtensionSession:
         return {"tool": TOOL_SEARCH, "ok": True, "output": text,
                 "ui": {"summary": f"Loaded {min(len(hits), 8)} tool schema(s)", "diff": None, "lines": None}}
 
+    def active(self) -> bool:
+        """True when this session changes anything about the tools."""
+        return bool(self.tools or self.mcp_tools or self.hooks or self.agents)
+
+    def delegate_spec(self, base: Any) -> Any:
+        """The delegate tool's spec with the agents it can start (``agent`` in each task)."""
+        from critique_bot.tool_api import ToolSpec
+
+        if base is None or not self.agents:
+            return base
+        params = json.loads(json.dumps(base.parameters))
+        items = (((params.get("properties") or {}).get("tasks") or {}).get("items") or {})
+        props = items.get("properties")
+        if isinstance(props, dict):
+            props.setdefault("agent", {"type": "string", "enum": sorted(self.agents),
+                                       "description": "run this agent's profile (its tools, steps, instructions)"})
+        names = ", ".join(sorted(self.agents))
+        return ToolSpec(base.name, base.description + f" A task may name an agent: {names}.", params,
+                        read_only=base.read_only)
+
     def registry(self, base: Any) -> Any:
         """``base`` (the built-in tools of this session) with the extension tools merged in and hooks around all."""
         from critique_bot import tool_api
 
         merged = tool_api.merge(base, self.extra_registry()) if (self.tools or self.mcp_tools) else base
+        if self.agents and merged.spec("delegate") is not None:
+            merged = merged.with_specs([self.delegate_spec(merged.spec("delegate"))])
         if not any(hook.event in {"pre_tool", "post_tool"} for hook in self.hooks.hooks):
             return merged
         return self._with_hooks(merged)
@@ -299,6 +323,8 @@ def load_session(
     session = ExtensionSession(workspace)
     if settings.get("extensions") is False:
         return session
+    session.agents, problems = agent_files.load_agents(workspace)
+    session.notes.extend(f"agent skipped: {problem}" for problem in problems)
     files = trust.discover(workspace, ["tools", "hooks", "mcp"])
     session.tools = _load_tools([f for f in files if f.kind == "tools"], builtin, session.notes)
     hooks: list[hooks_mod.Hook] = []

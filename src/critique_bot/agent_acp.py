@@ -297,7 +297,7 @@ def _initialize(request_id: Any, params: dict[str, Any]) -> None:
             "agentCapabilities": {
                 "loadSession": False,
                 "promptCapabilities": {"image": False, "audio": False, "embeddedContext": True},
-                "mcpCapabilities": {"http": False, "sse": False},
+                "mcpCapabilities": {"http": True, "sse": False},
             },
             "authMethods": [],
             "agentInfo": {"name": "crit", "title": "crit", "version": __version__},
@@ -316,6 +316,11 @@ def _new_session(request_id: Any, params: dict[str, Any]) -> None:
         _fail(request_id, INVALID_PARAMS, f"cwd must be an existing absolute folder, got {raw!r}")
         return
     cwd = cwd.resolve()
+    # The editor's MCP servers join the session's tools through the same path as mcp.json
+    # (extensions/session.py): pinned, prefixed mcp__<name>__<tool>, output marked untrusted.
+    from critique_bot import extensions
+
+    extensions.offer_client_servers(params.get("mcpServers"))
     with _lock:
         _state.client["mcpServers"] = redact_servers(params.get("mcpServers"))
         if _state.requested_cwd is None:

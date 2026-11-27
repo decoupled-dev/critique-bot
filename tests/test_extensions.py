@@ -306,6 +306,63 @@ class RegistryTests(TempProject):
         self.assertEqual(reg.spec("read_files").description, tool_api.builtin_registry().spec("read_files").description)
 
 
+def _call(tool: str, **arguments: object) -> str:
+    return "<tool_call>\n" + json.dumps({"tool": tool, "arguments": arguments}) + "\n</tool_call>"
+
+
+class _Scripted:
+    def __init__(self, replies: list[str]) -> None:
+        self.sent: list[str] = []
+        self.last_detail = None
+        self._replies = list(replies)
+
+    def send(self, prompt: str) -> str:
+        self.sent.append(prompt)
+        return self._replies.pop(0) if self._replies else "COMPLETED"
+
+
+class EngineTests(TempProject):
+    """The agent loop runs extension tools through the same approvals as the built-ins."""
+
+    def run_loop(self, found, replies: list[str], *, mode: str, answer: tuple[str, str] = ("yes", "")):
+        from critique_bot.agent import run_agent_loop
+
+        asked: list[object] = []
+        session_ = _Scripted(replies)
+        old = tool_api.use_registry(found.registry(tool_api.builtin_registry()))
+        try:
+            with mock.patch("critique_bot.agent._approve_prompt",
+                            side_effect=lambda perm, **_: asked.append(perm) or answer):
+                run_agent_loop(session_, workspace=self.root, index_path=None, cache_dir=None, first_task="do it",
+                               max_rounds=4, max_result_chars=8000, read_message=lambda: None,
+                               emit=lambda _text: None, approve_mode=mode, settings={"_extensions": found})
+        finally:
+            tool_api.use_registry(old)
+        return session_, asked
+
+    def test_read_only_manifest_tool_runs_without_asking(self) -> None:
+        write(self.user / "tools" / "echo.json", json.dumps(ECHO_ARGS))
+        found = session.load_session(self.root, {}, builtin_names=tool_api.ALLOWED_TOOLS)
+        sent, asked = self.run_loop(found, [_call("echo_args", text="$(id); rm -rf /"), "Done. COMPLETED"], mode="ask")
+        self.assertEqual(asked, [])
+        self.assertIn("$(id); rm -rf /", sent.sent[1])
+
+    def test_writing_manifest_tool_asks_even_in_auto_mode(self) -> None:
+        write(self.user / "tools" / "echo.json", json.dumps({**ECHO_ARGS, "read_only": False}))
+        found = session.load_session(self.root, {}, builtin_names=tool_api.ALLOWED_TOOLS)
+        sent, asked = self.run_loop(found, [_call("echo_args", text="x"), "COMPLETED"], mode="auto",
+                                    answer=("no", "not now"))
+        self.assertEqual(len(asked), 1)
+        self.assertIn("denied by the user", sent.sent[1])
+
+    def test_user_prompt_hook_can_stop_a_task(self) -> None:
+        write(self.user / "hooks.json", json.dumps({"user_prompt": [{"argv": [
+            PY, "-c", "import json; print(json.dumps({'decision': 'deny', 'message': 'policy'}))"]}]}))
+        found = session.load_session(self.root, {}, builtin_names=tool_api.ALLOWED_TOOLS)
+        sent, _ = self.run_loop(found, ["COMPLETED"], mode="ask")
+        self.assertEqual(sent.sent, [])
+
+
 class HookTests(TempProject):
     def hooks_file(self, event: str, script: str, **extra) -> None:
         write(self.user / "hooks.json", json.dumps({event: [{"argv": [PY, "-c", script], **extra}]}))

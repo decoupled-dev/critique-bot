@@ -1461,9 +1461,44 @@ def load_agent_instructions(tool_format: str = TOOL_FORMAT_TAGS) -> str:
     return load_prompt_sections(tool_format)["SYSTEM"]
 
 
-def load_role_instructions(role_id: object) -> str:
-    """The ``ROLE_...`` section of prompts/agent.txt for a role; "" for Generic or a role without one."""
+def load_role_instructions(role_id: object, root: Path | None = None) -> str:
+    """The ``ROLE_...`` section of prompts/agent.txt for a role; "" for Generic or a role without one.
+
+    A name that is no role but a file-defined agent (``.crit/agents/<name>.md``, ``/agent``)
+    gives that agent's instructions.
+    """
+    if roles.normalize_role(role_id) is None and str(role_id or "").strip():
+        found = _file_agent(role_id, root)
+        if found is not None:
+            return found.body
     return load_prompt_sections().get(roles.section_key(role_id), "").strip()
+
+
+def _file_agent(name: object, root: Path | None) -> Any:
+    """The file-defined agent called ``name`` (extensions.agent_files), or None."""
+    from critique_bot.extensions import agent_files
+
+    try:
+        return agent_files.find_agent(str(name), Path(root) if root is not None else Path.cwd())
+    except Exception as exc:  # a broken agent file must not stop the session
+        log.warn(f"agent {name}: {exc}")
+        return None
+
+
+#: The session's extensions (extensions.ExtensionSession) while run_agent_loop runs, for the hooks.
+_EXTENSIONS: Any = None
+
+
+def _hook(event: str, payload: dict[str, Any]) -> Any:
+    """Run the session's hooks for ``event``; None when there are none (see extensions/hooks.py)."""
+    ext = _EXTENSIONS
+    if ext is None:
+        return None
+    try:
+        return ext.run_hook(event, payload)
+    except Exception as exc:  # a hook problem is reported, never a crash
+        log.warn(f"{event} hook failed: {exc}")
+        return None
 
 
 def task_message(
@@ -2057,6 +2092,7 @@ class _TaskRun:
                 reason = self.chat.rotation_reason() or "the chat grew long"
                 # A chat that is merely long still works: ask it for a handoff note first.
                 note = self._handoff_note() if self.chat.too_long() and self.handoff else ""
+                _hook("pre_compact", {"reason": reason, "task": self.task})
                 if self.chat.restart(reason):
                     self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
@@ -2941,8 +2977,9 @@ def run_agent_loop(
     show = emit or _emit
     ask_person = ask_user or (lambda question: _ask_user(question, None))
     sections = load_prompt_sections(tool_format_of(settings if isinstance(settings, dict) else None))
-    global _NATIVE_TOOLS
+    global _NATIVE_TOOLS, _EXTENSIONS
     _NATIVE_TOOLS = None
+    _EXTENSIONS = (settings or {}).get("_extensions") if isinstance(settings, dict) else None
     if sections.get("_FORMAT") == TOOL_FORMAT_NATIVE:
         found = (settings or {}).get("_native_tools") if isinstance(settings, dict) else None
         _NATIVE_TOOLS = list(found) if found else sorted(
@@ -3092,6 +3129,10 @@ def run_agent_loop(
                 handler("/role", task.split(None, 1)[1] if " " in task.strip() else "")
             continue
         role_now = _apply_role_change(chat, reseed) or role_now
+        prompt_hook = _hook("user_prompt", {"prompt": task})
+        if prompt_hook is not None and prompt_hook.denied:
+            _ui("bad", "A hook stopped this task" + (f": {prompt_hook.message}" if prompt_hook.message else "."))
+            continue
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
         if chat.stale_for_next_task():
@@ -3143,6 +3184,8 @@ def run_agent_loop(
         if carry:
             message = carry + "\n\n" + message
             carry = ""
+        if prompt_hook is not None and prompt_hook.append_context:
+            message += "\n\nCONTEXT FROM A HOOK\n" + prompt_hook.append_context
         try:
             outcome_code = run.run(message)
         except KeyboardInterrupt:
@@ -3164,6 +3207,7 @@ def run_agent_loop(
                 "its last reply was not acted on. The new task follows."
             )
         changed = list(task_state.edits)
+        _hook("task_finished", {"task": task, "status": outcome_code, "changed": changed})
         chat.history.append(
             f"{_one_line(task, 100)} -> {outcome_code}"
             + (f" (changed {', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})" if changed else "")
@@ -3173,6 +3217,7 @@ def run_agent_loop(
             pool.close()
         except Exception as exc:  # the session is over; a stuck tab must not hang the exit
             log.debug(f"closing helper tabs failed: {exc}")
+    _EXTENSIONS = None
     if outcome is not None:
         outcome[:] = [outcome_code]
     return turns
@@ -3440,16 +3485,20 @@ def run_agent(
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
-    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=config.is_local)
+    extensions = _load_extensions(home.root, settings)
+    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=config.is_local,
+                        extensions=extensions)
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
         log.error(str(exc))
         log.notice(f"Problem: {exc}")
+        if extensions is not None:
+            extensions.close()
         return 1
     if settings.get("seed_instructions") is False:
         instructions = ""
-    role_id = _resolve_role(role, settings)
+    role_id = _resolve_role(role, settings, home.root)
     if approve_mode not in _MODES:
         approve_mode = ui_api.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
@@ -3471,10 +3520,15 @@ def run_agent(
         history_path=home.bot_dir / "history",
         cache_dir=home.cache_dir,
         session_shell=session_shell,
-        tools=setup.registry.names() if setup.registry is not None else ALLOWED_TOOLS,
+        tools=setup.names or (setup.registry.names() if setup.registry is not None else ALLOWED_TOOLS),
         role=role_id,
     )
     agent_ui.welcome_header()
+    for line in (extensions.notes if extensions is not None else []):
+        _ui("note", line)
+    started_hook = _session_start_hook(extensions, setup)
+    if started_hook:
+        notes = (notes + "\n\n" + started_hook).strip()
     agent_ui.install_log_bridge()
     try:
         skill_names = [item["name"] for item in agent_tools.discover_skills(home.root)]
@@ -3493,7 +3547,7 @@ def run_agent(
             helpers=helpers,
             web_hosts=_web_hosts(settings),
             offline=settings.get("offline") is True,
-            role=load_role_instructions(chosen_role),
+            role=load_role_instructions(chosen_role, home.root),
             tools=setup.tools_block,
         )
 
@@ -3521,7 +3575,7 @@ def run_agent(
                 "session_shell": session_shell,
                 "turns": turns,
                 "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
-                             "_native_tools": setup.native_tools},
+                             "_native_tools": setup.native_tools, "_extensions": extensions},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
                 "role": role_id,
@@ -3537,6 +3591,8 @@ def run_agent(
     finally:
         if previous_registry is not None:
             tool_api.use_registry(previous_registry)
+        if extensions is not None:
+            extensions.close()
         agent_ui.shutdown()
         if session_shell is not None:
             try:
@@ -3580,6 +3636,8 @@ class _ToolSetup:
     registry: Any
     #: Native format: the tools in OpenAI chat format, handed to each session (use_tools).
     native_tools: list[dict[str, Any]] | None = None
+    #: The tools the model is told about (for /tools); () when that is the registry's list.
+    names: tuple[str, ...] = ()
 
 
 def _tool_setup(
@@ -3589,6 +3647,7 @@ def _tool_setup(
     web: bool,
     only: Iterable[str] | None = None,
     native_ok: bool = False,
+    extensions: Any = None,
 ) -> _ToolSetup:
     """The tool format, the tool set, and the tools block, from ``tool_format`` and ``tool_set``.
 
@@ -3611,6 +3670,13 @@ def _tool_setup(
     block = ""
     native: list[dict[str, Any]] | None = None
     source = registry or tool_api.builtin_registry().only(names)
+    if extensions is not None and extensions.active():
+        # Manifest and MCP tools, hooks, and the agents delegate can start: one merged registry
+        # (extensions/session.py), decided now and kept for the whole session.
+        source = extensions.registry(source)
+        registry = extensions.registry(registry or tool_api.builtin_registry())
+        if fmt == TOOL_FORMAT_TAGS:
+            block = extensions.tools_text()
     if fmt == TOOL_FORMAT_OPENAI:
         from critique_bot import openai_format
 
@@ -3618,7 +3684,31 @@ def _tool_setup(
     elif fmt == TOOL_FORMAT_NATIVE:
         # Sorted by name, so the request's tools are byte-identical turn after turn (prompt cache).
         native = sorted(source.openai_tools(), key=lambda tool: str((tool.get("function") or {}).get("name")))
-    return _ToolSetup(fmt, block, registry, native)
+    names_now = source.names() if extensions is not None and extensions.active() else ()
+    return _ToolSetup(fmt, block, registry, native, names_now)
+
+
+def _load_extensions(root: Path, settings: dict[str, Any]) -> Any:
+    """This session's extension tools, MCP servers, hooks and agents (extensions.load_session); None on failure."""
+    from critique_bot import extensions
+
+    try:
+        return extensions.load_session(root, settings, builtin_names=ALLOWED_TOOLS)
+    except Exception as exc:  # extensions are optional: crit runs without them
+        log.warn(f"extensions not loaded: {exc}")
+        return None
+
+
+def _session_start_hook(extensions: Any, setup: _ToolSetup) -> str:
+    """Run the session_start hooks; the context they add goes into the project notes."""
+    if extensions is None:
+        return ""
+    try:
+        decision = extensions.run_hook("session_start", {"tools": list(setup.names or ())})
+    except Exception as exc:
+        log.warn(f"session_start hook failed: {exc}")
+        return ""
+    return decision.append_context
 
 
 def run_read_only_task(
@@ -3747,14 +3837,19 @@ def _loop_settings(config: BotConfig, settings: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-def _resolve_role(flag: str | None, settings: dict[str, Any]) -> str:
-    """The role id for this run: ``--role``, then ``"role"`` in settings, then Generic. Unknown names warn."""
+def _resolve_role(flag: str | None, settings: dict[str, Any], root: Path | None = None) -> str:
+    """The role id for this run: ``--role``, then ``"role"`` in settings, then Generic. Unknown names warn.
+
+    The name of a file-defined agent (``/agent``) counts too: its instructions become the role.
+    """
     for source, raw in (("--role", flag), ('settings "role"', settings.get("role"))):
         if raw is None or str(raw).strip() == "":
             continue
         found = roles.normalize_role(raw)
         if found is not None:
             return found
+        if root is not None and _file_agent(raw, root) is not None:
+            return str(raw).strip()
         log.warn(f"{source}: {raw!r} is not one of {', '.join(roles.ROLE_IDS)}; using {roles.GENERIC}")
     return roles.GENERIC
 
