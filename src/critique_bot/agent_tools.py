@@ -3394,9 +3394,10 @@ def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[s
     """``[{name, brief, files}]`` from a delegate call, or a problem for the model.
 
     Accepts ``tasks`` (or ``briefs``/``subtasks``) as a list of objects
-    ``{brief, files, name}`` or of plain strings, or one ``brief`` at the top
-    level. ``files`` are the files that helper may change; a file can belong to
-    one helper only. Paths must be inside the workspace.
+    ``{brief, files, name}`` or of plain strings, or one ``brief`` (or ``task``) at
+    the top level. ``files`` (or ``scope``) are the files that helper may change; a
+    file can belong to one helper only. Paths must be inside the workspace.
+    ``agent`` names a file-defined agent to run the brief (see agent_helpers).
     """
     raw = args.get("tasks")
     for key in ("briefs", "subtasks", "agents", "jobs"):
@@ -3405,7 +3406,7 @@ def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[s
     if isinstance(raw, str):
         parsed = _maybe_json(raw)
         raw = parsed if isinstance(parsed, list) else [raw]
-    if raw is None and (args.get("brief") or args.get("prompt") or args.get("description")):
+    if raw is None and (args.get("brief") or args.get("prompt") or args.get("description") or args.get("task")):
         raw = [args]
     if not isinstance(raw, list) or not raw:
         return [], 'tasks is required: a list of {"brief": "...", "files": ["path"]}'
@@ -3422,7 +3423,7 @@ def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[s
         if not isinstance(text, str) or len(text.strip()) < 15:
             return [], f"task {index} needs a self-contained brief (the helper cannot see this conversation)"
         name = str(item.get("name") or f"helper {index}").strip()[:40] or f"helper {index}"
-        files = item.get("files") or item.get("paths") or []
+        files = item.get("files") or item.get("paths") or item.get("scope") or []
         if isinstance(files, str):
             files = [part.strip() for part in re.split(r"[,\n]", files) if part.strip()]
         if not isinstance(files, list):
@@ -3439,7 +3440,14 @@ def delegate_briefs(args: dict[str, Any], ctx: ToolContext) -> tuple[list[dict[s
                 return [], f"{shown} is given to both {owner[shown]} and {name}; give each file to one helper"
             owner[shown] = name
             cleaned.append(shown)
-        briefs.append({"name": name, "brief": text.strip(), "files": cleaned})
+        brief = {"name": name, "brief": text.strip(), "files": cleaned}
+        agent = item.get("agent")
+        if isinstance(agent, str) and agent.strip():
+            # A file-defined agent runs this brief (agent_helpers): its tools, steps and instructions.
+            brief["agent"] = agent.strip()
+            if not item.get("name"):
+                brief["name"] = f"{agent.strip()[:30]} {index}"
+        briefs.append(brief)
     return briefs, ""
 
 
