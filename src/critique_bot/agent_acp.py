@@ -797,7 +797,7 @@ def pinned_skills() -> list[str]:
 def handle_command(word: str, rest: str = "") -> None:
     if word in {"/mode", "/permissions"}:
         set_mode(rest)
-    elif word == "/role":
+    elif word in {"/role", "/agent"}:
         _set_role(rest)
     elif word == "/undo":
         _undo()
@@ -807,7 +807,7 @@ def handle_command(word: str, rest: str = "") -> None:
         note("bad", f"{word} is not available here.")
 
 
-_IDLE_COMMANDS = {"/mode", "/permissions", "/role", "/undo", "/plan", "/auto", "/ask", "/edits"}
+_IDLE_COMMANDS = {"/mode", "/permissions", "/role", "/agent", "/undo", "/plan", "/auto", "/ask", "/edits"}
 
 
 def read_message(**_ignored: Any) -> str | None:

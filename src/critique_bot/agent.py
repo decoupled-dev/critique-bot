@@ -3122,7 +3122,7 @@ def run_agent_loop(
             if not chat.restart("you asked for one"):
                 _ui("note", "This chat page cannot open a new conversation; staying in this one.")
             continue
-        if task.lower().split(None, 1)[0] == "/role":
+        if task.lower().split(None, 1)[0] in {"/role", "/agent"}:
             # A reader without the slash-command layer: handle it here rather than send it as a task.
             handler = getattr(globals().get("agent_ui"), "handle_command", None)
             if callable(handler):

@@ -173,7 +173,8 @@ SLASH_COMMANDS: dict[str, str] = {
     "/auto": "Auto mode: edits and commands run without asking (risky ones still ask)",
     "/permissions": "Same as /mode",
     "/skills": "List skills; /skills <name> pins one for this session, /skills off <name> unpins",
-    "/role": "Show or set the role for this project: code-reviewer, aosp-expert, expert-developer, ai-expert, test-engineer, android-app-engineer, generic",
+    "/agent": "Show or set the agent for this project: a built-in one (the roles) or one from .crit/agents",
+    "/role": "Same as /agent (the built-in agents were called roles)",
     "/status": "Model, shell, folder, and background commands",
     "/shell": "Show or switch the default shell",
     "/tools": "List the tools the model can call",
@@ -1641,7 +1642,7 @@ def _make_completer() -> Any:
         def get_completions(self, document: Any, complete_event: Any) -> Iterable[Any]:
             before = document.text_before_cursor
             if before.startswith("/") and " " not in before and "\n" not in before:
-                for name, meta in SLASH_COMMANDS.items():
+                for name, meta in [*SLASH_COMMANDS.items(), *custom_command_help().items()]:
                     if name.startswith(before.lower()):
                         yield Completion(name, start_position=-len(before), display_meta=meta)
                 return
@@ -1832,6 +1833,15 @@ def print_help() -> None:
         table.add_row(name, meta)
     _print(Text("Commands", style="bold"))
     _print(Padding(table, (0, 0, 0, 2)))
+    custom = custom_command_help()
+    if custom:
+        mine = Table.grid(padding=(0, 2))
+        mine.add_column(style="bold", no_wrap=True)
+        mine.add_column(style=_style("dim"))
+        for name, meta in custom.items():
+            mine.add_row(name, meta)
+        _print(Text("Your commands (.crit/commands, ~/.crit/commands)", style="bold"))
+        _print(Padding(mine, (0, 0, 0, 2)))
     _print(Text("Shortcuts", style="bold"))
     print_shortcuts()
 
@@ -1912,6 +1922,9 @@ def read_message(
             if word in SLASH_COMMANDS:
                 handle_command(word, rest.strip())
                 continue
+            custom = custom_commands().get(word)
+            if custom is not None:
+                return with_references(run_custom_command(custom, rest))
             if "/" not in word[1:]:
                 note("bad", f"Unknown command {word}. Type /help for the list.")
                 continue
@@ -1950,7 +1963,7 @@ def handle_command(word: str, rest: str = "") -> None:
         set_mode("auto")
     elif word == "/skills":
         _skills_command(rest)
-    elif word == "/role":
+    elif word in {"/role", "/agent"}:
         _role_command(rest)
     elif word == "/status":
         print_status_table()
@@ -1976,9 +1989,22 @@ def _mode_command(rest: str) -> None:
     set_mode(word)
 
 
+def _file_agents() -> dict[str, Any]:
+    """The agents from agent files that are not built-in roles: ~/.crit/agents and .crit/agents."""
+    try:
+        from critique_bot.extensions import agent_files
+
+        found, _problems = agent_files.load_agents(_state.workspace)
+    except Exception as exc:
+        log.warn(f"could not read the agent files: {exc}")
+        return {}
+    return {name: item for name, item in found.items() if not item.role and roles.normalize_role(name) is None}
+
+
 def _role_command(rest: str) -> None:
-    """``/role`` lists the roles; ``/role <name>`` stores it for this project and re-seeds the next chat."""
+    """``/agent`` (or ``/role``) lists the agents; ``/agent <name>`` stores it for this project and re-seeds the next chat."""
     word = rest.strip()
+    extra = _file_agents()
     if not word:
         for role in roles.ROLES:
             current = role.id == _state.role
@@ -1986,11 +2012,19 @@ def _role_command(rest: str) -> None:
             line = Text(f" {mark} {role.id:<21}", style="bold" if current else _style("dim"))
             line.append(role.summary, style=_style("dim"))
             _print(line)
-        _print(Text("   /role <name> to switch; it is kept in .crit/settings.json", style=_style("dim")))
+        for name, item in sorted(extra.items()):
+            current = name == _state.role
+            mark = glyphs().pointer if current else " "
+            line = Text(f" {mark} {name:<21}", style="bold" if current else _style("dim"))
+            line.append(f"{item.description} ({item.scope})", style=_style("dim"))
+            _print(line)
+        _print(Text("   /agent <name> to switch; it is kept in .crit/settings.json", style=_style("dim")))
         return
     chosen = roles.normalize_role(word)
+    if chosen is None and word.lower() in extra:
+        chosen = word.lower()
     if chosen is None:
-        note("bad", f"Unknown role {word}. Use one of: {', '.join(roles.ROLE_IDS)}.")
+        note("bad", f"Unknown role {word}. Use one of: {', '.join([*roles.ROLE_IDS, *sorted(extra)])}.")
         return
     if chosen == _state.role:
         note("note", f"Role: {roles.role_label(chosen)} (already).")
@@ -2000,7 +2034,52 @@ def _role_command(rest: str) -> None:
         _state.role_changed = chosen
     saved = _save_setting(role=chosen)
     where = "kept in .crit/settings.json" if saved else "for this session"
-    note("note", f"Role: {roles.role_label(chosen)}, {where}. The next task starts a new conversation with its instructions.")
+    label = chosen if chosen in extra else roles.role_label(chosen)
+    note("note", f"Role: {label}, {where}. The next task starts a new conversation with its instructions.")
+
+
+_custom_cache: dict[str, Any] = {"root": None, "commands": {}}
+
+
+def custom_commands() -> dict[str, Any]:
+    """Slash commands from command files (extensions/commands.py), by word; built-in words win."""
+    root = _state.workspace
+    with _lock:
+        if _custom_cache["root"] == root:
+            return dict(_custom_cache["commands"])
+    try:
+        from critique_bot.extensions import commands
+
+        found, problems = commands.load_commands(root, reserved=set(SLASH_COMMANDS) | {NEW_CHAT, "/exit", "/quit"})
+        for problem in problems:
+            log.warn(f"command skipped: {problem}")
+    except Exception as exc:
+        log.warn(f"could not read the command files: {exc}")
+        found = {}
+    with _lock:
+        _custom_cache["root"] = root
+        _custom_cache["commands"] = found
+    return dict(found)
+
+
+def custom_command_help() -> dict[str, str]:
+    out = {}
+    for word, command in custom_commands().items():
+        args = " ".join(f"<{name}>" for name in command.arguments)
+        out[word] = command.description + (f"  {args}" if args else "")
+    return out
+
+
+def run_custom_command(command: Any, rest: str) -> str:
+    """The task text of a command file; its agent and mode switch like /agent and /mode first."""
+    if command.agent and command.agent != _state.role:
+        _role_command(command.agent)
+    mode = command.effective_mode
+    if mode and mode in _MODE_ALIASES and mode != _state.approve_mode:
+        set_mode(mode)
+    elif command.mode and not mode:
+        note("note", f"{command.word} asks for {command.mode} mode; a project command needs crit trust {command.path} first.")
+    return command.expand(rest)
 
 
 def _save_setting(**values: Any) -> bool:

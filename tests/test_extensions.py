@@ -482,5 +482,46 @@ class CommandTests(TempProject):
         self.assertTrue(problems)
 
 
+class SlashCommandTests(TempProject):
+    """/agent picks file agents; command files become slash commands in the terminal UI."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from rich.console import Console
+
+        from critique_bot import agent_ui
+
+        self.ui = agent_ui
+        agent_ui.reset()
+        self.out = StringIO()
+        agent_ui.set_console(Console(file=self.out, force_terminal=False, width=120, theme=agent_ui.rich_theme("dark")))
+        agent_ui.configure(workspace=self.root)
+        self.addCleanup(agent_ui.reset)
+
+    def reader(self, *lines):
+        queue = list(lines)
+        return lambda: queue.pop(0) if queue else None
+
+    def test_agent_command_lists_and_picks_a_file_agent(self) -> None:
+        write(self.user / "agents" / "aosp-debugger.md", "---\ndescription: Debugs AOSP crashes.\n---\nYou debug.")
+        self.assertEqual(self.ui.read_message(reader=self.reader("/agent", "/agent aosp-debugger", "go")), "go")
+        text = self.out.getvalue()
+        self.assertIn("aosp-debugger", text)
+        self.assertIn("Debugs AOSP crashes", text)
+        self.assertEqual(self.ui.take_role_change(), "aosp-debugger")
+        from critique_bot import agent
+
+        self.assertEqual(agent.load_role_instructions("aosp-debugger", self.root), "You debug.")
+        self.assertEqual(agent._resolve_role(None, {"role": "aosp-debugger"}, self.root), "aosp-debugger")
+
+    def test_command_files_become_slash_commands(self) -> None:
+        write(self.root / ".crit" / "commands" / "fix-issue.md",
+              "---\ndescription: Fix an issue\narguments: [issue]\nmode: plan\n---\nFix $issue, then run the tests.")
+        self.assertEqual(self.ui.read_message(reader=self.reader("/fix-issue CAR-12")), "Fix CAR-12, then run the tests.")
+        self.assertEqual(self.ui._state.approve_mode, "plan")  # stricter modes need no approval; auto would
+        self.ui.print_help()
+        self.assertIn("/fix-issue", self.out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
