@@ -362,7 +362,7 @@ def _end(workspace: Path, index_path: Path | None, task: str, code: str, changed
         _last.update(files=[], task="")
         builder = _card_builder(options, side_factory)
         started = time.monotonic()
-        touched = list(dict.fromkeys(changed + reads))
+        touched = [rel for rel in dict.fromkeys(changed + reads) if _inside(rel)]
         built = 0
         for rel in touched[:MAX_CARDS_PER_TASK]:
             if time.monotonic() - started > CARD_SECONDS:
@@ -377,6 +377,12 @@ def _end(workspace: Path, index_path: Path | None, task: str, code: str, changed
         if conn is not None:
             conn.close()
         store.close()
+
+
+def _inside(rel: str) -> bool:
+    """Cards only for project files: not outside paths, not crit's own folder."""
+    path = Path(rel)
+    return bool(rel) and not path.is_absolute() and ".." not in path.parts and path.parts[:1] != (".crit",)
 
 
 def _module_cards(store: Any, workspace: Path, conn: Any, touched: list[str], builder: Any, started: float) -> None:

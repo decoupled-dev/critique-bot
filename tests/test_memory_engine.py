@@ -195,6 +195,13 @@ class EngineHookTests(unittest.TestCase):
             self.assertFalse(store.episodes()[0].trusted)
         finally:
             store.close()
+class CardScopeTests(unittest.TestCase):
+    def test_only_project_files_get_cards(self) -> None:
+        self.assertTrue(memory_recall._inside("src/a.py"))
+        for rel in ("/etc/hosts", "../other/x.py", ".crit/settings.json", ""):
+            self.assertFalse(memory_recall._inside(rel), rel)
+
+
 class ToolRegistrationTests(unittest.TestCase):
     def test_tool_is_registered_and_read_only(self) -> None:
         from critique_bot import agent_tools, tool_api
