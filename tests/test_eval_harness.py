@@ -216,6 +216,8 @@ class RunnerTests(unittest.TestCase):
             args = sys.argv[1:]
             out = args[args.index("--output-dir") + 1]
             assert os.environ["CRIT_HOME"].endswith(".crit-home-1")
+            settings = json.load(open(".crit/settings.json"))
+            assert settings["allow"] == ["*"] and settings["confirm_risky"] is False, settings
             open("calc.py", "w").write("def add(a, b):\\n    return a + b\\n")
             turns = [{"role": "user", "content": args[-1]}, {"role": "assistant", "content": "fixed add"}]
             stats = {"model_requests": 2, "prompt_tokens": 50, "malformed_calls": 0, "tool_calls": {"edit_file": 1}}

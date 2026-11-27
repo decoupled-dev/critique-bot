@@ -177,6 +177,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.local.num_ctx, 0)
         self.assertEqual(config.model, "gemma3:12b")
 
+    def test_max_tokens_setting(self) -> None:
+        config = self._load({"backend": "local", "local": {"max_tokens": 4096}})
+        self.assertEqual(config.local.max_tokens, 4096)
+        self.assertEqual(self._load({"backend": "local"}).local.max_tokens, 0)
+        with self.assertRaises(ConfigError):
+            self._load({"backend": "local", "local": {"max_tokens": -1}})
+
     def test_openai_api_settings(self) -> None:
         config = self._load({"backend": "local", "url": "http://localhost:8080/"})
         self.assertEqual(config.url, "http://localhost:8080")
@@ -319,6 +326,16 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(session.last_detail["completion"], COMPLETION_STOPPED)
             self.assertEqual(session.last_detail["prompt_eval_count"], 12)
             self.assertEqual(session.last_detail["done_reason"], "stop")
+
+    def test_max_tokens_is_sent_only_when_set(self) -> None:
+        self.server.replies = ["a", "b"]
+        with open_provider(_config(self.server.url)) as provider:
+            provider.session().send("x")
+        self.assertNotIn("max_tokens", self.server.requests[-1]["body"])
+        config = _config(self.server.url, local=LocalConfig(max_tokens=8192))
+        with open_provider(config) as provider:
+            provider.session().send("y")
+        self.assertEqual(self.server.requests[-1]["body"]["max_tokens"], 8192)
 
     def test_usage_is_asked_for_and_counted_for_crit_eval(self) -> None:
         from critique_bot import run_stats

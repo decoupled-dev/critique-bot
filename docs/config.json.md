@@ -161,6 +161,7 @@ llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 -
 | `local.num_ctx` | 0 (read from the server) | The context window the server was started with (`llama-server -c`). crit sizes its conversations to it; it is not sent to the server. When it is 0 or not set, crit reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `data[].max_model_len`) and otherwise assumes 32768. crit never asks for it. |
 | `local.api_key` | none | The server's API key, sent as `Authorization: Bearer <key>` only to this server. Read only from your own `~/.crit/config.json` or `CRIT_API_KEY`; a shared config file cannot supply it (it is ignored there). Never logged, and redacted from transcripts and the log file. Set it with `crit config --api-key`. |
 | `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
+| `local.max_tokens` | none sent | The longest reply, sent as `max_tokens`. Hosted gateways (OpenRouter) reserve credit for the model's whole output window without it, and refuse with HTTP 402 on a small balance: set 8192 there. |
 
 Replies are streamed, so the [waiting settings](#waiting-for-a-reply) apply the same way: `reply_start_ms` (at least 120 s here, since a large model may take that long to load), `reply_stall_ms` between two chunks, and `reply_max_ms` for the whole reply. A model that stops at its output limit is logged as cut off.
 

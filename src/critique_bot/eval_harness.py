@@ -260,10 +260,13 @@ class CritRunner(Runner):
 
     name = "crit"
 
-    def __init__(self, command: str = "", config: str = "", keep_home: bool = False) -> None:
+    def __init__(self, command: str = "", config: str = "", keep_home: bool = False, ask_commands: bool = False) -> None:
         self.command = command or f"{shlex.quote(sys.executable)} -m critique_bot --as-crit"
         self.config = config
         self.keep_home = keep_home
+        #: False (the default): the throwaway workspace allows every command, so nothing waits
+        #: for an approval no one can give. Network commands stay under the egress policy.
+        self.ask_commands = ask_commands
 
     def version(self) -> str:
         try:
@@ -285,11 +288,28 @@ class CritRunner(Runner):
         if self.config:
             command += ["--config", str(Path(self.config).expanduser().resolve())]
         command.append(task.spec["prompt"])
+        if not self.ask_commands:
+            _allow_everything(work)
         code, output = _run_process(command, work, env, timeout)
         if not self.keep_home:
             shutil.rmtree(env["CRIT_HOME"], ignore_errors=True)
         final, stats = crit_transcript(out_dir)
         return RunOutput(code, output, final, stats)
+
+
+def _allow_everything(work: Path) -> None:
+    """Let crit run any command in this disposable workspace without asking (an eval has no
+    terminal to answer). The file is untracked, so crit treats it as the user's own setting."""
+    settings = work / ".crit" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    current: dict[str, Any] = {}
+    if settings.is_file():
+        try:
+            current = json.loads(settings.read_text(encoding="utf-8")) or {}
+        except ValueError:
+            current = {}
+    current.update({"allow": ["*"], "confirm_risky": False})
+    settings.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
 
 
 def crit_transcript(out_dir: Path) -> tuple[str, dict[str, Any]]:
@@ -741,6 +761,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout", type=float, default=900, help="seconds per trial unless the task says")
     run.add_argument("--out", type=Path, default=None, help="results folder (default: .crit/eval/<time>)")
     run.add_argument("--keep-home", action="store_true", help="crit: use your CRIT_HOME instead of a fresh one")
+    run.add_argument("--ask-commands", action="store_true",
+                     help="crit: keep asking before commands (default: the throwaway workspace allows them all)")
     run.add_argument("--note", default="", help="free text saved in meta.json (server, quant, flags)")
 
     listing = sub.add_parser("list", help="list the tasks and whether they can run here")
@@ -792,7 +814,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.runner == "opencode":
         runner = OpencodeRunner(args.opencode, args.model)
     else:
-        runner = CritRunner(args.crit, args.config, args.keep_home)
+        runner = CritRunner(args.crit, args.config, args.keep_home, args.ask_commands)
     out_root = args.out or (Path.cwd() / ".crit" / "eval" / time.strftime("%Y%m%d-%H%M%S"))
     out_root.mkdir(parents=True, exist_ok=True)
     meta = _meta(runner, args)

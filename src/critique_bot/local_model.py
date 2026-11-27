@@ -297,6 +297,7 @@ class LocalModelClient:
         #: The server's context window when the config says (used to warn when a chat fills it).
         self.num_ctx = config.local.num_ctx
         self.temperature = config.local.temperature
+        self.max_tokens = config.local.max_tokens
         #: ``local.api_key`` (or CRIT_API_KEY): sent as a Bearer token, only to this server.
         self._api_key = config.local.api_key
         self.first_chunk_seconds = max(config.reply_start_ms / 1000.0, _MIN_FIRST_CHUNK_SECONDS)
@@ -410,6 +411,8 @@ class LocalModelClient:
         }
         if self.temperature is not None:
             body["temperature"] = self.temperature
+        if self.max_tokens:
+            body["max_tokens"] = self.max_tokens
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
