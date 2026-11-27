@@ -1,0 +1,77 @@
+{
+ "language": "cpp",
+ "symbols": [
+  [
+   "class",
+   "AudioZone",
+   6,
+   9
+  ],
+  [
+   "method",
+   "AudioZone.setVolume",
+   11,
+   17
+  ]
+ ],
+ "edges": [
+  [
+   "calls",
+   "",
+   "setVolume",
+   8
+  ],
+  [
+   "calls",
+   "AudioZone.setVolume",
+   "LOG",
+   13
+  ],
+  [
+   "calls",
+   "AudioZone.setVolume",
+   "applyGain",
+   15
+  ],
+  [
+   "calls",
+   "AudioZone.setVolume",
+   "flush",
+   16
+  ],
+  [
+   "imports",
+   "",
+   "audio/Zone.h",
+   2
+  ],
+  [
+   "inherits",
+   "AudioZone",
+   "Observer",
+   6
+  ],
+  [
+   "inherits",
+   "AudioZone",
+   "ZoneBase",
+   6
+  ]
+ ],
+ "strings": [
+  [
+   1,
+   "tag",
+   "CarAudio",
+   "CarAudio",
+   ""
+  ],
+  [
+   13,
+   "log",
+   "negative volume",
+   "CarAudio",
+   "AudioZone.setVolume"
+  ]
+ ]
+}

@@ -1,0 +1,83 @@
+{
+ "language": "go",
+ "symbols": [
+  [
+   "struct",
+   "Thumb",
+   8,
+   10
+  ],
+  [
+   "interface",
+   "Namer",
+   12,
+   14
+  ],
+  [
+   "method",
+   "Thumb.Path",
+   16,
+   18
+  ],
+  [
+   "function",
+   "Build",
+   20,
+   26
+  ]
+ ],
+ "edges": [
+  [
+   "calls",
+   "",
+   "Name",
+   13
+  ],
+  [
+   "calls",
+   "Build",
+   "Errorf",
+   22
+  ],
+  [
+   "calls",
+   "Build",
+   "Save",
+   24
+  ],
+  [
+   "calls",
+   "Thumb.Path",
+   "Sprintf",
+   17
+  ],
+  [
+   "imports",
+   "",
+   "example.com/app/store",
+   5
+  ],
+  [
+   "imports",
+   "",
+   "fmt",
+   4
+  ]
+ ],
+ "strings": [
+  [
+   17,
+   "literal",
+   "%s/%s.png",
+   "",
+   "Thumb.Path"
+  ],
+  [
+   22,
+   "error",
+   "empty thumbnail name",
+   "",
+   "Build"
+  ]
+ ]
+}

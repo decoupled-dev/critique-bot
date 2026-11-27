@@ -30,6 +30,11 @@ _STRING = re.compile(r'"([^"]*)"')
 _COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*', re.S)
 
 
+# Properties that name other modules a module depends on (top level of the block, and in
+# arch/target variants, which the regex sees too).
+_DEP_PROPS = r"(?:static_libs|shared_libs|whole_static_libs|header_libs|libs|java_libs|runtime_libs|required|plugins|aidl_interface_imports|dex_preopt_libs)"
+
+
 def _strip_comments(text: str) -> str:
     return _COMMENT.sub(lambda m: m.group(0) if m.group(0).startswith('"') else "", text)
 
@@ -45,6 +50,8 @@ class Module:
     srcs: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     defaults: list[str] = field(default_factory=list)
+    #: Modules it builds against: static_libs, shared_libs, libs, header_libs, required, ...
+    deps: list[str] = field(default_factory=list)
 
     @property
     def buildable(self) -> bool:
@@ -161,6 +168,7 @@ def _parse(bp_path: str, mtime_ns: int, bp_rel: str) -> tuple[Module, ...]:
                 srcs=_strings(body, r"(?!exclude_)(?:\w+_)?srcs", variables),
                 exclude=_strings(body, "exclude_srcs", variables),
                 defaults=_strings(body, "defaults", variables),
+                deps=_strings(body, _DEP_PROPS, variables),
             )
         )
     return tuple(modules)

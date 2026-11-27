@@ -1,0 +1,65 @@
+{
+ "language": "c",
+ "symbols": [
+  [
+   "struct",
+   "fan_state",
+   5,
+   7
+  ],
+  [
+   "function",
+   "clamp",
+   9,
+   11
+  ],
+  [
+   "function",
+   "fan_set",
+   13,
+   20
+  ]
+ ],
+ "edges": [
+  [
+   "calls",
+   "fan_set",
+   "ALOGE",
+   15
+  ],
+  [
+   "calls",
+   "fan_set",
+   "clamp",
+   18
+  ],
+  [
+   "imports",
+   "",
+   "fan/fan.h",
+   3
+  ],
+  [
+   "imports",
+   "",
+   "stdio.h",
+   2
+  ]
+ ],
+ "strings": [
+  [
+   1,
+   "tag",
+   "fanctl",
+   "fanctl",
+   ""
+  ],
+  [
+   15,
+   "log",
+   "fan level too high: %d",
+   "fanctl",
+   "fan_set"
+  ]
+ ]
+}

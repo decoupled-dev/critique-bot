@@ -1,0 +1,38 @@
+{
+ "language": "hidl",
+ "symbols": [
+  [
+   "interface",
+   "IFan",
+   5,
+   8
+  ],
+  [
+   "method",
+   "IFan.setSpeed",
+   6,
+   6
+  ],
+  [
+   "method",
+   "IFan.getSpeed",
+   7,
+   7
+  ]
+ ],
+ "edges": [
+  [
+   "imports",
+   "",
+   "android.hardware.base@1.0::IBase",
+   2
+  ],
+  [
+   "inherits",
+   "IFan",
+   "IBase",
+   5
+  ]
+ ],
+ "strings": []
+}

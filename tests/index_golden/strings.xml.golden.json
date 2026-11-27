@@ -1,0 +1,21 @@
+{
+ "language": "xml",
+ "symbols": [],
+ "edges": [],
+ "strings": [
+  [
+   2,
+   "resource",
+   "Climate control",
+   "hvac_title",
+   ""
+  ],
+  [
+   3,
+   "resource",
+   "Fan could not be set",
+   "fan_error",
+   ""
+  ]
+ ]
+}
