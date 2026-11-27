@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from critique_bot import egress, env_names, redaction
+from critique_bot import egress, env_names, log, redaction
 from critique_bot.config import (
     COMPANY_CONFIG_KEY,
     USER_PREF_KEYS,
@@ -123,15 +123,16 @@ def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path
     ``--config`` > ``CRIT_CONFIG`` > the config stored for the project in
     ``.crit/settings.json`` > an untracked ``config.json`` in the project root > the user
     config (``config.user_config_path()``). The first two count even when the file is
-    missing (the caller reports it or writes it); the project's only when the file exists;
-    the user config may not exist yet (first run).
+    missing (the caller reports it or writes it); the project's only when the file exists
+    and the user approved it (see ``project_home.APPROVAL_KEYS``); the user config may not
+    exist yet (first run).
     """
     if explicit:
         return ConfigLocation(Path(explicit).expanduser(), "flag")
     from_env = (env_names.get(ENV_CONFIG) or "").strip()
     if from_env:
         return ConfigLocation(Path(from_env).expanduser(), "env")
-    from critique_bot.project_home import BotHomeError, find_bot_home, git_tracks
+    from critique_bot.project_home import BotHomeError, find_bot_home
 
     start = Path(repo_dir or ".").resolve()
     home = find_bot_home(start)
@@ -142,11 +143,37 @@ def resolve_config_path(explicit: str | Path | None = None, repo_dir: str | Path
             raise ConfigError(str(exc)) from exc
         if stored is not None and stored.is_file():
             return ConfigLocation(stored, "project")
-    root = home.root if home is not None else start
-    candidate = root / CONFIG_FILE_NAME
-    if candidate.is_file() and not git_tracks(root, candidate):
+    candidate = unapproved_root_config(repo_dir, home=home, approved=True)
+    if candidate is not None:
         return ConfigLocation(candidate, "project-root")
     return ConfigLocation(user_config_path(), "user")
+
+
+def unapproved_root_config(repo_dir: str | Path | None = None, *, home=None, approved: bool = False) -> Path | None:
+    """The project's untracked ``config.json`` (next to the code) that is not approved yet, or None.
+
+    With ``approved``: the approved one instead. A ``config.json`` that came with the code
+    picks the model server every file is sent to, so it counts only once the user approved
+    that content (the question at start, or ``crit trust config.json``).
+    """
+    from critique_bot.project_home import find_bot_home, git_tracks, root_config_approved
+
+    start = Path(repo_dir or ".").resolve()
+    if home is None:
+        home = find_bot_home(start)
+    if home is not None and home.unapproved.get("config"):
+        return None  # the settings name a config: that is the question to ask
+    root = home.root if home is not None else start
+    candidate = root / CONFIG_FILE_NAME
+    if not candidate.is_file() or git_tracks(root, candidate):
+        return None
+    ok = root_config_approved(candidate)
+    if approved:
+        if not ok:
+            log.warn(f"not using {candidate}: it came with the project and you have not approved it "
+                     f"(crit trust {candidate})")
+        return candidate if ok else None
+    return None if ok else candidate
 
 
 # --------------------------------------------------------------------------- showing
@@ -291,8 +318,58 @@ def _read_api_key(value: str, prompt: str = "API key: ") -> str | None:
 
 
 def set_api_key(value: str) -> int:
-    """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it."""
-    return set_user_secret("local", "api_key", value, "API key")
+    """``crit config --api-key``: store (or remove) ``local.api_key`` in the user config. Never prints it.
+
+    The key is saved together with the server it is for (``local.api_key_url``: the url in the
+    user config, or the default local server). A config from a project or ``--config`` that
+    names another server does not get it; ``--api-key-url`` binds it to another server.
+    """
+    code = set_user_secret("local", "api_key", value, "API key")
+    if code == 0:
+        code = bind_api_key(None, quiet=True)
+    return code
+
+
+def bind_api_key(url: str | None, *, quiet: bool = False) -> int:
+    """``crit config --api-key-url URL``: the server the saved API key may be sent to.
+
+    None: the url in the user config (or the default local server). The key is removed:
+    the binding goes with it.
+    """
+    from critique_bot.config import DEFAULT_LOCAL_URL, url_origin
+
+    path = user_config_path()
+    try:
+        data = read_config_dict(path) if path.is_file() else {}
+    except ConfigError as exc:
+        print(f"Not saved: {exc}", file=sys.stderr)
+        return 2
+    block = data.get("local") if isinstance(data.get("local"), dict) else {}
+    if not _api_key_in(data):
+        if block.pop("api_key_url", None) is None:
+            if not quiet:
+                print("Not saved: no API key is saved (crit config --api-key sets one).", file=sys.stderr)
+                return 2
+            return 0
+    else:
+        target = (url or "").strip() or str(data.get("url") or "").strip() or DEFAULT_LOCAL_URL
+        if not url_origin(target):
+            print(f"Not saved: {target!r} is not a server address (http://host:port).", file=sys.stderr)
+            return 2
+        block["api_key_url"] = target
+    if block:
+        data["local"] = block
+    else:
+        data.pop("local", None)
+    try:
+        write_config_file(path, data)
+    except OSError as exc:
+        print(f"Not saved: could not write {path}: {exc}", file=sys.stderr)
+        return 1
+    if block.get("api_key_url") and not quiet:
+        print(f"Saved {path}: the API key is sent only to {url_origin(block['api_key_url'])} "
+              "(and the server in your own settings).")
+    return 0
 
 
 def set_user_secret(section: str, key: str, value: str, label: str) -> int:
@@ -370,6 +447,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="the model server's API key, kept in your user settings: no value asks for it (nothing is shown), "
         "- reads it from stdin, none removes it. CRIT_API_KEY overrides it",
     )
+    parser.add_argument(
+        "--api-key-url", metavar="URL",
+        help="the model server your saved API key is for (default: the url in your user settings). "
+        "A project config or --config that names another server does not get the key",
+    )
     parser.add_argument("--allow-host", action="append", default=[], metavar="HOST", help="a site the page may reach (repeatable)")
     parser.add_argument("--remove-host", action="append", default=[], metavar="HOST", help="stop allowing a site (repeatable)")
     parser.add_argument("--redact", action="append", default=[], metavar="NAME", help="names to hide, comma-separated or repeated")
@@ -433,6 +515,7 @@ def _changes_requested(args: argparse.Namespace) -> bool:
             args.url, args.backend, args.local_url, args.model, args.allow_host, args.remove_host,
             args.redact, args.unredact, args.pii, args.egress, args.gitlab_url, args.selector,
             args.config_file, args.page_network, args.theme, getattr(args, "api_key", None),
+            getattr(args, "api_key_url", None),
             getattr(args, "gitlab_token", None), getattr(args, "jira_url", None), getattr(args, "jira_email", None),
             getattr(args, "jira_token", None), getattr(args, "site_user", None), getattr(args, "site_password", None),
             getattr(args, "site_login_host", None), getattr(args, "proxy_user", None), getattr(args, "proxy_password", None),
@@ -734,6 +817,11 @@ def main(argv: list[str], *, confirm: Callable[[str], bool] = _confirm, is_tty: 
     if args.api_key is not None:
         code = set_api_key(args.api_key)
         args.api_key = None
+        if code or not _changes_requested(args):
+            return code
+    if getattr(args, "api_key_url", None) is not None:
+        code = bind_api_key(args.api_key_url)
+        args.api_key_url = None
         if code or not _changes_requested(args):
             return code
     for attr, section, key, label in (

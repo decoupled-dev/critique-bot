@@ -17,8 +17,9 @@ Every command uses the first of these that applies:
 
 1. `--config FILE` on the command line;
 2. the `CRIT_CONFIG` environment variable;
-3. the config recorded for the project in `.crit/settings.json` (`"config"`), if the file exists;
-4. a `config.json` in the project root, if it exists and git does not track it;
+3. the config recorded for the project in `.crit/settings.json` (`"config"`), if the file exists
+   and you approved it (see [security.md](security.md#what-the-repository-may-not-change));
+4. a `config.json` in the project root, if it exists, git does not track it, and you approved it;
 5. your user config: `config.json` in crit's folder, `~/.crit/config.json`
    (`%USERPROFILE%\.crit\config.json` on Windows; `CRIT_HOME` moves the folder). In 1.0.x
    it was `~/.config/critique-bot/config.json` (`%APPDATA%\critique-bot\config.json`); crit
@@ -75,7 +76,8 @@ environment variable, and the API key is shown only as set or not set).
 | `--backend browser\|local` | `backend` (local defaults `url` to `http://127.0.0.1:8080`) |
 | `--local-url ADDR` | the model server's `url` (`ip:port` or `http(s)://host:port`), `backend: local`; a server on another PC is added to `allowed_hosts` |
 | `--model NAME` | `model` (`""` for the default) |
-| `--api-key` | `local.api_key` in your own config: asks for it without echo; `--api-key -` reads it from stdin, `--api-key none` removes it |
+| `--api-key` | `local.api_key` in your own config: asks for it without echo; `--api-key -` reads it from stdin, `--api-key none` removes it. Saved with the server it is for (`local.api_key_url`) |
+| `--api-key-url URL` | the model server your saved API key may be sent to besides the one in your own config (`local.api_key_url`) |
 | `--allow-host H` / `--remove-host H` | `allowed_hosts` (repeatable; a URL is reduced to its host) |
 | `--redact NAMES` / `--unredact NAME` | `redact_terms` (repeatable or comma-separated; at least 3 letters or digits) |
 | `--pii on\|off` | `redact_pii` |
@@ -159,7 +161,7 @@ llama-server -m models/qwen2.5-coder-14b-instruct-q4_k_m.gguf --host 127.0.0.1 -
 | `model` | first model the server lists | The model name as the server lists it at `/v1/models` (llama-server: the file name, or `--alias`). `--model` and `CRIT_MODEL` override it, as for the browser. |
 | `local.api` | `openai` | The only API crit speaks: `/v1/chat/completions` and `/v1/models`. |
 | `local.num_ctx` | 0 (read from the server) | The context window the server was started with (`llama-server -c`). crit sizes its conversations to it; it is not sent to the server. When it is 0 or not set, crit reads it from the server (llama.cpp: `GET /props`, `default_generation_settings.n_ctx`; vLLM: `GET /v1/models`, `data[].max_model_len`) and otherwise assumes 32768. crit never asks for it. |
-| `local.api_key` | none | The server's API key, sent as `Authorization: Bearer <key>` only to this server. Read only from your own `~/.crit/config.json` or `CRIT_API_KEY`; a shared config file cannot supply it (it is ignored there). Never logged, and redacted from transcripts and the log file. Set it with `crit config --api-key`. |
+| `local.api_key` | none | The server's API key, sent as `Authorization: Bearer <key>` only to this server. Read only from your own `~/.crit/config.json` or `CRIT_API_KEY`; a shared config file cannot supply it (it is ignored there). It is bound to its server: a config other than your own (a project's, or `--config`) gets it only when its `url` has the same scheme, host and port as `local.api_key_url` (saved with the key), the `url` in your own config, or `CRIT_API_KEY_URL`; otherwise the log file says it was not sent. `crit config --api-key-url URL` binds it to another server. Never logged, and redacted from transcripts and the log file. Set it with `crit config --api-key`. |
 | `local.temperature` | server default | Sampling temperature. 0 to 0.3 suits code. |
 | `local.max_tokens` | the profile's, else none sent | The longest reply, sent as `max_tokens`. Hosted gateways (OpenRouter) reserve credit for the model's whole output window without it, and refuse with HTTP 402 on a small balance: set 8192 there. |
 | `local.profile` | chosen by the model name | The [model profile](local-models.md#model-profiles) to use, by id (`qwen3.6-27b`, `gemma3`, `generic`, or one of yours in `~/.crit/profiles/`). Left out, crit picks the profile whose name pattern fits `model` best, else `generic`. An unknown id is logged and ignored. |
@@ -763,6 +765,7 @@ browser cannot reach it.
 | `CRIT_SITE_PASSWORD` | `site_login.password` |
 | `CRIT_REDACT_TERMS` | added to `redact_terms` (comma-separated) |
 | `CRIT_API_KEY` | `local.api_key` |
+| `CRIT_API_KEY_URL` | another server the API key may be sent to (see `local.api_key`) |
 
 The older `CRITIQUE_*` names (for example `CRITIQUE_CHAT_URL` for `CRIT_URL`) still work.
 

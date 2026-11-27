@@ -45,8 +45,7 @@ class StringsIndexTest(unittest.TestCase):
         engine.wait_all(30)
         file_catalog.forget()
 
-    # SECURITY FINDING SF-6: find_strings returns secret literals without their key, so redaction misses them.
-    @unittest.expectedFailure
+    # SECURITY FINDING SF-6 (fixed): find_strings returns secret literals without their key, so redaction misses them.
     def test_find_strings_never_hands_the_model_a_secret_read_files_would_redact(self) -> None:
         from critique_bot.indexing import tools
 

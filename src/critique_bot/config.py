@@ -443,7 +443,7 @@ def load_config(
     if backend == BACKEND_LOCAL:
         url = _local_url(url or DEFAULT_LOCAL_URL, _host_list(raw.get("allowed_hosts")))
         local = _load_local(raw.get("local"), url)
-        api_key = _local_api_key(own_raw, company, shared_file=shared_file)
+        api_key = _local_api_key(own_raw, company, shared_file=shared_file, config_path=config_path, url=url)
         if api_key:
             local = replace(local, api_key=api_key)
     else:
@@ -1272,6 +1272,56 @@ def _load_local(raw: object, url: str) -> LocalConfig:
 
 #: The local server's API key from the environment (wins over the user config).
 ENV_LOCAL_KEY = "CRIT_API_KEY"
+#: The server ``CRIT_API_KEY`` (and the user config's key) may also go to: an explicit re-binding.
+ENV_LOCAL_KEY_URL = "CRIT_API_KEY_URL"
+
+
+def url_origin(url: str) -> str:
+    """``scheme://host:port`` of ``url`` (``ip:port`` means http), lower case, default ports filled in."""
+    from urllib.parse import urlsplit
+
+    value = (url or "").strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "http://" + value
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return ""
+    if not parts.hostname:
+        return ""
+    scheme = parts.scheme.lower()
+    port = port or {"http": 80, "https": 443}.get(scheme, 0)
+    return f"{scheme}://{parts.hostname.lower().rstrip('.')}:{port}"
+
+
+def api_key_origins() -> set[str]:
+    """The servers the user's API key is for: ``local.api_key_url`` (where it was saved for, or
+    re-bound with ``crit config --api-key-url``), the url in the user's own config (or the default
+    local server when it names none), and ``CRIT_API_KEY_URL``."""
+    origins: set[str] = set()
+    try:
+        data = read_config_dict(user_config_path())
+    except (ConfigError, OSError):
+        data = {}
+    local = data.get("local") if isinstance(data.get("local"), dict) else {}
+    for value in (_clean(local.get("api_key_url")), _clean(data.get("url")) or DEFAULT_LOCAL_URL,
+                  _clean(os.environ.get(ENV_LOCAL_KEY_URL))):
+        origin = url_origin(value or "")
+        if origin:
+            origins.add(origin)
+    return origins
+
+
+def _is_user_config(config_path: Path | None) -> bool:
+    if config_path is None:
+        return False
+    try:
+        return Path(config_path).resolve() == user_config_path().resolve()
+    except OSError:
+        return False
 
 
 def user_api_key() -> str:
@@ -1363,20 +1413,45 @@ def _load_site_login(own: dict, company: "CompanySettings | None", shared_file: 
     return SiteLoginConfig(username=username, password=password, host=host)
 
 
-def _local_api_key(own: dict, company: "CompanySettings | None", *, shared_file: bool) -> str:
-    """``CRIT_API_KEY``, else ``local.api_key`` in the user's own config. A shared config file never
-    supplies it (it would hand everyone's requests one key, and the file is readable by others).
-    The key is registered with redaction so it never reaches a transcript or the log file."""
+def _local_api_key(own: dict, company: "CompanySettings | None", *, shared_file: bool,
+                   config_path: Path | None = None, url: str = "") -> str:
+    """``CRIT_API_KEY``, else ``local.api_key`` in the active config, else the one in the user's own config.
+
+    A shared config file never supplies it (it would hand everyone's requests one key, and the
+    file is readable by others). The user's key (``CRIT_API_KEY`` or ``~/.crit/config.json``)
+    goes only to the server it is for (:func:`api_key_origins`): a config from the project or
+    ``--config`` that names another server does not get it. The key is registered with
+    redaction so it never reaches a transcript or the log file."""
     if company is not None and _api_key_in(company.data):
         log.info(f"local.api_key in the config file {company.path} is ignored; set it with crit config --api-key")
+    own_config = _is_user_config(config_path)
+    origins: set[str] | None = None
+
+    def bound(source: str) -> bool:
+        nonlocal origins
+        if own_config or config_path is None:
+            return True
+        if origins is None:
+            origins = api_key_origins()
+        if url_origin(url) in origins:
+            return True
+        log.warn(f"not sending {source} to {url_origin(url) or url}: the key is for "
+                 f"{', '.join(sorted(origins)) or 'another server'}. To use it there: "
+                 f"crit config --api-key-url {url} (or set {ENV_LOCAL_KEY_URL})")
+        return False
+
     key = _clean(os.environ.get(ENV_LOCAL_KEY))
+    if key and not bound(ENV_LOCAL_KEY):
+        key = ""
     if not key:
         if shared_file and _api_key_in(own):
             log.info("local.api_key in a shared config file is ignored; set it with crit config --api-key")
         elif not shared_file:
-            key = _api_key_in(own)
+            key = _api_key_in(own)  # the key saved in the same file as its url
     if not key:
         key = user_api_key()
+        if key and not bound("your API key"):
+            key = ""
     if key:
         redaction.add_secret_value(key)
     return key

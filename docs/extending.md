@@ -33,14 +33,26 @@ $ crit trust --list                # every approval on this machine
 $ crit trust --revoke .crit/tools/adb_logcat.toml
 ```
 
-An approval covers the file's content (its sha256). If the file changes later, for example
-after a `git pull`, it is off again until you approve it again. At session start crit lists
-every file that is off and gives the command that turns it on.
+An approval covers the file's content (its sha256) **and every project file it names**: a
+script in `argv` (`["python3", ".crit/hooks/check.py"]`, `./tools/run.sh`), an MCP server's
+`command`, or any other path in the file that lands inside the project (relative to the
+project root or to the file's `cwd`). `crit trust` lists them (`runs .crit/hooks/check.py`). If
+the file or one of those programs changes later, for example after a `git pull`, or a
+program appears where the file points and was not there when you approved it, the file is
+off again until you approve it again. At session start crit lists every file that is off
+and gives the command that turns it on. An approval made before crit covered programs counts
+only for files that run no project file.
+
+What an approval cannot cover: files that a covered program loads in turn (a helper module
+the script imports), and packages a launcher downloads (`uvx some-server`, `npx pkg`). Keep
+hook programs self-contained, or in `~/.crit/hooks/`, and pin package versions
+(`uvx some-server==1.2.3`).
 
 Project agents and commands are prompts, so they load without approval. Until you approve
 one, though, it cannot set a looser permission mode than `ask` (agents) or `ask`/`plan`
-(commands). The model cannot write to any extension file or to `trust.json` /
-`mcp-lock.json`, in either scope.
+(commands). The model cannot write to any extension file, to `hooks/` (in `.crit` and
+`~/.crit`), to a program an extension file runs, or to `trust.json` / `mcp-lock.json`, in
+either scope.
 
 ## Manifest tools
 

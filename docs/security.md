@@ -91,8 +91,9 @@ Files that usually hold secrets need your yes before they are read or edited (mo
 - `keystore.properties`, `gradle.properties`, `local.properties`, `google-services.json`
 - shell histories, and the browser profile's `Cookies` and `Login Data`
 - anything under `.ssh`, `.aws`, `.docker`, `.kube`, `.gnupg`, or the browser profile folder
+- every credential file and folder the sandbox masks (`HOME_CREDENTIALS` in `src/critique_bot/secret_paths.py`), wherever it appears in a path: the GitHub/GitLab/hub CLI logins (`.config/gh/hosts.yml`, `.config/hub`), `.s3cfg`, `.boto`, `.cargo/credentials.toml`, `.terraformrc`, `.m2/settings.xml`, `.config/gcloud` (and any `application_default_credentials.json`), and the rest of that list
 
-A workspace-wide search leaves those files out of its results. `git_diff` and `git_show` keep their names and diff headers but leave out their changes, with a note, unless the call names the file (`path`), which asks first like `read_files`. Review mode never attaches them whole; their diff hunks still go, redacted.
+A workspace-wide search leaves those files out of its results. `git_diff` and `git_show` keep their names and diff headers but leave out their changes, with a note, unless the call names the file (`path`), which asks first like `read_files`. The strings index behind `find_strings` and `locate` does not store the literals of those files, nor a literal that looks secret by its format or by the name it is assigned to (`DB_PASSWORD = "..."`), because those tools show a literal without the line around it that redaction would recognize; hits from an index built before this are filtered the same way. Review mode never attaches them whole; their diff hunks still go, redacted.
 
 Anything outside the workspace (a read, a write, or a command run there) also needs your yes in every mode.
 
@@ -150,13 +151,28 @@ Anything outside the workspace (a read, a write, or a command run there) also ne
 
 ## What the repository may not change
 
-A cloned repository is untrusted input, so it cannot loosen crit's rules:
+A cloned repository, a downloaded archive, or a folder another user can write to is untrusted input, so it cannot loosen crit's rules:
 
+- **Project settings that loosen crit count only once you approve them.** The keys in `project_home.APPROVAL_KEYS` (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`, `lint`, `packs`, `memory_untrusted`, `keep_background_jobs`, and `config`, the model server) are left out of a project's `.crit/settings.json` until you approve the values it sets, whether or not the folder is a git repository. In a terminal, `crit` shows them at start and asks once:
+
+  ```
+  /work/proj/.crit/settings.json sets values that loosen crit or pick the model server:
+    permissions: "auto"  (how much crit does without asking)
+    config: ".crit/model.json"  (the model server your code is sent to)
+  crit did not write them on this PC (or they changed since you approved them), so they are off.
+  Use them only if you wrote them, or trust whoever did: they decide what runs without asking.
+  Use these settings in this project? [y/N]
+  ```
+
+  Without a terminal one line says so and crit goes on without them. Approve later with `crit trust .crit/settings.json`; undo with `crit trust --revoke .crit/settings.json`. The approval is the sha256 of those values (and of the config file `config` names), kept in `~/.crit/trust.json`; other keys (`theme`, `role`, ...) can change without a new question, a change to an approved value turns it off again. Values crit writes itself (`/mode`, an "always allow" rule, `--config`) stay approved, unless the file already held values you had not approved. Settings in `~/.crit/projects/home` (the home folder as a project) are crit's own and need no approval.
+- **An untracked `config.json` in the project root** is used only after the same kind of question ("... came with this project and picks where your code is sent (model server: URL). Use it?") or `crit trust config.json`, and only while its content is unchanged.
+- **crit does not climb into other people's folders.** Looking for `.crit` above the working folder, crit skips one that belongs to another user or that others can write to (a `/tmp/.crit` someone else made), and inside your home folder it stops at the home folder.
+- **`crit eval` writes no settings.** Its allow-everything settings for unattended trials go to the crit process it starts (`CRIT_EVAL_SETTINGS` in that process's environment), never into a task's workspace, so a real tree used as a task's `"workspace"` keeps its own rules.
 - **A committed config is refused.** When `.crit/settings.json` names a `config` that git tracks in the project (or git cannot confirm it does not: no git, a timeout, or the project is a subfolder of a repository), crit stops with an error instead of using its `url`, `allowed_hosts`, or `cdp_url`. Use your own untracked copy, or `--config`.
-- **A committed `.crit/settings.json` loses its permission keys** (`permissions`, `mode`, `allow`, `confirm_risky`, `web_fetch`, `web_fetch_hosts`, `network_commands`, `check_command`, `auto_questions`, `sandbox`). They count only in your own, untracked settings file. New projects git-ignore `.crit/settings.json`.
+- **A committed `.crit/settings.json` loses its permission keys** (`project_home.SECURITY_KEYS`: the list above without `config`), even when approved. They count only in your own, untracked, approved settings file. New projects git-ignore `.crit/settings.json`.
 - **The check command asks like any other command**, since it can come from `.crit/AGENT.md`.
-- **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, `.crit/skills/`, the extension files (`tools/`, `agents/`, `commands/`, `hooks.*`, `mcp.json` in `.crit` and `~/.crit`), `~/.crit/trust.json`, `~/.crit/mcp-lock.json`, and the config file named there are refused.
-- **A project's extension tools, hooks and MCP servers run nothing until approved.** `.crit/tools/`, `.crit/hooks.*` and `.crit/mcp.json` stay off until `crit trust <file>` approves that exact content (sha256, kept in `~/.crit/trust.json`); an edit turns the file off again. Project agents and commands are prompts: they load, but cannot loosen the permission mode until approved ([extending.md](extending.md)).
+- **The model cannot rewrite crit's own files.** Writes to `.crit/settings.json`, every skill folder (`.crit/skills/`, `.agents/skills/`, `.opencode/skills/`, `.bot/skills/`), the extension files (`tools/`, `agents/`, `commands/`, `hooks.*`, `hooks/`, `mcp.json` in `.crit` and `~/.crit`), every program those files run inside the project (what `crit trust` covers), `~/.crit/trust.json`, `~/.crit/mcp-lock.json`, and the config file named there are refused.
+- **A project's extension tools, hooks and MCP servers run nothing until approved.** `.crit/tools/`, `.crit/hooks.*` and `.crit/mcp.json` stay off until `crit trust <file>` approves that exact content (sha256, kept in `~/.crit/trust.json`), together with every project file it names (the scripts it runs); an edit to any of them, or a program that appears where the file points, turns the file off again. Project agents and commands are prompts: they load, but cannot loosen the permission mode until approved ([extending.md](extending.md)).
 - **MCP tools are pinned and their output is untrusted.** A tool whose description or schema changes after its first use, or that a server adds after its first connection, is left out until `crit mcp approve`; a server name with `__` in it, or a tool whose model-facing name another tool already has, is refused with a note; results are wrapped in `<untrusted source="mcp:...">` blocks the content cannot close, also not with zero-width characters, fullwidth forms or bracket lookalikes (`<\u200b/untrusted>`, `＜/untrusted＞`). Manifest tools run as one argv (no shell); arguments fill whole argv elements and cannot start with `-` (negative numbers included, unless the schema's `minimum` allows them).
 
 ## The setup page
@@ -167,7 +183,7 @@ A cloned repository is untrusted input, so it cannot loosen crit's rules:
 
 Everything crit keeps for you is in one folder, `~/.crit` (`%USERPROFILE%\.crit` on Windows; `CRIT_HOME` moves it): `config.json` (your settings, 0600), `browser-profile/` (the signed-in browser, with its cookies), `msedge-user-data/` (only with `user_data_dir: "system"`), `cache/` (the saved copy of the config file), `logs/crit.log` (the log file), `logs/audit.jsonl` (the audit log), `projects/` (project data, such as the home folder's own), and the self-installed program in `app/<version>/` with its launcher in `bin/`. The folder is readable only by your user: 0700 on Linux and macOS and an owner-only ACL (icacls) on Windows. The browser profile is never taken from a shared config file. Files from 1.0.x (`~/.config/critique-bot`, `%APPDATA%\critique-bot`, `%LOCALAPPDATA%\critique-bot\msedge-user-data`) are moved in once. `crit uninstall` removes all of it except `projects/` ([install.md](install.md#uninstall)).
 
-The log file `~/.crit/logs/crit.log` is always written, owner-only, and rotated at about 2 MB (3 files kept). Every line is redacted the same way as outgoing messages. A local model server's API key (`local.api_key`) is never logged and is redacted from transcripts and the log file; it is sent only to the configured local server, and a shared config file cannot supply it.
+The log file `~/.crit/logs/crit.log` is always written, owner-only, and rotated at about 2 MB (3 files kept). Every line is redacted the same way as outgoing messages. A local model server's API key (`local.api_key`) is never logged and is redacted from transcripts and the log file; it is sent only to the server it was saved for (or the one in your own config; `crit config --api-key-url` re-binds it), never to a server that a project's config or `--config` names, and a shared config file cannot supply it.
 
 `.crit/sessions` (transcripts), `.crit/cache` (undo copies), and `.crit/history` (your typed tasks) stay on the PC. Undo copies are never made of secret files. Transcripts are saved as they were sent, with secrets redacted. They are git-ignored in `.crit/.gitignore` and the project's `.gitignore`, so they are not committed by accident. The folders are readable only by your user: 0700 on Linux and macOS, set every time they are used, and an owner-only ACL (icacls) on Windows.
 

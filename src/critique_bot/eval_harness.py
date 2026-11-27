@@ -292,10 +292,17 @@ class CritRunner(Runner):
         if self.config:
             command += ["--config", str(Path(self.config).expanduser().resolve())]
         command.append(task.spec["prompt"])
+        # Settings for this run go through the environment of the crit process, never into the
+        # workspace: a task's "workspace" is the user's real project and must stay as it was.
+        values: dict[str, Any] = {}
         if not self.ask_commands:
-            _allow_everything(work)
+            values.update(_ALLOW_EVERYTHING)
         if self.packs:
-            _merge_settings(work, {"packs": list(self.packs)})
+            values["packs"] = list(self.packs)
+        if values:
+            from critique_bot.project_home import ENV_EVAL_SETTINGS
+
+            env[ENV_EVAL_SETTINGS] = json.dumps(values)
         code, output = _run_process(command, work, env, timeout)
         if not self.keep_home:
             shutil.rmtree(env["CRIT_HOME"], ignore_errors=True)
@@ -303,23 +310,9 @@ class CritRunner(Runner):
         return RunOutput(code, output, final, stats)
 
 
-def _allow_everything(work: Path) -> None:
-    """Let crit run any command in this disposable workspace without asking (an eval has no
-    terminal to answer). The file is untracked, so crit treats it as the user's own setting."""
-    _merge_settings(work, {"allow": ["*"], "confirm_risky": False})
-
-
-def _merge_settings(work: Path, values: dict[str, Any]) -> None:
-    settings = work / ".crit" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    current: dict[str, Any] = {}
-    if settings.is_file():
-        try:
-            current = json.loads(settings.read_text(encoding="utf-8")) or {}
-        except ValueError:
-            current = {}
-    current.update(values)
-    settings.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+#: Lets crit run any command without asking (an eval has no terminal to answer). Passed as
+#: CRIT_EVAL_SETTINGS to the crit process only; network commands stay under the egress policy.
+_ALLOW_EVERYTHING: dict[str, Any] = {"allow": ["*"], "confirm_risky": False}
 
 
 def crit_transcript(out_dir: Path) -> tuple[str, dict[str, Any]]:

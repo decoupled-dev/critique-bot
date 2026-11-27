@@ -19,7 +19,10 @@ From a checkout, `python3 scripts/eval/run_eval.py` is the same command.
 
 Each trial gets a fresh temporary git workspace and, for crit, a fresh `CRIT_HOME`, so no
 earlier trial can leak into it. A task's hidden check files are copied in only after the
-agent finishes, so the agent never sees them.
+agent finishes, so the agent never sees them. crit runs without asking before commands
+(`--ask-commands` keeps the questions) and with `--packs`; both reach the crit process as
+`CRIT_EVAL_SETTINGS` in its environment, never as a settings file, so a task's existing
+`"workspace"` (your real tree) is not changed.
 
 `<out>/results.jsonl` has one line per trial:
 

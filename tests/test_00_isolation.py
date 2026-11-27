@@ -36,7 +36,7 @@ for _name, _sub in (
     os.environ[_name] = str(_folder)
 for _name in list(os.environ):
     if _name.startswith("CRITIQUE_") or _name in {
-        "CRIT_CONFIG", "CRIT_CONFIG_FILE", "CRIT_URL", "CRIT_MODEL", "CRIT_API_KEY", "CRIT_EGRESS",
+        "CRIT_CONFIG", "CRIT_CONFIG_FILE", "CRIT_URL", "CRIT_MODEL", "CRIT_API_KEY", "CRIT_API_KEY_URL", "CRIT_EVAL_SETTINGS", "CRIT_EGRESS",
         "CRIT_USER_DATA_DIR", "CRIT_CDP_URL", "CRIT_QUEUE_DIR", "CRIT_STORAGE_STATE", "CRIT_GITLAB_TOKEN",
         "CRIT_GITLAB_URL", "CRIT_GITLAB_PROXY", "CRIT_QUEUE_SHARED", "CRIT_MAX_PARALLEL_TABS",
     }:

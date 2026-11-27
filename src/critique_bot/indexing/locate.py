@@ -259,9 +259,18 @@ def search_strings(conn: sqlite3.Connection, text: str, *, kind: str = "", path:
         if str(row[2]) in {"log", "error"}:
             score += 0.03
         out.append(StringHit(str(row[0]), int(row[1]), str(row[2]), value, tag, str(row[5]), round(min(score, 1.0), 3)))
-    out = [hit for hit in out if hit.score >= 0.45]
+    # An index built before secret literals were left out may still hold some (SF-6).
+    out = [hit for hit in out if hit.score >= 0.45 and not _secret_hit(hit)]
     out.sort(key=lambda hit: (-hit.score, hit.path, hit.line))
     return out[:limit]
+
+
+def _secret_hit(hit: StringHit) -> bool:
+    from critique_bot import redaction
+    from critique_bot.indexing.facts import secret_literal
+
+    return redaction.sensitive_file(hit.path) or secret_literal(hit.value) or (
+        bool(hit.tag) and hit.tag != hit.value and secret_literal(hit.tag))
 
 
 # --------------------------------------------------------------------------- retrievers

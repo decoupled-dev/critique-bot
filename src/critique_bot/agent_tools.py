@@ -2064,15 +2064,29 @@ def _protected_paths(ctx: ToolContext) -> list[Path]:
 
     own = project_dir(ctx.workspace, migrate=False)
     out = [own / "settings.json", own / "skills"]
+    # Every folder project skills load from: a planted skill replaces a built-in one next session.
+    out += [Path(ctx.workspace) / root for root in _SKILL_ROOTS]
     # Extension files (tools, agents, commands, hooks, MCP servers) and the approvals of them,
     # in the project and in ~/.crit: a model that wrote one could give itself a new power.
-    extension_names = ("tools", "agents", "commands", "hooks.toml", "hooks.json", "mcp.json")
+    # hooks/ holds the programs hooks run (the documented place for them).
+    extension_names = ("tools", "agents", "commands", "hooks.toml", "hooks.json", "hooks", "mcp.json")
     out += [own / name for name in extension_names]
     user = crit_home()
     out += [user / name for name in (*extension_names, "trust.json", "mcp-lock.json")]
     # A leftover .bot folder from 1.0.x is protected the same way.
     legacy = legacy_project_dir(ctx.workspace)
     out += [legacy / "settings.json", legacy / "skills"]
+    # Every program an approved or user extension runs (what crit trust covers): a model that
+    # rewrote one would run its code the next time the hook or tool fires, with no question.
+    from critique_bot.extensions import trust
+
+    try:
+        out += [Path(os.path.realpath(path)) for path in trust.protected_files(ctx.workspace)]
+    except (OSError, ValueError) as exc:  # a broken trust.json must not open the files up
+        from critique_bot import log
+
+        log.warn(f"could not list the programs extensions run ({exc}); protecting the whole .crit folder")
+        out.append(own)
     for folder in (own, legacy):
         try:
             raw = json.loads((folder / "settings.json").read_text(encoding="utf-8")).get("config")

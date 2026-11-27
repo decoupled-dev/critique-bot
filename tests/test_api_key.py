@@ -191,7 +191,11 @@ class SendingTests(_Base):
     def test_env_key_wins(self) -> None:
         server = self.server()
         with patch.dict(os.environ, {"CRIT_API_KEY": KEY}):
+            # This config is not the user's own: the env key goes only to a server it is bound to (SF-4).
             cfg = load_config(self._config(server.url, {"local": {"api_key": "old-one-1234"}}))
+            self.assertEqual(cfg.local.api_key, "old-one-1234")
+            with patch.dict(os.environ, {"CRIT_API_KEY_URL": server.url}):
+                cfg = load_config(self._config(server.url, {"local": {"api_key": "old-one-1234"}}))
         self.assertEqual(cfg.local.api_key, KEY)
         self.assertEqual(LocalModelClient(cfg).list_models(), ["qwen3"])
 
