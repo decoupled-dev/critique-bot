@@ -37,6 +37,7 @@ LAYERS: dict[str, int] = {
     # models: the model behind crit; model_api is its interface
     "model_api": MODELS,
     "local_model": MODELS,
+    "tool_parse": MODELS,
     # the web chat: a removable package (critique_bot/webchat/), reached only via model_api
     "webchat": MODELS,
     # tools: what the agent can do on this machine; tool_api is its interface

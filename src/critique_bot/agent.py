@@ -1386,7 +1386,15 @@ def _keywords(task: str) -> list[str]:
 
 TOOL_FORMAT_TAGS = "tags"
 TOOL_FORMAT_OPENAI = "openai"
-TOOL_FORMATS = (TOOL_FORMAT_TAGS, TOOL_FORMAT_OPENAI)
+#: Native tool calling: the server's ``tools`` / ``tool_calls`` (a local model). The session
+#: translates to and from the Responses format, so the engine parses replies and sends
+#: results as with TOOL_FORMAT_OPENAI; only the prompts differ (prompts/agent_native.txt).
+TOOL_FORMAT_NATIVE = "native"
+TOOL_FORMATS = (TOOL_FORMAT_TAGS, TOOL_FORMAT_OPENAI, TOOL_FORMAT_NATIVE)
+#: Formats whose replies and results use the Responses wire shape inside the engine.
+_RESPONSES_WIRE = (TOOL_FORMAT_OPENAI, TOOL_FORMAT_NATIVE)
+#: The tools every chat of the running task gets natively (main and helper chats), or None.
+_NATIVE_TOOLS: list[dict[str, Any]] | None = None
 
 
 #: What crit uses when ``"tool_format"`` is not set: the OpenAI Responses format.
@@ -1400,6 +1408,8 @@ def tool_format_of(settings: dict[str, Any] | None, default: str = TOOL_FORMAT_T
     setting keeps tags, the format its own tests are written in.
     """
     raw = str((settings or {}).get("tool_format") or "").strip().lower()
+    if raw in {"native", "tools", "function-calling"}:
+        return TOOL_FORMAT_NATIVE
     if raw in {"openai", "responses", "openai-responses", "json"}:
         return TOOL_FORMAT_OPENAI
     if raw in {"tags", "tag", "tool_call", "xml", "legacy"}:
@@ -1439,6 +1449,8 @@ def load_prompt_sections(tool_format: str = TOOL_FORMAT_TAGS) -> dict[str, str]:
         if "SYSTEM" in overlay:
             overlay["SYSTEM"] = overlay["SYSTEM"].replace("{format}", openai_format.INSTRUCTION)
         sections.update(overlay)
+    elif tool_format == TOOL_FORMAT_NATIVE:
+        sections.update(_read_sections(_agent_prompt_path("agent_native.txt")))
     for key, value in _FALLBACKS.items():
         sections.setdefault(key, value)
     sections["_FORMAT"] = tool_format if tool_format in TOOL_FORMATS else TOOL_FORMAT_TAGS
@@ -1736,6 +1748,8 @@ class _Chat:
         compact_minutes: int = DEFAULT_COMPACT_AFTER_MINUTES,
     ) -> None:
         self.session = session
+        if _NATIVE_TOOLS is not None and callable(getattr(session, "use_tools", None)):
+            session.use_tools(_NATIVE_TOOLS)
         #: A helper tab's chat: no spinner and no notes in the terminal.
         self.quiet = quiet
         self.seed = (seed or "").strip()
@@ -2062,7 +2076,7 @@ class _TaskRun:
         detail = self.chat.last_detail
         complete = isinstance(detail, dict) and detail.get("complete") is True
         answer_task = _answer_only(self.task)
-        wire = _openai_reply(raw_reply, complete) if self.tool_format == TOOL_FORMAT_OPENAI else None
+        wire = _openai_reply(raw_reply, complete) if self.tool_format in _RESPONSES_WIRE else None
         if wire is not None:
             # Responses items: the calls are explicit, and the words are the message items.
             reply, fabricated, unclosed = wire.text, wire.fabricated, wire.unclosed
@@ -2838,7 +2852,7 @@ class _TaskRun:
         if notes:
             extra = notes + ("\n\n" + extra if extra else "")
         room = max(2_000, self.max_result_chars - len(state_text) - len(extra) - 4)
-        if self.tool_format == TOOL_FORMAT_OPENAI:
+        if self.tool_format in _RESPONSES_WIRE:
             from critique_bot import openai_format
 
             ids = [call.call_id for call in calls or []]
@@ -2927,6 +2941,12 @@ def run_agent_loop(
     show = emit or _emit
     ask_person = ask_user or (lambda question: _ask_user(question, None))
     sections = load_prompt_sections(tool_format_of(settings if isinstance(settings, dict) else None))
+    global _NATIVE_TOOLS
+    _NATIVE_TOOLS = None
+    if sections.get("_FORMAT") == TOOL_FORMAT_NATIVE:
+        found = (settings or {}).get("_native_tools") if isinstance(settings, dict) else None
+        _NATIVE_TOOLS = list(found) if found else sorted(
+            tool_api.registry().openai_tools(), key=lambda tool: str((tool.get("function") or {}).get("name")))
 
     def ask(question: str) -> str | None:
         # Auto mode does not stop for questions: the model decides and says what it chose.
@@ -3420,7 +3440,7 @@ def run_agent(
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
-    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)))
+    setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=config.is_local)
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
@@ -3500,7 +3520,8 @@ def run_agent(
                 "approve_mode": approve_mode,
                 "session_shell": session_shell,
                 "turns": turns,
-                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format},
+                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
+                             "_native_tools": setup.native_tools},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
                 "role": role_id,
@@ -3557,13 +3578,29 @@ class _ToolSetup:
     tools_block: str
     #: The registry to install for the session, or None for the built-in one.
     registry: Any
+    #: Native format: the tools in OpenAI chat format, handed to each session (use_tools).
+    native_tools: list[dict[str, Any]] | None = None
 
 
 def _tool_setup(
-    settings: dict[str, Any], *, helpers: int, web: bool, only: Iterable[str] | None = None
+    settings: dict[str, Any],
+    *,
+    helpers: int,
+    web: bool,
+    only: Iterable[str] | None = None,
+    native_ok: bool = False,
 ) -> _ToolSetup:
-    """The tool format, the tool set, and the tools block, from ``tool_format`` and ``tool_set``."""
+    """The tool format, the tool set, and the tools block, from ``tool_format`` and ``tool_set``.
+
+    ``native_ok``: the backend calls tools natively (a local model server). Then native is the
+    default; ``"tool_format": "openai"`` or ``"tags"`` still picks a text format.
+    """
+    raw = str(settings.get("tool_format") or "").strip().lower()
     fmt = tool_format_of(settings, DEFAULT_TOOL_FORMAT)
+    if native_ok and raw in {"", "auto"}:
+        fmt = TOOL_FORMAT_NATIVE
+    elif fmt == TOOL_FORMAT_NATIVE and not native_ok:
+        fmt = TOOL_FORMAT_OPENAI  # the web chat has no native tool calls
     minimal = str(settings.get("tool_set") or "").strip().lower() == "minimal"
     names = list(only) if only is not None else list(MINIMAL_TOOLS if minimal else ALLOWED_TOOLS)
     if helpers < 1 and "delegate" in names:
@@ -3572,12 +3609,16 @@ def _tool_setup(
         names.remove("web_fetch")
     registry = tool_api.builtin_registry().only(names) if (minimal or only is not None) else None
     block = ""
+    native: list[dict[str, Any]] | None = None
+    source = registry or tool_api.builtin_registry().only(names)
     if fmt == TOOL_FORMAT_OPENAI:
         from critique_bot import openai_format
 
-        source = registry or tool_api.builtin_registry().only(names)
         block = openai_format.tools_block(source.openai_tools())
-    return _ToolSetup(fmt, block, registry)
+    elif fmt == TOOL_FORMAT_NATIVE:
+        # Sorted by name, so the request's tools are byte-identical turn after turn (prompt cache).
+        native = sorted(source.openai_tools(), key=lambda tool: str((tool.get("function") or {}).get("name")))
+    return _ToolSetup(fmt, block, registry, native)
 
 
 def run_read_only_task(
@@ -3602,7 +3643,7 @@ def run_read_only_task(
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
-    setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS))
+    setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS), native_ok=config.is_local)
     try:
         instructions = load_agent_instructions(setup.tool_format)
     except OSError as exc:
@@ -3652,7 +3693,8 @@ def run_read_only_task(
                 "shell": shell,
                 "approve_mode": "plan",
                 "turns": turns,
-                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format},
+                "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
+                             "_native_tools": setup.native_tools},
                 "ask_user": lambda _question: "",
                 "helper_count": 0,
                 "role": role,

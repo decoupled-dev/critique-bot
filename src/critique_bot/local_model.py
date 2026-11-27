@@ -109,6 +109,76 @@ def _served(model: str, models: list[str]) -> bool:
     return any(name.lower() == wanted or name.lower() == wanted + ":latest" for name in models)
 
 
+def _merge_tool_call(pending: dict[int, dict[str, Any]], piece: Any) -> None:
+    """Add one streamed ``tool_calls`` delta to the calls being built (name once, arguments in pieces)."""
+    if not isinstance(piece, dict):
+        return
+    index = piece.get("index")
+    if not isinstance(index, int):
+        index = len(pending)
+    call = pending.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+    if piece.get("id"):
+        call["id"] = str(piece["id"])
+    function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
+    if function.get("name"):
+        call["function"]["name"] += str(function["name"]) if not call["function"]["name"] else ""
+    arguments = function.get("arguments")
+    if isinstance(arguments, dict):  # some servers send the object, not a string
+        call["function"]["arguments"] = json.dumps(arguments, ensure_ascii=False)
+    elif isinstance(arguments, str):
+        call["function"]["arguments"] += arguments
+
+
+def _result_text(output: Any) -> str:
+    """A function_call_output payload as the text of a tool message."""
+    if not isinstance(output, dict):
+        return str(output)
+    body = output.get("output")
+    body = body if isinstance(body, str) else ("" if body is None else json.dumps(body, ensure_ascii=False))
+    if output.get("ok"):
+        return body or "(ok, no output)"
+    error = str(output.get("error") or "tool failed")
+    parts = [f"ERROR: {error}"]
+    if body:
+        parts.append(body)
+    if output.get("allowed"):
+        parts.append("allowed: " + ", ".join(map(str, output["allowed"])))
+    return "\n".join(parts)
+
+
+def split_results(prompt: str) -> tuple[list[dict[str, Any]], str]:
+    """(function_call_output items, the rest) from a message the engine sends after running tools."""
+    text = prompt.lstrip()
+    if not text.startswith('{"input"'):
+        return [], prompt
+    try:
+        value, end = json.JSONDecoder().raw_decode(text)
+    except ValueError:
+        return [], prompt
+    items = value.get("input") if isinstance(value, dict) else None
+    if not isinstance(items, list):
+        return [], prompt
+    results = [item for item in items if isinstance(item, dict) and item.get("type") == "function_call_output"]
+    return results, text[end:].strip()
+
+
+def responses_text(content: str, calls: list[dict[str, Any]]) -> str:
+    """A native reply as the Responses-format text the engine parses (message + function_call items)."""
+    items: list[dict[str, Any]] = []
+    if content.strip():
+        items.append({"type": "message", "content": [{"type": "output_text", "text": content.strip()}]})
+    for call in calls:
+        function = call.get("function") or {}
+        raw = function.get("arguments") or "{}"
+        try:
+            arguments: Any = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            arguments = raw  # the engine reports a call it cannot read
+        items.append({"type": "function_call", "call_id": call.get("id") or "", "name": function.get("name") or "",
+                      "arguments": arguments})
+    return json.dumps({"output": items}, ensure_ascii=False)
+
+
 class LocalModelSession(ChatSession):
     """One conversation with the local model: the messages so far go with every request."""
 
@@ -116,13 +186,24 @@ class LocalModelSession(ChatSession):
 
     def __init__(self, client: LocalModelClient) -> None:
         self.client = client
-        self.messages: list[dict[str, str]] = []
+        self.messages: list[dict[str, Any]] = []
         self.last_detail: dict[str, Any] | None = None
+        #: Native tool calling: the tools go to the server in ``tools`` (OpenAI chat format).
+        self.tools: list[dict[str, Any]] | None = None
+        self._call_count = 0
+
+    def use_tools(self, tools: list[dict[str, Any]]) -> bool:
+        """Call tools natively from now on. The engine keeps sending and parsing the Responses
+        format; this session translates it to and from the server's ``tools`` / ``tool_calls``."""
+        self.tools = list(tools)
+        return True
 
     def send(self, prompt: str) -> str:
         from critique_bot.redaction import redact_outgoing
 
         prompt = redact_outgoing(prompt)
+        if self.tools is not None:
+            return self._send_native(prompt)
         self.messages.append({"role": "user", "content": prompt})
         detail: dict[str, Any] = {"backend": "local", "model": self.client.model}
         try:
@@ -136,6 +217,64 @@ class LocalModelSession(ChatSession):
         self.last_detail = detail
         run_stats.add_usage(detail.get("prompt_eval_count"), detail.get("eval_count"), detail.get("cached_count"))
         return reply
+
+    def _send_native(self, prompt: str) -> str:
+        from critique_bot import tool_parse
+
+        before = len(self.messages)
+        results, rest = split_results(prompt)
+        pending = [c.get("id") for c in (self.messages[-1].get("tool_calls") or [])] if self.messages else []
+        answered: set[str] = set()
+        loose: list[str] = []
+        for item in results:
+            call_id = str(item.get("call_id") or "")
+            text = _result_text(item.get("output"))
+            if call_id in pending and call_id not in answered:
+                self.messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+                answered.add(call_id)
+            else:
+                loose.append(f"result of {call_id or 'a call'}: {text}")
+        for call_id in pending:  # every call needs an answer before the next user turn
+            if call_id not in answered:
+                self.messages.append({"role": "tool", "tool_call_id": call_id, "content": "(not run)"})
+        user_text = "\n\n".join([*loose, rest] if rest else loose)
+        if user_text or not results:
+            self.messages.append({"role": "user", "content": user_text or prompt})
+        detail: dict[str, Any] = {"backend": "local", "model": self.client.model, "tool_mode": "native"}
+        try:
+            content = self.client.chat(self.messages, detail=detail, tools=self.tools)
+        except BaseException:
+            del self.messages[before:]  # a retry sends the same text again
+            self.last_detail = detail
+            raise
+        calls = list(detail.get("tool_calls") or [])
+        if not calls:
+            for source_text in (content, str(detail.get("reasoning") or "")):
+                found, cleaned = tool_parse.recover_calls(source_text)
+                if found:
+                    calls = [{"id": "", "type": "function",
+                              "function": {"name": c.name, "arguments": json.dumps(c.arguments, ensure_ascii=False)}}
+                             for c in found]
+                    detail["parse_notes"] = [f"recovered {len(found)} call(s) from the {found[0].source} format"] + [
+                        note for c in found for note in c.notes]
+                    if source_text is content:
+                        content = cleaned
+                    break
+        for call in calls:
+            if not call.get("id"):
+                self._call_count += 1
+                call["id"] = f"call_{self._call_count}"
+        message: dict[str, Any] = {"role": "assistant", "content": content}
+        if calls:
+            message["tool_calls"] = calls
+        self.messages.append(message)
+        self.last_detail = detail
+        run_stats.add_usage(detail.get("prompt_eval_count"), detail.get("eval_count"), detail.get("cached_count"))
+        if detail.get("parse_notes"):
+            run_stats.count("recovered_calls", len(calls))
+        if not calls:
+            return content
+        return responses_text(content, calls)
 
     def new_chat(self) -> bool:
         self.messages = []
@@ -196,10 +335,21 @@ class LocalModelClient:
         items = data.get("data") if isinstance(data, dict) else None
         return [str(item.get("id") or "") for item in items or [] if isinstance(item, dict)]
 
-    def chat(self, messages: list[dict[str, str]], *, detail: dict[str, Any] | None = None) -> str:
-        """One reply to ``messages``, streamed and joined. Raises LocalModelError when it fails."""
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        detail: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """One reply to ``messages``, streamed and joined. Raises LocalModelError when it fails.
+
+        With ``tools`` the request uses the server's native tool calling; the calls the
+        server parsed land in ``detail["tool_calls"]`` (OpenAI chat format) and any
+        reasoning text in ``detail["reasoning"]``.
+        """
         detail = detail if detail is not None else {}
-        path, body = self._chat_request(messages)
+        path, body = self._chat_request(messages, tools)
         started = time.monotonic()
         parts: list[str] = []
         try:
@@ -239,19 +389,30 @@ class LocalModelClient:
             stream.close()
         detail.setdefault("completion", COMPLETION_STOPPED)
         detail["seconds"] = round(time.monotonic() - started, 1)
+        pending = detail.pop("_tool_calls", None)
+        if pending:
+            detail["tool_calls"] = [pending[index] for index in sorted(pending)]
+        reasoning = detail.pop("_reasoning", None)
+        if reasoning:
+            detail["reasoning"] = "".join(reasoning)
         reply = strip_thinking("".join(parts))
         self._warn_if_truncated(detail)
         return reply
 
     # ------------------------------------------------------------------ wire formats
 
-    def _chat_request(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
+    def _chat_request(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> tuple[str, dict[str, Any]]:
         # include_usage: the last chunk carries token counts (vLLM, llama.cpp, LM Studio, Ollama), for crit eval.
         body: dict[str, Any] = {
             "model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
         }
         if self.temperature is not None:
             body["temperature"] = self.temperature
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
         return "/v1/chat/completions", body
 
     def _events(self, stream: _Stream) -> Iterator[dict[str, Any]]:
@@ -299,6 +460,11 @@ class LocalModelClient:
                 delta = choice["message"]
                 done = True
             text = str(delta.get("content") or "")
+            thought = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(thought, str) and thought:
+                detail.setdefault("_reasoning", []).append(thought)
+            for piece in delta.get("tool_calls") or []:
+                _merge_tool_call(detail.setdefault("_tool_calls", {}), piece)
             reason = choice.get("finish_reason")
             if reason:
                 detail["done_reason"] = str(reason)
