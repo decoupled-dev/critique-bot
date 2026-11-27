@@ -27,6 +27,10 @@ from typing import Any
 
 from critique_bot import agent_build, agent_edit, agent_shell, code_index, config_prompts, egress, integrations, log, roles
 from critique_bot import run_stats
+from critique_bot import session_log as session_log_mod
+from critique_bot import prompt_build
+from critique_bot.prompt_build import READY_LINE, seed_message
+from critique_bot.prompt_build import without_ready as _without_ready
 from critique_bot.config import effective_theme
 from critique_bot import tool_api
 from critique_bot import tool_api as agent_tools
@@ -186,7 +190,6 @@ RETRY_DELAYS = (5.0, 15.0, 45.0)
 PARALLEL_WORKERS = 4
 _REVIEW_LINES = 80
 REPO_MAP_CHARS = 2_500
-READY_LINE = "Reply with exactly READY."
 #: Read-only tools that may run side by side within one reply.
 _PARALLEL_SAFE = frozenset(
     {"list_files", "find_files", "read_files", "search_code", "git_status", "git_diff", "git_log", "git_show"}
@@ -1491,96 +1494,6 @@ def task_message(
     return "\n\n".join(parts)
 
 
-def seed_message(
-    workspace: Path,
-    instructions: str,
-    *,
-    shell: agent_shell.Shell | None = None,
-    notes: str = "",
-    platform_name: str | None = None,
-    persistent_cwd: bool = True,
-    available: dict[str, agent_shell.Shell] | None = None,
-    skills: list[str] | None = None,
-    helpers: int = 0,
-    web_hosts: tuple[str, ...] | None = None,
-    offline: bool = False,
-    role: str = "",
-    tools: str = "",
-) -> str:
-    """The first message of a chat: SHELL, the instructions, the ROLE text, the tools (OpenAI format),
-    ENVIRONMENT, and the notes."""
-    chosen = shell or agent_shell.detect_shell(platform_name)
-    lines = [
-        "ENVIRONMENT",
-        f"os: {platform_name or sys.platform}",
-        f"shell: {chosen.label}",
-        f"workspace: {workspace}",
-    ]
-    lines.extend(agent_shell.tool_hints(workspace, platform_name))
-    if offline:
-        lines.append(
-            "network: offline. Commands reach no other machine: package managers run offline, the Gradle "
-            "wrapper gets --offline, and git works with local repositories only. A build that needs a "
-            "dependency that is not in the local cache fails; say which one in your report."
-        )
-    access = integrations.current()
-    if access.gitlab_ready:
-        lines.append(
-            f"gitlab: {access.gitlab_url}. git clone, fetch, pull, ls-remote, and push work for the projects your "
-            "GitLab token can reach (one plain git command each); other network commands follow the rules below."
-        )
-    if access.jira_ready:
-        lines.append(f"jira: {access.jira_url} (read-only, with the jira tool)")
-    sites = () if web_hosts is None else web_hosts
-    if sites:
-        lines.append("web_fetch sites (https, plain page addresses only): " + ", ".join(sites))
-    else:
-        lines.append("web_fetch: off (nothing leaves this machine but the chat)")
-    if helpers > 0:
-        lines.append(
-            f"helper chats: {helpers}. Hand a self-contained part of the task to one with delegate (one brief, "
-            "or up to 6 in one call). Each runs in a fresh chat and returns a short report, so the files it "
-            "reads and the output it sees never land in this chat."
-        )
-    else:
-        lines.append("helper chats: none (do not call delegate; do the work here)")
-    if skills:
-        lines.append(
-            "skills: " + ", ".join(skills) + ". The ones that fit a task come with it under SKILLS; "
-            "load another with the skill tool when the work turns to its domain."
-        )
-    if persistent_cwd:
-        lines.append(
-            "run_command starts in the workspace above. cd persists between run_command calls, "
-            "as in a terminal; a result shows cwd when it changed. "
-            "The result starts with exit, the code and seconds, then stdout, then stderr."
-        )
-    else:
-        lines.append(
-            "Each run_command is a new process whose starting folder is the workspace above, "
-            "not C:\\ and not the user profile; pass cwd to start somewhere else. "
-            "Its result starts with exit, the code and seconds, then cwd, then stdout, then stderr."
-        )
-    text = agent_shell.shell_preamble(chosen, available) + "\n\n"
-    if instructions.strip():
-        text += instructions.rstrip() + "\n\n"
-    if role.strip():
-        text += role.strip() + "\n\n"
-    if tools.strip():
-        text += tools.strip() + "\n\n"
-    text += "\n".join(lines) + "\n"
-    if notes.strip():
-        text += "\nPROJECT NOTES (from .crit/AGENT.md; follow them)\n" + notes.strip() + "\n"
-    if READY_LINE not in text:
-        text += "\n" + READY_LINE + "\n"
-    return text
-
-
-def _without_ready(seed: str) -> str:
-    """The seed for a message that also carries the task: no READY handshake."""
-    return re.sub(r"\n*[^\n]*\bexactly READY\b[^\n]*", "", seed).strip()
-
-
 MAX_SKILL_CHARS = 14_000
 
 
@@ -1671,6 +1584,13 @@ def _int_setting(settings: dict[str, Any], key: str, default: int, minimum: int)
 
 
 _MODES = frozenset({"ask", "edits", "auto", "plan"})
+#: What a mode change note tells the model (prompt_build.change_note).
+_MODE_NOTES = {
+    "ask": "ask. Edits and commands wait for the user's approval.",
+    "edits": "edits. File edits in the workspace run without asking; commands still ask.",
+    "auto": "auto. Edits and commands run without asking; risky commands still ask.",
+    "plan": "plan. Read only now, then reply with a plan; nothing changes until the user approves it.",
+}
 
 
 def _ui_approve_mode() -> str:
@@ -1777,6 +1697,17 @@ class _Chat:
         self.can_restart = callable(getattr(session, "new_chat", None))
         #: "task -> outcome" for each task in this session, for the summary.
         self.history: list[str] = []
+        #: The session's event log (session_log.SessionLog); NullLog when there is none.
+        self.log: Any = session_log_mod.NullLog()
+        #: Model API sessions: compaction by context pressure (compaction.Compactor). The web
+        #: chat has None and moves to a new chat by size, turns, and time instead.
+        self.compactor: Any = None
+        #: Opens a second session on the same model (one-off helper requests: the summary).
+        self.side_factory: Callable[[], Any] | None = None
+        #: Replies received in this session, across new chats (the session log's turn).
+        self.replies = 0
+        #: Notes for the next message: a mid-session change (role) on an append-only conversation.
+        self.pending_notes: list[str] = []
 
     @property
     def last_detail(self) -> Any:
@@ -1802,6 +1733,7 @@ class _Chat:
             if not self.quiet:
                 _waiting(True)
             stalled = False
+            mark = self.log.request(self.session, outgoing, attempt=attempt or None)
             try:
                 reply = self.session.send(outgoing)
                 problem = _provider_error(reply)
@@ -1809,6 +1741,7 @@ class _Chat:
                 raise  # only a visible window gets past it; the session reopens one
             except ChatError as exc:
                 reply, problem = "", f"the chat page failed: {_one_line(str(exc), 160)}"
+                self.log.write("error", message=problem, attempt=attempt)
                 stalled = isinstance(exc, ReplyStalled)
                 if self.failure_dir is not None:
                     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1821,6 +1754,8 @@ class _Chat:
             self.chars += len(outgoing) + len(reply or "")
             if problem is None:
                 self.sends += 1
+                self.replies += 1
+                self.log.reply(self.session, mark, reply)
                 return reply
             self.note_reply(bad=True)
             if attempt >= self.retries:
@@ -1886,14 +1821,20 @@ class _Chat:
         return sum(1 for bad in self.health if bad) >= HEALTH_BAD_REPLIES
 
     def rotation_reason(self, *, size_only: bool = False, share: float = 1.0) -> str:
-        """Why this chat should move to a new one now, or "". ``share`` scales the size limits."""
-        if self.chars > self.compact_after * share:
+        """Why this chat should move to a new one now, or "". ``share`` scales the size limits.
+
+        With a compactor (a model API session) size, turns, and time never move the chat:
+        context pressure compacts it in place instead.
+        """
+        if self.compactor is not None:
+            if size_only:
+                return ""
+        elif self.chars > self.compact_after * share:
             return "the chat grew long"
-        if self.sends >= max(1, int(self.compact_turns * share)):
+        elif self.sends >= max(1, int(self.compact_turns * share)):
             return f"the chat reached {self.sends} messages"
-        minutes = (time.monotonic() - self.born) / 60
-        if self.sends and minutes * 60 >= self.compact_seconds * share:
-            return f"the chat has been open {minutes:.0f} minutes"
+        elif self.sends and (time.monotonic() - self.born) >= self.compact_seconds * share:
+            return f"the chat has been open {(time.monotonic() - self.born) / 60:.0f} minutes"
         if size_only:
             return ""
         if self.violations >= AMNESIA_VIOLATIONS:
@@ -1921,6 +1862,8 @@ class _Chat:
             return False
         self._note("note", f"Starting a new conversation: {reason}.")
         run_stats.count("compactions")
+        self.log.write("compaction", strategy="new_chat", reason=reason)
+        self.log.sync()
         self.chars = 0
         self.violations = 0
         self.health.clear()
@@ -2041,6 +1984,8 @@ class _TaskRun:
         self.denials: dict[str, str] = {}
         self.denied_rounds = 0
         self.denied_reason = ""
+        #: The mode the model was last told about (a switch mid-task is appended as a note).
+        self.mode_seen = self._approve_mode()
 
     def _present(self, text: str) -> None:
         visible = _present_text(text)
@@ -2053,6 +1998,8 @@ class _TaskRun:
         rounds = 0
         while self.max_rounds is None or rounds < self.max_rounds:
             rounds += 1
+            if self.chat.compactor is not None:
+                _compact_at_boundary(self)
             if self.chat.wants_restart():
                 reason = self.chat.rotation_reason() or "the chat grew long"
                 # A chat that is merely long still works: ask it for a handoff note first.
@@ -2060,6 +2007,7 @@ class _TaskRun:
                 if self.chat.restart(reason):
                     self.payload = self._resume_text(note) + "\n\n" + self.payload
             self._note_shell_change()
+            self._note_mode_change()
             if self.answer and self.answer.last_round and self.max_rounds is not None and rounds == self.max_rounds:
                 self.payload = self.payload + "\n\n" + self.answer.last_round
             try:
@@ -2406,6 +2354,22 @@ class _TaskRun:
             return _Perm("command" if name == "run_command" else "edit", _activity(call), "")
 
     def _approved(self, perm: Any) -> tuple[bool, str]:
+        """:meth:`_decide`, recorded in the session log when it was not a plain read."""
+        allowed, reason = self._decide(perm)
+        kind = getattr(perm, "kind", "read") or "read"
+        slog = getattr(getattr(self, "chat", None), "log", None)
+        if slog is not None and (kind != "read" or not allowed):
+            slog.write(
+                "permission_decision",
+                kind=kind,
+                summary=str(getattr(perm, "summary", "") or getattr(perm, "detail", "") or ""),
+                allowed=allowed,
+                reason=reason or None,
+                mode=self._approve_mode(),
+            )
+        return allowed, reason
+
+    def _decide(self, perm: Any) -> tuple[bool, str]:
         """Ask the user unless the call only reads, the mode allows it, or it was always-allowed.
 
         ask: every edit, command, fetch, and outside path. edits: file edits in
@@ -2690,6 +2654,15 @@ class _TaskRun:
         label = getattr(chosen, "label", "") or str(chosen)
         self.payload = f"Shell changed to {label}: {preamble}\n\n" + self.payload
 
+    def _note_mode_change(self) -> None:
+        """A mode switched mid-task (/mode, Shift+Tab) goes to the model as a short appended note."""
+        mode = self._approve_mode()
+        if mode == self.mode_seen:
+            return
+        old, self.mode_seen = self.mode_seen, mode
+        self.chat.log.write("mode_changed", old=old, new=mode)
+        self.payload = prompt_build.change_note("mode", _MODE_NOTES.get(mode, mode)) + "\n\n" + self.payload
+
     def _run_check(self) -> dict[str, Any]:
         """The project check. It always runs again after a change, with its own long timeout.
 
@@ -2919,6 +2892,9 @@ def run_agent_loop(
     read_only: bool = False,
     answer: AnswerContract | None = None,
     single_task: bool = False,
+    session_log: Any = None,
+    resume: bool = False,
+    side_factory: Callable[[], Any] | None = None,
 ) -> list[dict[str, str]]:
     """Talk to ``session.send`` until each task reaches a finish code.
 
@@ -2935,6 +2911,13 @@ def run_agent_loop(
 
     ``settings`` keys: ``check_timeout`` (seconds, default 600),
     ``compact_after_chars`` (default 120000), ``reply_retries`` (default 3).
+
+    ``session_log`` (a :class:`session_log.SessionLog`) records every event of the session;
+    with ``resume`` it already holds an earlier run, and the conversation is rebuilt from
+    it first. ``side_factory`` opens a second session on the same model for one-off
+    requests (the compaction summary). A model API session (``_context_window`` in
+    settings, a session with ``replace_history``) is compacted by context pressure
+    (:mod:`compaction`) instead of moving to a new chat by size, turns, and time.
     """
     turns = turns if turns is not None else []
     reader = read_message or _read_message
@@ -2970,6 +2953,10 @@ def run_agent_loop(
     )
     if cache_dir is not None:
         chat.failure_dir = Path(cache_dir) / "failures"
+    slog = session_log if session_log is not None else session_log_mod.NullLog()
+    chat.log = slog
+    chat.side_factory = side_factory
+    _setup_model_api_session(chat, options, slog)
     handoff_notes = options.get("handoff_notes") is not False
     check_timeout = _int_setting(options, "check_timeout", DEFAULT_CHECK_TIMEOUT, 1)
     build_timeout = _int_setting(options, "build_timeout", int(agent_build.DEFAULT_BUILD_TIMEOUT), 60)
@@ -3049,16 +3036,29 @@ def run_agent_loop(
 
         return delegate
 
+    carry = ""
+    restored = False
+    if resume and slog.enabled:
+        restored, carry = _resume_from_log(chat, slog)
     if seed and seed.strip():
-        if seed_first:
+        slog.prefix = _without_ready(seed) if not seed_first else seed.strip()
+        if not restored:
+            slog.write("system_prompt", hash=prompt_build.prefix_hash(seed), text=seed)
+            if _NATIVE_TOOLS:
+                slog.write("tools_declared", hash=session_log_mod.text_hash(json.dumps(_NATIVE_TOOLS, sort_keys=True))[:16],
+                           tools=_NATIVE_TOOLS)
+        if restored:
+            pass  # the rebuilt conversation already starts with the instructions
+        elif seed_first:
             _seed_session(
                 chat, seed.strip(), turns, ctx=_tool_context(**base), max_result_chars=max_result_chars, show=show
             )
         else:
             chat.prefix = _without_ready(seed)
+    first_context = str(options.get("_first_turn_context") or "").strip() if not restored else ""
     pending = first_task.strip()
     announced = False
-    carry = ""
+    mode_told = _current_mode(approve_mode, ui_mode_at_start)
     while True:
         if not pending and single_task and turns:
             break  # one task, and it ran: do not wait for another
@@ -3091,9 +3091,24 @@ def run_agent_loop(
             if callable(handler):
                 handler("/role", task.split(None, 1)[1] if " " in task.strip() else "")
             continue
-        role_now = _apply_role_change(chat, reseed) or role_now
+        if task.lower().split(None, 1)[0] in {"/resume", "/fork", "/sessions"}:
+            # A reader without the slash-command layer: the UI records the request; the next task uses it.
+            handler = getattr(globals().get("agent_ui"), "handle_command", None)
+            if callable(handler):
+                handler(task.lower().split(None, 1)[0], task.split(None, 1)[1] if " " in task.strip() else "")
+            continue
+        switched = _take_session_change(chat, slog)
+        if switched is not None:
+            slog, switch_note = switched
+            carry = (carry + "\n\n" + switch_note).strip() if switch_note else carry
+        changed_role = _apply_role_change(chat, reseed)
+        if changed_role:
+            slog.write("role_changed", old=role_now, new=changed_role)
+        role_now = changed_role or role_now
         _ui("task", f"Working on: {_one_line(task, 100)}")
         turns.append({"role": "user", "content": task})
+        slog.write("user_message", text=task, task=True, mode=_current_mode(approve_mode, ui_mode_at_start),
+                   role=role_now)
         if chat.stale_for_next_task():
             chat.restart(chat.rotation_reason(size_only=True, share=BOUNDARY_ROTATION_SHARE) or "the chat grew long")
         repo_map = _prepare_index(workspace, index_path, task)
@@ -3104,7 +3119,13 @@ def run_agent_loop(
         skills = _task_skills(task, workspace, chat, options, auto=auto_skills, limit=max_skills, role=role_now)
         mode_now = _current_mode(approve_mode, ui_mode_at_start)
         mode_note = sections["PLAN_MODE"] if mode_now == "plan" and not _answer_only(task) else ""
+        if mode_now != mode_told:
+            slog.write("mode_changed", old=mode_told, new=mode_now)
+            chat.pending_notes.append(prompt_build.change_note("mode", _MODE_NOTES.get(mode_now, mode_now)))
+            mode_told = mode_now
         checkpoints.start_task()
+        if checkpoints.task_dir is not None:
+            slog.write("checkpoint", undo=checkpoints.task_dir.name)
         cancel = threading.Event()
         task_state = TaskState(task=task)
         ctx = _tool_context(
@@ -3140,9 +3161,17 @@ def run_agent_loop(
         message = task_message(
             task, repo_map=repo_map, skills=skills, mode_note=mode_note, prefix=sections["TASK_PREFIX"], tickets=tickets,
         )
+        if chat.pending_notes:
+            message = "\n\n".join(chat.pending_notes) + "\n\n" + message
+            chat.pending_notes = []
+        if first_context:
+            message = first_context + "\n\n" + message
+            first_context = ""
         if carry:
             message = carry + "\n\n" + message
             carry = ""
+        if slog.enabled:
+            run.hooks = _LoggedHooks(run.hooks, slog)
         try:
             outcome_code = run.run(message)
         except KeyboardInterrupt:
@@ -3163,7 +3192,10 @@ def run_agent_loop(
                 "The user interrupted the previous task. Stop working on it; "
                 "its last reply was not acted on. The new task follows."
             )
+        mode_told = run.mode_seen
         changed = list(task_state.edits)
+        slog.write("task_finished", code=outcome_code, task=task, changed=changed or None)
+        _update_session_meta(slog)
         chat.history.append(
             f"{_one_line(task, 100)} -> {outcome_code}"
             + (f" (changed {', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''})" if changed else "")
@@ -3197,6 +3229,14 @@ def _apply_role_change(chat: Any, reseed: Callable[[str], str] | None) -> str | 
         return None
     if not changed:
         return None
+    if getattr(chat, "compactor", None) is not None:
+        # A model API conversation is append-only (its prefix is cached): the new role's
+        # instructions go in as a note with the next message instead of a new chat.
+        text = load_role_instructions(changed)
+        chat.pending_notes.append(
+            prompt_build.change_note("role", f"{roles.role_label(changed)}." + (f"\n{text}" if text else ""))
+        )
+        return changed
     if reseed is None:
         return changed
     try:
@@ -3210,6 +3250,361 @@ def _apply_role_change(chat: Any, reseed: Callable[[str], str] | None) -> str | 
     chat.prefix = _without_ready(chat.seed) if chat.seed else ""
     _ui("note", "This chat page cannot open a new conversation; the new role goes in front of the next task.")
     return changed
+
+
+# --------------------------------------------------------------------------- sessions and context
+#
+# The hooks between the loop and session_log / compaction / prompt_build (Stage 3). Stage 5
+# moves this section, with _Chat and _TaskRun, into the engine core.
+
+
+class _LoggedHooks:
+    """A task run's hooks that also record tool calls in the session log."""
+
+    def __init__(self, inner: Any, slog: Any) -> None:
+        self.inner = inner
+        self.slog = slog
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def ui(self, kind: str, message: str) -> None:
+        self.inner.ui(kind, message)
+
+    def status(self, code: str) -> None:
+        self.inner.status(code)
+
+    def tool_start(self, call: ToolCall) -> None:
+        self.slog.write(
+            "tool_started",
+            tool=canonical_tool(call.tool) or call.tool,
+            call_id=call.call_id or None,
+            arguments=call.arguments,
+            summary=_activity(call),
+        )
+        self.inner.tool_start(call)
+
+    def tool_done(self, call: ToolCall, result: dict[str, Any]) -> None:
+        name = canonical_tool(call.tool) or call.tool
+        ok = bool(result.get("ok"))
+        text = str(result.get("output") if ok else result.get("error") or "") or ""
+        paths = _call_paths(call)
+        self.slog.write(
+            "tool_result",
+            tool=name,
+            call_id=call.call_id or None,
+            ok=ok,
+            summary=_one_line(text, 200),
+            path=paths or None,
+            mutating=(name in MUTATING) or None,
+            denied=bool(result.get("denied")) or None,
+            result=result,
+        )
+        self.inner.tool_done(call, result)
+
+
+def _setup_model_api_session(chat: _Chat, options: dict[str, Any], slog: Any) -> None:
+    """For a model API session: compaction by context pressure, and llama.cpp slot pinning.
+
+    ``_context_window`` in ``options`` is the backend's context window (run_agent sets it for
+    a local server). The web chat has none and keeps its size/turn/time rotation.
+    """
+    from critique_bot import compaction
+
+    session = chat.session
+    window = options.get("_context_window")
+    if (
+        isinstance(window, int)
+        and not isinstance(window, bool)
+        and window > 0
+        and callable(getattr(session, "replace_history", None))
+        and options.get("compaction") is not False
+    ):
+        from critique_bot.redaction import redact_outgoing
+
+        chat.compactor = compaction.Compactor(
+            compaction.Policy.from_settings(window, options),
+            summarize=_side_summarizer(chat),
+            put_blob=lambda text: chat.log.put_blob(text),
+            redact=lambda text: redact_outgoing(text, report=False),
+        )
+    _pin_slot(session, slog.id if slog.enabled else "", options.get("slot_pinning"))
+
+
+def _pin_slot(session: Any, key: str, setting: Any) -> int | None:
+    """llama.cpp: keep the session in one slot (``id_slot``). Off with ``"slot_pinning": false``;
+    a number is the server's slot count (no detection)."""
+    pin = getattr(session, "pin_slot", None)
+    if not callable(pin) or not key or setting is False:
+        return None
+    slots = setting if isinstance(setting, int) and not isinstance(setting, bool) and setting > 0 else None
+    try:
+        slot = pin(key, slots)
+    except Exception as exc:  # the cache is an optimization; never stop a session over it
+        log.debug(f"slot pinning failed: {exc}")
+        return None
+    if slot is not None:
+        log.info(f"llama.cpp: this session uses slot {slot} (id_slot) so its prompt cache stays warm")
+    return slot
+
+
+def _side_summarizer(chat: _Chat) -> Callable[[list[dict[str, Any]], str], str] | None:
+    """The compaction summary as one request on a second session that holds the same messages.
+
+    The messages share the conversation's prefix, so a server with a prompt cache (and the
+    same llama.cpp slot) reuses it. None without a second session.
+    """
+    if chat.side_factory is None:
+        return None
+    from critique_bot import compaction
+
+    def summarize(messages: list[dict[str, Any]], prompt: str) -> str:
+        assert chat.side_factory is not None
+        handle = chat.side_factory()
+        enter = getattr(handle, "__enter__", None)
+        side = enter() if callable(enter) and not hasattr(handle, "send") else handle
+        try:
+            if _NATIVE_TOOLS and callable(getattr(side, "use_tools", None)):
+                side.use_tools(_NATIVE_TOOLS)
+            _pin_slot(side, chat.log.id if chat.log.enabled else "", None)
+            replace = getattr(side, "replace_history", None)
+            if callable(replace):
+                replace(messages)
+                reply = side.send(prompt)
+            else:
+                rendered = "\n\n".join(f"[{m.get('role')}]\n{m.get('content') or ''}" for m in messages)
+                reply = side.send(rendered + "\n\n" + prompt)
+        finally:
+            close = getattr(handle, "__exit__", None) if handle is not side else None
+            try:
+                if callable(close):
+                    close(None, None, None)
+                elif callable(getattr(side, "close", None)):
+                    side.close()
+            except Exception as exc:  # noqa: BLE001
+                log.debug(f"closing the summary session failed: {exc}")
+        return compaction.reply_text(reply)
+
+    return summarize
+
+
+def _compact_at_boundary(run: "_TaskRun") -> bool:
+    """At a turn boundary of a model API session: compact when context pressure calls for it."""
+    from critique_bot import compaction
+
+    chat = run.chat
+    session = chat.session
+    history = getattr(session, "history", None)
+    replace = getattr(session, "replace_history", None)
+    if chat.compactor is None or not callable(history) or not callable(replace):
+        return False
+    detail = chat.last_detail if isinstance(chat.last_detail, dict) else {}
+    used = int(detail.get("prompt_eval_count") or 0) + int(detail.get("eval_count") or 0)
+    state = run.state
+    facts = {
+        "notes": "; ".join(run.findings),
+        "changed": ", ".join(state.edits),
+        "problems": run.last_output.strip()[-800:] if run.last_failed else "",
+        "failing": f"{state.last_command} -> {state.last_exit}" if state.last_command and run.last_failed else "",
+    }
+    ctx = compaction.Context(
+        used_tokens=used,
+        pending_chars=len(run.payload),
+        turn=chat.replies,
+        task=run.task,
+        todos=list(state.todos),
+        recent_files=list(state.reads),
+        workspace=run.ctx.workspace,
+        facts=facts,
+    )
+    try:
+        result = chat.compactor.compact(history(), ctx)
+    except Exception as exc:  # a failed compaction leaves the conversation as it was
+        log.warn(f"compaction failed: {exc}")
+        return False
+    if result is None:
+        return False
+    replace(result.messages)
+    chat.log.write(
+        "compaction",
+        strategy=result.strategy,
+        reason=result.reason,
+        tokens_before=result.tokens_before,
+        tokens_after=result.tokens_after,
+        masked=result.masked or None,
+        summarized=list(result.summarized) if result.summarized else None,
+        summary=result.summary or None,
+        helper=result.helper or None,
+        history=result.messages if result.strategy == "summarize" else None,
+    )
+    chat.log.sync()
+    run_stats.count("compactions")
+    run_stats.count(f"compaction_{result.strategy}")
+    what = "Hid old tool results" if result.strategy == "mask" else "Summarized the earlier turns"
+    run.hooks.ui("note", f"{what} to save context: about {result.tokens_before} -> {result.tokens_after} tokens.")
+    return True
+
+
+def _resume_from_log(chat: _Chat, slog: Any) -> tuple[bool, str]:
+    """Rebuild the conversation from the session log. (restored, a note for the first message).
+
+    A model API session gets its message list back (``replace_history``), up to the last
+    complete turn. A session without one (the web chat) starts a new chat whose first
+    message carries a summary of the log.
+    """
+    events = slog.events()
+    projection = session_log_mod.history_from_events(events, slog.folder)
+    chat.history = projection.tasks[-8:]
+    replace = getattr(chat.session, "replace_history", None)
+    if projection.has_wire and projection.messages and callable(replace):
+        replace(projection.messages)
+        chat.map_sent = True
+        slog.write("session_resumed", strategy="history", messages=len(projection.messages))
+        note = "This session was resumed: crit restored the conversation from its log."
+        if projection.unanswered_calls:
+            note += " The last tool calls did not finish before crit stopped; check the state before repeating them."
+        _ui("note", f"Resumed the conversation ({len(projection.messages)} messages).")
+        return True, note
+    summary = session_log_mod.resume_summary(events, slog.folder)
+    slog.write("session_resumed", strategy="summary", messages=0)
+    _ui("note", "Resumed: a new conversation starts with a summary of the session's log.")
+    return False, summary
+
+
+def _take_session_change(chat: _Chat, slog: Any) -> tuple[Any, str] | None:
+    """After ``/resume`` or ``/fork`` in the UI: switch this conversation to that session's log.
+
+    Returns (the new log, a note for the next message), or None when nothing was asked.
+    """
+    taker = getattr(globals().get("agent_ui"), "take_session_change", None)
+    if not callable(taker):
+        return None
+    try:
+        request = taker()
+    except Exception:
+        return None
+    if not request:
+        return None
+    folder = Path(request.get("folder")) if isinstance(request, dict) and request.get("folder") else None
+    if folder is None:
+        return None
+    try:
+        new_log = session_log_mod.SessionLog.open(folder)
+    except OSError as exc:
+        _ui("bad", f"Could not open session {folder.name}: {exc}")
+        return None
+    if chat.can_restart:
+        chat.restart(f"switching to session {folder.name}")  # recorded in the session being left
+    slog.close(status="switched")
+    chat.log = new_log
+    restored, note = _resume_from_log(chat, new_log)
+    chat.prefix = "" if restored else (_without_ready(chat.seed) if chat.seed else "")
+    if not restored:
+        chat.map_sent = False
+    _announce_session(new_log)
+    return new_log, note
+
+
+def _announce_session(slog: Any) -> None:
+    setter = getattr(globals().get("agent_ui"), "set_session", None)
+    if callable(setter) and slog.enabled:
+        try:
+            setter(slog.folder.parent, slog.id)
+        except Exception as exc:  # noqa: BLE001
+            log.debug(f"telling the UI about the session failed: {exc}")
+
+
+def _open_session_log(
+    home: BotHome,
+    config: BotConfig,
+    task: str,
+    *,
+    resume: str | None = None,
+    settings: dict[str, Any] | None = None,
+    kind: str = "agent",
+) -> Any:
+    """The session's event log in ``.crit/sessions``: a new one, or ``resume``'s (raises
+    SessionNotFound). NullLog when ``"session_log": false`` or the folder cannot be written."""
+    options = settings or {}
+    if options.get("session_log") is False and not resume:
+        return session_log_mod.NullLog()
+    if resume:
+        folder = session_log_mod.find_session(home.sessions_dir, resume)
+        slog = session_log_mod.SessionLog.open(folder)
+        tokens = slog.meta.get("tokens") if isinstance(slog.meta.get("tokens"), dict) else {}
+        slog.meta["tokens_base"] = dict(tokens)
+        return slog
+    try:
+        slog = session_log_mod.SessionLog.create(
+            home.sessions_dir,
+            title=task,
+            kind=kind,
+            model=config.model or "",
+            backend=config.backend,
+            cwd=str(home.root),
+        )
+    except OSError as exc:
+        log.warn(f"no session log: {exc}")
+        return session_log_mod.NullLog()
+    slog.write(
+        "session_started",
+        id=slog.id,
+        kind=kind,
+        model=config.model or "",
+        backend=config.backend,
+        cwd=str(home.root),
+        crit_version=slog.meta.get("crit_version") or None,
+    )
+    return slog
+
+
+def _close_session_log(slog: Any, status: str) -> None:
+    if not slog.enabled:
+        return
+    try:
+        _update_session_meta(slog)
+        slog.close(status=status)
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"closing the session log failed: {exc}")
+
+
+def _memory_notes(home: BotHome, settings: dict[str, Any]) -> str:
+    """The memory files for the prefix (prompt_build.load_memory); a warning when over the cap."""
+    if settings.get("memory_files") is False:
+        return home.project_notes()
+    try:
+        memory = prompt_build.load_memory(home.root)
+    except Exception as exc:  # the notes help; they must never stop a session
+        log.warn(f"reading the memory files failed: {exc}")
+        return home.project_notes()
+    if memory.warning:
+        _ui("note", memory.warning[:1].upper() + memory.warning[1:] + ".")
+    return memory.text
+
+
+def _session_settings(config: BotConfig, home: BotHome) -> dict[str, Any]:
+    """Settings the loop takes from the run, not the settings file: the model API context window
+    (compaction by pressure) and the first turn's session context (date, git status)."""
+    values: dict[str, Any] = {"_first_turn_context": prompt_build.session_context(home.root)}
+    if config.is_local:
+        window = model_api.context_tokens(config)
+        if window:
+            values["_context_window"] = int(window)
+    return values
+
+
+def _update_session_meta(slog: Any) -> None:
+    """Title, status, turns, and tokens in meta.json (what ``crit sessions`` lists)."""
+    if not slog.enabled:
+        return
+    stats = run_stats.snapshot()
+    base = slog.meta.get("tokens_base") if isinstance(slog.meta.get("tokens_base"), dict) else {}
+    tokens = {
+        key: int(base.get(key) or 0) + int(stats.get(name) or 0)
+        for key, name in (("prompt", "prompt_tokens"), ("completion", "completion_tokens"), ("cached", "cached_tokens"))
+    }
+    slog.update_meta(turns=slog.turn, tokens=tokens)
+    slog.sync()
 
 
 def _task_skills(
@@ -3426,6 +3821,7 @@ def run_agent(
     headed: bool,
     approve_mode: str | None = None,
     role: str | None = None,
+    resume: str | None = None,
 ) -> int:
     """Open the Edge session, run the tool loop, and write the transcript.
 
@@ -3433,12 +3829,20 @@ def run_agent(
     (``--plan``); ``None`` reads ``"permissions"`` from ``.crit/settings.json``. ``role`` is the
     persona for this run (``--role``); ``None`` reads ``"role"`` from the settings, and Generic
     is the default. The transcript is saved even when Ctrl+C or an error ends the session.
+
+    Every session is logged in ``.crit/sessions/<id>/`` (session_log). ``resume`` is the id
+    (or a prefix, or ``last``) of a logged session to continue instead of starting a new one.
     """
     started = datetime.now(timezone.utc)
     run_stats.reset()
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
+    try:
+        slog = _open_session_log(home, config, task, resume=resume, settings=settings)
+    except session_log_mod.SessionNotFound as exc:
+        log.notice(f"Problem: {exc}")
+        return 1
     helpers = min(_int_setting(settings, "helper_sessions", DEFAULT_HELPER_SESSIONS, 0), MAX_HELPER_SESSIONS)
     setup = _tool_setup(settings, helpers=helpers, web=bool(_web_hosts(settings)), native_ok=config.is_local)
     try:
@@ -3454,6 +3858,7 @@ def run_agent(
         approve_mode = ui_api.normalize_mode(settings.get("permissions") or settings.get("mode"))
     notes = home.project_notes()
     check_command = resolve_check_command(settings, notes)
+    memory = _memory_notes(home, settings)
     if helpers and config.max_parallel_tabs < helpers + 1:
         # Extra tabs are opened over the browser's remote debugging port, which this turns on.
         config = dataclasses.replace(config, max_parallel_tabs=helpers + 1)
@@ -3476,6 +3881,7 @@ def run_agent(
     )
     agent_ui.welcome_header()
     agent_ui.install_log_bridge()
+    _announce_session(slog)
     try:
         skill_names = [item["name"] for item in agent_tools.discover_skills(home.root)]
     except Exception as exc:
@@ -3487,7 +3893,7 @@ def run_agent(
             home.root,
             instructions,
             shell=shell,
-            notes=notes,
+            notes=memory,
             available=available,
             skills=skill_names,
             helpers=helpers,
@@ -3521,11 +3927,13 @@ def run_agent(
                 "session_shell": session_shell,
                 "turns": turns,
                 "settings": {**_loop_settings(config, settings), "tool_format": setup.tool_format,
-                             "_native_tools": setup.native_tools},
+                             "_native_tools": setup.native_tools, **_session_settings(config, home)},
                 "ask_user": _ask_user,
                 "helper_count": helpers,
                 "role": role_id,
                 "reseed": build_seed,
+                "session_log": slog,
+                "resume": bool(resume),
             },
             turns=turns,
         )
@@ -3550,7 +3958,9 @@ def run_agent(
             started=started,
             output_dir=output_dir,
             commands=list(getattr(session_shell, "history", []) or []),
+            folder=slog.folder if slog.enabled else None,
         )
+        _close_session_log(slog, outcome[-1] if code in (0, 1) else ("INTERRUPTED" if code == 130 else "FAILED"))
     if code != 0:
         return code
     return 0 if outcome[-1] in _STATUS_OK else 1
@@ -3643,6 +4053,7 @@ def run_read_only_task(
     turns: list[dict[str, str]] = []
     outcome = ["COMPLETED"]
     settings = effective_settings(home.settings)
+    slog = _open_session_log(home, config, task, settings=settings, kind="review")
     setup = _tool_setup(settings, helpers=0, web=False, only=sorted(READ_ONLY_TOOLS), native_ok=config.is_local)
     try:
         instructions = load_agent_instructions(setup.tool_format)
@@ -3668,7 +4079,7 @@ def run_read_only_task(
         home.root,
         instructions,
         shell=shell,
-        notes=home.project_notes(),
+        notes=_memory_notes(home, settings),
         helpers=0,
         offline=True,
         role=load_role_instructions(role),
@@ -3701,6 +4112,7 @@ def run_read_only_task(
                 "read_only": True,
                 "answer": answer,
                 "single_task": True,
+                "session_log": slog,
             },
             turns=turns,
         )
@@ -3710,7 +4122,8 @@ def run_read_only_task(
         code = 130
     finally:
         agent_ui.shutdown()
-        _save_transcript(config, home, turns, started=started, output_dir=None)
+        _save_transcript(config, home, turns, started=started, output_dir=None, folder=slog.folder if slog.enabled else None)
+        _close_session_log(slog, outcome[-1])
     if code == 0 and outcome[-1] not in _STATUS_OK:
         code = 1
     return code, turns
@@ -3841,6 +4254,9 @@ def _run_session(
                     log.info("helper chats run one at a time in a second tab (no remote debugging)")
                     kwargs["helper_factory"] = lambda: provider.session()
                     kwargs["helper_inline"] = True
+                if config.is_local and "side_factory" in _loop_kwargs({"side_factory": None}):
+                    # One-off requests on the same model (the compaction summary): another session.
+                    kwargs["side_factory"] = lambda: provider.session()
                 try:
                     result = run_agent_loop(session, first_task=task, **kwargs)
                     if "turns" not in kwargs and result is not turns:
@@ -3879,7 +4295,10 @@ def _save_transcript(
     started: datetime,
     output_dir: Path | None,
     commands: list[dict[str, Any]] | None = None,
+    folder: Path | None = None,
 ) -> None:
+    """``agent.json`` / ``agent.md`` for this run: in the session's folder (``folder``), else in a
+    folder named after the start time. ``crit eval`` reads ``turns`` and ``stats`` from it."""
     if not turns:
         return
     finished = datetime.now(timezone.utc)
@@ -3902,7 +4321,7 @@ def _save_transcript(
     payload["stats"] = run_stats.snapshot()
     stamp = started.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     try:
-        write_output(home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
+        write_output(folder or home.sessions_dir / stamp, body, payload, stem="agent", print_body=False)
         if output_dir is not None:
             write_output(output_dir, body, payload, stem="agent", print_body=False)
     except OSError as exc:

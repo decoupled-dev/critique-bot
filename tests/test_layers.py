@@ -61,6 +61,9 @@ LAYERS: dict[str, int] = {
     "agent_helpers": ENGINE,
     "ui_api": ENGINE,
     "openai_format": ENGINE,
+    "session_log": ENGINE,
+    "compaction": ENGINE,
+    "prompt_build": ENGINE,
     # apps: things built on the engine and the models
     "review_agent": APPS,
     "review_session": APPS,
@@ -76,6 +79,7 @@ LAYERS: dict[str, int] = {
     "config_cmd": APPS,
     "installer": APPS,
     "eval_harness": APPS,
+    "sessions_cmd": APPS,
     # routing: command line; the only place that wires concrete pieces together
     "cli": ROUTING,
     "agent_cli": ROUTING,
