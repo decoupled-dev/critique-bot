@@ -96,7 +96,8 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _SECRET_ASSIGN_RE = re.compile(
     r"(?im)\b(?P<key>[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
-    r"client[_-]?secret|auth[_-]?key|storepass|keypass)[\w.-]*)(?P<kq>[\"']?)(?P<sep>[ \t]*(?::=|=>|[:=])[ \t]*)"
+    r"client[_-]?secret|auth[_-]?key|storepass|keypass|passphrase|credentials?|cookie|session[_-]?(?:key|secret)|"
+    r"(?:signing|encryption|master)[_-]?key|(?<![a-z])pass(?![a-z])|(?<![a-z])pw(?![a-z]))[\w.-]*)(?P<kq>[\"']?)(?P<sep>[ \t]*(?::=|=>|[:=])[ \t]*)"
     r"(?P<q>[\"']?)(?P<val>[^\s\"'<>{}()\[\]$;,`]{6,})(?P=q)(?=$|[\s\"',;)}\]])"
 )
 _SECRET_XML_RE = re.compile(

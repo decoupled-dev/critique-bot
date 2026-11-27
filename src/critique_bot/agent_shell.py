@@ -2825,8 +2825,12 @@ def run(
     runner: Callable[..., Any] | None = None,
     on_output: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[int | None, str, str, float]:
-    """Run one command without a session. Returns exit code (None on timeout), stdout, stderr, seconds."""
+    """Run one command without a session. Returns exit code (None on timeout), stdout, stderr, seconds.
+
+    ``extra_env`` applies to this command only (crit's own settings, such as git's for a read-only command).
+    """
     chosen = shell or detect_shell()
     started = time.monotonic()
     if runner is not None:
@@ -2845,8 +2849,9 @@ def run(
             return None, decode(exc.stdout), decode(exc.stderr), time.monotonic() - started
         code = int(getattr(proc, "returncode", 1) or 0)
         return code, decode(getattr(proc, "stdout", b"")), decode(getattr(proc, "stderr", b"")), time.monotonic() - started
+    env = environment() if not extra_env else {**environment(), **extra_env}
     launch, _timed_out, _interrupted = _execute(
-        chosen, command, cwd=Path(cwd), env=environment(), timeout=timeout, on_output=on_output, cancel=cancel
+        chosen, command, cwd=Path(cwd), env=env, timeout=timeout, on_output=on_output, cancel=cancel
     )
     try:
         return launch.exit_code(), launch.stdout.text(), launch.stderr.text(), time.monotonic() - started

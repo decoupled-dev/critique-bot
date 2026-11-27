@@ -191,6 +191,14 @@ def _save_allow_rule(ctx: Any, rule: str) -> None:
         log.warn(f"could not save the rule {rule!r}: {exc}")
 
 
+def _perm_read_only(perm: Any) -> bool:
+    """Whether a command step only reads: as permission_for judged it with its folder, else by its text."""
+    judged = getattr(perm, "read_only", None)
+    if isinstance(judged, bool):
+        return judged
+    return _read_only_command(str(getattr(perm, "detail", "") or ""))
+
+
 def _read_only_command(command: str) -> bool:
     check = getattr(agent_tools, "read_only_command", None)
     try:
@@ -427,27 +435,62 @@ class Dispatch:
             # A command inside the OS sandbox (perm.contained) cannot write outside the workspace or
             # reach a host the egress allow-list does not allow, so auto mode runs it unasked.
             if mode == "auto" and (kind != "command" or getattr(perm, "contained", False)
-                                   or _read_only_command(str(getattr(perm, "detail", "") or ""))):
+                                   or _perm_read_only(perm)):
                 return True, ""
             if mode == "edits" and kind == "edit":
                 return True, ""
-        if _rule_allows(self.ctx, perm, risky):
+        # Code the task changed since the user last said yes to this command runs through it
+        # (a new test file under pytest, an edited Makefile), so neither a rule nor "always" answers.
+        changed = self._code_changed(perm)
+        if not changed and _rule_allows(self.ctx, perm, risky):
             return True, ""
         key = getattr(perm, "key", "") or ""
         rememberable = bool(key) and kind != "outside"
-        if rememberable and key in self.always and not risky:
+        if rememberable and key in self.always and not risky and not changed:
             return True, ""
         decision, reason = ui._approve_prompt(perm, risky=risky) if risky else ui._approve_prompt(perm)
+        if decision in {"yes", "always"}:
+            self._note_code_approval(perm)
         if decision == "always":
-            if rememberable:
-                self.always.add(key)
             rule = str(getattr(perm, "rule", "") or "")
-            if rule and kind == "command" and not risky:
-                _save_allow_rule(self.ctx, rule)
+            if kind == "command" and rule:
+                # Remember exactly what the prompt showed ("git log*"), never the whole program:
+                # "always" on git log must not cover git config or an alias.
+                if not risky:
+                    _save_allow_rule(self.ctx, rule)
+            elif rememberable:
+                self.always.add(key)
             return True, ""
         if decision == "yes":
             return True, ""
         return False, (reason or "").strip()
+
+    def _code_runner(self, perm: Any) -> str:
+        """The programs a code-running command starts (``pytest``, ``make``), or "" for any other step."""
+        if not getattr(perm, "runs_code", False):
+            return ""
+        from critique_bot import agent_rules
+
+        command = str(getattr(perm, "detail", "") or "")
+        segments = agent_rules.command_segments(command) or [command]
+        return " ".join(sorted({agent_rules._program(segment) for segment in segments}))
+
+    def _edit_generation(self) -> int:
+        edits = getattr(getattr(self.ctx, "state", None), "edits", None) or {}
+        return sum(edits.values())
+
+    def _code_changed(self, perm: Any) -> bool:
+        """True when ``perm`` runs project code and the task changed files since the user last approved it."""
+        runner = self._code_runner(perm)
+        generation = self._edit_generation()
+        if not runner or not generation:
+            return False
+        return self.__dict__.get("code_approvals", {}).get(runner) != generation
+
+    def _note_code_approval(self, perm: Any) -> None:
+        runner = self._code_runner(perm)
+        if runner:
+            self.__dict__.setdefault("code_approvals", {})[runner] = self._edit_generation()
 
     def _risk(self, perm: Any) -> str:
         declared = str(getattr(perm, "risk", "") or "")
